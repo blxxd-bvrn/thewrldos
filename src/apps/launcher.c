@@ -1,0 +1,162 @@
+/* Application registry, file associations and command execution */
+#include "kernel.h"
+#include "wm.h"
+#include "apps.h"
+#include "theme.h"
+
+const app_info_t app_table[] = {
+    { "explorer", "File Explorer", "Browse files and folders", ICON_EXPLORER },
+    { "notepad", "Notepad", "Edit text files", ICON_NOTEPAD },
+    { "cmd", "Command Prompt", "Shell & scripts", ICON_TERMINAL },
+    { "calc", "Calculator", "Perform calculations", ICON_CALCULATOR },
+    { "paint", "Paint", "Draw pictures", ICON_PAINT },
+    { "taskmgr", "Task Manager", "Processes and performance", ICON_TASKMGR },
+    { "control", "Control Panel", "Change settings", ICON_CONTROL_PANEL },
+    { "snake", "Snake", "A small arcade game", ICON_GAME },
+    { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
+    { "help", "Help and Support", "Read the manual", ICON_HELP },
+};
+const int app_count = ARRAY_LEN(app_table);
+const app_info_t *app_find(const char *id) { for (int i = 0; i < app_count; i++) if (!strcasecmp(app_table[i].id, id)) return &app_table[i]; return NULL; }
+
+void app_launch(const char *name, const char *arg) {
+    if (!strcasecmp(name, "explorer")) explorer_open(arg ? arg : USER_DOCS);
+    else if (!strcasecmp(name, "notepad")) notepad_open(arg);
+    else if (!strcasecmp(name, "cmd") || !strcasecmp(name, "terminal") || !strcasecmp(name, "sh") || !strcasecmp(name, "bash")) terminal_open(arg, NULL);
+    else if (!strcasecmp(name, "calc")) calc_open();
+    else if (!strcasecmp(name, "paint") || !strcasecmp(name, "mspaint")) paint_open(arg);
+    else if (!strcasecmp(name, "taskmgr")) taskmgr_open();
+    else if (!strcasecmp(name, "control")) control_open(arg);
+    else if (!strcasecmp(name, "snake")) snake_open();
+    else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
+    else if (!strcasecmp(name, "help")) notepad_open("C:\\Windows\\Help.txt");
+    else if (!strcasecmp(name, "run")) shell_show_run();
+    else msgbox("Error", "Unknown application.", MBI_ERROR, MBX_OK, NULL, NULL);
+}
+
+int file_icon(vnode_t *n) {
+    if (n->dir) {
+        if (str_ends_with_ci(n->name, ".app")) return ICON_APP_BUNDLE;
+        if (!n->parent) return vfs_drive_kind(n->drive) == 2 ? ICON_DRIVE_DMG : ICON_DRIVE;
+        if (!strcasecmp(n->name, "My Documents")) return ICON_MY_DOCUMENTS;
+        return ICON_FOLDER;
+    }
+    const char *e = vfs_ext(n->name);
+    if (!strcasecmp(e, "txt") || !strcasecmp(e, "log") || !strcasecmp(e, "ini") || !strcasecmp(e, "md") || !strcasecmp(e, "cfg")) return ICON_TEXT_FILE;
+    if (!strcasecmp(e, "c") || !strcasecmp(e, "h") || !strcasecmp(e, "plist") || !strcasecmp(e, "xml") || !strcasecmp(e, "json")) return ICON_NOTEPAD;
+    if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) return ICON_EXE;
+    if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
+    if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
+    if (!strcasecmp(e, "bmp")) return ICON_IMAGE_FILE;
+    if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
+    if (!strcasecmp(e, "lnk")) {
+        /* shortcut: icon of the target app */
+        if (n->data && n->size) { char t[64]; int l = MIN(n->size, 63u); memcpy(t, n->data, l); t[l] = 0; char *nl = strchr(t, '\n'); if (nl) *nl = 0; char *r = strchr(t, '\r'); if (r) *r = 0; const app_info_t *a = app_find(t); if (a) return a->icon; vnode_t *tn = vfs_resolve(t, NULL); if (tn && tn != n) return file_icon(tn); }
+        return ICON_EXE;
+    }
+    return ICON_FILE;
+}
+const char *file_type_name(vnode_t *n) {
+    if (n->dir) return !n->parent ? "Local Disk" : str_ends_with_ci(n->name, ".app") ? "Application Bundle" : "File Folder";
+    const char *e = vfs_ext(n->name);
+    if (!strcasecmp(e, "txt")) return "Text Document";
+    if (!strcasecmp(e, "exe")) return "Application";
+    if (!strcasecmp(e, "sh")) return "Shell Script";
+    if (!strcasecmp(e, "dmg")) return "Apple Disk Image";
+    if (!strcasecmp(e, "bmp")) return "Bitmap Image";
+    if (!strcasecmp(e, "dll")) return "Application Extension";
+    if (!strcasecmp(e, "lnk")) return "Shortcut";
+    if (!strcasecmp(e, "plist")) return "Property List";
+    if (!strcasecmp(e, "c")) return "C Source File";
+    return "File";
+}
+
+static void err_box(const char *title, const char *msg) { msgbox(title, msg, MBI_ERROR, MBX_OK, NULL, NULL); }
+
+bool shell_open(const char *path, const char *cwd) {
+    if (!strcmp(path, "::computer") || !strcmp(path, "::recycle")) { explorer_open(path); return true; }
+    vnode_t *n = vfs_resolve(path, cwd);
+    if (!n) return false;
+    char full[512]; vfs_path(n, full, sizeof full);
+    if (n->dir) {
+        if (str_ends_with_ci(n->name, ".app")) bundle_open(n);
+        else explorer_open(full);
+        return true;
+    }
+    const char *e = vfs_ext(n->name);
+    if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) {
+        char err[256];
+        if (pe_spawn(full, "", NULL, err, sizeof err) < 0) err_box(n->name, err);
+    } else if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash")) {
+        char dir[512]; path_dirname(full, dir, sizeof dir);
+        terminal_open(full, dir);
+    } else if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img")) {
+        char msg[400];
+        char l = dmg_mount(n, msg, sizeof msg);
+        if (!l) err_box("Disk Image", msg);
+        else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
+    } else if (!strcasecmp(e, "bmp")) imageview_open(full);
+    else if (!strcasecmp(e, "lnk")) {
+        char t[256]; int l = MIN(n->size, 255u); memcpy(t, n->data, l); t[l] = 0;
+        char *nl = strchr(t, '\n'); if (nl) *nl = 0; char *r = strchr(t, '\r'); if (r) *r = 0;
+        return shell_execute(t, NULL);
+    } else {
+        /* Mach-O and unknown binaries */
+        char desc[200];
+        if (macho_probe(n->data, n->size, desc, sizeof desc)) {
+            char m[400]; snprintf(m, sizeof m, "'%s' is a macOS program (%s).\n\nNative macOS binaries cannot run on " OS_NAME ". Script-based .app bundles and shell scripts can.", n->name, desc);
+            err_box("Cannot run program", m);
+        } else if (n->size >= 4 && !memcmp(n->data, "\x7F" "ELF", 4)) {
+            err_box("Cannot run program", "This is a Linux ELF binary. " OS_NAME " runs Win32 PE (.exe) programs and shell scripts.");
+        } else notepad_open(full);
+    }
+    return true;
+}
+
+bool shell_execute(const char *cmdline, const char *cwd) {
+    char buf[256]; strlcpy(buf, cmdline, sizeof buf);
+    char *s = buf; while (*s == ' ') s++;
+    if (!*s) return false;
+    char *arg = NULL;
+    if (*s == '"') { s++; char *e = strchr(s, '"'); if (e) { *e = 0; arg = e + 1; } }
+    else { char *sp = strchr(s, ' '); if (sp) { *sp = 0; arg = sp + 1; } }
+    if (arg) { while (*arg == ' ') arg++; if (!*arg) arg = NULL; }
+    if (app_find(s) || !strcasecmp(s, "terminal") || !strcasecmp(s, "mspaint") || !strcasecmp(s, "winver") || !strcasecmp(s, "sh") || !strcasecmp(s, "bash")) { app_launch(s, arg); return true; }
+    if (!strcasecmp(s, "notepad.exe")) { app_launch("notepad", arg); return true; }
+    if (!strcasecmp(s, "cmd.exe")) { app_launch("cmd", arg); return true; }
+    if (!strcasecmp(s, "calc.exe")) { app_launch("calc", NULL); return true; }
+    if (!strcasecmp(s, "explorer.exe")) { app_launch("explorer", arg); return true; }
+    if (!strcasecmp(s, "control.exe")) { app_launch("control", arg); return true; }
+    if (!strcasecmp(s, "taskmgr.exe")) { app_launch("taskmgr", NULL); return true; }
+    vnode_t *n = vfs_resolve(s, cwd);
+    if (!n) {
+        /* search PATH-like locations */
+        const char *dirs[] = { "C:\\Windows\\System32", "C:\\Windows", "C:\\Samples", "C:\\Program Files" };
+        char p[300];
+        for (unsigned i = 0; i < ARRAY_LEN(dirs) && !n; i++) {
+            snprintf(p, sizeof p, "%s\\%s", dirs[i], s); n = vfs_resolve(p, NULL);
+            if (!n) { snprintf(p, sizeof p, "%s\\%s.exe", dirs[i], s); n = vfs_resolve(p, NULL); }
+        }
+    }
+    if (!n) return false;
+    char full[512]; vfs_path(n, full, sizeof full);
+    if (!n->dir && !strcasecmp(vfs_ext(n->name), "exe") && arg) {
+        char err[256]; if (pe_spawn(full, arg, NULL, err, sizeof err) < 0) err_box(n->name, err);
+        return true;
+    }
+    return shell_open(full, NULL);
+}
+
+bool macho_probe(const uint8_t *d, uint32_t n, char *desc, int cap) {
+    if (n < 8) return false;
+    uint32_t m = *(const uint32_t *)d;
+    const char *arch = NULL;
+    if (m == 0xFEEDFACE || m == 0xFEEDFACF) {
+        uint32_t cpu = ((const uint32_t *)d)[1];
+        arch = cpu == 7 ? "i386" : cpu == 0x01000007 ? "x86_64" : cpu == 0x0100000C ? "arm64" : cpu == 12 ? "arm" : "unknown CPU";
+        snprintf(desc, cap, "Mach-O %s executable", arch);
+        return true;
+    }
+    if (m == 0xBEBAFECA) { snprintf(desc, cap, "Mach-O universal binary"); return true; }
+    return false;
+}

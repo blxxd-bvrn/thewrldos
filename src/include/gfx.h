@@ -1,0 +1,95 @@
+#ifndef GFX_H
+#define GFX_H
+#include "types.h"
+#include "assets.h"
+
+#define RGB(r,g,b)    (0xFF000000u | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
+#define RGBA(r,g,b,a) (((uint32_t)(a) << 24) | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
+#define HEX(v)        (0xFF000000u | (uint32_t)(v))
+#define C_R(c) (((c) >> 16) & 0xFF)
+#define C_G(c) (((c) >> 8) & 0xFF)
+#define C_B(c) ((c) & 0xFF)
+#define C_A(c) ((c) >> 24)
+#define WHITE HEX(0xFFFFFF)
+#define BLACK HEX(0x000000)
+
+typedef struct { int x, y, w, h; } rect_t;
+typedef struct canvas {
+    uint32_t *px;
+    int w, h, stride;
+    rect_t clip;
+} canvas_t;
+
+extern canvas_t screen;
+extern int SCREEN_W, SCREEN_H;
+
+static inline rect_t R(int x, int y, int w, int h) { rect_t r = { x, y, w, h }; return r; }
+static inline bool pt_in(rect_t r, int x, int y) { return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }
+rect_t rect_intersect(rect_t a, rect_t b);
+
+void gfx_init(void);
+void canvas_init(canvas_t *c, uint32_t *px, int w, int h);
+canvas_t *canvas_new(int w, int h);
+void canvas_free(canvas_t *c);
+void canvas_resize(canvas_t *c, int w, int h);
+void canvas_set_clip(canvas_t *c, rect_t r);
+void canvas_reset_clip(canvas_t *c);
+rect_t canvas_push_clip(canvas_t *c, rect_t r);   /* intersect, return old */
+
+uint32_t mix(uint32_t a, uint32_t b, int t);       /* t 0..255: a->b */
+uint32_t lighten(uint32_t c, int amt);
+uint32_t darken(uint32_t c, int amt);
+uint32_t hue_shift(uint32_t c, int deg);
+void rgb_to_hsv(uint32_t c, int *h, int *s, int *v);
+uint32_t hsv_to_rgb(int h, int s, int v);
+
+void gfx_clear(canvas_t *c, uint32_t col);
+void put_pixel(canvas_t *c, int x, int y, uint32_t col);
+void blend_pixel(canvas_t *c, int x, int y, uint32_t col, int alpha);
+uint32_t get_pixel(canvas_t *c, int x, int y);
+void fill_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col);
+void blend_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col, int alpha);
+void draw_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col);
+void hline(canvas_t *c, int x, int y, int w, uint32_t col);
+void vline(canvas_t *c, int x, int y, int h, uint32_t col);
+void gradient_v(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2);
+void gradient_h(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2);
+void gradient_v3(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2, uint32_t c3, int mid);
+void fill_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col);
+void draw_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col);
+void gradient_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t c1, uint32_t c2);
+void draw_line(canvas_t *c, int x0, int y0, int x1, int y1, uint32_t col);
+void draw_thick_line(canvas_t *c, int x0, int y0, int x1, int y1, int t, uint32_t col);
+void fill_circle(canvas_t *c, int cx, int cy, int r, uint32_t col);
+void draw_circle(canvas_t *c, int cx, int cy, int r, uint32_t col);
+void bevel(canvas_t *c, int x, int y, int w, int h, bool raised);
+void bevel_deep(canvas_t *c, int x, int y, int w, int h, bool raised);
+void dotted_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col);
+void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, int h);
+void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha);
+void flood_fill(canvas_t *c, int x, int y, uint32_t col);
+
+/* text */
+int font_height(int font);
+int font_ascent(int font);
+int text_width(int font, const char *s);
+int text_width_n(int font, const char *s, int n);
+int draw_text(canvas_t *c, int font, int x, int y, const char *s, uint32_t col);
+int draw_text_n(canvas_t *c, int font, int x, int y, const char *s, int n, uint32_t col);
+void draw_text_ellipsis(canvas_t *c, int font, int x, int y, int maxw, const char *s, uint32_t col);
+void draw_text_centered(canvas_t *c, int font, rect_t r, const char *s, uint32_t col);
+int draw_text_wrapped(canvas_t *c, int font, int x, int y, int maxw, const char *s, uint32_t col, int line_gap);
+int text_wrapped_height(int font, int maxw, const char *s, int line_gap);
+int text_fit_chars(int font, const char *s, int maxw);
+
+/* icons */
+void draw_icon(canvas_t *c, int icon, int size, int x, int y);
+void draw_icon_alpha(canvas_t *c, int icon, int size, int x, int y, int alpha);
+void draw_icon_tinted(canvas_t *c, int icon, int size, int x, int y, uint32_t tint, int amt);
+const uint32_t *icon_pixels(int icon, int size);
+
+/* cursor + presentation */
+enum { CURSOR_ARROW, CURSOR_IBEAM, CURSOR_HAND, CURSOR_SIZE_NS, CURSOR_SIZE_EW, CURSOR_SIZE_NWSE, CURSOR_SIZE_NESW, CURSOR_BUSY, CURSOR_MOVE, CURSOR_CROSS, CURSOR_COUNT };
+void gfx_present(int cursor, int mx, int my);
+void gfx_move_cursor(int cursor, int mx, int my);
+#endif

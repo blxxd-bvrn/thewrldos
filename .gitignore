@@ -1,0 +1,5 @@
+build/
+lumina.iso
+*.ppm
+serial.log
+__pycache__/
