@@ -1,1 +1,38 @@
-Help placeholder
+Lumina OS Help and Support
+==========================
+
+GETTING AROUND
+  Start menu ........ click "start" or press the Windows key / Ctrl+Esc
+  Switch windows .... Alt+Tab, or click a taskbar button
+  Close a window .... Alt+F4 or the red X button
+  Task Manager ...... Ctrl+Shift+Esc or Ctrl+Alt+Del
+  Desktop ........... right-click for New Folder / New Text Document / Properties
+
+VISUAL STYLES
+  Control Panel > Appearance and Personalization > Personalization
+  - Luna (Blue), Olive Green, Silver and Windows Classic
+  - Colour hue slider (0-359 degrees) recolours title bars, taskbar,
+    start menu, selections and buttons of any style
+  - Desktop backgrounds: Meadow, Azure, Sunset, Aurora, Dunes or a solid colour
+  From the Command Prompt:  theme olive 40   /   theme classic
+
+RUNNING PROGRAMS
+  .exe  32-bit Win32 PE programs (console and GUI). Each process gets its own
+        address space; kernel32, msvcrt, user32, gdi32, advapi32 and shell32
+        are implemented natively. Build your own with:
+            i686-w64-mingw32-gcc -O2 prog.c -o prog.exe            (console)
+            i686-w64-mingw32-gcc -O2 -mwindows prog.c -o prog.exe -lgdi32 (GUI)
+        64-bit (x64), .NET and 16-bit DOS programs are detected and refused.
+  .sh   Shell scripts run on the built-in POSIX-style shell: variables,
+        $(...), $((...)), pipes, redirection, if/while/until/for/case,
+        functions, globbing and ~70 builtins (type "help").
+  .dmg  Apple UDIF disk images (raw, zero-fill and zlib "UDZO" chunks) are
+        decoded and their FAT volume is mounted as a new drive letter.
+        Script-based .app bundles inside them can be launched; native
+        Mach-O binaries are identified but cannot execute.
+
+COMMAND PROMPT TIPS
+  ls -l, cd, cat, grep -n, sort, wc -l, find . -name "*.txt", tree
+  mount Sample.dmg  /  hdiutil attach X.dmg  /  hdiutil detach D:
+  ps, kill PID, free, uptime, dmesg, lspci, cpuinfo, date, uname -a
+  open FILE (default program), notepad FILE, explorer, control, taskmgr

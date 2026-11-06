@@ -196,8 +196,8 @@ static void heading(canvas_t *s, int x, int y, const char *t, const char *sub) {
     if (sub) draw_text_wrapped(s, FONT_UI, x, y + 30, s->w - x - 30, sub, W7_TEXT, 2);
 }
 static void theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
-    theme_t save = T; int sid = theme_id, sh = theme_hue;
-    theme_apply(id, hue);
+    theme_t save = T;
+    theme_compute(id, hue, &T);
     canvas_t *pre = canvas_new(120, 80);
     gfx_clear(pre, id == THEME_OLIVE ? HEX(0x6E7F48) : id == THEME_SILVER ? HEX(0x8A90A8) : HEX(0x3A6EA5));
     wallpaper_render(pre, id == THEME_CLASSIC ? 5 : 0);
@@ -205,8 +205,7 @@ static void theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     fill_rect(pre, 10 + T.border, 8 + T.title_h, 100 - 2 * T.border, 56 - T.title_h - T.border, T.face);
     if (T.classic) fill_rect(pre, 0, 70, 120, 10, T.face); else gradient_v(pre, 0, 70, 120, 10, T.tb_top, T.tb_bot);
     if (!T.classic) fill_round_rect(pre, 0, 70, 26, 10, 3, T.start_top); else { fill_rect(pre, 2, 71, 22, 8, T.face); bevel(pre, 2, 71, 22, 8, true); }
-    theme_t now = T; (void)now;
-    T = save; theme_id = sid; theme_hue = sh;
+    T = save;
     if (sel) { fill_rect(s, x - 4, y - 4, 128, 88, HEX(0xCCE4F8)); draw_rect(s, x - 4, y - 4, 128, 88, HEX(0x3399FF)); }
     blit(s, x, y, pre, 0, 0, 120, 80);
     draw_rect(s, x, y, 120, 80, HEX(0x808080));
@@ -215,12 +214,12 @@ static void theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
 static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, rotate its colour hue, and choose a desktop background. Changes apply immediately.");
-    int y = oy + 76;
+    int y = oy + 86;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", BLACK); y += 22;
     for (int i = 0; i < THEME_COUNT; i++) {
         int x = ox + 24 + i * 140;
         bool sel = theme_id == i;
-        theme_thumb(s, x, y, i, i == THEME_CLASSIC ? 0 : theme_hue, sel);
+        theme_thumb(s, x, y, i, theme_hue, sel);
         if (ui_click_area(w, R(x - 4, y - 4, 128, 108))) { theme_apply(i, theme_hue); wm_redraw_all(); }
         draw_text_centered(s, FONT_UI, R(x - 4, y + 84, 128, 16), theme_names[i], BLACK);
     }

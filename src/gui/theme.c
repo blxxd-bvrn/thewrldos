@@ -110,17 +110,16 @@ static void make_classic(theme_t *t) {
 }
 
 #define SHIFT(f) t->f = hue_shift(t->f, hue)
-void theme_apply(int id, int hue) {
-    theme_id = CLAMP(id, 0, THEME_COUNT - 1);
-    theme_hue = ((hue % 360) + 360) % 360;
-    theme_t *t = &T;
-    switch (theme_id) {
+void theme_compute(int id, int hue, theme_t *t) {
+    id = CLAMP(id, 0, THEME_COUNT - 1);
+    hue = ((hue % 360) + 360) % 360;
+    switch (id) {
     case THEME_OLIVE: make_olive(t); break;
     case THEME_SILVER: make_silver(t); break;
     case THEME_CLASSIC: make_classic(t); break;
     default: make_blue(t); break;
     }
-    t->id = theme_id;
+    t->id = id;
     if (hue) {
         SHIFT(title_hi); SHIFT(title_top); SHIFT(title_mid); SHIFT(title_bot);
         SHIFT(ititle_hi); SHIFT(ititle_top); SHIFT(ititle_mid); SHIFT(ititle_bot);
@@ -134,6 +133,11 @@ void theme_apply(int id, int hue) {
         SHIFT(pane_top); SHIFT(pane_bot); SHIFT(pane_head_bot); SHIFT(pane_head_text); SHIFT(pane_body); SHIFT(pane_link);
         SHIFT(desktop_bg);
     }
+}
+void theme_apply(int id, int hue) {
+    theme_id = CLAMP(id, 0, THEME_COUNT - 1);
+    theme_hue = ((hue % 360) + 360) % 360;
+    theme_compute(theme_id, theme_hue, &T);
     wm_theme_changed();
 }
 

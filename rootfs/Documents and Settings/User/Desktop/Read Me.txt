@@ -1,0 +1,17 @@
+Welcome to Lumina OS!
+=====================
+
+Lumina OS is a from-scratch 32-bit x86 operating system with an XP-style
+shell. Things to try:
+
+  * Start > All Programs > Samples: run a real Win32 .exe, a shell script
+    and mount an Apple .dmg disk image.
+  * Control Panel > Appearance and Personalization > Personalization:
+    switch between Luna (Blue), Olive Green, Silver and Classic, and drag
+    the colour hue slider to recolour the whole interface.
+  * Control Panel "View by" lets you switch between Category, Large icons
+    and Small icons, like Windows 7.
+  * Command Prompt: type "help". Try:  ls -l C:/Samples | grep exe
+  * Task Manager (Ctrl+Shift+Esc) shows tasks, CPU and memory graphs.
+
+Everything lives on a RAM disk, so changes are lost when you restart.

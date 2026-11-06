@@ -32,6 +32,7 @@ typedef struct {
 extern theme_t T;
 extern int theme_id, theme_hue;
 void theme_apply(int id, int hue);
+void theme_compute(int id, int hue, theme_t *out);
 
 /* decorated drawing helpers */
 void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool active, int flags, int hot_btn, int pressed_btn, int state);
