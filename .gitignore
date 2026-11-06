@@ -4,3 +4,4 @@ wrldos.iso
 serial.log
 __pycache__/
 disk.img
+*.iso
