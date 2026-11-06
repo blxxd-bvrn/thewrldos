@@ -10,11 +10,26 @@ GETTING AROUND
 
 VISUAL STYLES
   Control Panel > Appearance and Personalization > Personalization
-  - Luna (Blue), Olive Green, Silver and Windows Classic
-  - Colour hue slider (0-359 degrees) recolours title bars, taskbar,
-    start menu, selections and buttons of any style
+  - Luna (Blue), Olive Green, Silver, Windows Classic, Aero (Windows 7-style
+    blurred glass) and Plex (Longhorn-style glossy blue)
+  - Colour hue slider (0-359 degrees) recolours any style
   - Desktop backgrounds: Meadow, Azure, Sunset, Aurora, Dunes or a solid colour
-  From the Command Prompt:  theme olive 40   /   theme classic
+  Every style is a text file in C:\Windows\Resources\Themes (*.wrldstyle).
+  "Create a style..." in Personalization makes your own from the current one;
+  double-click a .wrldstyle file to install and apply it.
+  From the Command Prompt:  theme list   /   theme aero   /   theme olive 40
+
+THE INTERNET
+  The WRLD Xplorer (Start menu > Internet, or the globe on the Quick Launch
+  bar) opens web pages over HTTP and HTTPS. It shows HTML, simple CSS,
+  tables, forms and PNG/GIF/JPEG/BMP pictures. There is no JavaScript, so
+  text-heavy sites work best (try the links on its home page).
+  Command Prompt: ipconfig (/renew), ping HOST, nslookup NAME,
+                  wget URL [-O FILE], curl URL, sha256sum FILE
+  Extra trusted certificates (.crt/.pem) go in C:\Windows\Certificates.
+  Host name overrides go in C:\Windows\hosts ("10.0.0.5  myserver").
+  Supported network card: Intel PRO/1000 (e1000), the default in QEMU,
+  VirtualBox and VMware.
 
 INSTALLING TO A HARD DISK
   Double-click "Install THE WRLD OS" on the live desktop, or pick "Install

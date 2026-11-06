@@ -10,3 +10,5 @@
 *.bmp binary
 *.iso binary
 *.img binary
+*.jpg binary
+*.gif binary

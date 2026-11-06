@@ -1,14 +1,20 @@
 # THE WRLD OS
 
-An original 32-bit x86 operating system written from scratch in C and assembly (about 14,000
-lines). It has an XP-style "Luna" desktop and a Windows 7-style Control Panel, and it runs
-**Win32 `.exe` programs**, **`.sh` shell scripts** and opens **Apple `.dmg` disk images**.
+An original 32-bit x86 operating system written from scratch in C and assembly (about 18,000
+lines, plus the BearSSL library for HTTPS). It has an XP-style "Luna" desktop and a Windows
+7-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
+**Apple `.dmg` disk images**. It connects to the network and has its own web browser,
+**The WRLD Xplorer**.
 
 - Boots from a GRUB CD into a spinning-globe boot screen, a log-on screen and the desktop.
 - Runs **live from the CD** or **installs to a hard disk** with an XP-style Setup, after which
   every file and setting is saved to the disk.
-- Visual styles **Luna (Blue), Olive Green, Silver and Windows Classic**, each recolourable with
-  a **hue slider**.
+- Visual styles **Luna (Blue), Olive Green, Silver, Windows Classic, Aero** (Windows 7-style
+  blurred glass) and **Plex** (Longhorn-style). Each one is a `.wrldstyle` text file you can edit
+  or copy, and each can be recoloured with a **hue slider**.
+- **Networking:** an Intel PRO/1000 driver, a TCP/IP stack with DHCP and DNS, and HTTPS with
+  certificate checking.
+- **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
 
 ![Boot screen](docs/screenshots/boot.png)
 
@@ -19,6 +25,14 @@ lines). It has an XP-style "Luna" desktop and a Windows 7-style Control Panel, a
 | ![Silver](docs/screenshots/silver.png) | ![Windows Classic](docs/screenshots/classic.png) |
 | ![Win32 GUI program](docs/screenshots/win32-exe.png) | ![Win32 console program](docs/screenshots/console-exe.png) |
 | ![Shell script](docs/screenshots/shell-script.png) | ![Mounted .dmg disk image](docs/screenshots/dmg-mounted.png) |
+| ![Aero](docs/screenshots/aero.png) | ![Plex](docs/screenshots/plex.png) |
+
+### The WRLD Xplorer
+
+| | |
+|---|---|
+| ![Browser showing the Welcome page](docs/screenshots/browser.png) | ![Images and forms](docs/screenshots/browser-forms.png) |
+| ![A page over HTTPS](docs/screenshots/browser-https.png) | ![Network and Sharing Center](docs/screenshots/network.png) |
 
 ### Installing to a hard disk
 
@@ -28,6 +42,7 @@ lines). It has an XP-style "Luna" desktop and a Windows 7-style Control Panel, a
 | ![Choosing the file system](docs/screenshots/setup-format.png) | ![Copying files](docs/screenshots/setup-copying.png) |
 | ![CD boot menu after installing](docs/screenshots/cd-menu-installed.png) | ![First-boot wizard](docs/screenshots/setup-oobe.png) |
 | ![Finalizing installation](docs/screenshots/setup-finalizing.png) | ![Installed desktop](docs/screenshots/installed-desktop.png) |
+| ![Choosing Aero in the wizard](docs/screenshots/oobe-aero.png) | ![Installed with Aero](docs/screenshots/installed-aero.png) |
 
 ## Quick start
 
@@ -73,7 +88,7 @@ automatically. On WSL, clone the repository inside the Linux file system (for ex
 
 | Command | What it does |
 |---|---|
-| `make run` | Live session from the CD. Nothing is saved. |
+| `make run` | Live session from the CD. Nothing is saved. Networking uses QEMU's built-in NAT. |
 | `make run-install` | CD plus a blank 512 MB `disk.img`. Choose **Install THE WRLD OS**. |
 | `make run-disk` | Boots the installed `disk.img` on its own, with no CD. |
 | `make disk` | Creates the blank `disk.img` (size: `make disk DISK_MB=1024`). |
@@ -82,6 +97,8 @@ automatically. On WSL, clone the repository inside the Linux file system (for ex
 
 Boot `wrldos.iso` with **legacy BIOS** boot (not UEFI) and at least **256 MB RAM**. To install,
 attach a hard disk on an **IDE** controller. SATA/AHCI, NVMe and USB disks are not supported.
+For networking, use an **Intel PRO/1000** adapter. That's the default in VirtualBox ("Intel
+PRO/1000 MT Desktop", NAT) and in QEMU, and usually in VMware (e1000).
 
 ### The CD boot menu
 
@@ -126,11 +143,18 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `winhello.exe`, a Win32 GUI program;
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
+- **The WRLD Xplorer** (Start menu > Internet, or the globe on Quick Launch):
+  - The home page links to sites that work well without JavaScript, such as Wikipedia, Hacker
+    News, CNN Lite and 68k.news.
+  - It has DuckDuckGo search; you can also type words in the address bar to search.
+  - `C:\Samples\Welcome.html` shows everything it can render.
 - **Command Prompt** examples:
+  - `ipconfig`, `ping example.com`, `nslookup example.com`;
+  - `wget https://example.com/file.zip` downloads a file; `curl URL` prints it;
+  - `theme list`, `theme aero`, `theme plex 200`;
   - `open control personalization` opens Control Panel at Personalization;
   - `open C:/Samples/Sample.dmg` mounts the disk image;
   - `hdiutil info` shows mounted images;
-  - `theme olive 185` sets Olive Green with a 185° hue;
   - `sync` writes pending changes to the disk now (installed systems);
   - `hostname`, `ps`, `free`, `shutdown -r`;
   - `help` lists all commands.
@@ -156,7 +180,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Devices:**
   - PIT timer (1 kHz), CMOS RTC, PS/2 keyboard and wheel mouse.
   - PCI enumeration, CPUID, PC speaker.
-  - ACPI/Bochs power-off and keyboard-controller reboot.
+  - ACPI power management: reads the FADT and the DSDT's `\_S5_` soft-off value, so power-off
+    works on any ACPI machine; restart uses the ACPI reset register, then port 0xCF9, then the
+    keyboard controller.
   - Serial (COM1) kernel log.
 - **Storage:**
   - ATA/IDE disk driver (polled PIO, LBA28/LBA48) and MBR partition tables.
@@ -167,6 +193,40 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Files:** in-memory VFS with drive letters, filled from a tar initrd (live CD) or from the
   system partition (installed). `persist.c` writes changes back to the disk and keeps the
   settings file.
+
+### Networking (`src/net`)
+- **Network card:** Intel PRO/1000 (e1000/e1000e) driver, polled.
+- **Protocols:** Ethernet, ARP, IPv4, ICMP, UDP, DHCP client, and a DNS resolver (with
+  `C:\Windows\hosts`).
+- **TCP:** client side, with MSS, a 64 KiB window, retransmission with back-off, and graceful
+  close.
+- **HTTPS (TLS 1.0–1.2):**
+  - Built on [BearSSL](https://bearssl.org/) 0.6 (`third_party/bearssl`).
+  - Certificates are checked against the 117 roots of the Mozilla root store (generated by
+    `tools/gen_trust_anchors.py`), plus any `.crt`/`.pem` you put in
+    `C:\Windows\Certificates`.
+  - The random generator is seeded from RDRAND and timing jitter.
+- **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
+
+### The WRLD Xplorer (`src/apps/browser.c`, `html.c`, `imgdec.c`)
+- **HTML:** a forgiving parser with entities. UTF-8 and Windows-1252 are converted to Latin-1;
+  other characters are replaced with close ASCII equivalents.
+- **CSS:** simple selectors (tag, `.class`, `#id`) and `style` attributes, for colour,
+  background, `display:none`, alignment, bold, italic, underline and size.
+- **Layout:**
+  - Text wrapping, headings, lists, blockquote, `pre` and `hr`.
+  - Tables: column widths from min/max content, `colspan`, cell colours, borders, `valign`.
+  - Images, form controls and in-page `#anchors`.
+- **Forms:** text, password, checkbox, radio, select, textarea and submit, sent by GET or POST.
+- **Images:**
+  - PNG: all colour types, transparency and interlacing.
+  - GIF: first frame, with transparency.
+  - Baseline JPEG and BMP.
+  - The Image Viewer uses the same decoders.
+- **Window:**
+  - Back/Forward/Stop/Refresh/Home, an address bar with a padlock for HTTPS, and a status bar.
+  - Page source, Save Page, Favorites.
+  - Error pages, `file://` folder listings, and downloads saved to `My Documents\Downloads`.
 
 ### Setup (`src/apps/setup.c`)
 - **Text mode:** partition editor, FAT32 format (quick/full), file copy with progress, GRUB
@@ -192,10 +252,24 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     a vertical banner.
   - Tray balloons; desktop icons with context menus.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
-- **Visual styles:**
-  - Luna (Blue), Olive Green, Silver and Windows Classic.
-  - A **hue slider (0–359°)** recolours title bars, frames, taskbar, Start menu, selections and
-    buttons in any style.
+- **Visual styles**, all `.wrldstyle` files in `C:\Windows\Resources\Themes`:
+  - **Luna (Blue), Olive Green, Silver:** XP Luna.
+  - **Windows Classic:** also the built-in safe-mode fallback.
+  - **Aero:**
+    - Window frames are drawn on real **blurred, tinted glass**, with reflection streaks.
+    - Title text glows; there's a wide red close button.
+    - Glass taskbar, a glossy globe Start orb, and a glass Start menu.
+  - **Plex:** after the Longhorn reference.
+    - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
+    - Blue Start menu with round lock/power buttons.
+  - A **hue slider (0–359°)** recolours any style.
+- **`.wrldstyle` format:** plain INI text.
+  - `[Style]` holds `Name`, `Renderer` (luna, classic, aero or plex), `Description`, a
+    suggested `Wallpaper`, and `Base` (inherit everything from another style).
+  - It is followed by metrics (`title_h`, `border`, `taskbar_h`, …) and about 90 named colours.
+  - Personalization's **Create a style...** writes a new file based on the current style and
+    opens it in Notepad.
+  - Double-clicking a `.wrldstyle` file anywhere installs and applies it.
 
 ### Applications (`src/apps`)
 - **File Explorer:** task pane, Icons/Tiles/Details views, history, copy/cut/paste, rename,
@@ -208,8 +282,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     Network, Mouse, Keyboard, Sound, Programs and Features, Default Programs, User Accounts,
     Fonts, Ease of Access.
 - **Task Manager:** applications, processes, CPU/memory graphs.
-- **Others:** Calculator, Paint (BMP open/save), Image Viewer, Snake, Properties, Run, About,
-  Setup.
+- **The WRLD Xplorer** web browser (see above).
+- **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
+  Properties, Run, About, Setup.
 
 ### Compatibility
 - **`.exe`: Win32 subsystem (`src/win32`)**
@@ -265,29 +340,41 @@ used to test every screen above, including a full install from a blank disk.
   - At boot the whole partition is loaded into memory and changes are written back, so the
     installed system's size is limited by RAM.
   - BIOS/MBR only: no UEFI or GPT install.
+- **Network and browser:**
+  - Only Intel PRO/1000 cards, IPv4 only, and no Wi-Fi.
+  - HTTPS uses TLS 1.2, so the few sites that only accept TLS 1.3 can't be opened.
+  - The browser has **no JavaScript**.
+  - It doesn't load external stylesheets or web fonts.
+  - Unsupported images: WebP, SVG and progressive JPEG (the alt text is shown instead).
+  - Text is limited to Latin-1; other scripts are replaced with `?`.
+  - Interactive web apps won't work. Text-heavy sites work well.
 - **Hardware and design:**
-  - No network stack, USB or sound card (only the PC speaker).
+  - No USB or sound card (only the PC speaker).
   - Fixed 1024×768 resolution, single CPU.
   - Cooperative (not preemptive) scheduling, and programs run in ring 0.
-- **Names and artwork:** "Luna", "Olive Green", "Silver" and "Classic" name the visual styles
-  this project recreates. All artwork, icons, wallpapers and the globe logo are original.
+- **Names and artwork:** "Luna", "Olive Green", "Silver", "Classic", "Aero" and "Plex" name the
+  visual styles this project recreates. All artwork, icons, wallpapers and the globe logo are original.
 
 ## Project layout
 
 ```
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker)
-src/kernel         boot, cpu, drivers, memory, scheduler, VFS, ATA, FAT32 (r/w), FAT reader,
-                   inflate, DMG, persistence
+src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 (r/w),
+                   FAT reader, inflate, DMG, persistence
+src/net            e1000 driver, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP, root certificates
 src/gui            graphics, globe + wordmark, themes, window manager, widgets, desktop, screens
-src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup
+src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup,
+                   browser (html.c, imgdec.c)
 src/shell          sh interpreter
 src/win32          PE loader, kernel32, msvcrt, user32/gdi32
-src/include        headers (disk.h: block devices, partitions, FAT32, persistence, setup)
+src/include        headers (disk.h: disks/FAT32/setup; net.h: network stack)
+third_party/bearssl  BearSSL 0.6 (TLS), MIT licence
 samples/           Win32 sample sources (hello.c, winhello.c)
 dmgroot/           contents of Sample.dmg
-rootfs/            live C: drive (initrd); the build adds boot/ (kernel and GRUB images)
+rootfs/            live C: drive (initrd), including Windows/Resources/Themes/*.wrldstyle;
+                   the build adds boot/ (kernel and GRUB images)
 grub/grub.cfg      CD boot menu
-tools/             asset and globe generators, DMG builder, build-iso.sh, QEMU test harness
+tools/             asset/globe/trust-anchor generators, DMG builder, build-iso.sh, QEMU harness
 docs/screenshots/  the screenshots in this README
 ```
 
@@ -298,5 +385,9 @@ docs/screenshots/  the screenshots in this README
 - Boot loader: [GNU GRUB](https://www.gnu.org/software/grub/) (GPL v3). It is used on the CD,
   and Setup writes GRUB's boot images to the installed disk. Its source code is available from
   the GNU project.
-- Everything else (kernel, drivers, GUI, applications, Win32 subsystem, shell, artwork) was
-  written for this project.
+- TLS: [BearSSL](https://bearssl.org/) 0.6 by Thomas Pornin (MIT licence), taken from the
+  Debian/Ubuntu source package and built unmodified.
+- Root certificates: the Mozilla CA certificate store, as shipped in Debian/Ubuntu's
+  `ca-certificates` package.
+- Everything else (kernel, drivers, network stack, browser, GUI, applications, Win32 subsystem,
+  shell, artwork) was written for this project.
