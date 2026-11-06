@@ -22,6 +22,9 @@ void paint_open(const char *path);
 void taskmgr_open(void);
 void control_open(const char *page);
 void style_create_from(int base_style);
+canvas_t *bmp_load(const uint8_t *d, uint32_t n);
+canvas_t *image_decode(const uint8_t *d, uint32_t n, char *err, int errcap);   /* PNG, GIF, JPEG, BMP */
+void browser_open(const char *url);
 void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel);
 void about_open(void);
 void snake_open(void);

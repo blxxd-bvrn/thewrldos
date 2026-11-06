@@ -264,8 +264,8 @@ static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RE
 static int tray_w(void) { return show_clock ? (show_seconds ? 110 : 90) : 34; }
 static int tb_y(void) { return SCREEN_H - T.taskbar_h; }
 static int ql_x(void) { return start_w() + (T.classic ? 6 : 8); }
-#define QL_N 3
-static const struct { int icon; const char *app; } quicklaunch[QL_N] = { { ICON_DESKTOP, "showdesktop" }, { ICON_EXPLORER, "explorer" }, { ICON_TERMINAL, "cmd" } };
+#define QL_N 4
+static const struct { int icon; const char *app; } quicklaunch[QL_N] = { { ICON_DESKTOP, "showdesktop" }, { ICON_BROWSER, "xplorer" }, { ICON_EXPLORER, "explorer" }, { ICON_TERMINAL, "cmd" } };
 static int tasks_x(void) { return ql_x() + QL_N * 24 + 10; }
 static int task_btns(window_t **out, int max) {
     int n = 0;
@@ -467,11 +467,11 @@ static void paint_balloon(canvas_t *c) {
 /* ---------------- start menu ---------------- */
 typedef struct { const char *label, *sub; int icon; const char *action; bool bold; } sm_item_t;
 static const sm_item_t sm_left[] = {
+    { "Internet", "The WRLD Xplorer", ICON_BROWSER, "xplorer", true },
     { "Command Prompt", "Shell & scripts", ICON_TERMINAL, "cmd", true },
     { "File Explorer", "Browse files", ICON_EXPLORER, "explorer", true },
     { NULL },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad", false },
-    { "Calculator", NULL, ICON_CALCULATOR, "calc", false },
     { "Paint", NULL, ICON_PAINT, "paint", false },
     { "Task Manager", NULL, ICON_TASKMGR, "taskmgr", false },
     { "Snake", NULL, ICON_GAME, "snake", false },
@@ -488,7 +488,7 @@ static const sm_item_t sm_right[] = {
     { "Run...", NULL, ICON_RUN, "run", false },
 };
 static const sm_item_t all_programs[] = {
-    { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" },
+    { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "The WRLD Xplorer", NULL, ICON_BROWSER, "xplorer" },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
     { "Snake", NULL, ICON_GAME, "snake" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },

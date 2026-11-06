@@ -5,6 +5,7 @@
 #include "theme.h"
 
 const app_info_t app_table[] = {
+    { "xplorer", "The WRLD Xplorer", "Browse the web", ICON_BROWSER },
     { "explorer", "File Explorer", "Browse files and folders", ICON_EXPLORER },
     { "notepad", "Notepad", "Edit text files", ICON_NOTEPAD },
     { "cmd", "Command Prompt", "Shell & scripts", ICON_TERMINAL },
@@ -23,6 +24,7 @@ const app_info_t *app_find(const char *id) { for (int i = 0; i < app_count; i++)
 void app_launch(const char *name, const char *arg) {
     if (!strcasecmp(name, "explorer")) explorer_open(arg ? arg : USER_DOCS);
     else if (!strcasecmp(name, "notepad")) notepad_open(arg);
+    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
     else if (!strcasecmp(name, "cmd") || !strcasecmp(name, "terminal") || !strcasecmp(name, "sh") || !strcasecmp(name, "bash")) terminal_open(arg, NULL);
     else if (!strcasecmp(name, "calc")) calc_open();
     else if (!strcasecmp(name, "paint") || !strcasecmp(name, "mspaint")) paint_open(arg);
@@ -50,7 +52,8 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
     if (!strcasecmp(e, "wrldstyle")) return ICON_CP_APPEARANCE;
-    if (!strcasecmp(e, "bmp")) return ICON_IMAGE_FILE;
+    if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) return ICON_IMAGE_FILE;
+    if (!strcasecmp(e, "html") || !strcasecmp(e, "htm") || !strcasecmp(e, "url")) return ICON_BROWSER;
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
     if (!strcasecmp(e, "lnk")) {
         /* shortcut: icon of the target app */
@@ -69,6 +72,8 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "bmp")) return "Bitmap Image";
     if (!strcasecmp(e, "dll")) return "Application Extension";
     if (!strcasecmp(e, "lnk")) return "Shortcut";
+    if (!strcasecmp(e, "html") || !strcasecmp(e, "htm")) return "HTML Document";
+    if (!strcasecmp(e, "url")) return "Internet Shortcut";
     if (!strcasecmp(e, "wrldstyle")) return "Visual Style";
     if (!strcasecmp(e, "plist")) return "Property List";
     if (!strcasecmp(e, "c")) return "C Source File";
@@ -114,7 +119,12 @@ bool shell_open(const char *path, const char *cwd) {
         int id = style_find(n->name);
         if (id < 0) err_box("Visual Style", "This visual style could not be loaded.");
         else { theme_apply(id, 0); wm_redraw_all(); control_open("personalization"); }
-    } else if (!strcasecmp(e, "bmp")) imageview_open(full);
+    } else if (!strcasecmp(e, "html") || !strcasecmp(e, "htm") || !strcasecmp(e, "url")) {
+        char u[700];
+        if (!strcasecmp(e, "url")) { int l = MIN(n->size, 600u); memcpy(u, n->data, l); u[l] = 0; char *nl = strpbrk(u, "\r\n"); if (nl) *nl = 0; char *eq = strstr(u, "URL="); if (eq) memmove(u, eq + 4, strlen(eq + 4) + 1); }
+        else { snprintf(u, sizeof u, "file:///%s", full); for (char *q = u; *q; q++) if (*q == '\\') *q = '/'; }
+        browser_open(u);
+    } else if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) imageview_open(full);
     else if (!strcasecmp(e, "lnk")) {
         char t[256]; int l = MIN(n->size, 255u); memcpy(t, n->data, l); t[l] = 0;
         char *nl = strchr(t, '\n'); if (nl) *nl = 0; char *r = strchr(t, '\r'); if (r) *r = 0;

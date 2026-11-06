@@ -38,7 +38,7 @@ SYS     := $(BUILD)/sys
 CORES   := $(foreach n,1 2 3 4,$(SYS)/boot/grub/core$(n).img)
 DISK    := disk.img
 DISK_MB := 512
-QEMU    := qemu-system-i386 -m 256 -vga std -serial stdio
+QEMU    := qemu-system-i386 -m 256 -vga std -serial stdio -nic user,model=e1000
 
 .PHONY: all iso run run-headless run-install run-disk disk clean samples dmg assets check-tools FORCE
 

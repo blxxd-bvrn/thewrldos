@@ -13,7 +13,15 @@ enum {
     FONT_SMALL = 8,
     FONT_XL = 9,
     FONT_LOGO = 10,
-    FONT_COUNT = 11
+    FONT_WEB = 11,
+    FONT_WEB_B = 12,
+    FONT_WEB_I = 13,
+    FONT_WEB_BI = 14,
+    FONT_H1 = 15,
+    FONT_H2 = 16,
+    FONT_H3 = 17,
+    FONT_WEB_SMALL = 18,
+    FONT_COUNT = 19
 };
 enum {
     ICON_COMPUTER = 0,
@@ -80,6 +88,11 @@ enum {
     ICON_DESKTOP = 61,
     ICON_SHELL_FOLDER = 62,
     ICON_SETUP = 63,
-    ICON_COUNT = 64
+    ICON_BROWSER = 64,
+    ICON_STOP = 65,
+    ICON_REFRESH = 66,
+    ICON_HOME = 67,
+    ICON_LOCK = 68,
+    ICON_COUNT = 69
 };
 #endif

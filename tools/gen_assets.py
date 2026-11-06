@@ -24,7 +24,18 @@ FONTS = [  # (enum name, file, pixel size)
     ("FONT_SMALL",     "LiberationSans-Regular.ttf", 10),
     ("FONT_XL",        "LiberationSans-Regular.ttf", 24),
     ("FONT_LOGO",      "LiberationSans-Bold.ttf", 46),
+    # web page fonts (The WRLD Xplorer)
+    ("FONT_WEB",       "LiberationSans-Regular.ttf", 14),
+    ("FONT_WEB_B",     "LiberationSans-Bold.ttf", 14),
+    ("FONT_WEB_I",     "LiberationSans-Italic.ttf", 14),
+    ("FONT_WEB_BI",    "LiberationSans-BoldItalic.ttf", 14),
+    ("FONT_H1",        "LiberationSans-Bold.ttf", 28),
+    ("FONT_H2",        "LiberationSans-Bold.ttf", 22),
+    ("FONT_H3",        "LiberationSans-Bold.ttf", 17),
+    ("FONT_WEB_SMALL", "LiberationSans-Regular.ttf", 12),
 ]
+# glyphs cover printable ASCII and Latin-1 (codes 32..255; 127..159 are empty)
+FIRST, LAST = 32, 255
 
 def gen_fonts():
     out = bytearray(struct.pack("<I", len(FONTS)))
@@ -34,8 +45,10 @@ def gen_fonts():
         asc, desc = f.getmetrics()
         glyphs = bytearray()
         data = bytearray()
-        for c in range(32, 127):
+        for c in range(FIRST, LAST + 1):
             ch = chr(c)
+            if 127 <= c < 160:
+                glyphs += struct.pack("<BBbbBBI", 0, 0, 0, 0, 0, 0, len(data)); continue
             bbox = f.getbbox(ch, anchor="ls")
             adv = int(round(f.getlength(ch)))
             if ch == " " or bbox[2] <= bbox[0]:
@@ -487,6 +500,30 @@ def ic_setup():
     i.alpha_composite(g, (int(SS * .40), int(SS * .02)))
     poly(i, [(14, 18), (34, 18), (34, 8), (50, 26), (34, 44), (34, 34), (14, 34)], hexc("#7CE07C"), hexc("#1E8E1E"), ol=hexc("#106010"), ow=1.4)
     return i
+def ic_browser():
+    """The WRLD Xplorer: the globe with an orange orbit ring"""
+    i = new(); logo_globe(i, 10, 10, 90, 90)
+    ring = Image.new("RGBA", (SS, SS), (0, 0, 0, 0)); d = ImageDraw.Draw(ring)
+    d.ellipse(box(2, 34, 98, 70), outline=hexc("#F08A24"), width=int(P(6)))
+    ring = ring.rotate(-24, resample=Image.BICUBIC, center=(SS / 2, SS / 2))
+    # the ring passes behind the globe at the top: cut that part out
+    m = Image.new("L", (SS, SS), 255); md = ImageDraw.Draw(m); md.rectangle(box(16, 0, 84, 47), fill=0)
+    front = Image.composite(ring, Image.new("RGBA", (SS, SS), (0, 0, 0, 0)), m)
+    i.alpha_composite(front); return i
+def ic_stop():
+    i = new(); circle_badge(i, 6, 6, 94, 94, "#F06A50", "#B8200C", "#801000")
+    line(i, [(34, 34), (66, 66)], WHITE, 12); line(i, [(66, 34), (34, 66)], WHITE, 12); return i
+def ic_refresh():
+    i = new(); d = ImageDraw.Draw(i)
+    d.arc(box(14, 14, 86, 86), start=200, end=470, fill=hexc("#2E9E2E"), width=int(P(14)))
+    poly(i, [(68, 4), (92, 26), (62, 36)], hexc("#3CB43C"), hexc("#1E7E1E")); return i
+def ic_home():
+    i = new(); poly(i, [(50, 8), (94, 48), (82, 48), (82, 92), (18, 92), (18, 48), (6, 48)], hexc("#FFE6A0"), hexc("#E8B850"), ol=hexc("#8A5A10"), ow=1.6)
+    poly(i, [(50, 4), (98, 48), (88, 52), (50, 18), (12, 52), (2, 48)], hexc("#E84A2A"), hexc("#A82A10"))
+    rect(i, 40, 60, 60, 92, hexc("#5A82C8"), hexc("#2A4E98")); return i
+def ic_lock():
+    i = new(); ImageDraw.Draw(i).arc(box(26, 8, 74, 62), start=180, end=360, fill=hexc("#8A8A90"), width=int(P(10)))
+    rect(i, 18, 40, 82, 94, hexc("#FFD24A"), hexc("#D8900A"), r=6, ol=hexc("#8A5A04"), ow=1.6); ellipse(i, 44, 56, 56, 68, hexc("#6A4A04")); return i
 def ic_logo():
     i = new(); logo_globe(i, 0, 0, 100, 100); return i
 def ic_start_logo():
@@ -569,6 +606,7 @@ ICONS = [
     ("up", nav("#FFD24A", "#D8900A", "#8A5A04", "u")), ("go", nav("#7CE07C", "#1E8E1E", "#106010", "r")),
     ("user_flower", user_pic("flower")), ("user_planet", user_pic("planet")), ("user_fish", user_pic("fish")), ("user_mountain", user_pic("mountain")),
     ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder), ("setup", ic_setup),
+    ("browser", ic_browser), ("stop", ic_stop), ("refresh", ic_refresh), ("home", ic_home), ("lock", ic_lock),
 ]
 SIZES = [48, 32, 16]
 

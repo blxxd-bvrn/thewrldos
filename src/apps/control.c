@@ -5,6 +5,7 @@
 #include "wm.h"
 #include "apps.h"
 #include "disk.h"
+#include "net.h"
 
 typedef struct { const char *id, *name, *desc; int icon; int cat; } applet_t;
 enum { CAT_SYSTEM, CAT_NETWORK, CAT_HARDWARE, CAT_PROGRAMS, CAT_USERS, CAT_APPEARANCE, CAT_CLOCK, CAT_EASE, CAT_N };
@@ -429,14 +430,30 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
 static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "View your basic network information", NULL);
+    bool ok = net_ready();
     draw_icon(s, ICON_COMPUTER, 48, ox + 40, oy + 80); draw_text(s, FONT_UI, ox + 30, oy + 134, computer_name, BLACK);
-    for (int x = ox + 100; x < ox + 240; x += 8) hline(s, x, oy + 104, 4, HEX(0xC03030));
-    draw_icon(s, ICON_ERROR, 16, ox + 162, oy + 96);
+    if (ok) for (int x = ox + 100; x < ox + 240; x += 2) hline(s, x, oy + 104, 1, HEX(0x2E8E2E));
+    else { for (int x = ox + 100; x < ox + 240; x += 8) hline(s, x, oy + 104, 4, HEX(0xC03030)); draw_icon(s, ICON_ERROR, 16, ox + 162, oy + 96); }
     draw_icon(s, ICON_CP_NETWORK, 48, ox + 250, oy + 80); draw_text(s, FONT_UI, ox + 254, oy + 134, "Internet", BLACK);
-    pci_dev_t d[32]; int n = pci_scan(d, 32); char b[160] = "No network adapter was detected.";
-    for (int i = 0; i < n; i++) if (d[i].cls == 2) { snprintf(b, sizeof b, "Network adapter detected: %s (%04x:%04x).", pci_vendor_name(d[i].vendor), d[i].vendor, d[i].device); break; }
-    draw_text(s, FONT_UI, ox + 30, oy + 180, b, BLACK);
-    draw_text_wrapped(s, FONT_UI, ox + 30, oy + 204, s->w - ox - 60, "This version of " OS_NAME " does not include a network stack or NIC drivers, so the computer is not connected.", W7_TEXT, 2);
+    int y = oy + 170;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Local Area Connection", HEX(0x1E3287)); hline(s, ox + 160, y + 8, s->w - ox - 190, HEX(0xD8E0EA)); y += 24;
+    char a[16], m[16], g[16], d[16], b[160];
+    ip_to_str(netif.ip, a); ip_to_str(netif.mask, m); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d);
+    const char *lab[] = { "Status:", "Adapter:", "Physical address:", "IPv4 address:", "Subnet mask:", "Default gateway:", "DNS server:", "Activity:" };
+    char vals[8][96];
+    strlcpy(vals[0], net_status_text(), 96);
+    strlcpy(vals[1], netif.driver[0] ? netif.driver : "None", 96);
+    snprintf(vals[2], 96, "%02X-%02X-%02X-%02X-%02X-%02X", netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5]);
+    strlcpy(vals[3], netif.configured ? a : "-", 96); strlcpy(vals[4], netif.configured ? m : "-", 96);
+    strlcpy(vals[5], netif.configured ? g : "-", 96); strlcpy(vals[6], netif.configured ? d : "-", 96);
+    snprintf(vals[7], 96, "%u KB sent, %u KB received", netif.tx_bytes / 1024, netif.rx_bytes / 1024);
+    for (int i = 0; i < 8; i++) { if (!netif.present && i > 1) break; draw_text(s, FONT_UI, ox + 40, y, lab[i], HEX(0x505050)); draw_text(s, FONT_UI, ox + 170, y, vals[i], BLACK); y += 20; }
+    y += 10;
+    if (netif.present && ui_button(w, R(ox + 40, y, 150, 26), "Renew address (DHCP)")) dhcp_renew();
+    if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open The WRLD Xplorer", W7_LINK)) browser_open(NULL);
+    y += 40;
+    snprintf(b, sizeof b, "Secure websites are checked against %d trusted root certificates (add your own in C:\\Windows\\Certificates).", tls_trust_anchor_count());
+    draw_text_wrapped(s, FONT_UI, ox + 30, y, s->w - ox - 60, netif.present ? b : "No supported network adapter was found. THE WRLD OS supports Intel PRO/1000 (e1000) adapters, the default in QEMU, VirtualBox and VMware.", W7_TEXT, 2);
 }
 static void page_mouse(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -612,7 +629,7 @@ static void cp_paint(window_t *w) {
     else if (!strcmp(a->id, "ease")) page_ease(w, c, ox, oy);
     s->clip = old;
 }
-static void cp_tick(window_t *w) { cp_t *c = w->data; if (!strcmp(c->page, "datetime") || !strcmp(c->page, "system")) w->dirty = true; }
+static void cp_tick(window_t *w) { cp_t *c = w->data; if (!strcmp(c->page, "datetime") || !strcmp(c->page, "system") || !strcmp(c->page, "network")) w->dirty = true; }
 static void cp_mouse(window_t *w, int type, int x, int y, int b) { cp_t *c = w->data; if (type == ME_WHEEL && !strcmp(c->page, "devices")) { c->scroll = MAX(0, c->scroll + b * 30); w->dirty = true; } }
 static void cp_menu(window_t *w, int id) { (void)id; w->dirty = true; }
 static void cp_destroy(window_t *w) { kfree(w->data); }

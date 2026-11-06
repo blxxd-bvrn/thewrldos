@@ -270,7 +270,7 @@ static void fonts_load(void) {
         const int16_t *h = (const int16_t *)p;
         fonts[i].height = h[0]; fonts[i].ascent = h[1]; fonts[i].descent = h[2];
         fonts[i].g = (const glyph_t *)(p + 8);
-        fonts[i].data = p + 8 + 95 * sizeof(glyph_t) + 4;
+        fonts[i].data = p + 8 + 224 * sizeof(glyph_t) + 4;     /* glyphs for 32..255 */
         p += len;
     }
     fonts_loaded = true;
@@ -280,7 +280,7 @@ int font_height(int f) { return F(f)->height; }
 int font_ascent(int f) { return F(f)->ascent; }
 static inline const glyph_t *glyph(font_t *f, char ch) {
     uint8_t c = (uint8_t)ch;
-    if (c < 32 || c > 126) c = '?';
+    if (c < 32 || (c > 126 && c < 160)) c = '?';    /* Latin-1 160..255 are drawn */
     return &f->g[c - 32];
 }
 int text_width_n(int font, const char *s, int n) {
