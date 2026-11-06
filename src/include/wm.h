@@ -155,6 +155,7 @@ void startmenu_toggle(void);
 void shell_show_run(void);
 void shell_show_shutdown(void);
 void shell_logoff(void);
+void shell_power_action(void *restart);   /* NULL = shut down, non-NULL = restart */
 extern int wallpaper_id;
 extern uint32_t desktop_color;
 extern char user_name[32];

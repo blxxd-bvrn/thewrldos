@@ -243,15 +243,12 @@ const char *pci_vendor_name(uint16_t v) {
 }
 void system_poweroff(void) {
     persist_flush();
-    cli();
-    outw(0x604, 0x2000);   /* QEMU (newer) */
-    outw(0xB004, 0x2000);  /* Bochs / old QEMU */
-    outw(0x4004, 0x3400);  /* VirtualBox */
-    for (;;) hlt();
+    acpi_poweroff();    /* returns only if the machine could not be switched off */
 }
 void system_reboot(void) {
     persist_flush();
     cli();
+    acpi_reset();
     for (int i = 0; i < 100000 && (inb(0x64) & 2); i++) {}
     outb(0x64, 0xFE);
     desc_ptr_t null_idt = { 0, 0 };

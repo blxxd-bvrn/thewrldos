@@ -133,7 +133,11 @@ typedef struct { uint8_t bus, dev, fn; uint16_t vendor, device; uint8_t cls, sub
 int pci_scan(pci_dev_t *out, int max);
 const char *pci_class_name(uint8_t cls, uint8_t sub);
 const char *pci_vendor_name(uint16_t v);
-void system_poweroff(void);
+void system_poweroff(void);   /* returns if power-off is not supported */
+void acpi_init(void);
+bool acpi_poweroff(void);
+void acpi_reset(void);
+const char *acpi_describe(void);
 void system_reboot(void);
 
 /* ---- boot info ---- */

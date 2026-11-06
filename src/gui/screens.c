@@ -160,6 +160,7 @@ static void final_screen(const char *msg, bool reboot) {
     gfx_present(CURSOR_ARROW, -100, -100);
     for (;;) hlt();
 }
+void shell_power_action(void *restart) { final_screen(restart ? "Restarting..." : "Shutting down...", restart != NULL); }
 static int dialog_loop(const char *title, int kind) {
     /* kind 0: turn off (3 options), 1: log off (2 options). Returns option index or -1 */
     static canvas_t *saved;

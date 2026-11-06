@@ -1173,8 +1173,10 @@ static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static int b_pause(sh_t *s, int argc, char **argv, io_t *io) { out_s(io, "Press any key to continue . . . "); s->con->getkey(s->con); out_s(io, "\n"); return 0; }
 static int b_shutdown(sh_t *s, int argc, char **argv, io_t *io) {
-    if (argc > 1 && (!strcmp(argv[1], "-r") || !strcmp(argv[1], "/r"))) system_reboot();
-    system_poweroff(); return 0;
+    bool r = argc > 1 && (!strcmp(argv[1], "-r") || !strcmp(argv[1], "/r"));
+    out_s(io, r ? "Restarting...\n" : "Shutting down...\n");
+    wm_defer(shell_power_action, r ? (void *)1 : NULL);
+    return 0;
 }
 static int b_xargs(sh_t *s, int argc, char **argv, io_t *io);
 static int b_lsblk(sh_t *s, int argc, char **argv, io_t *io) {
