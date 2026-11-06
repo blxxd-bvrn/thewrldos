@@ -1,0 +1,14 @@
+#!/bin/sh
+# The executable of a script-based macOS application bundle.
+echo -e "\e[95m*** Lumina Demo.app ***\e[0m"
+echo "This app was launched from a macOS-style .app bundle inside a .dmg disk image."
+echo "Bundle executable: $0"
+echo
+name=$(grep -A1 CFBundleName ../Info.plist | tail -n 1 | tr -d ' ')
+echo "Info.plist says CFBundleName = $name"
+echo
+echo "Resources in this bundle:"
+ls ../Resources
+echo
+read -p "Type something and press Enter: " answer
+echo "You typed: $answer"

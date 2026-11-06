@@ -17,7 +17,7 @@ MINGW   := i686-w64-mingw32-gcc
 SAMPLES := $(wildcard samples/*.c)
 SAMPLE_EXES := $(patsubst samples/%.c,rootfs/Samples/%.exe,$(SAMPLES))
 
-.PHONY: all iso run run-headless clean samples dmg assets
+.PHONY: all iso run run-headless clean samples dmg assets FORCE
 
 all: $(ISO)
 
@@ -47,10 +47,10 @@ rootfs/Samples/%.exe: samples/%.c
 	$(MINGW) -O2 -s -o $@ $<
 
 dmg: rootfs/Samples/Sample.dmg
-rootfs/Samples/Sample.dmg: tools/mkdmg.py $(shell find dmgroot -type f 2>/dev/null)
+rootfs/Samples/Sample.dmg: tools/mkdmg.py FORCE
 	python3 tools/mkdmg.py dmgroot $@ "Lumina Sample"
 
-$(BUILD)/initrd.tar: $(shell find rootfs -type f 2>/dev/null)
+$(BUILD)/initrd.tar: FORCE
 	@mkdir -p $(BUILD)
 	tar --format=ustar -cf $@ -C rootfs .
 
@@ -69,3 +69,5 @@ run-headless: $(ISO)
 
 clean:
 	rm -rf $(BUILD) $(ISO)
+
+FORCE:
