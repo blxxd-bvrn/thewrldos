@@ -130,7 +130,7 @@ static void part_desc(item_t *it, char *b, int n) {
     if (it->fat) snprintf(fs, sizeof fs, "[FAT32]");
     else if (it->type == 0x0C && !it->fat) snprintf(fs, sizeof fs, "[New (Raw)]");
     else snprintf(fs, sizeof fs, "[%s]", part_type_name(it->type));
-    char lab[24]; snprintf(lab, sizeof lab, "%c:  Partition%d %s", it->letter, it->slot + 1, fs);
+    char lab[48]; snprintf(lab, sizeof lab, "%c:  Partition%d %s", it->letter, it->slot + 1, fs);
     if (it->fat) snprintf(b, n, "%-33s%8u MB (%6d MB free)", lab, it->sectors / 2048, it->free_mb);
     else snprintf(b, n, "%-33s%8u MB", lab, it->sectors / 2048);
 }

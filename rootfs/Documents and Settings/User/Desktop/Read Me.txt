@@ -14,4 +14,8 @@ shell. Things to try:
   * Command Prompt: type "help". Try:  ls -l C:/Samples | grep exe
   * Task Manager (Ctrl+Shift+Esc) shows tasks, CPU and memory graphs.
 
-Everything lives on a RAM disk, so changes are lost when you restart.
+Running from the CD (live session), everything lives in RAM, so changes are
+lost when you restart. To keep your files and settings, double-click
+"Install THE WRLD OS" on the desktop (or choose Install in the CD boot menu):
+Setup partitions and formats a hard disk, copies the system and installs the
+boot loader. After that, all changes are saved to the disk.
