@@ -260,7 +260,7 @@ void desktop_mouse(int type, int x, int y, int btn) {
 /* ---------------- taskbar ---------------- */
 #define START_W_LUNA 99
 #define START_W_CLASSIC 56
-static int start_w(void) { return T.classic ? START_W_CLASSIC : START_W_LUNA; }
+static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? 54 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
 static int tray_w(void) { return show_clock ? (show_seconds ? 110 : 90) : 34; }
 static int tb_y(void) { return SCREEN_H - T.taskbar_h; }
 static int ql_x(void) { return start_w() + (T.classic ? 6 : 8); }
@@ -292,8 +292,42 @@ static void fmt_clock(char *b, int n) {
         if (show_seconds) snprintf(b, n, "%d:%02d:%02d %s", h, t.minute, t.second, ap); else snprintf(b, n, "%d:%02d %s", h, t.minute, ap);
     }
 }
+/* glossy sphere: the Aero start orb */
+static void paint_orb(canvas_t *c, int cx, int cy, int r, bool hot, bool down) {
+    uint32_t top = T.start_top, bot = T.start_bot;
+    if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); }
+    if (down) { top = darken(top, 40); bot = darken(bot, 30); }
+    if (hot || down) for (int dy = -r - 4; dy <= r + 4; dy++) for (int dx = -r - 4; dx <= r + 4; dx++) {
+        int d2 = dx * dx + dy * dy; if (d2 <= r * r || d2 > (r + 4) * (r + 4)) continue;
+        blend_pixel(c, cx + dx, cy + dy, T.start_hi, 90 * ((r + 4) * (r + 4) - d2) / ((r + 4) * (r + 4) - r * r));
+    }
+    for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
+        int d2 = dx * dx + dy * dy;
+        if (d2 > r * r + r) continue;
+        uint32_t col = mix(top, bot, (dy + r) * 255 / (2 * r));
+        int edge = r * r - d2;
+        if (edge < 3 * r) col = mix(col, darken(bot, 60), 160 - MAX(0, edge) * 160 / (3 * r));
+        blend_pixel(c, cx + dx, cy + dy, col, edge < 0 ? 120 : 255);
+    }
+    draw_icon(c, ICON_LOGO, 32, cx - 16, cy - 16);
+    /* gloss */
+    int gx = r * 7 / 10, gy = r * 5 / 10, gcy = cy - r * 4 / 10;
+    for (int dy = -gy; dy <= gy; dy++) for (int dx = -gx; dx <= gx; dx++) {
+        int v = (dx * dx * 256) / (gx * gx) + (dy * dy * 256) / (gy * gy);
+        if (v <= 256) blend_pixel(c, cx + dx, gcy + dy, WHITE, (256 - v) * (dy < 0 ? 150 : 90) / 256);
+    }
+    draw_circle(c, cx, cy, r, darken(bot, 70));
+}
 static void paint_start_button(canvas_t *c, bool hot, bool down) {
     int y = tb_y();
+    if (T.renderer == RENDER_AERO) { paint_orb(c, 27, y + T.taskbar_h / 2, MIN(19, T.taskbar_h / 2 - 1), hot, down); return; }
+    if (T.renderer == RENDER_PLEX) {   /* Longhorn: a plain globe + "start", highlighted on hover */
+        rect_t r = R(2, y + 3, start_w() - 6, T.taskbar_h - 6);
+        if (hot || down) { fill_round_rect_blend(c, r.x, r.y, r.w, r.h, 4, down ? T.select : WHITE, down ? 90 : 150); fill_round_rect_blend(c, r.x, r.y, r.w, 1, 0, T.tray_border, 120); }
+        draw_icon(c, ICON_START_LOGO, 16, r.x + 6, r.y + (r.h - 16) / 2);
+        draw_text(c, FONT_LARGE, r.x + 27, r.y + (r.h - font_height(FONT_LARGE)) / 2, "start", T.start_text);
+        return;
+    }
     if (T.classic) {
         rect_t r = R(2, y + 4, START_W_CLASSIC - 2, T.taskbar_h - 6);
         fill_rect(c, r.x, r.y, r.w, r.h, T.face);
@@ -322,9 +356,17 @@ static void paint_start_button(canvas_t *c, bool hot, bool down) {
 }
 void taskbar_paint(canvas_t *c) {
     int y = tb_y(), h = T.taskbar_h;
+    bool aero = T.renderer == RENDER_AERO, plex = T.renderer == RENDER_PLEX;
     if (T.classic) {
         fill_rect(c, 0, y, SCREEN_W, h, T.face);
         hline(c, 0, y, SCREEN_W, T.face); hline(c, 0, y + 1, SCREEN_W, WHITE);
+    } else if (aero) {
+        draw_glass(c, 0, y, SCREEN_W, h, T.tb_top, 170, 6);
+        for (int j = 0; j < h / 2; j++) blend_rect(c, 0, y + j, SCREEN_W, 1, WHITE, 36 - j * 36 / (h / 2));
+        hline(c, 0, y, SCREEN_W, HEX(0x0A1018)); blend_rect(c, 0, y + 1, SCREEN_W, 1, T.tb_hi, 140);
+    } else if (plex) {
+        gradient_v3(c, 0, y, SCREEN_W, h, T.tb_hi, T.tb_top, T.tb_bot, 3);
+        hline(c, 0, y, SCREEN_W, T.tray_border); hline(c, 0, y + 1, SCREEN_W, WHITE);
     } else {
         gradient_v3(c, 0, y, SCREEN_W, h, T.tb_hi, T.tb_top, T.tb_bot, 4);
         hline(c, 0, y, SCREEN_W, darken(T.tb_top, 60));
@@ -334,7 +376,8 @@ void taskbar_paint(canvas_t *c) {
     /* quick launch */
     int qx = ql_x();
     if (T.classic) { vline(c, qx - 3, y + 4, h - 6, HEX(0x808080)); vline(c, qx - 2, y + 4, h - 6, WHITE); }
-    else { vline(c, qx - 3, y + 3, h - 5, darken(T.tb_top, 50)); vline(c, qx - 2, y + 3, h - 5, lighten(T.tb_top, 60)); }
+    else if (plex) { vline(c, qx - 3, y + 5, h - 9, T.tray_border); vline(c, qx - 2, y + 5, h - 9, WHITE); }
+    else if (!aero) { vline(c, qx - 3, y + 3, h - 5, darken(T.tb_top, 50)); vline(c, qx - 2, y + 3, h - 5, lighten(T.tb_top, 60)); }
     for (int i = 0; i < QL_N; i++) {
         rect_t r = R(qx + i * 24, y + (h - 22) / 2, 22, 22);
         if (tb_hot == 2000 + i) { if (T.classic) bevel(c, r.x, r.y, r.w, r.h, true); else { blend_rect(c, r.x, r.y, r.w, r.h, WHITE, 60); draw_rect(c, r.x, r.y, r.w, r.h, lighten(T.tb_top, 120)); } }
@@ -351,6 +394,21 @@ void taskbar_paint(canvas_t *c) {
             bevel_deep(c, r.x, r.y, r.w, r.h, !act);
             draw_icon(c, w->icon >= 0 ? w->icon : ICON_EXE, 16, r.x + 4 + act, r.y + (r.h - 16) / 2 + act);
             draw_text_ellipsis(c, act ? FONT_UI_BOLD : FONT_UI, r.x + 24 + act, r.y + (r.h - 14) / 2 + act, r.w - 30, w->title, BLACK);
+        } else if (plex) {   /* flat buttons, only the active/hot one has a frame */
+            if (act || hot) {
+                fill_round_rect(c, r.x, r.y, r.w, r.h, 3, T.tbtn_border);
+                gradient_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 2, act ? T.tbtn_act_top : T.tbtn_hot, act ? T.tbtn_act_bot : T.tbtn_bot);
+            }
+            draw_icon(c, w->icon >= 0 ? w->icon : ICON_EXE, 16, r.x + 6, r.y + (r.h - 16) / 2);
+            draw_text_ellipsis(c, act ? FONT_UI_BOLD : FONT_UI, r.x + 26, r.y + (r.h - 14) / 2, r.w - 32, w->title, T.tbtn_text);
+        } else if (aero) {
+            fill_round_rect_blend(c, r.x, r.y, r.w, r.h, 3, BLACK, 90);
+            fill_round_rect_blend(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 3, act ? T.tbtn_act_top : hot ? T.tbtn_hot : T.tbtn_top, act ? 150 : hot ? 120 : 70);
+            fill_round_rect_blend(c, r.x + 2, r.y + 2, r.w - 4, (r.h - 4) / 2, 2, WHITE, act ? 60 : 35);
+            if (act) blend_rect(c, r.x + 6, r.y + r.h - 3, r.w - 12, 1, WHITE, 120);
+            draw_icon(c, w->icon >= 0 ? w->icon : ICON_EXE, 16, r.x + 6, r.y + (r.h - 16) / 2);
+            draw_text_ellipsis(c, FONT_UI, r.x + 27, r.y + (r.h - 14) / 2 + 1, r.w - 33, w->title, BLACK);
+            draw_text_ellipsis(c, FONT_UI, r.x + 26, r.y + (r.h - 14) / 2, r.w - 32, w->title, T.tbtn_text);
         } else {
             uint32_t top = act ? T.tbtn_act_top : T.tbtn_top, bot = act ? T.tbtn_act_bot : T.tbtn_bot;
             if (hot && !act) { top = lighten(top, 30); bot = lighten(bot, 30); }
@@ -367,6 +425,8 @@ void taskbar_paint(canvas_t *c) {
     if (T.classic) {
         rect_t r = R(tx, y + 4, tw - 3, h - 6);
         fill_rect(c, r.x, r.y, r.w, r.h, T.face); bevel(c, r.x, r.y, r.w, r.h, false);
+    } else if (aero || plex) {
+        blend_rect(c, tx, y + 4, 1, h - 8, plex ? T.tray_border : BLACK, plex ? 255 : 90); blend_rect(c, tx + 1, y + 4, 1, h - 8, WHITE, plex ? 200 : 50);
     } else {
         gradient_v3(c, tx, y + 1, tw, h - 1, T.tray_hi, T.tray_top, T.tray_bot, 4);
         vline(c, tx, y + 1, h - 1, T.tray_border); vline(c, tx + 1, y + 1, h - 1, lighten(T.tray_hi, 80));
@@ -471,6 +531,7 @@ static rect_t sm_item_rect(int id) {
         return R(m.x + 192, y, m.w - 194, !sm_right[k].label ? 9 : 26);
     }
     if (id == 300) return R(m.x + 2, m.y + m.h - SM_FOOT - 36, 188, 30);
+    if (T.renderer == RENDER_PLEX && (id == 400 || id == 401)) return R(m.x + m.w - (id == 400 ? 76 : 42), m.y + m.h - SM_FOOT + 7, 30, 30);
     if (id == 400) return R(m.x + m.w - 200, m.y + m.h - SM_FOOT + 8, 86, 28);
     if (id == 401) return R(m.x + m.w - 110, m.y + m.h - SM_FOOT + 8, 106, 28);
     return R(0, 0, 0, 0);
@@ -549,11 +610,17 @@ static void paint_startmenu(canvas_t *c) {
         if (allprog_open) paint_allprog(c);
         return;
     }
-    /* Luna two-column menu */
+    /* Luna two-column menu (Aero: the same layout on glass) */
+    bool aero = T.renderer == RENDER_AERO;
     blend_rect(c, m.x + m.w, m.y + 6, 3, m.h - 6, BLACK, 60);
-    fill_round_rect(c, m.x, m.y, m.w, m.h, 7, T.sm_border);
+    if (aero) {
+        draw_glass(c, m.x, m.y, m.w, m.h, T.sm_head_bot, 200, 8);
+        for (int j = 0; j < 40; j++) blend_rect(c, m.x, m.y + j, m.w, 1, WHITE, 50 - j);
+        draw_rect(c, m.x, m.y, m.w, m.h, T.sm_border);
+        blend_rect(c, m.x + 1, m.y + 1, m.w - 2, 1, WHITE, 120);
+    } else fill_round_rect(c, m.x, m.y, m.w, m.h, 7, T.sm_border);
     /* header */
-    for (int j = 0; j < SM_HEAD; j++) {
+    for (int j = 0; j < SM_HEAD && !aero; j++) {
         int in = 0, rr = 7; if (j < rr) { int dy = rr - j, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rr * rr) dx++; in = rr - dx; }
         uint32_t col = j < 6 ? mix(lighten(T.sm_head_top, 80), T.sm_head_top, j * 42) : mix(T.sm_head_top, T.sm_head_bot, (j - 6) * 255 / (SM_HEAD - 6));
         hline(c, m.x + in + 1, m.y + j + 1, m.w - 2 * in - 2, col);
@@ -566,33 +633,47 @@ static void paint_startmenu(canvas_t *c) {
     draw_text(c, FONT_LARGE_BOLD, m.x + 69, m.y + 20, user_name, darken(T.sm_head_bot, 80));
     draw_text(c, FONT_LARGE_BOLD, m.x + 68, m.y + 19, user_name, T.sm_head_text);
     /* accent line */
-    gradient_h(c, m.x + 1, m.y + SM_HEAD, m.w / 2, 2, T.sm_head_bot, T.sm_accent);
-    gradient_h(c, m.x + m.w / 2, m.y + SM_HEAD, m.w / 2 - 1, 2, T.sm_accent, T.sm_head_bot);
+    if (!aero) {
+        gradient_h(c, m.x + 1, m.y + SM_HEAD, m.w / 2, 2, T.sm_head_bot, T.sm_accent);
+        gradient_h(c, m.x + m.w / 2, m.y + SM_HEAD, m.w / 2 - 1, 2, T.sm_accent, T.sm_head_bot);
+    }
     /* body */
     int by = m.y + SM_HEAD + 2, bh = m.h - SM_HEAD - 2 - SM_FOOT;
-    fill_rect(c, m.x + 1, by, 190, bh, T.sm_left);
-    fill_rect(c, m.x + 191, by, m.w - 192, bh, T.sm_right);
-    vline(c, m.x + 191, by, bh, T.sm_right_line);
+    if (aero) {
+        fill_round_rect(c, m.x + 6, by, 186, bh, 4, HEX(0x50607A));
+        fill_round_rect(c, m.x + 7, by + 1, 184, bh - 2, 3, T.sm_left);
+        blend_rect(c, m.x + 196, by, m.w - 202, bh, T.sm_right, 110);
+    } else if (T.renderer == RENDER_PLEX) {
+        gradient_v(c, m.x + 1, by, 190, bh, T.sm_left, darken(T.sm_left, 40));
+        gradient_v(c, m.x + 191, by, m.w - 192, bh, T.sm_right, WHITE);
+        vline(c, m.x + 191, by, bh, T.sm_right_line);
+    } else {
+        fill_rect(c, m.x + 1, by, 190, bh, T.sm_left);
+        fill_rect(c, m.x + 191, by, m.w - 192, bh, T.sm_right);
+        vline(c, m.x + 191, by, bh, T.sm_right_line);
+    }
     for (int i = 0; i < SM_LEFT_N; i++) {
         rect_t r = sm_item_rect(i);
         const sm_item_t *it = &sm_left[i];
-        if (!it->label) { gradient_h(c, r.x + 8, r.y + 4, r.w / 2 - 8, 1, WHITE, HEX(0xC8C8C8)); gradient_h(c, r.x + r.w / 2, r.y + 4, r.w / 2 - 8, 1, HEX(0xC8C8C8), WHITE); continue; }
+        uint32_t sep = mix(T.sm_left, T.sm_left_text, 50);
+        if (!it->label) { gradient_h(c, r.x + 8, r.y + 4, r.w / 2 - 8, 1, T.sm_left, sep); gradient_h(c, r.x + r.w / 2, r.y + 4, r.w / 2 - 8, 1, sep, T.sm_left); continue; }
         bool hot = sm_hot == i;
         if (hot) fill_rect(c, r.x, r.y, r.w, r.h, T.hot);
         draw_icon(c, it->icon, 32, r.x + 5, r.y + (r.h - 32) / 2);
         if (it->sub) {
-            draw_text(c, FONT_UI_BOLD, r.x + 43, r.y + 6, it->label, hot ? WHITE : BLACK);
-            draw_text(c, FONT_UI, r.x + 43, r.y + 21, it->sub, hot ? WHITE : HEX(0x7A7A7A));
-        } else draw_text(c, FONT_UI, r.x + 43, r.y + (r.h - 14) / 2, it->label, hot ? WHITE : BLACK);
+            draw_text(c, FONT_UI_BOLD, r.x + 43, r.y + 6, it->label, hot ? WHITE : T.sm_left_text);
+            draw_text(c, FONT_UI, r.x + 43, r.y + 21, it->sub, hot ? WHITE : mix(T.sm_left_text, T.sm_left, 110));
+        } else draw_text(c, FONT_UI, r.x + 43, r.y + (r.h - 14) / 2, it->label, hot ? WHITE : T.sm_left_text);
     }
     /* all programs */
     {
         rect_t r = sm_item_rect(300);
-        gradient_h(c, r.x + 8, r.y - 5, r.w / 2 - 8, 1, WHITE, HEX(0xC8C8C8)); gradient_h(c, r.x + r.w / 2, r.y - 5, r.w / 2 - 8, 1, HEX(0xC8C8C8), WHITE);
+        uint32_t sep = mix(T.sm_left, T.sm_left_text, 50);
+        gradient_h(c, r.x + 8, r.y - 5, r.w / 2 - 8, 1, T.sm_left, sep); gradient_h(c, r.x + r.w / 2, r.y - 5, r.w / 2 - 8, 1, sep, T.sm_left);
         bool hot = sm_hot == 300 || allprog_open;
         if (hot) fill_rect(c, r.x, r.y, r.w, r.h, T.hot);
         int tw = text_width(FONT_UI_BOLD, "All Programs");
-        draw_text(c, FONT_UI_BOLD, r.x + (r.w - tw - 24) / 2, r.y + 8, "All Programs", hot ? WHITE : BLACK);
+        draw_text(c, FONT_UI_BOLD, r.x + (r.w - tw - 24) / 2, r.y + 8, "All Programs", hot ? WHITE : T.sm_left_text);
         draw_icon(c, ICON_GO, 16, r.x + (r.w + tw - 24) / 2 + 6, r.y + 7);
     }
     for (int i = 0; i < SM_RIGHT_N; i++) {
@@ -602,16 +683,26 @@ static void paint_startmenu(canvas_t *c) {
         bool hot = sm_hot == 100 + i;
         if (hot) fill_rect(c, r.x, r.y, r.w, r.h, T.hot);
         draw_icon(c, it->icon, 24, r.x + 5, r.y + 1);
-        draw_text(c, it->bold ? FONT_UI_BOLD : FONT_UI, r.x + 35, r.y + 6, it->label, hot ? WHITE : HEX(0x00136B));
+        draw_text(c, it->bold ? FONT_UI_BOLD : FONT_UI, r.x + 35, r.y + 6, it->label, hot ? WHITE : T.sm_right_text);
     }
     /* footer */
     int fy = m.y + m.h - SM_FOOT;
-    for (int j = 0; j < SM_FOOT - 1; j++) {
+    for (int j = 0; j < SM_FOOT - 1 && !aero; j++) {
         int in = 0, rr = 7, jj = SM_FOOT - 2 - j; if (jj < rr) { int dy = rr - jj, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rr * rr) dx++; in = rr - dx; }
         hline(c, m.x + 1 + in, fy + j, m.w - 2 - 2 * in, mix(T.sm_foot_top, T.sm_foot_bot, j * 255 / SM_FOOT));
     }
     const char *fl[2] = { "Log Off", "Turn Off Computer" }; int fi[2] = { ICON_LOGOFF, ICON_POWER };
-    for (int k = 0; k < 2; k++) {
+    for (int k = 0; k < 2 && T.renderer == RENDER_PLEX; k++) {   /* round buttons */
+        rect_t r = sm_item_rect(400 + k);
+        int cx = r.x + 15, cy = r.y + 15;
+        uint32_t base = k ? HEX(0xD8452A) : HEX(0xE8A030);
+        if (sm_hot == 400 + k) base = lighten(base, 50);
+        fill_circle(c, cx, cy, 13, darken(base, 80));
+        fill_circle(c, cx, cy, 12, base);
+        for (int j = -11; j < 0; j++) blend_rect(c, cx - 9, cy + j, 18, 1, WHITE, 90 + j * 6);
+        draw_icon(c, fi[k], 16, cx - 8, cy - 8);
+    }
+    for (int k = 0; k < 2 && T.renderer != RENDER_PLEX; k++) {
         rect_t r = sm_item_rect(400 + k);
         if (sm_hot == 400 + k) { blend_rect(c, r.x, r.y, r.w, r.h, WHITE, 50); draw_rect(c, r.x, r.y, r.w, r.h, lighten(T.sm_foot_top, 100)); }
         draw_icon(c, fi[k], 24, r.x + 2, r.y + 2);

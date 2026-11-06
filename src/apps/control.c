@@ -235,7 +235,7 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
 }
 static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, rotate its colour hue, and choose a desktop background. Changes apply immediately.");
+    heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, rotate its colour hue and choose a background. Changes apply at once.");
     /* pick up new or edited .wrldstyle files */
     if (c->style_gen != vfs_generation) { c->style_gen = vfs_generation; styles_load(); theme_compute(theme_id, theme_hue, &T); wm_theme_changed(); }
     int y = oy + 78;

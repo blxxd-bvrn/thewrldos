@@ -46,7 +46,7 @@ static const struct { const char *name; uint16_t off; char kind; bool shift; } f
     F(tray_hi, 'c', 1), F(tray_top, 'c', 1), F(tray_bot, 'c', 1), F(tray_border, 'c', 1), F(tray_text, 'c', 0),
     F(start_hi, 'c', 0), F(start_top, 'c', 0), F(start_bot, 'c', 0), F(start_text, 'c', 0), F(start_shadow, 'c', 0),
     F(tbtn_top, 'c', 1), F(tbtn_bot, 'c', 1), F(tbtn_border, 'c', 1), F(tbtn_act_top, 'c', 1), F(tbtn_act_bot, 'c', 1), F(tbtn_text, 'c', 0), F(tbtn_hot, 'c', 1),
-    F(sm_head_top, 'c', 1), F(sm_head_bot, 'c', 1), F(sm_head_text, 'c', 0), F(sm_border, 'c', 1), F(sm_left, 'c', 0),
+    F(sm_head_top, 'c', 1), F(sm_head_bot, 'c', 1), F(sm_head_text, 'c', 0), F(sm_border, 'c', 1), F(sm_left, 'c', 0), F(sm_left_text, 'c', 0),
     F(sm_right, 'c', 1), F(sm_right_line, 'c', 1), F(sm_right_text, 'c', 0), F(sm_foot_top, 'c', 1), F(sm_foot_bot, 'c', 1), F(sm_accent, 'c', 0), F(sm_foot_text, 'c', 0),
     F(btn_border, 'c', 1), F(btn_top, 'c', 0), F(btn_bot, 'c', 0), F(btn_hot_a, 'c', 0), F(btn_hot_b, 'c', 0), F(btn_focus, 'c', 1),
     F(pane_top, 'c', 1), F(pane_bot, 'c', 1), F(pane_head_top, 'c', 0), F(pane_head_bot, 'c', 1), F(pane_head_text, 'c', 1), F(pane_body, 'c', 1), F(pane_link, 'c', 1),
@@ -115,6 +115,7 @@ static void sanitize(theme_t *t) {
     t->menubar_h = CLAMP(t->menubar_h, 16, 30); t->taskbar_h = CLAMP(t->taskbar_h, 24, 48);
     t->glass_alpha = CLAMP(t->glass_alpha, 0, 255); t->iglass_alpha = CLAMP(t->iglass_alpha, 0, 255); t->glass_blur = CLAMP(t->glass_blur, 0, 16);
     if (!t->sm_right_text) t->sm_right_text = t->classic ? BLACK : HEX(0x00136B);
+    if (!t->sm_left_text) t->sm_left_text = BLACK;
 }
 static void add_style(const char *file) {
     if (nstyles >= (int)ARRAY_LEN(styles)) return;
@@ -250,14 +251,25 @@ static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, b
         glyph(c, cx, cy, kind, WHITE, 2);
         return;
     }
+    if (T.renderer == RENDER_PLEX) {   /* Longhorn: bare glyphs on the title bar, glow on hover */
+        if (hot || pressed) {
+            uint32_t g = kind == 3 ? T.close_bot : T.cap_bot;
+            fill_round_rect_blend(c, x, y, r.w, r.h, 4, pressed ? darken(g, 40) : g, kind == 3 ? 220 : 150);
+            fill_round_rect_blend(c, x + 1, y + 1, r.w - 2, r.h / 2, 3, WHITE, 70);
+        }
+        int cx = x + r.w / 2, cy = y + r.h / 2 - 1;
+        uint32_t gc = active || hot ? T.cap_glyph : T.ititle_text;
+        glyph(c, cx + 1, cy + 1, kind, mix(T.title_bot, BLACK, 90), 2);
+        glyph(c, cx, cy, kind, gc, 2);
+        return;
+    }
     uint32_t top = kind == 3 ? T.close_top : T.cap_top, bot = kind == 3 ? T.close_bot : T.cap_bot;
-    if (!active) { top = mix(top, WHITE, T.renderer == RENDER_PLEX ? 30 : 90); bot = mix(bot, WHITE, T.renderer == RENDER_PLEX ? 30 : 90); }
-    if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); if (T.renderer == RENDER_PLEX && kind != 3) bot = mix(bot, T.glass, 160); }
+    if (!active) { top = mix(top, WHITE, 90); bot = mix(bot, WHITE, 90); }
+    if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); }
     if (pressed) { uint32_t t2 = top; top = darken(bot, 30); bot = t2; }
     fill_round_rect(c, x, y, s, s, 3, T.cap_border);
     gradient_round_rect(c, x + 1, y + 1, s - 2, s - 2, 2, lighten(top, 40), bot);
     blend_rect(c, x + 2, y + s - 6, s - 4, 3, WHITE, 25);
-    if (T.renderer == RENDER_PLEX) blend_rect(c, x + 2, y + 2, s - 4, (s - 4) / 2, WHITE, 45);
     uint32_t g = kind == 3 ? WHITE : T.cap_glyph;
     switch (kind) {
     case 0: fill_rect(c, x + 5, y + s - 8, 7, 3, g); break;
@@ -356,21 +368,17 @@ void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool 
             else col = mix(active ? T.title_mid : T.ititle_mid, active ? T.title_bot : T.ititle_bot, (j - 8) * 255 / (th - 8));
             int in = corner_in(j, rad);
             hline(c, x + in, y + j, w - 2 * in, col);
-            if (T.renderer == RENDER_PLEX && j > 0 && j < th / 2) blend_rect(c, x + in + 1, y + j, w - 2 * in - 2, 1, WHITE, 38 - j * 2);
+            if (T.renderer == RENDER_PLEX && j > 1 && j < th / 2) blend_rect(c, x + in + 1, y + j, w - 2 * in - 2, 1, WHITE, 70 - j * 140 / th);
             if (j > 0 && j < rad + 1) { put_pixel(c, x + in, y + j, fo); put_pixel(c, x + w - 1 - in, y + j, fo); }
             else if (j > 0) { put_pixel(c, x, y + j, fo); put_pixel(c, x + w - 1, y + j, fo); }
-        }
-        if (T.renderer == RENDER_PLEX) {   /* blue accent glow under the title */
-            uint32_t g = active ? T.glass : T.iglass;
-            hline(c, x + 1, y + th - 1, w - 2, g);
-            blend_rect(c, x + 1, y + th - 3, w - 2, 2, g, 70);
         }
         int textx = x + 8;
         if (icon >= 0) { draw_icon(c, icon, 16, x + 6, y + (th - 16) / 2 + 1); textx = x + 27; }
         rect_t old = canvas_push_clip(c, R(x, y, w - 75, th));
-        int ty = y + (th - font_height(FONT_TITLE)) / 2 + 1;
-        if (T.title_shadow && active) draw_text(c, FONT_TITLE, textx + 1, ty + 1, title, T.title_shadow);
-        draw_text(c, FONT_TITLE, textx, ty, title, active ? T.title_text : T.ititle_text);
+        int tf = T.renderer == RENDER_PLEX ? FONT_UI : FONT_TITLE;
+        int ty = y + (th - font_height(tf)) / 2 + 1;
+        if (T.title_shadow && active) draw_text(c, tf, textx + 1, ty + 1, title, T.title_shadow);
+        draw_text(c, tf, textx, ty, title, active ? T.title_text : T.ititle_text);
         c->clip = old;
     }
     /* caption buttons */

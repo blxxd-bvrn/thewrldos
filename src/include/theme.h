@@ -22,7 +22,7 @@ typedef struct {
     int renderer;
     uint32_t glass, iglass;     /* aero: glass tint; plex: accent glow */
     int glass_alpha, iglass_alpha, glass_blur;
-    uint32_t sm_right_text;
+    uint32_t sm_right_text, sm_left_text;
     int title_h, border, cap_btn, menubar_h, taskbar_h;
     uint32_t title_top, title_mid, title_bot, title_hi;
     uint32_t ititle_top, ititle_mid, ititle_bot, ititle_hi;
