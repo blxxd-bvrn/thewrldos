@@ -1164,11 +1164,22 @@ static int b_open(sh_t *s, int argc, char **argv, io_t *io) {
     return 0;
 }
 static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
-    if (argc < 2) { out_f(io, "Current theme: %s, hue %d\nusage: theme blue|olive|silver|classic [HUE 0-359]\n", theme_names[theme_id], theme_hue); return 0; }
-    int id = !strcmp(argv[1], "olive") ? THEME_OLIVE : !strcmp(argv[1], "silver") ? THEME_SILVER : !strcmp(argv[1], "classic") ? THEME_CLASSIC : THEME_LUNA_BLUE;
+    if (argc < 2 || !strcmp(argv[1], "list")) {
+        styles_load();
+        out_f(io, "Current style: %s, hue %d\n\nVisual styles (" STYLE_DIR "\\*.wrldstyle):\n", style_name(theme_id), theme_hue);
+        for (int i = 0; i < THEME_COUNT; i++) out_f(io, "  %c %-18s %s\n", i == theme_id ? '*' : ' ', style_file(i), style_desc(i));
+        out_s(io, "\nusage: theme STYLE [HUE 0-359]   e.g. theme aero, theme plex 200, theme \"Luna Blue\"\n");
+        return 0;
+    }
+    static const struct { const char *alias, *file; } aliases[] = { { "blue", "Luna Blue" }, { "luna", "Luna Blue" }, { "olive", "Olive Green" }, { "classic", "Windows Classic" } };
+    const char *want = argv[1];
+    for (unsigned i = 0; i < ARRAY_LEN(aliases); i++) if (!strcasecmp(want, aliases[i].alias)) want = aliases[i].file;
+    styles_load();
+    int id = style_find(want);
+    if (id < 0) { err_f(io, "theme: no visual style called '%s' (try: theme list)\n", argv[1]); return 1; }
     theme_apply(id, argc > 2 ? atoi(argv[2]) : 0);
     wm_redraw_all();
-    out_f(io, "Theme set to %s (hue %d)\n", theme_names[theme_id], theme_hue);
+    out_f(io, "Visual style set to %s (hue %d)\n", style_name(theme_id), theme_hue);
     return 0;
 }
 static int b_pause(sh_t *s, int argc, char **argv, io_t *io) { out_s(io, "Press any key to continue . . . "); s->con->getkey(s->con); out_s(io, "\n"); return 0; }

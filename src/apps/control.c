@@ -45,7 +45,7 @@ typedef struct {
     int scroll;
     char search[64];
     /* applet state */
-    int hue, theme; int wall;
+    int hue, theme; int wall; int style_page; uint32_t style_gen;
     char uname[32];
     int dbl, speed; bool swap; uint32_t dbl_test_t; bool dbl_open;
     int tz; char keytest[64];
@@ -196,6 +196,27 @@ static void heading(canvas_t *s, int x, int y, const char *t, const char *sub) {
     draw_text(s, FONT_LARGE, x, y, t, W7_HEAD);
     if (sub) draw_text_wrapped(s, FONT_UI, x, y + 30, s->w - x - 30, sub, W7_TEXT, 2);
 }
+void style_create_from(int base) {
+    char path[200], name[48];
+    for (int k = 1; k < 100; k++) {
+        snprintf(name, sizeof name, "My Style %d", k);
+        snprintf(path, sizeof path, STYLE_DIR "\\%s.wrldstyle", name);
+        if (!vfs_resolve(path, NULL)) break;
+    }
+    char body[1400];
+    snprintf(body, sizeof body,
+        "; %s - a THE WRLD OS visual style based on \"%s\".\r\n"
+        "; Every value not listed here comes from the Base style. Remove the ';' in\r\n"
+        "; front of a line and change the colour, save, then pick the style in\r\n"
+        "; Control Panel > Personalization (or double-click this file).\r\n\r\n"
+        "[Style]\r\nName=%s\r\nBase=%s\r\nDescription=My own visual style.\r\n\r\n"
+        "[Colors]\r\n; title_top=#2E82F8\r\n; title_mid=#0A5BE6\r\n; title_bot=#0049D0\r\n; tb_top=#2A66E0\r\n; tb_bot=#1C47B8\r\n"
+        "; start_top=#3C9C3C\r\n; start_bot=#2D7A2D\r\n; select=#316AC5\r\n; desktop_bg=#3A6EA5\r\n"
+        "; glass=#74B8FC\r\n; glass_alpha=105\r\n",
+        name, style_file(base), name, style_file(base));
+    vfs_mkdir_p(STYLE_DIR);
+    if (vfs_write_file(path, body, strlen(body))) { styles_load(); notepad_open(path); }
+}
 void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     theme_t save = T;
     theme_compute(id, hue, &T);
@@ -215,34 +236,56 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
 static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, rotate its colour hue, and choose a desktop background. Changes apply immediately.");
-    int y = oy + 86;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", BLACK); y += 22;
-    for (int i = 0; i < THEME_COUNT; i++) {
-        int x = ox + 24 + i * 140;
-        bool sel = theme_id == i;
-        cp_theme_thumb(s, x, y, i, theme_hue, sel);
-        if (ui_click_area(w, R(x - 4, y - 4, 128, 108))) { theme_apply(i, theme_hue); wm_redraw_all(); }
-        draw_text_centered(s, FONT_UI, R(x - 4, y + 84, 128, 16), theme_names[i], BLACK);
+    /* pick up new or edited .wrldstyle files */
+    if (c->style_gen != vfs_generation) { c->style_gen = vfs_generation; styles_load(); theme_compute(theme_id, theme_hue, &T); wm_theme_changed(); }
+    int y = oy + 78;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", BLACK);
+    if (ui_link(w, s->w - 330, y, FONT_UI, "Create a style...", W7_LINK)) style_create_from(theme_id);
+    if (ui_link(w, s->w - 210, y, FONT_UI, "Open the Themes folder", W7_LINK)) explorer_open(STYLE_DIR);
+    y += 22;
+    int n = THEME_COUNT, per = 8, pages = (n + per - 1) / per;
+    if (c->style_page >= pages) c->style_page = 0;
+    int hovered = -1;
+    for (int k = 0; k < per && c->style_page * per + k < n; k++) {
+        int i = c->style_page * per + k;
+        int x = ox + 24 + (k % 4) * 140, yy = y + (k / 4) * 104;
+        cp_theme_thumb(s, x, yy, i, i == theme_id ? theme_hue : 0, theme_id == i);
+        if (ui_hover(w, R(x - 4, yy - 4, 128, 104))) hovered = i;
+        if (ui_click_area(w, R(x - 4, yy - 4, 128, 104))) {
+            theme_apply(i, i == theme_id ? theme_hue : 0); c->hue = theme_hue;
+            const char *wp = style_wallpaper(i);
+            for (int j = 0; wp[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], wp)) { wallpaper_id = j; shell_wallpaper_changed(); }
+            wm_redraw_all();
+        }
+        draw_text_centered(s, FONT_UI, R(x - 4, yy + 83, 128, 16), style_name(i), BLACK);
     }
-    y += 116;
+    if (pages > 1) {
+        char pb[32]; snprintf(pb, sizeof pb, "Page %d of %d", c->style_page + 1, pages);
+        draw_text(s, FONT_UI, ox + 24, y + 210, pb, W7_TEXT);
+        if (ui_link(w, ox + 110, y + 210, FONT_UI, "Next page", W7_LINK)) c->style_page = (c->style_page + 1) % pages;
+    }
+    y += MIN(2, (n + 3) / 4) * 104 + (pages > 1 ? 18 : 0);
+    draw_text_ellipsis(s, FONT_UI, ox + 20, y - 4, s->w - ox - 40, style_desc(hovered >= 0 ? hovered : theme_id), W7_TEXT);
+    y += 16;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Colour hue", BLACK);
     char hb[40]; snprintf(hb, sizeof hb, "%d degrees", c->hue);
     draw_text(s, FONT_UI, ox + 120, y, hb, W7_TEXT);
     y += 20;
-    for (int i = 0; i < 360; i += 2) { uint32_t base = theme_id == THEME_OLIVE ? HEX(0x8BA169) : theme_id == THEME_SILVER ? HEX(0x9C9CB6) : theme_id == THEME_CLASSIC ? HEX(0x0A246A) : HEX(0x245DDA); fill_rect(s, ox + 25 + i * 300 / 360, y, 2, 10, hue_shift(base | 0xFF000000, i)); }
+    theme_t base; theme_compute(theme_id, 0, &base);
+    uint32_t basec = base.renderer == RENDER_AERO || base.renderer == RENDER_PLEX ? base.glass : base.classic ? base.title_top : base.title_mid;
+    for (int i = 0; i < 360; i += 2) fill_rect(s, ox + 25 + i * 300 / 360, y, 2, 10, hue_shift(basec | 0xFF000000, i));
     if (ui_slider(w, R(ox + 20, y + 12, 310, 24), &c->hue, 0, 359)) { theme_apply(theme_id, c->hue); wm_redraw_all(); }
     if (ui_button(w, R(ox + 350, y + 10, 90, 24), "Reset hue")) { c->hue = 0; theme_apply(theme_id, 0); wm_redraw_all(); }
     static const int presets[] = { 0, 30, 120, 160, 200, 280, 320 };
     static const char *pnames[] = { "Default", "Violet", "Rose", "Ruby", "Amber", "Emerald", "Teal" };
     for (int i = 0; i < 7; i++) {
         int x = ox + 450 + i * 26;
-        uint32_t base = theme_id == THEME_OLIVE ? HEX(0x8BA169) : theme_id == THEME_SILVER ? HEX(0x9C9CB6) : HEX(0x245DDA);
         fill_round_rect(s, x, y + 10, 22, 22, 4, HEX(0x606060));
-        fill_round_rect(s, x + 1, y + 11, 20, 20, 3, hue_shift(base, presets[i]));
+        fill_round_rect(s, x + 1, y + 11, 20, 20, 3, hue_shift(basec | 0xFF000000, presets[i]));
         if (ui_click_area(w, R(x, y + 10, 22, 22))) { c->hue = presets[i]; theme_apply(theme_id, presets[i]); wm_redraw_all(); }
         if (ui_hover(w, R(x, y + 10, 22, 22))) draw_text(s, FONT_SMALL, ox + 450, y + 36, pnames[i], W7_TEXT);
     }
-    y += 62;
+    y += 50;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK); y += 22;
     static canvas_t *thumbs[8];
     for (int i = 0; i < wallpaper_count; i++) {

@@ -49,6 +49,7 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) return ICON_EXE;
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
+    if (!strcasecmp(e, "wrldstyle")) return ICON_CP_APPEARANCE;
     if (!strcasecmp(e, "bmp")) return ICON_IMAGE_FILE;
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
     if (!strcasecmp(e, "lnk")) {
@@ -68,6 +69,7 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "bmp")) return "Bitmap Image";
     if (!strcasecmp(e, "dll")) return "Application Extension";
     if (!strcasecmp(e, "lnk")) return "Shortcut";
+    if (!strcasecmp(e, "wrldstyle")) return "Visual Style";
     if (!strcasecmp(e, "plist")) return "Property List";
     if (!strcasecmp(e, "c")) return "C Source File";
     return "File";
@@ -100,6 +102,18 @@ bool shell_open(const char *path, const char *cwd) {
         char l = dmg_mount(n, msg, sizeof msg);
         if (!l) err_box("Disk Image", msg);
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
+    } else if (!strcasecmp(e, "wrldstyle")) {
+        /* apply the visual style, then show it in Personalization */
+        char dir[512]; path_dirname(full, dir, sizeof dir);
+        if (strcasecmp(dir, STYLE_DIR)) {   /* install it into the Themes folder */
+            char dst[512]; path_join(dst, sizeof dst, STYLE_DIR, n->name);
+            vfs_mkdir_p(STYLE_DIR);
+            vfs_write_file(dst, n->data, n->size);
+        }
+        styles_load();
+        int id = style_find(n->name);
+        if (id < 0) err_box("Visual Style", "This visual style could not be loaded.");
+        else { theme_apply(id, 0); wm_redraw_all(); control_open("personalization"); }
     } else if (!strcasecmp(e, "bmp")) imageview_open(full);
     else if (!strcasecmp(e, "lnk")) {
         char t[256]; int l = MIN(n->size, 255u); memcpy(t, n->data, l); t[l] = 0;

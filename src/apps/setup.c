@@ -659,24 +659,28 @@ static void oobe_paint(window_t *w) {
     }
     case 4: {
         page_header(s, "Choose a Look", "Pick a visual style and an account picture. You can change both later in Control Panel.");
-        draw_text(s, FONT_UI_BOLD, bx, by - 4, "Visual style", BLACK);
-        for (int i = 0; i < THEME_COUNT; i++) {
-            int x = bx + i * 148, y = by + 14;
-            cp_theme_thumb(s, x, y, i, theme_hue, theme_id == i);
-            draw_text(s, FONT_UI, x + 2, y + 88, theme_names[i], BLACK);
-            if (ui_click_area(w, R(x - 4, y - 4, 128, 108))) theme_apply(i, theme_hue);
+        draw_text(s, FONT_UI_BOLD, bx, by - 6, "Visual style", BLACK);
+        for (int i = 0; i < THEME_BUILTIN && i < THEME_COUNT; i++) {
+            int x = bx + 4 + (i % 3) * 140, y = by + 12 + (i / 3) * 106;
+            cp_theme_thumb(s, x, y, i, theme_id == i ? theme_hue : 0, theme_id == i);
+            draw_text_centered(s, FONT_UI, R(x - 4, y + 83, 128, 16), style_name(i), BLACK);
+            if (ui_click_area(w, R(x - 4, y - 4, 128, 104))) {
+                theme_apply(i, 0);
+                const char *wp = style_wallpaper(i);
+                for (int j = 0; wp[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], wp)) { wallpaper_id = j; shell_wallpaper_changed(); }
+            }
         }
-        draw_text(s, FONT_UI_BOLD, bx, by + 150, "Account picture", BLACK);
+        draw_text(s, FONT_UI_BOLD, bx + 432, by - 6, "Picture", BLACK);
         for (int i = 0; i < 4; i++) {
-            int x = bx + i * 74, y = by + 170;
-            if (O.pic == i) fill_round_rect(s, x - 4, y - 4, 64, 64, 5, T.select);
-            draw_icon(s, pics[i], 48, x + 4, y + 4);
-            if (ui_click_area(w, R(x - 4, y - 4, 64, 64))) O.pic = i;
+            int x = bx + 436 + (i % 2) * 64, y = by + 14 + (i / 2) * 64;
+            if (O.pic == i) fill_round_rect(s, x - 4, y - 4, 60, 60, 5, T.select);
+            draw_icon(s, pics[i], 48, x + 2, y + 2);
+            if (ui_click_area(w, R(x - 4, y - 4, 60, 60))) O.pic = i;
         }
-        draw_text(s, FONT_UI, bx, by + 250, "Hue:", BLACK);
+        draw_text(s, FONT_UI, bx, by + 236, "Hue:", BLACK);
         int hue = theme_hue;
-        if (ui_slider(w, R(bx + 40, by + 244, 300, 24), &hue, 0, 359)) theme_apply(theme_id, hue);
-        if (ui_button(w, R(bx + 356, by + 244, 80, 24), "Reset")) theme_apply(theme_id, 0);
+        if (ui_slider(w, R(bx + 40, by + 230, 300, 24), &hue, 0, 359)) theme_apply(theme_id, hue);
+        if (ui_button(w, R(bx + 356, by + 230, 80, 24), "Reset")) theme_apply(theme_id, 0);
         break;
     }
     }

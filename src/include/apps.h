@@ -21,6 +21,7 @@ void calc_open(void);
 void paint_open(const char *path);
 void taskmgr_open(void);
 void control_open(const char *page);
+void style_create_from(int base_style);
 void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel);
 void about_open(void);
 void snake_open(void);

@@ -2,95 +2,15 @@
 #include "kernel.h"
 #include "theme.h"
 #include "wm.h"
+#include "fs.h"
 
 theme_t T;
 int theme_id = THEME_LUNA_BLUE, theme_hue = 0;
-const char *theme_names[THEME_COUNT] = { "Luna (Blue)", "Olive Green", "Silver", "Windows Classic" };
 
-static void base_luna(theme_t *t) {
-    t->classic = false;
-    t->title_h = 30; t->border = 4; t->cap_btn = 21; t->menubar_h = 20; t->taskbar_h = 30;
-    t->face = HEX(0xECE9D8); t->face_dark = HEX(0xACA899); t->face_light = HEX(0xFFFFFF);
-    t->window_bg = WHITE; t->text = BLACK; t->gray_text = HEX(0xACA899);
-    t->select = HEX(0x316AC5); t->select_text = WHITE; t->hot = HEX(0x316AC5); t->hot_text = WHITE;
-    t->btn_border = HEX(0x003C74); t->btn_top = HEX(0xFFFFFF); t->btn_bot = HEX(0xE3E1D6);
-    t->btn_hot_a = HEX(0xFFF0CF); t->btn_hot_b = HEX(0xF8B330); t->btn_focus = HEX(0x9DB7E8);
-    t->pane_top = HEX(0x7BA2E7); t->pane_bot = HEX(0x6375D6);
-    t->pane_head_top = HEX(0xFFFFFF); t->pane_head_bot = HEX(0xC6D3F7); t->pane_head_text = HEX(0x215DC6);
-    t->pane_body = HEX(0xD6DFF7); t->pane_link = HEX(0x215DC6);
-    t->link = HEX(0x0066CC); t->link_head = HEX(0x1E7B1E);
-    t->desktop_bg = HEX(0x3A6EA5);
-    t->menu_bg = WHITE; t->menu_border = HEX(0xACA899);
-    t->start_hi = HEX(0x79C779); t->start_top = HEX(0x3C9C3C); t->start_bot = HEX(0x2D7A2D);
-    t->start_text = WHITE; t->start_shadow = HEX(0x1A4A1A);
-    t->close_top = HEX(0xE8916E); t->close_bot = HEX(0xC4401C);
-    t->sm_left = WHITE; t->sm_accent = HEX(0xF09A3C);
-    t->tray_text = WHITE; t->tb_text = WHITE; t->tbtn_text = WHITE; t->sm_foot_text = WHITE; t->sm_head_text = WHITE;
-    t->title_text = WHITE; t->title_shadow = HEX(0x0A1E6A); t->cap_glyph = WHITE;
-}
-
-static void make_blue(theme_t *t) {
-    base_luna(t);
-    t->title_hi = HEX(0x8AC0FF); t->title_top = HEX(0x2E82F8); t->title_mid = HEX(0x0A5BE6); t->title_bot = HEX(0x0049D0);
-    t->ititle_hi = HEX(0xC4D6F6); t->ititle_top = HEX(0x9DB9EB); t->ititle_mid = HEX(0x7A9AE0); t->ititle_bot = HEX(0x7090DA);
-    t->frame_out = HEX(0x0831D9); t->frame_mid = HEX(0x0C55E6); t->frame_in = HEX(0x2E74F0);
-    t->iframe_out = HEX(0x6582D0); t->iframe_mid = HEX(0x7B97E0); t->iframe_in = HEX(0x91ABEA);
-    t->ititle_text = HEX(0xD8E4F8);
-    t->cap_top = HEX(0x5C9BFF); t->cap_bot = HEX(0x1D5AD8); t->cap_border = WHITE;
-    t->tb_hi = HEX(0x4C93F7); t->tb_top = HEX(0x2A66E0); t->tb_mid = HEX(0x245DDA); t->tb_bot = HEX(0x1C47B8);
-    t->tray_top = HEX(0x139BEF); t->tray_bot = HEX(0x0D7EDE); t->tray_border = HEX(0x0F4FAE); t->tray_hi = HEX(0x24B6FA);
-    t->tbtn_top = HEX(0x4C8DF5); t->tbtn_bot = HEX(0x2A66DF); t->tbtn_border = HEX(0x1747A8);
-    t->tbtn_act_top = HEX(0x1A4CB8); t->tbtn_act_bot = HEX(0x1E55C8); t->tbtn_hot = HEX(0x5CA0FF);
-    t->sm_head_top = HEX(0x1A6BDA); t->sm_head_bot = HEX(0x0F4EC2); t->sm_border = HEX(0x1550C0);
-    t->sm_right = HEX(0xD3E5FA); t->sm_right_line = HEX(0x95BDEE);
-    t->sm_foot_top = HEX(0x3C80F0); t->sm_foot_bot = HEX(0x1C47B8);
-}
-static void make_olive(theme_t *t) {
-    base_luna(t);
-    t->select = HEX(0x93A070); t->hot = HEX(0x93A070);
-    t->btn_border = HEX(0x37622B); t->btn_focus = HEX(0xB5C88A);
-    t->title_hi = HEX(0xDCE6C0); t->title_top = HEX(0xB6C78C); t->title_mid = HEX(0x97AB68); t->title_bot = HEX(0x7E9450);
-    t->ititle_hi = HEX(0xF0F2E4); t->ititle_top = HEX(0xDDE3C8); t->ititle_mid = HEX(0xCBD4AE); t->ititle_bot = HEX(0xBEC8A0);
-    t->frame_out = HEX(0x758B48); t->frame_mid = HEX(0x8BA169); t->frame_in = HEX(0xA4B77F);
-    t->iframe_out = HEX(0xB6C19A); t->iframe_mid = HEX(0xC6CFAE); t->iframe_in = HEX(0xD4DBC0);
-    t->title_shadow = HEX(0x4A5A2A); t->ititle_text = HEX(0xF4F6EC);
-    t->cap_top = HEX(0xC8D6A2); t->cap_bot = HEX(0x8BA169); t->cap_border = WHITE;
-    t->tb_hi = HEX(0xC8D6A6); t->tb_top = HEX(0xA9BC80); t->tb_mid = HEX(0x99AE6E); t->tb_bot = HEX(0x7C924E);
-    t->tray_top = HEX(0xDCE6C4); t->tray_bot = HEX(0xC4D2A0); t->tray_border = HEX(0x8EA266); t->tray_hi = HEX(0xF2F6E6); t->tray_text = BLACK;
-    t->tbtn_top = HEX(0xBACB91); t->tbtn_bot = HEX(0x9CB070); t->tbtn_border = HEX(0x6F8549);
-    t->tbtn_act_top = HEX(0x7D9350); t->tbtn_act_bot = HEX(0x8BA160); t->tbtn_hot = HEX(0xCEDCA8);
-    t->sm_head_top = HEX(0xA6BA7A); t->sm_head_bot = HEX(0x80975A); t->sm_border = HEX(0x758B48);
-    t->sm_right = HEX(0xE9EDD8); t->sm_right_line = HEX(0xBBC79A);
-    t->sm_foot_top = HEX(0xA9BC80); t->sm_foot_bot = HEX(0x7C924E);
-    t->pane_top = HEX(0xCCD6A8); t->pane_bot = HEX(0xA9B97F); t->pane_head_text = HEX(0x56662D);
-    t->pane_head_bot = HEX(0xE0E7C8); t->pane_body = HEX(0xF2F5E6); t->pane_link = HEX(0x56662D);
-    t->desktop_bg = HEX(0x6E7F48);
-}
-static void make_silver(theme_t *t) {
-    base_luna(t);
-    t->face = HEX(0xE0DFE3); t->face_dark = HEX(0x9D9DA1);
-    t->select = HEX(0x7C88AE); t->hot = HEX(0x7C88AE);
-    t->btn_border = HEX(0x5E5D74); t->btn_focus = HEX(0xBCBCD0);
-    t->title_hi = HEX(0xFFFFFF); t->title_top = HEX(0xF2F2F6); t->title_mid = HEX(0xD6D6E2); t->title_bot = HEX(0xB6B6C8);
-    t->ititle_hi = HEX(0xFFFFFF); t->ititle_top = HEX(0xF6F6F8); t->ititle_mid = HEX(0xE6E6EE); t->ititle_bot = HEX(0xDADAE4);
-    t->frame_out = HEX(0x8E8DA6); t->frame_mid = HEX(0xC0C0D2); t->frame_in = HEX(0xDADAE6);
-    t->iframe_out = HEX(0xB8B8C8); t->iframe_mid = HEX(0xD8D8E2); t->iframe_in = HEX(0xE8E8EE);
-    t->title_text = HEX(0x101030); t->title_shadow = 0; t->ititle_text = HEX(0x8A8AA0);
-    t->cap_top = HEX(0xFFFFFF); t->cap_bot = HEX(0xC6C6D6); t->cap_border = HEX(0x8E8DA6); t->cap_glyph = HEX(0x30304A);
-    t->tb_hi = HEX(0xFFFFFF); t->tb_top = HEX(0xEAEAF2); t->tb_mid = HEX(0xD8D8E4); t->tb_bot = HEX(0xB4B4C6); t->tb_text = BLACK;
-    t->tray_top = HEX(0xF6F6FA); t->tray_bot = HEX(0xDCDCE6); t->tray_border = HEX(0x9C9CB4); t->tray_hi = WHITE; t->tray_text = BLACK;
-    t->tbtn_top = HEX(0xFBFBFD); t->tbtn_bot = HEX(0xDCDCE6); t->tbtn_border = HEX(0x9C9CB4); t->tbtn_text = BLACK;
-    t->tbtn_act_top = HEX(0xC2C2D2); t->tbtn_act_bot = HEX(0xD6D6E2); t->tbtn_hot = WHITE;
-    t->sm_head_top = HEX(0xC8C8D8); t->sm_head_bot = HEX(0x9C9CB6); t->sm_border = HEX(0x8E8DA6);
-    t->sm_right = HEX(0xEDEDF3); t->sm_right_line = HEX(0xC4C4D4);
-    t->sm_foot_top = HEX(0xE4E4EC); t->sm_foot_bot = HEX(0xB8B8C8); t->sm_foot_text = BLACK;
-    t->pane_top = HEX(0xC8C8D8); t->pane_bot = HEX(0xA8A8C0); t->pane_head_text = HEX(0x3A3A5A);
-    t->pane_head_bot = HEX(0xE2E2EC); t->pane_body = HEX(0xF4F4F8); t->pane_link = HEX(0x3A3A5A);
-    t->desktop_bg = HEX(0x7A7A90);
-}
+/* built-in fallback (safe mode, or when the style files are missing) */
 static void make_classic(theme_t *t) {
     memset(t, 0, sizeof *t);
-    t->classic = true;
+    t->classic = true; t->renderer = RENDER_CLASSIC;
     t->title_h = 22; t->border = 4; t->cap_btn = 16; t->menubar_h = 19; t->taskbar_h = 28;
     t->face = HEX(0xD4D0C8); t->face_dark = HEX(0x808080); t->face_light = WHITE;
     t->window_bg = WHITE; t->text = BLACK; t->gray_text = HEX(0x808080);
@@ -109,33 +29,146 @@ static void make_classic(theme_t *t) {
     t->btn_focus = BLACK;
 }
 
-#define SHIFT(f) t->f = hue_shift(t->f, hue)
-void theme_compute(int id, int hue, theme_t *t) {
-    id = CLAMP(id, 0, THEME_COUNT - 1);
-    hue = ((hue % 360) + 360) % 360;
-    switch (id) {
-    case THEME_OLIVE: make_olive(t); break;
-    case THEME_SILVER: make_silver(t); break;
-    case THEME_CLASSIC: make_classic(t); break;
-    default: make_blue(t); break;
+
+/* ---------------- .wrldstyle files ---------------- */
+#define F(n, k, sh) { #n, offsetof(theme_t, n), k, sh }
+static const struct { const char *name; uint16_t off; char kind; bool shift; } fields[] = {
+    F(title_h, 'i', 0), F(border, 'i', 0), F(cap_btn, 'i', 0), F(menubar_h, 'i', 0), F(taskbar_h, 'i', 0),
+    F(glass_alpha, 'i', 0), F(iglass_alpha, 'i', 0), F(glass_blur, 'i', 0), F(glass, 'c', 1), F(iglass, 'c', 1),
+    F(face, 'c', 0), F(face_dark, 'c', 0), F(face_light, 'c', 0), F(window_bg, 'c', 0), F(text, 'c', 0), F(gray_text, 'c', 0),
+    F(select, 'c', 1), F(select_text, 'c', 0), F(hot, 'c', 1), F(hot_text, 'c', 0),
+    F(title_hi, 'c', 1), F(title_top, 'c', 1), F(title_mid, 'c', 1), F(title_bot, 'c', 1),
+    F(ititle_hi, 'c', 1), F(ititle_top, 'c', 1), F(ititle_mid, 'c', 1), F(ititle_bot, 'c', 1),
+    F(title_text, 'c', 0), F(title_shadow, 'c', 1), F(ititle_text, 'c', 1),
+    F(frame_out, 'c', 1), F(frame_mid, 'c', 1), F(frame_in, 'c', 1), F(iframe_out, 'c', 1), F(iframe_mid, 'c', 1), F(iframe_in, 'c', 1),
+    F(cap_top, 'c', 1), F(cap_bot, 'c', 1), F(cap_border, 'c', 0), F(cap_glyph, 'c', 0), F(close_top, 'c', 0), F(close_bot, 'c', 0),
+    F(tb_hi, 'c', 1), F(tb_top, 'c', 1), F(tb_mid, 'c', 1), F(tb_bot, 'c', 1), F(tb_text, 'c', 0),
+    F(tray_hi, 'c', 1), F(tray_top, 'c', 1), F(tray_bot, 'c', 1), F(tray_border, 'c', 1), F(tray_text, 'c', 0),
+    F(start_hi, 'c', 0), F(start_top, 'c', 0), F(start_bot, 'c', 0), F(start_text, 'c', 0), F(start_shadow, 'c', 0),
+    F(tbtn_top, 'c', 1), F(tbtn_bot, 'c', 1), F(tbtn_border, 'c', 1), F(tbtn_act_top, 'c', 1), F(tbtn_act_bot, 'c', 1), F(tbtn_text, 'c', 0), F(tbtn_hot, 'c', 1),
+    F(sm_head_top, 'c', 1), F(sm_head_bot, 'c', 1), F(sm_head_text, 'c', 0), F(sm_border, 'c', 1), F(sm_left, 'c', 0),
+    F(sm_right, 'c', 1), F(sm_right_line, 'c', 1), F(sm_right_text, 'c', 0), F(sm_foot_top, 'c', 1), F(sm_foot_bot, 'c', 1), F(sm_accent, 'c', 0), F(sm_foot_text, 'c', 0),
+    F(btn_border, 'c', 1), F(btn_top, 'c', 0), F(btn_bot, 'c', 0), F(btn_hot_a, 'c', 0), F(btn_hot_b, 'c', 0), F(btn_focus, 'c', 1),
+    F(pane_top, 'c', 1), F(pane_bot, 'c', 1), F(pane_head_top, 'c', 0), F(pane_head_bot, 'c', 1), F(pane_head_text, 'c', 1), F(pane_body, 'c', 1), F(pane_link, 'c', 1),
+    F(link, 'c', 0), F(link_head, 'c', 0), F(desktop_bg, 'c', 1), F(menu_bg, 'c', 0), F(menu_border, 'c', 0),
+};
+typedef struct { char file[64], name[48], desc[160], wallpaper[24]; theme_t base; } style_t;
+static style_t styles[24];
+static int nstyles;
+static const char *builtin_files[THEME_BUILTIN] = { "Luna Blue", "Olive Green", "Silver", "Windows Classic", "Aero", "Plex" };
+
+static uint32_t parse_color(const char *v) {
+    while (*v == ' ') v++;
+    if (!strncasecmp(v, "none", 4)) return 0;
+    if (*v == '#') v++;
+    uint32_t c = strtoul(v, NULL, 16);
+    return strlen(v) > 6 && isxdigit(v[6]) ? c : (0xFF000000u | c);
+}
+static bool parse_style(const char *file, theme_t *t, style_t *meta, int depth) {
+    char path[160]; snprintf(path, sizeof path, STYLE_DIR "\\%s.wrldstyle", file);
+    uint32_t len;
+    char *txt = (char *)vfs_read_file(path, &len);
+    if (!txt) return false;
+    /* "Base=" is applied first, wherever it appears, so the file's own values win */
+    for (char *bl = txt; (bl = strstr(bl, "Base")); bl++) {
+        if (bl != txt && bl[-1] != '\n') continue;
+        char *q = bl + 4; while (*q == ' ') q++;
+        if (*q != '=') continue;
+        q++; while (*q == ' ') q++;
+        char base[64]; int k = 0; while (*q && *q != '\r' && *q != '\n' && *q != ';' && k < 63) base[k++] = *q++;
+        while (k && base[k - 1] == ' ') k--;
+        base[k] = 0;
+        if (depth < 4 && base[0] && strcasecmp(base, file)) parse_style(base, t, NULL, depth + 1);
+        break;
     }
+    for (char *line = txt; *line;) {
+        char *e = line; while (*e && *e != '\n') e++;
+        char save = *e; *e = 0;
+        char *cr = strchr(line, '\r'); if (cr) *cr = 0;
+        while (*line == ' ' || *line == '\t') line++;
+        char *eq = strchr(line, '=');
+        if (eq && *line != ';' && *line != '[') {
+            *eq = 0; char *k = line, *v = eq + 1;
+            for (char *q = eq - 1; q >= k && (*q == ' ' || *q == '\t'); q--) *q = 0;
+            while (*v == ' ' || *v == '\t') v++;
+            char *sc = strchr(v, ';'); if (sc && v[0] != '#') *sc = 0;
+            if (!strcasecmp(k, "Base")) {}
+            else if (!strcasecmp(k, "Name")) { if (meta) strlcpy(meta->name, v, sizeof meta->name); }
+            else if (!strcasecmp(k, "Description")) { if (meta) strlcpy(meta->desc, v, sizeof meta->desc); }
+            else if (!strcasecmp(k, "Wallpaper")) { if (meta) strlcpy(meta->wallpaper, v, sizeof meta->wallpaper); }
+            else if (!strcasecmp(k, "Renderer"))
+                t->renderer = !strcasecmp(v, "classic") ? RENDER_CLASSIC : !strcasecmp(v, "aero") ? RENDER_AERO : !strcasecmp(v, "plex") ? RENDER_PLEX : RENDER_LUNA;
+            else for (unsigned i = 0; i < ARRAY_LEN(fields); i++) if (!strcasecmp(k, fields[i].name)) {
+                if (fields[i].kind == 'i') *(int *)((uint8_t *)t + fields[i].off) = atoi(v);
+                else *(uint32_t *)((uint8_t *)t + fields[i].off) = parse_color(v);
+                break;
+            }
+        }
+        *e = save; line = *e ? e + 1 : e;
+    }
+    kfree(txt);
+    return true;
+}
+static void sanitize(theme_t *t) {
+    t->classic = t->renderer == RENDER_CLASSIC;
+    t->title_h = CLAMP(t->title_h, 16, 48); t->border = CLAMP(t->border, 1, 12); t->cap_btn = CLAMP(t->cap_btn, 12, t->title_h);
+    t->menubar_h = CLAMP(t->menubar_h, 16, 30); t->taskbar_h = CLAMP(t->taskbar_h, 24, 48);
+    t->glass_alpha = CLAMP(t->glass_alpha, 0, 255); t->iglass_alpha = CLAMP(t->iglass_alpha, 0, 255); t->glass_blur = CLAMP(t->glass_blur, 0, 16);
+    if (!t->sm_right_text) t->sm_right_text = t->classic ? BLACK : HEX(0x00136B);
+}
+static void add_style(const char *file) {
+    if (nstyles >= (int)ARRAY_LEN(styles)) return;
+    style_t *st = &styles[nstyles];
+    memset(st, 0, sizeof *st);
+    strlcpy(st->file, file, sizeof st->file);
+    strlcpy(st->name, file, sizeof st->name);
+    if (!parse_style(file, &st->base, st, 0)) { make_classic(&st->base); klog("theme: %s.wrldstyle missing, using Classic", file); }
+    sanitize(&st->base);
+    nstyles++;
+}
+void styles_load(void) {
+    nstyles = 0;
+    for (int i = 0; i < THEME_BUILTIN; i++) add_style(builtin_files[i]);
+    vnode_t *d = vfs_resolve(STYLE_DIR, NULL);
+    if (d) {
+        vfs_sort_children(d);
+        for (vnode_t *n = d->child; n; n = n->next) {
+            if (n->dir || strcasecmp(vfs_ext(n->name), "wrldstyle")) continue;
+            char f[64]; strlcpy(f, n->name, sizeof f); char *dot = strrchr(f, '.'); if (dot) *dot = 0;
+            bool dup = false; for (int i = 0; i < nstyles; i++) if (!strcasecmp(styles[i].file, f)) dup = true;
+            if (!dup) add_style(f);
+        }
+    }
+    if (theme_id >= nstyles) theme_id = THEME_LUNA_BLUE;
+}
+int style_count(void) { if (!nstyles) styles_load(); return nstyles; }
+static style_t *st_get(int i) { if (!nstyles) styles_load(); return &styles[CLAMP(i, 0, nstyles - 1)]; }
+const char *style_name(int i) { return st_get(i)->name; }
+const char *style_file(int i) { return st_get(i)->file; }
+const char *style_desc(int i) { return st_get(i)->desc; }
+const char *style_wallpaper(int i) { return st_get(i)->wallpaper; }
+int style_find(const char *n) {
+    if (!n || !*n) return -1;
+    char f[160]; strlcpy(f, path_basename(n), sizeof f);
+    char *dot = strrchr(f, '.'); if (dot && !strcasecmp(dot, ".wrldstyle")) *dot = 0;
+    int cnt = style_count();
+    for (int i = 0; i < cnt; i++) if (!strcasecmp(styles[i].file, f) || !strcasecmp(styles[i].name, f)) return i;
+    for (int i = 0; i < cnt; i++) if (!strncasecmp(styles[i].file, f, strlen(f)) || !strncasecmp(styles[i].name, f, strlen(f))) return i;
+    return -1;
+}
+
+void theme_compute(int id, int hue, theme_t *t) {
+    id = CLAMP(id, 0, style_count() - 1);
+    hue = ((hue % 360) + 360) % 360;
+    *t = styles[id].base;
     t->id = id;
-    if (hue) {
-        SHIFT(title_hi); SHIFT(title_top); SHIFT(title_mid); SHIFT(title_bot);
-        SHIFT(ititle_hi); SHIFT(ititle_top); SHIFT(ititle_mid); SHIFT(ititle_bot);
-        SHIFT(frame_out); SHIFT(frame_mid); SHIFT(frame_in); SHIFT(iframe_out); SHIFT(iframe_mid); SHIFT(iframe_in);
-        SHIFT(title_shadow); SHIFT(ititle_text); SHIFT(cap_top); SHIFT(cap_bot);
-        SHIFT(tb_hi); SHIFT(tb_top); SHIFT(tb_mid); SHIFT(tb_bot);
-        SHIFT(tray_top); SHIFT(tray_bot); SHIFT(tray_border); SHIFT(tray_hi);
-        SHIFT(tbtn_top); SHIFT(tbtn_bot); SHIFT(tbtn_border); SHIFT(tbtn_act_top); SHIFT(tbtn_act_bot); SHIFT(tbtn_hot);
-        SHIFT(sm_head_top); SHIFT(sm_head_bot); SHIFT(sm_border); SHIFT(sm_right); SHIFT(sm_right_line); SHIFT(sm_foot_top); SHIFT(sm_foot_bot);
-        SHIFT(select); SHIFT(hot); SHIFT(btn_border); SHIFT(btn_focus);
-        SHIFT(pane_top); SHIFT(pane_bot); SHIFT(pane_head_bot); SHIFT(pane_head_text); SHIFT(pane_body); SHIFT(pane_link);
-        SHIFT(desktop_bg);
+    if (hue) for (unsigned i = 0; i < ARRAY_LEN(fields); i++) if (fields[i].shift) {
+        uint32_t *c = (uint32_t *)((uint8_t *)t + fields[i].off);
+        if (*c) *c = hue_shift(*c, hue);
     }
 }
 void theme_apply(int id, int hue) {
-    theme_id = CLAMP(id, 0, THEME_COUNT - 1);
+    theme_id = CLAMP(id, 0, style_count() - 1);
     theme_hue = ((hue % 360) + 360) % 360;
     theme_compute(theme_id, theme_hue, &T);
     wm_theme_changed();
@@ -153,7 +186,44 @@ void draw_arrow(canvas_t *c, int x, int y, int dir, uint32_t col) {
     }
 }
 
-static void cap_button(canvas_t *c, int x, int y, int s, int kind, bool active, bool hot, bool pressed) {
+rect_t caption_button_rect(rect_t win, int flags, int kind) {
+    rect_t none = R(0, 0, 0, 0);
+    bool nomin = flags & WF_NO_MIN, nomax = flags & WF_NO_MAX;
+    if (T.renderer == RENDER_AERO) {
+        int top = win.y + 1, h = 20, cx = win.x + win.w - 6 - 43;
+        if (kind == 3) return (flags & WF_NOCLOSE) ? none : R(cx, top, 43, h);
+        if (nomin && nomax) return none;
+        if (kind == 1) return nomax ? none : R(cx - 26, top, 26, h);
+        if (kind == 0) return nomin ? none : R(cx - 26 - (nomax ? 0 : 27), top, 27, h);
+        return none;
+    }
+    int s = T.cap_btn;
+    int bx = win.x + win.w - (T.classic ? 6 : 5) - s, by = win.y + (T.classic ? 6 : (T.title_h - s) / 2 + 1);
+    if (kind == 3) return (flags & WF_NOCLOSE) ? none : R(bx, by, s, s);
+    if (nomin && nomax) return none;
+    bx -= s + 2;
+    if (kind == 1) return nomax ? none : R(bx, by, s, s);
+    bx -= s + (T.classic ? 0 : 2);
+    if (kind == 0) return nomin ? none : R(bx, by, s, s);
+    return none;
+}
+void draw_glass(canvas_t *c, int x, int y, int w, int h, uint32_t tint, int alpha, int blur) {
+    if (w <= 0 || h <= 0) return;
+    if (blur > 0) blur_rect(c, x, y, w, h, blur);
+    blend_rect(c, x, y, w, h, tint, alpha);
+}
+/* caption glyphs: 0 minimize, 1 maximize, 2 restore, 3 close */
+static void glyph(canvas_t *c, int cx, int cy, int kind, uint32_t g, int scale) {
+    int s = scale;
+    switch (kind) {
+    case 0: fill_rect(c, cx - 4 * s / 2, cy + 2, 4 * s, 3, g); break;
+    case 1: draw_rect(c, cx - 5, cy - 4, 10, 9, g); fill_rect(c, cx - 5, cy - 4, 10, 3, g); break;
+    case 2: draw_rect(c, cx - 2, cy - 5, 8, 7, g); hline(c, cx - 2, cy - 4, 8, g); fill_rect(c, cx - 5, cy - 1, 8, 7, g); fill_rect(c, cx - 4, cy + 2, 6, 3, 0); break;
+    case 3: for (int i = 0; i < 8; i++) { fill_rect(c, cx - 4 + i, cy - 4 + i, 2, 2, g); fill_rect(c, cx + 3 - i, cy - 4 + i, 2, 2, g); } break;
+    }
+}
+static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, bool pressed) {
+    int x = r.x, y = r.y, s = r.w;
     if (T.classic) {
         fill_rect(c, x, y, s, s - 2, T.face);
         bevel_deep(c, x, y, s, s - 2, !pressed);
@@ -166,13 +236,28 @@ static void cap_button(canvas_t *c, int x, int y, int s, int kind, bool active, 
         }
         return;
     }
+    if (T.renderer == RENDER_AERO) {
+        bool close = kind == 3;
+        uint32_t top = close ? T.close_top : T.cap_top, bot = close ? T.close_bot : T.cap_bot;
+        if (hot) { top = close ? lighten(top, 50) : HEX(0xDDF2FF); bot = close ? lighten(bot, 40) : HEX(0x2A8EE6); }
+        if (pressed) { top = darken(top, 40); bot = darken(bot, 50); }
+        fill_round_rect(c, x, y, r.w, r.h, 3, T.cap_border);
+        if (close || hot || pressed) gradient_round_rect(c, x + 1, y + 1, r.w - 2, r.h - 2, 2, top, bot);
+        else for (int j = 1; j < r.h - 1; j++) blend_rect(c, x + 1, y + j, r.w - 2, 1, mix(top, bot, j * 255 / r.h), active ? 120 : 80);
+        blend_rect(c, x + 2, y + 2, r.w - 4, (r.h - 4) / 2, WHITE, close && !active && !hot ? 40 : 75);
+        int cx = x + r.w / 2, cy = y + r.h / 2 - 1;
+        glyph(c, cx + 1, cy + 1, kind, HEX(0x202830), 2);
+        glyph(c, cx, cy, kind, WHITE, 2);
+        return;
+    }
     uint32_t top = kind == 3 ? T.close_top : T.cap_top, bot = kind == 3 ? T.close_bot : T.cap_bot;
-    if (!active) { top = mix(top, WHITE, 90); bot = mix(bot, WHITE, 90); }
-    if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); }
+    if (!active) { top = mix(top, WHITE, T.renderer == RENDER_PLEX ? 30 : 90); bot = mix(bot, WHITE, T.renderer == RENDER_PLEX ? 30 : 90); }
+    if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); if (T.renderer == RENDER_PLEX && kind != 3) bot = mix(bot, T.glass, 160); }
     if (pressed) { uint32_t t2 = top; top = darken(bot, 30); bot = t2; }
     fill_round_rect(c, x, y, s, s, 3, T.cap_border);
     gradient_round_rect(c, x + 1, y + 1, s - 2, s - 2, 2, lighten(top, 40), bot);
     blend_rect(c, x + 2, y + s - 6, s - 4, 3, WHITE, 25);
+    if (T.renderer == RENDER_PLEX) blend_rect(c, x + 2, y + 2, s - 4, (s - 4) / 2, WHITE, 45);
     uint32_t g = kind == 3 ? WHITE : T.cap_glyph;
     switch (kind) {
     case 0: fill_rect(c, x + 5, y + s - 8, 7, 3, g); break;
@@ -183,11 +268,68 @@ static void cap_button(canvas_t *c, int x, int y, int s, int kind, bool active, 
     }
 }
 
+static int corner_in(int j, int rad) { if (j >= rad) return 0; int dy = rad - j, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rad * rad) dx++; return rad - dx; }
+/* Windows 7-style glass frame */
+static void aero_frame(canvas_t *c, rect_t r, const char *title, int icon, bool active, bool maxed) {
+    int x = r.x, y = r.y, w = r.w, h = r.h, th = T.title_h, b = T.border, rad = maxed ? 0 : 7;
+    uint32_t tint = active ? T.glass : T.iglass;
+    int al = active ? T.glass_alpha : T.iglass_alpha;
+    /* keep what is outside the rounded top corners */
+    uint32_t keep[2][8 * 8];
+    for (int j = 0; j < rad; j++) for (int i = 0; i < rad; i++) {
+        int px0 = x + i, px1 = x + w - rad + i, py = y + j;
+        keep[0][j * 8 + i] = (px0 >= 0 && px0 < c->w && py >= 0 && py < c->h) ? c->px[py * c->stride + px0] : 0;
+        keep[1][j * 8 + i] = (px1 >= 0 && px1 < c->w && py >= 0 && py < c->h) ? c->px[py * c->stride + px1] : 0;
+    }
+    draw_glass(c, x, y, w, th, tint, al, T.glass_blur);
+    draw_glass(c, x, y + th, b, h - th - b, tint, al, T.glass_blur);
+    draw_glass(c, x + w - b, y + th, b, h - th - b, tint, al, T.glass_blur);
+    draw_glass(c, x, y + h - b, w, b, tint, al, T.glass_blur);
+    /* sheen and diagonal reflection streaks */
+    for (int j = 0; j < th; j++) {
+        if (j < th / 2) blend_rect(c, x, y + j, w, 1, WHITE, (th / 2 - j) * 70 / (th / 2));
+        for (int k = -th; k < w; k += 170) {
+            int s0 = k + (th - j), len = 26;
+            int a0 = MAX(s0, 0), a1 = MIN(s0 + len, w);
+            if (a1 > a0) blend_rect(c, x + a0, y + j, a1 - a0, 1, WHITE, 22);
+        }
+    }
+    for (int j = 0; j < rad; j++) for (int i = 0; i < rad; i++) {
+        if (i >= corner_in(j, rad)) continue;
+        int py = y + j, px0 = x + i, px1 = x + w - 1 - i;
+        if (py < c->clip.y || py >= c->clip.y + c->clip.h) continue;
+        if (px0 >= c->clip.x && px0 < c->clip.x + c->clip.w) c->px[py * c->stride + px0] = keep[0][j * 8 + i];
+        if (px1 >= c->clip.x && px1 < c->clip.x + c->clip.w) c->px[py * c->stride + px1] = keep[1][j * 8 + (rad - 1 - i)];
+    }
+    /* outer outline and inner highlight */
+    uint32_t fo = active ? T.frame_out : T.iframe_out, fi = active ? T.frame_in : T.iframe_in;
+    for (int j = 0; j < h; j++) {
+        int in = corner_in(j, rad);
+        if (j == 0) { hline(c, x + in, y, w - 2 * in, fo); continue; }
+        int pin = j < rad ? corner_in(j - 1, rad) : in;
+        for (int i = in; i <= MAX(in, pin); i++) { blend_pixel(c, x + i, y + j, fo, 230); blend_pixel(c, x + w - 1 - i, y + j, fo, 230); }
+        if (j > 0 && j < h - 1) { blend_pixel(c, x + in + 1, y + j, fi, 110); blend_pixel(c, x + w - 2 - in, y + j, fi, 110); }
+    }
+    hline(c, x, y + h - 1, w, fo);
+    blend_rect(c, x + rad, y + 1, w - 2 * rad, 1, fi, 140);
+    /* client edge */
+    draw_rect(c, x + b - 1, y + th - 1, w - 2 * b + 2, h - th - b + 2, mix(fo, tint, 60));
+    /* title with a soft glow behind it */
+    int textx = x + 10;
+    if (icon >= 0) { draw_icon(c, icon, 16, x + 8, y + (th - 16) / 2 + 1); textx = x + 30; }
+    int tw = text_width(FONT_UI, title), fh = font_height(FONT_UI), ty = y + (th - fh) / 2 + 1;
+    rect_t old = canvas_push_clip(c, R(x, y, w - 130, th));
+    if (T.title_shadow) for (int k = 7; k >= 1; k--) fill_round_rect_blend(c, textx - 4 - k, ty - k / 2, tw + 8 + 2 * k, fh + k, 6, T.title_shadow, 22);
+    draw_text(c, FONT_UI, textx, ty, title, active ? T.title_text : T.ititle_text);
+    c->clip = old;
+}
+
 void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool active, int flags, int hot_btn, int pressed_btn, int state) {
     int x = r.x, y = r.y, w = r.w, h = r.h;
     int th = T.title_h, b = T.border;
     bool maxed = state == WS_MAXIMIZED;
-    if (T.classic) {
+    if (T.renderer == RENDER_AERO) aero_frame(c, r, title, icon, active, maxed);
+    else if (T.classic) {
         fill_rect(c, x, y, w, h, T.face);
         bevel_deep(c, x, y, w, h, true);
         int tx = x + 4, ty = y + 4, tw = w - 8, tht = th - 4;
@@ -212,11 +354,16 @@ void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool 
             else if (j == 1) col = active ? T.title_hi : T.ititle_hi;
             else if (j < 8) col = mix(active ? T.title_top : T.ititle_top, active ? T.title_mid : T.ititle_mid, (j - 2) * 255 / 6);
             else col = mix(active ? T.title_mid : T.ititle_mid, active ? T.title_bot : T.ititle_bot, (j - 8) * 255 / (th - 8));
-            int in = 0;
-            if (j < rad) { int dy = rad - j, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rad * rad) dx++; in = rad - dx; }
+            int in = corner_in(j, rad);
             hline(c, x + in, y + j, w - 2 * in, col);
+            if (T.renderer == RENDER_PLEX && j > 0 && j < th / 2) blend_rect(c, x + in + 1, y + j, w - 2 * in - 2, 1, WHITE, 38 - j * 2);
             if (j > 0 && j < rad + 1) { put_pixel(c, x + in, y + j, fo); put_pixel(c, x + w - 1 - in, y + j, fo); }
             else if (j > 0) { put_pixel(c, x, y + j, fo); put_pixel(c, x + w - 1, y + j, fo); }
+        }
+        if (T.renderer == RENDER_PLEX) {   /* blue accent glow under the title */
+            uint32_t g = active ? T.glass : T.iglass;
+            hline(c, x + 1, y + th - 1, w - 2, g);
+            blend_rect(c, x + 1, y + th - 3, w - 2, 2, g, 70);
         }
         int textx = x + 8;
         if (icon >= 0) { draw_icon(c, icon, 16, x + 6, y + (th - 16) / 2 + 1); textx = x + 27; }
@@ -226,16 +373,17 @@ void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool 
         draw_text(c, FONT_TITLE, textx, ty, title, active ? T.title_text : T.ititle_text);
         c->clip = old;
     }
-    /* caption buttons: close, max, min (right to left) */
-    int s = T.cap_btn;
-    int bx = x + w - (T.classic ? 6 : 5) - s, by = y + (T.classic ? 6 : (th - s) / 2 + 1);
-    if (!(flags & WF_NOCLOSE)) cap_button(c, bx, by, s, 3, active, hot_btn == 3, pressed_btn == 3);
-    if (!(flags & WF_NO_MAX) || !(flags & WF_NO_MIN)) {
-        bx -= s + (T.classic ? 2 : 2);
-        if (!(flags & WF_NO_MAX)) cap_button(c, bx, by, s, maxed ? 2 : 1, active, hot_btn == 1, pressed_btn == 1);
-        else if (T.classic) { cap_button(c, bx, by, s, 1, active, 0, 0); }
-        bx -= s + (T.classic ? 0 : 2);
-        if (!(flags & WF_NO_MIN)) cap_button(c, bx, by, s, 0, active, hot_btn == 0, pressed_btn == 0);
+    /* caption buttons */
+    for (int k = 3; k >= 0; k--) {
+        if (k == 2) continue;
+        rect_t br = caption_button_rect(r, flags, k);
+        if (!br.w) {
+            /* Classic shows a disabled maximize box next to an enabled minimize box */
+            if (k == 1 && T.classic && (flags & WF_NO_MAX) && !(flags & WF_NO_MIN)) cap_button(c, caption_button_rect(r, flags & ~WF_NO_MAX, 1), 1, active, false, false);
+            continue;
+        }
+        int kind = k == 1 && maxed ? 2 : k;
+        cap_button(c, br, kind, active, hot_btn == k, pressed_btn == k);
     }
 }
 

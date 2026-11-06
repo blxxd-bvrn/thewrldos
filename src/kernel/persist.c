@@ -173,7 +173,11 @@ void settings_load(void) {
     mouse_speed = geti("mouse_speed", mouse_speed);
     clock_24h = geti("clock24", clock_24h);
     show_seconds = geti("seconds", show_seconds);
-    if (!boot_safe_mode && settings_get("theme")) theme_apply(geti("theme", THEME_LUNA_BLUE) % THEME_COUNT, geti("hue", 0));
+    const char *th = settings_get("theme");
+    if (!boot_safe_mode && th) {
+        int id = isdigit(th[0]) ? atoi(th) : style_find(th);    /* numbers: older wrld.ini */
+        if (id >= 0 && id < THEME_COUNT) theme_apply(id, geti("hue", 0));
+    }
     if (settings_get("wallpaper")) { wallpaper_id = geti("wallpaper", wallpaper_id); if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count) wallpaper_id = 0; shell_wallpaper_changed(); }
     klog("settings: loaded %d values", nkv);
 }
@@ -181,7 +185,7 @@ static void capture(void) {
     char b[16];
     settings_set("user", user_name); settings_set("computer", computer_name);
     settings_set("picture", picture_name(user_picture));
-    snprintf(b, sizeof b, "%d", theme_id); settings_set("theme", b);
+    settings_set("theme", style_file(theme_id));
     snprintf(b, sizeof b, "%d", theme_hue); settings_set("hue", b);
     snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);
     snprintf(b, sizeof b, "%d", tz_offset_minutes); settings_set("tz", b);

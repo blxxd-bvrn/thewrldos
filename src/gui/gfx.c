@@ -138,6 +138,14 @@ void fill_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t co
         hline(c, x + in, y + j, w - 2 * in, col);
     }
 }
+void fill_round_rect_blend(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col, int alpha) {
+    if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
+    for (int j = 0; j < h; j++) {
+        int in = 0;
+        if (j < r) in = corner_inset(j, r); else if (j >= h - r) in = corner_inset(h - 1 - j, r);
+        blend_rect(c, x + in, y + j, w - 2 * in, 1, col, alpha);
+    }
+}
 void gradient_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t c1, uint32_t c2) {
     if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
     for (int j = 0; j < h; j++) {
@@ -543,4 +551,39 @@ int draw_wordmark(canvas_t *c, int x, int y, int st, uint32_t col) {
     int oy = wy + font_ascent(fw) - font_ascent(fo);
     draw_text(c, fo, x + ww + wm_styles[st].gap, oy, "OS", HEX(0xF08A24));
     return wordmark_width(st);
+}
+
+/* ---------------- blur (used for glass) ----------------
+ * Box blur of a rectangle. Reads pixels up to `rad` outside the rectangle (so
+ * strips blur smoothly into their surroundings) but only writes inside it. */
+void blur_rect(canvas_t *c, int x, int y, int w, int h, int rad) {
+    rect_t cl = c->clip;
+    int x0 = MAX(x, cl.x), y0 = MAX(y, cl.y), x1 = MIN(x + w, cl.x + cl.w), y1 = MIN(y + h, cl.y + cl.h);
+    if (rad <= 0 || x1 <= x0 || y1 <= y0) return;
+    w = x1 - x0; h = y1 - y0;
+    int ey0 = MAX(0, y0 - rad), ey1 = MIN(c->h, y1 + rad), eh = ey1 - ey0;
+    static uint32_t *tmp; static int cap;
+    if (w * eh > cap) { kfree(tmp); cap = w * eh; tmp = kmalloc(cap * 4); }
+    /* horizontal pass into tmp (rows ey0..ey1, columns x0..x1) */
+    for (int yy = ey0; yy < ey1; yy++) {
+        const uint32_t *row = c->px + yy * c->stride;
+        uint32_t r = 0, g = 0, b = 0; int n = 0;
+        for (int k = x0 - rad; k <= x0 + rad; k++) { int kk = CLAMP(k, 0, c->w - 1); uint32_t p = row[kk]; r += C_R(p); g += C_G(p); b += C_B(p); n++; }
+        uint32_t *out = tmp + (yy - ey0) * w;
+        for (int xx = x0; xx < x1; xx++) {
+            out[xx - x0] = RGB(r / n, g / n, b / n);
+            uint32_t pa = row[CLAMP(xx - rad, 0, c->w - 1)], pb = row[CLAMP(xx + rad + 1, 0, c->w - 1)];
+            r += C_R(pb) - C_R(pa); g += C_G(pb) - C_G(pa); b += C_B(pb) - C_B(pa);
+        }
+    }
+    /* vertical pass from tmp back into the canvas */
+    for (int xx = 0; xx < w; xx++) {
+        uint32_t r = 0, g = 0, b = 0; int n = 0;
+        for (int k = y0 - rad; k <= y0 + rad; k++) { int kk = CLAMP(k, ey0, ey1 - 1) - ey0; uint32_t p = tmp[kk * w + xx]; r += C_R(p); g += C_G(p); b += C_B(p); n++; }
+        for (int yy = y0; yy < y1; yy++) {
+            c->px[yy * c->stride + x0 + xx] = RGB(r / n, g / n, b / n);
+            uint32_t pa = tmp[(CLAMP(yy - rad, ey0, ey1 - 1) - ey0) * w + xx], pb = tmp[(CLAMP(yy + rad + 1, ey0, ey1 - 1) - ey0) * w + xx];
+            r += C_R(pb) - C_R(pa); g += C_G(pb) - C_G(pa); b += C_B(pb) - C_B(pa);
+        }
+    }
 }

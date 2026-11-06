@@ -291,13 +291,8 @@ static int menubar_hit(window_t *w, int sx, int sy) {
 /* ---------------- hit testing ---------------- */
 enum { HT_NONE, HT_CLIENT, HT_TITLE, HT_EDGE, HT_BTN, HT_MENUBAR, HT_FRAME };
 static int cap_btn_at(window_t *w, int sx, int sy) {
-    int s = T.cap_btn;
-    int bx = w->x + w->w - (T.classic ? 6 : 5) - s, by = w->y + (T.classic ? 6 : (T.title_h - s) / 2 + 1);
-    if (pt_in(R(bx, by, s, s), sx, sy)) return 3;
-    bx -= s + 2;
-    if (!(w->flags & WF_NO_MAX) && pt_in(R(bx, by, s, s), sx, sy)) return 1;
-    bx -= s + (T.classic ? 0 : 2);
-    if (!(w->flags & WF_NO_MIN) && pt_in(R(bx, by, s, s), sx, sy)) return 0;
+    static const int kinds[3] = { 3, 1, 0 };
+    for (int i = 0; i < 3; i++) { rect_t r = caption_button_rect(R(w->x, w->y, w->w, w->h), w->flags, kinds[i]); if (r.w && pt_in(r, sx, sy)) return kinds[i]; }
     return -1;
 }
 static int hit_test(window_t *w, int sx, int sy, int *edges, int *btn) {
@@ -613,7 +608,7 @@ static void handle_key(key_event_t *e) {
 }
 
 /* ---------------- main loop ---------------- */
-void wm_init(void) { theme_apply(boot_safe_mode ? THEME_CLASSIC : THEME_LUNA_BLUE, 0); }
+void wm_init(void) { styles_load(); theme_apply(boot_safe_mode ? THEME_CLASSIC : THEME_LUNA_BLUE, 0); }
 void wm_run(void) {
     mouse_state_t ms;
     uint32_t last_tick = 0;

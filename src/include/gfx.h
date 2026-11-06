@@ -49,6 +49,7 @@ void blend_pixel(canvas_t *c, int x, int y, uint32_t col, int alpha);
 uint32_t get_pixel(canvas_t *c, int x, int y);
 void fill_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col);
 void blend_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col, int alpha);
+void blur_rect(canvas_t *c, int x, int y, int w, int h, int radius);
 void draw_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col);
 void hline(canvas_t *c, int x, int y, int w, uint32_t col);
 void vline(canvas_t *c, int x, int y, int h, uint32_t col);
@@ -56,6 +57,7 @@ void gradient_v(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c
 void gradient_h(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2);
 void gradient_v3(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2, uint32_t c3, int mid);
 void fill_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col);
+void fill_round_rect_blend(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col, int alpha);
 void draw_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col);
 void gradient_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t c1, uint32_t c2);
 void draw_line(canvas_t *c, int x0, int y0, int x1, int y1, uint32_t col);
