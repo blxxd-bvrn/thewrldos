@@ -492,7 +492,7 @@ static rect_t ap_rect(void) {
     int h = 0; for (int i = 0; i < AP_N; i++) h += all_programs[i].label ? 24 : 7;
     h += 6;
     rect_t m = sm_rect();
-    if (T.classic) { rect_t r = cl_item_rect(0); return R(m.x + m.w - 2, r.y, 230, h); }
+    if (T.classic) { rect_t r = cl_item_rect(0); int y = r.y; if (y + h > tb_y()) y = MAX(0, tb_y() - h); return R(m.x + m.w - 2, y, 230, h); }
     rect_t a = sm_item_rect(300);
     int y = MAX(0, a.y + a.h - h);
     return R(a.x + a.w + 6, y, 240, h);

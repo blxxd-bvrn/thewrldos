@@ -834,8 +834,11 @@ static int b_wc(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static bool ci_contains(const char *h, const char *n, bool ci) { int l = strlen(n); for (; *h; h++) if (ci ? !strncasecmp(h, n, l) : !strncmp(h, n, l)) return true; return !*n; }
 static int b_grep(sh_t *s, int argc, char **argv, io_t *io) {
-    bool ci = false, num = false, inv = false, cnt = false, quiet = false; int i = 1;
-    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) for (char *f = argv[i] + 1; *f; f++) { if (*f == 'i') ci = true; if (*f == 'n') num = true; if (*f == 'v') inv = true; if (*f == 'c') cnt = true; if (*f == 'q') quiet = true; }
+    bool ci = false, num = false, inv = false, cnt = false, quiet = false; int i = 1, after_n = 0, after = 0;
+    for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
+        if (argv[i][1] == 'A') { after_n = argv[i][2] ? atoi(argv[i] + 2) : (i + 1 < argc ? atoi(argv[++i]) : 0); continue; }
+        for (char *f = argv[i] + 1; *f; f++) { if (*f == 'i') ci = true; if (*f == 'n') num = true; if (*f == 'v') inv = true; if (*f == 'c') cnt = true; if (*f == 'q') quiet = true; }
+    }
     if (i >= argc) { err_f(io, "usage: grep [-invc] PATTERN [FILE...]\n"); return 2; }
     const char *pat = argv[i++];
     bool ok; char *d = gather_input(s, argc, argv, i, io, &ok);
@@ -844,7 +847,8 @@ static int b_grep(sh_t *s, int argc, char **argv, io_t *io) {
         char *e = strchr(p, '\n'); int l = e ? e - p : (int)strlen(p);
         char save = p[l]; p[l] = 0; ln++;
         bool m = ci_contains(p, pat, ci) != inv;
-        if (m) { matches++; if (!cnt && !quiet) { if (num) out_f(io, "\x1b[92m%d:\x1b[0m", ln); out_s(io, p); out_s(io, "\n"); } }
+        if (m) { matches++; after = after_n; if (!cnt && !quiet) { if (num) out_f(io, "\x1b[92m%d:\x1b[0m", ln); out_s(io, p); out_s(io, "\n"); } }
+        else if (after > 0) { after--; if (!cnt && !quiet) { if (num) out_f(io, "%d-", ln); out_s(io, p); out_s(io, "\n"); } }
         p[l] = save; p += l + (e ? 1 : 0);
     }
     if (cnt) out_f(io, "%d\n", matches);
@@ -879,7 +883,13 @@ static int b_rev(sh_t *s, int argc, char **argv, io_t *io) {
     kfree(d); return 0;
 }
 static int b_tr(sh_t *s, int argc, char **argv, io_t *io) {
-    if (argc < 3) { err_f(io, "usage: tr SET1 SET2\n"); return 1; }
+    if (argc >= 2 && !strcmp(argv[1], "-d")) {
+        if (argc < 3) return 1;
+        bool ok; char *d = gather_input(s, argc, argv, 3, io, &ok);
+        char *o = d; for (char *q = d; *q; q++) if (!strchr(argv[2], *q)) *o++ = *q; *o = 0;
+        out_s(io, d); kfree(d); return 0;
+    }
+    if (argc < 3) { err_f(io, "usage: tr SET1 SET2 | tr -d SET\n"); return 1; }
     char set1[256], set2[256]; int n1 = 0, n2 = 0;
     for (int k = 0; k < 2; k++) {
         const char *src = argv[1 + k]; char *dst = k ? set2 : set1; int *n = k ? &n2 : &n1;
@@ -1343,7 +1353,8 @@ static int run_simple(sh_t *s, node_t *n, io_t *io) {
         redir_t *r = &n->redirs[i];
         if (r->type == T_2TO1) { rio.err = rio.out; continue; }
         char *t = expand_single(s, r->target);
-        if (r->type == T_LT) {
+        if (r->type == T_LT && (!strcmp(t, "/dev/null") || !strcasecmp(t, "nul"))) { inbuf = bufcon_new(s->con); rio.in = &inbuf->c; }
+        else if (r->type == T_LT) {
             vnode_t *f = vfs_resolve(t, s->cwd);
             if (!f || f->dir) { err_f(io, "%s: No such file\n", t); kfree(t); sv_free(&argv); return 1; }
             inbuf = bufcon_new(s->con); bc_write(&inbuf->c, (char *)f->data, f->size); rio.in = &inbuf->c;
