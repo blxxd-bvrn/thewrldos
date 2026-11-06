@@ -1,7 +1,7 @@
 ENTRY(_start)
 SECTIONS
 {
-    . = 1M;
+    . = 16M;                    /* above the 4..16 MiB window used for Win32 program images */
     kernel_start = .;
     .text BLOCK(4K) : ALIGN(4K)
     {

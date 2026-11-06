@@ -6,6 +6,7 @@
 #include "fs.h"
 #include "apps.h"
 #include "disk.h"
+#include "net.h"
 
 typedef struct PACKED {
     uint32_t flags, mem_lower, mem_upper, boot_device, cmdline, mods_count, mods_addr;
@@ -113,6 +114,8 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     acpi_init();
     pci_dev_t devs[32]; int nd = pci_scan(devs, 32);
     for (int i = 0; i < nd; i++) klog("pci %02x:%02x.%x %04x:%04x %s", devs[i].bus, devs[i].dev, devs[i].fn, devs[i].vendor, devs[i].device, pci_class_name(devs[i].cls, devs[i].sub));
+    boot_screen_progress("Starting network...", 20);
+    net_init();
     boot_screen_progress("Detecting hard disks...", 25);
     ata_init();
     boot_screen_progress("Mounting file systems...", 35);

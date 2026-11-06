@@ -1,0 +1,368 @@
+/* TCP/IP stack core: Ethernet, ARP, IPv4, ICMP, UDP, DHCP client, DNS
+ * resolver and the network task that polls the card and runs timers. */
+#include "kernel.h"
+#include "net.h"
+#include "fs.h"
+
+netif_t netif;
+static nic_ops_t nic;
+static task_t *net_task;
+static const uint8_t BCAST[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+
+void ip_to_str(uint32_t ip, char *b) { snprintf(b, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255); }
+bool str_to_ip(const char *s, uint32_t *ip) {
+    uint32_t v = 0; int parts = 0;
+    while (parts < 4) {
+        if (!isdigit(*s)) return false;
+        uint32_t p = 0; int digits = 0;
+        while (isdigit(*s) && digits < 4) { p = p * 10 + (*s++ - '0'); digits++; }
+        if (p > 255) return false;
+        v = (v << 8) | p; parts++;
+        if (parts < 4) { if (*s != '.') return false; s++; }
+    }
+    if (*s) return false;
+    *ip = v;
+    return true;
+}
+uint16_t ip_checksum(const void *data, uint32_t len, uint32_t sum) {
+    const uint8_t *p = data;
+    while (len > 1) { sum += (p[0] << 8) | p[1]; p += 2; len -= 2; }
+    if (len) sum += p[0] << 8;
+    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
+    return ~sum & 0xFFFF;
+}
+static void put16(uint8_t *p, uint16_t v) { p[0] = v >> 8; p[1] = v; }
+static void put32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
+static uint16_t get16(const uint8_t *p) { return (p[0] << 8) | p[1]; }
+static uint32_t get32(const uint8_t *p) { return ((uint32_t)p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
+
+/* ---------------- Ethernet ---------------- */
+static bool eth_send(const uint8_t *dst, uint16_t type, const void *payload, uint32_t len) {
+    static uint8_t f[1600];
+    if (!nic.send || len > 1500) return false;
+    memcpy(f, dst, 6); memcpy(f + 6, netif.mac, 6); put16(f + 12, type);
+    memcpy(f + 14, payload, len);
+    netif.tx_packets++; netif.tx_bytes += len + 14;
+    return nic.send(f, len + 14);
+}
+
+/* ---------------- ARP ---------------- */
+typedef struct { uint32_t ip; uint8_t mac[6]; uint32_t time; } arp_entry_t;
+static arp_entry_t arp_cache[32];
+static void arp_store(uint32_t ip, const uint8_t *mac) {
+    if (!ip) return;
+    int slot = 0; uint32_t oldest = 0xFFFFFFFF;
+    for (int i = 0; i < 32; i++) {
+        if (arp_cache[i].ip == ip) { slot = i; break; }
+        if (arp_cache[i].time < oldest) { oldest = arp_cache[i].time; slot = i; }
+    }
+    arp_cache[slot].ip = ip; memcpy(arp_cache[slot].mac, mac, 6); arp_cache[slot].time = timer_ticks() | 1;
+}
+static bool arp_lookup(uint32_t ip, uint8_t *mac) {
+    for (int i = 0; i < 32; i++) if (arp_cache[i].ip == ip && arp_cache[i].time) { memcpy(mac, arp_cache[i].mac, 6); return true; }
+    return false;
+}
+static void arp_send(uint16_t op, const uint8_t *tmac, uint32_t tip) {
+    uint8_t a[28];
+    put16(a, 1); put16(a + 2, 0x0800); a[4] = 6; a[5] = 4; put16(a + 6, op);
+    memcpy(a + 8, netif.mac, 6); put32(a + 14, netif.ip);
+    memcpy(a + 18, op == 1 ? (const uint8_t *)"\0\0\0\0\0\0" : tmac, 6); put32(a + 24, tip);
+    eth_send(op == 1 ? BCAST : tmac, 0x0806, a, 28);
+}
+static void arp_input(const uint8_t *a, uint32_t len) {
+    if (len < 28 || get16(a) != 1 || get16(a + 2) != 0x0800) return;
+    uint16_t op = get16(a + 6);
+    uint32_t sip = get32(a + 14), tip = get32(a + 24);
+    arp_store(sip, a + 8);
+    if (op == 1 && netif.ip && tip == netif.ip) arp_send(2, a + 8, sip);
+}
+static bool in_net_task(void) { return task_current() == net_task; }
+static bool arp_resolve(uint32_t ip, uint8_t *mac) {
+    if (arp_lookup(ip, mac)) return true;
+    if (in_net_task()) { arp_send(1, NULL, ip); return false; }     /* can't block here: drop, TCP will retransmit */
+    for (int tries = 0; tries < 4; tries++) {
+        arp_send(1, NULL, ip);
+        for (int t = 0; t < 250; t += 5) { task_sleep(5); if (arp_lookup(ip, mac)) return true; }
+    }
+    return false;
+}
+
+/* ---------------- IPv4 ---------------- */
+static uint16_t ip_id;
+bool ip_send(uint32_t dst, uint8_t proto, const void *payload, uint32_t len) {
+    static uint8_t pkt[1500];
+    if (len > 1480) return false;
+    uint8_t mac[6];
+    bool bcast = dst == 0xFFFFFFFF || (netif.mask && (dst | netif.mask) == 0xFFFFFFFF);
+    if (bcast) memcpy(mac, BCAST, 6);
+    else {
+        uint32_t hop = (netif.mask && (dst & netif.mask) != (netif.ip & netif.mask) && netif.gw) ? netif.gw : dst;
+        if (!arp_resolve(hop, mac)) return false;
+    }
+    uint8_t *h = pkt;
+    h[0] = 0x45; h[1] = 0; put16(h + 2, 20 + len); put16(h + 4, ip_id++); put16(h + 6, 0x4000);
+    h[8] = 64; h[9] = proto; put16(h + 10, 0); put32(h + 12, netif.ip); put32(h + 16, dst);
+    put16(h + 10, ip_checksum(h, 20, 0));
+    memcpy(pkt + 20, payload, len);
+    return eth_send(mac, 0x0800, pkt, 20 + len);
+}
+
+/* ---------------- ICMP ---------------- */
+static volatile int ping_seq_seen = -1;
+static void icmp_input(uint32_t src, const uint8_t *p, uint32_t len) {
+    if (len < 8) return;
+    if (p[0] == 8) {                       /* echo request -> reply */
+        static uint8_t r[1480];
+        if (len > sizeof r) return;
+        memcpy(r, p, len); r[0] = 0; put16(r + 2, 0); put16(r + 2, ip_checksum(r, len, 0));
+        ip_send(src, IPPROTO_ICMP, r, len);
+    } else if (p[0] == 0 && get16(p + 4) == 0x5752) ping_seq_seen = get16(p + 6);
+}
+int icmp_ping(uint32_t dst, uint16_t seq, uint32_t timeout_ms) {
+    uint8_t p[40];
+    p[0] = 8; p[1] = 0; put16(p + 2, 0); put16(p + 4, 0x5752); put16(p + 6, seq);
+    for (int i = 8; i < 40; i++) p[i] = 'a' + i % 26;
+    put16(p + 2, ip_checksum(p, 40, 0));
+    ping_seq_seen = -1;
+    uint32_t t0 = timer_ticks();
+    if (!ip_send(dst, IPPROTO_ICMP, p, 40)) return -1;
+    while (timer_ticks() - t0 < timeout_ms) {
+        if (ping_seq_seen == seq) return timer_ticks() - t0;
+        task_sleep(1);
+    }
+    return -1;
+}
+
+/* ---------------- UDP ---------------- */
+typedef struct { uint16_t port; udp_handler_t h; void *ctx; } udp_sock_t;
+static udp_sock_t udps[16];
+static uint16_t next_port;
+uint16_t net_ephemeral_port(void) { if (!next_port) next_port = 49152 + rand_next() % 8000; return next_port = next_port >= 65000 ? 49152 : next_port + 1; }
+bool udp_bind(uint16_t port, udp_handler_t h, void *ctx) {
+    for (int i = 0; i < 16; i++) if (!udps[i].port) { udps[i] = (udp_sock_t){ port, h, ctx }; return true; }
+    return false;
+}
+void udp_unbind(uint16_t port) { for (int i = 0; i < 16; i++) if (udps[i].port == port) udps[i].port = 0; }
+bool udp_send(uint32_t dst, uint16_t sport, uint16_t dport, const void *data, uint32_t len) {
+    static uint8_t u[1480];
+    if (len + 8 > sizeof u) return false;
+    put16(u, sport); put16(u + 2, dport); put16(u + 4, 8 + len); put16(u + 6, 0);
+    memcpy(u + 8, data, len);
+    uint8_t ph[12]; put32(ph, netif.ip); put32(ph + 4, dst); ph[8] = 0; ph[9] = IPPROTO_UDP; put16(ph + 10, 8 + len);
+    uint32_t s = 0; for (int i = 0; i < 12; i += 2) s += get16(ph + i);
+    uint16_t ck = ip_checksum(u, 8 + len, s); put16(u + 6, ck ? ck : 0xFFFF);
+    return ip_send(dst, IPPROTO_UDP, u, 8 + len);
+}
+static void udp_input(uint32_t src, const uint8_t *p, uint32_t len) {
+    if (len < 8) return;
+    uint16_t sport = get16(p), dport = get16(p + 2), ulen = get16(p + 4);
+    if (ulen < 8 || ulen > len) return;
+    for (int i = 0; i < 16; i++) if (udps[i].port == dport && udps[i].h) { udps[i].h(src, sport, p + 8, ulen - 8, udps[i].ctx); return; }
+}
+
+/* ---------------- frame dispatch ---------------- */
+static void ip_input(const uint8_t *p, uint32_t len) {
+    if (len < 20 || (p[0] >> 4) != 4) return;
+    uint32_t hl = (p[0] & 15) * 4, tot = get16(p + 2);
+    if (hl < 20 || tot > len || tot < hl) return;
+    if (get16(p + 6) & 0x3FFF) return;                       /* fragments are not supported */
+    uint32_t src = get32(p + 12), dst = get32(p + 16);
+    bool mine = dst == netif.ip || dst == 0xFFFFFFFF || (netif.mask && (dst | netif.mask) == 0xFFFFFFFF) || !netif.ip;
+    if (!mine) return;
+    switch (p[9]) {
+    case IPPROTO_ICMP: icmp_input(src, p + hl, tot - hl); break;
+    case IPPROTO_UDP: udp_input(src, p + hl, tot - hl); break;
+    case IPPROTO_TCP: tcp_input(src, dst, p + hl, tot - hl); break;
+    }
+}
+void net_rx(const uint8_t *f, uint32_t len) {
+    if (len < 14) return;
+    netif.rx_packets++; netif.rx_bytes += len;
+    uint16_t type = get16(f + 12);
+    if (type == 0x0806) arp_input(f + 14, len - 14);
+    else if (type == 0x0800) {
+        /* learn the sender's MAC for on-link hosts (saves ARP round trips) */
+        if (len >= 34 && netif.mask) { uint32_t s = get32(f + 26); if ((s & netif.mask) == (netif.ip & netif.mask)) arp_store(s, f + 6); }
+        ip_input(f + 14, len - 14);
+    }
+}
+
+/* ---------------- DHCP ---------------- */
+enum { DHCP_IDLE, DHCP_DISCOVER, DHCP_REQUEST, DHCP_BOUND };
+static int dhcp_state;
+static uint32_t dhcp_xid, dhcp_offer, dhcp_server, dhcp_next, dhcp_tries, dhcp_bound_at;
+static void dhcp_send(int type) {
+    uint8_t m[300];
+    memset(m, 0, sizeof m);
+    m[0] = 1; m[1] = 1; m[2] = 6; put32(m + 4, dhcp_xid); put16(m + 10, 0x8000);
+    memcpy(m + 28, netif.mac, 6);
+    put32(m + 236, 0x63825363);
+    int o = 240;
+    m[o++] = 53; m[o++] = 1; m[o++] = type;
+    m[o++] = 61; m[o++] = 7; m[o++] = 1; memcpy(m + o, netif.mac, 6); o += 6;
+    int hl = MIN((int)strlen(computer_name), 32); m[o++] = 12; m[o++] = hl; memcpy(m + o, computer_name, hl); o += hl;
+    if (type == 3) { m[o++] = 50; m[o++] = 4; put32(m + o, dhcp_offer); o += 4; m[o++] = 54; m[o++] = 4; put32(m + o, dhcp_server); o += 4; }
+    m[o++] = 55; m[o++] = 4; m[o++] = 1; m[o++] = 3; m[o++] = 6; m[o++] = 51;
+    m[o++] = 255;
+    uint32_t save = netif.ip; netif.ip = 0;
+    udp_send(0xFFFFFFFF, 68, 67, m, MAX(o, 300));
+    netif.ip = save;
+}
+static void dhcp_input(uint32_t src, uint16_t sport, const uint8_t *m, uint32_t len, void *ctx) {
+    if (len < 240 || m[0] != 2 || get32(m + 4) != dhcp_xid || get32(m + 236) != 0x63825363) return;
+    int type = 0; uint32_t mask = 0, gw = 0, dns = 0, server = 0, lease = 0;
+    for (uint32_t o = 240; o + 1 < len && m[o] != 255;) {
+        if (m[o] == 0) { o++; continue; }
+        uint8_t code = m[o], l = m[o + 1];
+        const uint8_t *v = m + o + 2;
+        if (o + 2 + l > len) break;
+        if (code == 53 && l >= 1) type = v[0];
+        else if (code == 1 && l >= 4) mask = get32(v);
+        else if (code == 3 && l >= 4) gw = get32(v);
+        else if (code == 6 && l >= 4) dns = get32(v);
+        else if (code == 54 && l >= 4) server = get32(v);
+        else if (code == 51 && l >= 4) lease = get32(v);
+        o += 2 + l;
+    }
+    if (type == 2 && dhcp_state == DHCP_DISCOVER) {           /* OFFER */
+        dhcp_offer = get32(m + 16); dhcp_server = server ? server : src;
+        dhcp_state = DHCP_REQUEST; dhcp_tries = 0; dhcp_next = 0;
+    } else if (type == 5 && dhcp_state == DHCP_REQUEST) {    /* ACK */
+        netif.ip = get32(m + 16); netif.mask = mask ? mask : IP4(255, 255, 255, 0); netif.gw = gw; netif.dns = dns ? dns : gw;
+        netif.dhcp_server = dhcp_server; netif.lease_s = lease;
+        netif.configured = true; dhcp_state = DHCP_BOUND; dhcp_bound_at = timer_ticks();
+        char a[16], g[16], d[16]; ip_to_str(netif.ip, a); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d);
+        klog("dhcp: address %s, gateway %s, DNS %s, lease %us", a, g, d, lease);
+    } else if (type == 6 && dhcp_state == DHCP_REQUEST) {    /* NAK */
+        dhcp_state = DHCP_DISCOVER; dhcp_tries = 0; dhcp_next = timer_ticks() + 1000;
+    }
+}
+void dhcp_renew(void) {
+    if (!netif.present) return;
+    netif.configured = false; netif.ip = 0;
+    dhcp_xid = rand_next(); dhcp_state = DHCP_DISCOVER; dhcp_tries = 0; dhcp_next = 0;
+}
+static void dhcp_tick(void) {
+    uint32_t now = timer_ticks();
+    if (dhcp_state == DHCP_BOUND) {
+        if (netif.lease_s && netif.lease_s < 0x7FFFFFFF && now - dhcp_bound_at > netif.lease_s * 500u) { dhcp_state = DHCP_REQUEST; dhcp_offer = netif.ip; dhcp_tries = 0; dhcp_next = 0; }
+        return;
+    }
+    if (dhcp_state == DHCP_IDLE || (int32_t)(now - dhcp_next) < 0) return;
+    if (dhcp_state == DHCP_REQUEST && dhcp_tries >= 4) { dhcp_state = DHCP_DISCOVER; dhcp_tries = 0; }
+    dhcp_send(dhcp_state == DHCP_DISCOVER ? 1 : 3);
+    dhcp_tries++;
+    dhcp_next = now + MIN(16000u, 1000u << MIN(dhcp_tries, 4u));
+}
+
+/* ---------------- DNS ---------------- */
+typedef struct { char name[128]; uint32_t ip, expires; } dns_cache_t;
+static dns_cache_t dcache[32];
+typedef struct { uint16_t id; uint32_t ip; bool done, failed; int rcode; } dns_q_t;
+static void dns_input(uint32_t src, uint16_t sport, const uint8_t *m, uint32_t len, void *ctx) {
+    dns_q_t *q = ctx;
+    if (len < 12 || get16(m) != q->id || !(m[2] & 0x80)) return;
+    q->rcode = m[3] & 15;
+    int qd = get16(m + 4), an = get16(m + 6);
+    uint32_t o = 12;
+    for (int i = 0; i < qd && o < len; i++) { while (o < len && m[o]) { if ((m[o] & 0xC0) == 0xC0) { o++; break; } o += m[o] + 1; } o += 5; }
+    for (int i = 0; i < an && o + 10 < len; i++) {
+        while (o < len && m[o]) { if ((m[o] & 0xC0) == 0xC0) { o++; break; } o += m[o] + 1; }
+        o++;
+        if (o + 10 > len) break;
+        uint16_t type = get16(m + o), rdlen = get16(m + o + 8);
+        if (type == 1 && rdlen == 4 && o + 14 <= len) { q->ip = get32(m + o + 10); q->done = true; return; }
+        o += 10 + rdlen;
+    }
+    q->failed = true;
+}
+static bool hosts_lookup(const char *name, uint32_t *ip) {
+    uint32_t len;
+    char *t = (char *)vfs_read_file("C:\\Windows\\hosts", &len);
+    if (!t) return false;
+    bool found = false;
+    for (char *line = strtok(t, "\r\n"); line && !found; line = strtok(NULL, "\r\n")) {
+        while (*line == ' ' || *line == '\t') line++;
+        if (*line == '#') continue;
+        char a[32]; int k = 0;
+        while (*line && *line != ' ' && *line != '\t' && k < 31) a[k++] = *line++;
+        a[k] = 0;
+        for (char *n = strtok(line, " \t"); n; n = strtok(NULL, " \t")) if (!strcasecmp(n, name) && str_to_ip(a, ip)) { found = true; break; }
+    }
+    kfree(t);
+    return found;
+}
+bool dns_resolve(const char *name, uint32_t *ip, char *err, int errcap) {
+    if (str_to_ip(name, ip)) return true;
+    if (!strcasecmp(name, "localhost")) { *ip = IP4(127, 0, 0, 1); return true; }
+    if (hosts_lookup(name, ip)) return true;
+    for (int i = 0; i < 32; i++) if (dcache[i].ip && !strcasecmp(dcache[i].name, name) && (int32_t)(dcache[i].expires - timer_ticks()) > 0) { *ip = dcache[i].ip; return true; }
+    if (!net_wait_ready(8000)) { snprintf(err, errcap, "The network is not connected."); return false; }
+    if (!netif.dns) { snprintf(err, errcap, "No DNS server is configured."); return false; }
+    uint8_t m[300]; int o = 12;
+    dns_q_t q = { (uint16_t)rand_next(), 0, false, false, 0 };
+    memset(m, 0, 12); put16(m, q.id); m[2] = 1; put16(m + 4, 1);
+    const char *p = name;
+    while (*p && o < 270) {
+        const char *dot = strchr(p, '.'); int l = dot ? dot - p : (int)strlen(p);
+        if (l <= 0 || l > 63) break;
+        m[o++] = l; memcpy(m + o, p, l); o += l;
+        p += l; if (*p == '.') p++;
+    }
+    m[o++] = 0; put16(m + o, 1); put16(m + o + 2, 1); o += 4;
+    uint16_t port = net_ephemeral_port();
+    udp_bind(port, dns_input, &q);
+    for (int attempt = 0; attempt < 3 && !q.done && !q.failed; attempt++) {
+        udp_send(netif.dns, port, 53, m, o);
+        for (int t = 0; t < 1500 && !q.done && !q.failed; t += 5) task_sleep(5);
+    }
+    udp_unbind(port);
+    if (!q.done) {
+        if (q.rcode == 3) snprintf(err, errcap, "The server name \"%s\" could not be found.", name);
+        else snprintf(err, errcap, "The DNS server did not answer for \"%s\".", name);
+        return false;
+    }
+    int slot = rand_next() % 32;
+    strlcpy(dcache[slot].name, name, sizeof dcache[slot].name); dcache[slot].ip = q.ip; dcache[slot].expires = timer_ticks() + 300000;
+    *ip = q.ip;
+    return true;
+}
+
+/* ---------------- network task ---------------- */
+static void net_loop(void *arg) {
+    bool was_up = false;
+    for (;;) {
+        if (nic.poll) nic.poll();
+        bool up = nic.link_up && nic.link_up();
+        if (up != was_up) {
+            netif.link = up; was_up = up;
+            klog("net: link %s", up ? "up" : "down");
+            if (up) dhcp_renew(); else { netif.configured = false; }
+        }
+        dhcp_tick();
+        tcp_timers();
+        task_sleep(tcp_count() ? 1 : 3);
+    }
+}
+void net_init(void) {
+    memset(&netif, 0, sizeof netif);
+    if (!e1000_probe(&nic)) { klog("net: no supported network adapter found"); strcpy(netif.driver, "No supported adapter"); return; }
+    netif.present = true;
+    udp_bind(68, dhcp_input, NULL);
+    net_task = task_create("netd", net_loop, NULL, 32768);
+}
+bool net_ready(void) { return netif.present && netif.link && netif.configured; }
+bool net_wait_ready(uint32_t ms) {
+    uint32_t t0 = timer_ticks();
+    while (!net_ready()) { if (!netif.present || timer_ticks() - t0 > ms) return false; task_sleep(20); }
+    return true;
+}
+const char *net_status_text(void) {
+    static char b[96];
+    if (!netif.present) return "No network adapter";
+    if (!netif.link) return "Network cable unplugged";
+    if (!netif.configured) return "Acquiring network address...";
+    char a[16]; ip_to_str(netif.ip, a);
+    snprintf(b, sizeof b, "Connected - %s", a);
+    return b;
+}

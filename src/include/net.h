@@ -1,0 +1,96 @@
+#ifndef NET_H
+#define NET_H
+#include "kernel.h"
+
+/* IPv4 addresses are kept in host byte order: 10.0.2.15 = 0x0A00020F */
+#define IP4(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | ((uint32_t)(c) << 8) | (uint32_t)(d))
+static inline uint16_t htons(uint16_t v) { return (v >> 8) | (v << 8); }
+static inline uint16_t ntohs(uint16_t v) { return htons(v); }
+static inline uint32_t htonl(uint32_t v) { return __builtin_bswap32(v); }
+static inline uint32_t ntohl(uint32_t v) { return __builtin_bswap32(v); }
+void ip_to_str(uint32_t ip, char *buf);                  /* buf >= 16 */
+bool str_to_ip(const char *s, uint32_t *ip);
+
+/* ---- network interface ---- */
+typedef struct {
+    bool present, link, configured;
+    char driver[48];
+    uint8_t mac[6];
+    uint32_t ip, mask, gw, dns, dhcp_server;
+    uint32_t lease_s;
+    uint32_t rx_packets, tx_packets, rx_bytes, tx_bytes, rx_dropped;
+} netif_t;
+extern netif_t netif;
+
+/* NIC driver interface */
+typedef struct {
+    const char *name;
+    bool (*send)(const void *frame, uint32_t len);
+    void (*poll)(void);                                   /* deliver received frames to net_rx() */
+    bool (*link_up)(void);
+} nic_ops_t;
+bool e1000_probe(nic_ops_t *ops);
+void net_rx(const uint8_t *frame, uint32_t len);
+
+void net_init(void);                                      /* probe NIC, start the net task and DHCP */
+bool net_ready(void);                                     /* link up and address configured */
+bool net_wait_ready(uint32_t timeout_ms);
+void dhcp_renew(void);
+const char *net_status_text(void);                        /* one line for the UI */
+
+/* ---- IP / ICMP / UDP ---- */
+enum { IPPROTO_ICMP = 1, IPPROTO_TCP = 6, IPPROTO_UDP = 17 };
+bool ip_send(uint32_t dst, uint8_t proto, const void *payload, uint32_t len);
+uint16_t ip_checksum(const void *data, uint32_t len, uint32_t initial);
+int icmp_ping(uint32_t dst, uint16_t seq, uint32_t timeout_ms);   /* round-trip ms, or -1 */
+typedef void (*udp_handler_t)(uint32_t src, uint16_t sport, const uint8_t *data, uint32_t len, void *ctx);
+bool udp_bind(uint16_t port, udp_handler_t h, void *ctx);
+void udp_unbind(uint16_t port);
+bool udp_send(uint32_t dst, uint16_t sport, uint16_t dport, const void *data, uint32_t len);
+uint16_t net_ephemeral_port(void);
+
+/* ---- DNS ---- */
+bool dns_resolve(const char *name, uint32_t *ip, char *err, int errcap);
+
+/* ---- TCP ---- */
+typedef struct tcb tcb_t;
+tcb_t *tcp_connect(uint32_t ip, uint16_t port, uint32_t timeout_ms, char *err, int errcap);
+int tcp_send(tcb_t *t, const void *data, uint32_t len);             /* bytes queued, -1 on error */
+int tcp_recv(tcb_t *t, void *buf, uint32_t max, uint32_t timeout_ms); /* >0 bytes, 0 = closed by peer, -1 error, -2 timeout */
+void tcp_close(tcb_t *t);                                            /* graceful close; t must not be used afterwards */
+void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, uint32_t len);
+void tcp_timers(void);
+int tcp_count(void);
+
+/* ---- TLS (BearSSL) ---- */
+typedef struct tls_conn tls_conn_t;
+tls_conn_t *tls_open(tcb_t *t, const char *host, char *err, int errcap);
+int tls_write(tls_conn_t *c, const void *data, uint32_t len);       /* -1 on error */
+int tls_read(tls_conn_t *c, void *buf, uint32_t max);                /* >0, 0 closed, -1 error */
+void tls_close(tls_conn_t *c);                                       /* also closes the TCP connection */
+const char *tls_error_text(tls_conn_t *c);
+const char *tls_cipher_name(tls_conn_t *c);
+int tls_trust_anchor_count(void);
+void entropy_add(uint32_t v);
+void sha256_hex(const void *data, uint32_t len, char out[65]);                                        /* timing noise from IRQs */
+
+/* ---- HTTP(S) client ---- */
+typedef struct {
+    int status;                 /* HTTP status, or 0 if the request failed */
+    char url[1024];             /* final URL after redirects */
+    char content_type[96];
+    char charset[24];
+    char location[1024];
+    uint8_t *body; uint32_t body_len;
+    char error[200];
+    bool secure;
+    char tls_info[80];
+} http_response_t;
+typedef void (*http_progress_t)(void *ctx, const char *status, uint32_t got, uint32_t total);
+bool http_get(const char *url, http_response_t *r, http_progress_t cb, void *ctx);
+bool http_request(const char *method, const char *url, const char *content_type, const void *body, uint32_t body_len,
+                  http_response_t *r, http_progress_t cb, void *ctx);
+void http_free(http_response_t *r);
+bool url_resolve(const char *base, const char *rel, char *out, int cap);    /* relative -> absolute */
+bool url_parse(const char *url, char *scheme, char *host, int hostcap, uint16_t *port, char *path, int pathcap);
+#endif

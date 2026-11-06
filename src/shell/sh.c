@@ -6,6 +6,7 @@
 #include "apps.h"
 #include "theme.h"
 #include "disk.h"
+#include "net.h"
 
 bool console_interrupted(console_t *c);
 void console_clear_interrupt(console_t *c);
@@ -942,6 +943,110 @@ static int b_uname(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static int b_ver(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "\n%s %s [Version %s.%s]\n\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD); return 0; }
 static int b_whoami(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "%s\n", user_name); return 0; }
+static int b_ipconfig(sh_t *s, int argc, char **argv, io_t *io) {
+    if (argc > 1 && (!strcasecmp(argv[1], "/renew") || !strcmp(argv[1], "-r"))) {
+        out_s(io, "Renewing the address (DHCP)...\n");
+        dhcp_renew();
+        if (!net_wait_ready(10000)) { err_f(io, "ipconfig: no DHCP server answered\n"); return 1; }
+    }
+    out_f(io, "\n" OS_NAME " IP Configuration\n\n   Host Name . . . . . . . . : %s\n\nEthernet adapter Local Area Connection:\n\n", computer_name);
+    if (!netif.present) { out_s(io, "   Media State . . . . . . . : No supported network adapter was found\n"); return 1; }
+    char a[16], m[16], g[16], d[16], sv[16];
+    ip_to_str(netif.ip, a); ip_to_str(netif.mask, m); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d); ip_to_str(netif.dhcp_server, sv);
+    out_f(io, "   Description . . . . . . . : %s\n", netif.driver);
+    out_f(io, "   Physical Address. . . . . : %02X-%02X-%02X-%02X-%02X-%02X\n", netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5]);
+    if (!netif.link) { out_s(io, "   Media State . . . . . . . : Media disconnected\n"); return 0; }
+    out_f(io, "   DHCP Enabled. . . . . . . : Yes\n   IP Address. . . . . . . . : %s\n   Subnet Mask . . . . . . . : %s\n   Default Gateway . . . . . : %s\n   DHCP Server . . . . . . . : %s\n   DNS Server. . . . . . . . : %s\n",
+          netif.configured ? a : "(acquiring...)", m, g, sv, d);
+    out_f(io, "   Packets sent/received . . : %u / %u (%u KB / %u KB)\n", netif.tx_packets, netif.rx_packets, netif.tx_bytes / 1024, netif.rx_bytes / 1024);
+    return 0;
+}
+static int b_ping(sh_t *s, int argc, char **argv, io_t *io) {
+    if (argc < 2) { err_f(io, "usage: ping HOST [-n COUNT]\n"); return 1; }
+    int count = 4; const char *host = NULL;
+    for (int i = 1; i < argc; i++) { if ((!strcmp(argv[i], "-n") || !strcmp(argv[i], "-c")) && i + 1 < argc) count = atoi(argv[++i]); else host = argv[i]; }
+    uint32_t ip; char err[160];
+    if (!host || !dns_resolve(host, &ip, err, sizeof err)) { err_f(io, "ping: %s\n", host ? err : "no host"); return 1; }
+    char a[16]; ip_to_str(ip, a);
+    out_f(io, "\nPinging %s [%s] with 32 bytes of data:\n", host, a);
+    int ok = 0, mn = 1 << 30, mx = 0, sum = 0;
+    for (int i = 0; i < count; i++) {
+        int ms = icmp_ping(ip, i + 1, 3000);
+        if (ms < 0) out_s(io, "Request timed out.\n");
+        else { out_f(io, "Reply from %s: bytes=32 time=%dms TTL=64\n", a, ms); ok++; mn = MIN(mn, ms); mx = MAX(mx, ms); sum += ms; }
+        if (i + 1 < count) task_sleep(1000 - MIN(ms < 0 ? 0 : ms, 900));
+    }
+    out_f(io, "\nPing statistics for %s:\n    Packets: Sent = %d, Received = %d, Lost = %d (%d%% loss)\n", a, count, ok, count - ok, (count - ok) * 100 / MAX(1, count));
+    if (ok) out_f(io, "Approximate round trip times: Minimum = %dms, Maximum = %dms, Average = %dms\n", mn, mx, sum / ok);
+    return ok ? 0 : 1;
+}
+static int b_nslookup(sh_t *s, int argc, char **argv, io_t *io) {
+    if (argc < 2) { err_f(io, "usage: nslookup NAME\n"); return 1; }
+    char d[16]; ip_to_str(netif.dns, d);
+    out_f(io, "Server:  %s\n\n", d);
+    uint32_t ip; char err[160];
+    if (!dns_resolve(argv[1], &ip, err, sizeof err)) { err_f(io, "*** %s\n", err); return 1; }
+    char a[16]; ip_to_str(ip, a);
+    out_f(io, "Name:    %s\nAddress: %s\n", argv[1], a);
+    return 0;
+}
+typedef struct { io_t *io; uint32_t last; } dlprog_t;
+static void dl_progress(void *ctx, const char *status, uint32_t got, uint32_t total) {
+    dlprog_t *p = ctx;
+    if (got && timer_ticks() - p->last < 500) return;
+    p->last = timer_ticks();
+    if (got) { if (total) out_f(p->io, "  %u / %u KB\n", got / 1024, total / 1024); else out_f(p->io, "  %u KB\n", got / 1024); }
+    else out_f(p->io, "%s\n", status);
+}
+static int b_wget(sh_t *s, int argc, char **argv, io_t *io) {
+    bool curl = !strcmp(argv[0], "curl");
+    const char *url = NULL, *outf = NULL; bool headers_only = false, quiet = false;
+    for (int i = 1; i < argc; i++) {
+        if ((!strcmp(argv[i], "-O") || !strcmp(argv[i], "-o")) && i + 1 < argc) outf = argv[++i];
+        else if (!strcmp(argv[i], "-I")) headers_only = true;
+        else if (!strcmp(argv[i], "-q") || !strcmp(argv[i], "-s")) quiet = true;
+        else url = argv[i];
+    }
+    if (!url) { err_f(io, "usage: %s URL [-O FILE]%s\n", argv[0], curl ? " [-I] [-s]" : " [-q]"); return 1; }
+    char full[1024];
+    if (!strstr(url, "://")) snprintf(full, sizeof full, "http://%s", url); else strlcpy(full, url, sizeof full);
+    http_response_t r;
+    dlprog_t pg = { io, 0 };
+    bool ok = http_get(full, &r, quiet || curl ? NULL : dl_progress, &pg);
+    if (!ok) { err_f(io, "%s: %s\n", argv[0], r.error); http_free(&r); return 1; }
+    if (!quiet && (!curl || headers_only)) {
+        out_f(io, "HTTP %d, %u bytes, %s%s%s\n", r.status, r.body_len, r.content_type[0] ? r.content_type : "unknown type",
+              r.secure ? ", " : "", r.secure ? r.tls_info : "");
+        if (strcmp(r.url, full)) out_f(io, "Redirected to %s\n", r.url);
+    }
+    if (headers_only) { http_free(&r); return 0; }
+    if (curl && !outf) { io->out->write(io->out, (const char *)r.body, r.body_len); if (r.body_len && r.body[r.body_len - 1] != '\n') out_s(io, "\n"); http_free(&r); return r.status >= 400; }
+    char name[256];
+    if (outf) strlcpy(name, outf, sizeof name);
+    else {
+        char sch[8], host[256], path[1024]; uint16_t port;
+        url_parse(r.url, sch, host, sizeof host, &port, path, sizeof path);
+        char *q = strchr(path, '?'); if (q) *q = 0;
+        const char *b = strrchr(path, '/'); b = b ? b + 1 : path;
+        strlcpy(name, *b ? b : "index.html", sizeof name);
+    }
+    char dst[512];
+    if (isalpha(name[0]) && name[1] == ':') strlcpy(dst, name, sizeof dst); else path_join(dst, sizeof dst, s->cwd, name);
+    path_normalize(dst);
+    if (!vfs_write_file(dst, r.body, r.body_len)) { err_f(io, "%s: cannot write %s\n", argv[0], dst); http_free(&r); return 1; }
+    if (!quiet) out_f(io, "Saved %s (%u bytes)\n", dst, r.body_len);
+    http_free(&r);
+    return 0;
+}
+static int b_sha256sum(sh_t *s, int argc, char **argv, io_t *io) {
+    for (int i = 1; i < argc; i++) {
+        vnode_t *n = vfs_resolve(argv[i], s->cwd);
+        if (!n || n->dir) { err_f(io, "sha256sum: %s: not found\n", argv[i]); continue; }
+        char h[65]; sha256_hex(n->data, n->size, h);
+        out_f(io, "%s  %s\n", h, argv[i]);
+    }
+    return 0;
+}
 static int b_hostname(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "%s\n", computer_name); return 0; }
 static int b_ps(sh_t *s, int argc, char **argv, io_t *io) {
     static const char *kinds[] = { "kernel", "shell", "win32", "app" };
@@ -1225,7 +1330,9 @@ static const builtin_t builtins[] = {
     { "clear", b_clear, "clear the screen" }, { "cls", b_clear, NULL }, { "exit", b_exit, "exit the shell" },
     { "true", b_true, NULL }, { "false", b_false, NULL }, { ":", b_true, NULL }, { "sleep", b_sleep, "wait N seconds" },
     { "date", b_date, "show date (+FORMAT)" }, { "uname", b_uname, "system name (-a)" }, { "ver", b_ver, "OS version" },
-    { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
+    { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew)" }, { "ifconfig", b_ipconfig, NULL },
+    { "ping", b_ping, "send ICMP echo requests" }, { "nslookup", b_nslookup, "look up a host name" },
+    { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
     { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "sync", b_sync, "write changes to the system disk now" }, { "mem", b_free, NULL },
     { "uptime", b_uptime, NULL }, { "dmesg", b_dmesg, "kernel log" }, { "export", b_export, "set variables" }, { "set", b_env, NULL },
     { "unset", b_unset, NULL }, { "env", b_env, "list variables" }, { "read", b_read, "read a line into variables" },

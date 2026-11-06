@@ -4,6 +4,8 @@
 void *memcpy(void *d, const void *s, size_t n);
 void *memmove(void *d, const void *s, size_t n);
 void *memchr(const void *s, int c, size_t n);
+char *strtok(char *s, const char *delim);
+char *strpbrk(const char *s, const char *accept);
 void *memset(void *d, int c, size_t n);
 void *memset32(uint32_t *d, uint32_t v, size_t n);
 int memcmp(const void *a, const void *b, size_t n);

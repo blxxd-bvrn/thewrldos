@@ -193,6 +193,12 @@ static uint32_t pci_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) {
     outl(0xCF8, 0x80000000u | (bus << 16) | (dev << 11) | (fn << 8) | (off & 0xFC));
     return inl(0xCFC);
 }
+uint32_t pci_cfg_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off) { return pci_read(bus, dev, fn, off); }
+void pci_cfg_write(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v) {
+    outl(0xCF8, 0x80000000u | (bus << 16) | (dev << 11) | (fn << 8) | (off & 0xFC));
+    outl(0xCFC, v);
+}
+bool cpu_has_rdrand(void) { uint32_t a, b, c, d; cpuid(1, &a, &b, &c, &d); return (c >> 30) & 1; }
 int pci_scan(pci_dev_t *out, int max) {
     int n = 0;
     for (int bus = 0; bus < 8; bus++)

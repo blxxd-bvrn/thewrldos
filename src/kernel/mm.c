@@ -112,6 +112,11 @@ uint32_t *paging_new_dir(void) {
     memcpy(d, page_dir, 4096);
     return d;
 }
+/* device registers (MMIO) must not be cached: set PCD|PWT on the 4 MiB page */
+void paging_set_uncached(uint32_t addr) {
+    page_dir[addr >> 22] |= 0x18;
+    uint32_t cr3; __asm__ volatile("mov %%cr3,%0; mov %0,%%cr3" : "=r"(cr3) :: "memory");
+}
 void paging_free_dir(uint32_t *d) { if (d && d != page_dir) kfree_aligned(d); }
 
 static void paging_init(void) {
@@ -134,7 +139,9 @@ bool boot_verbose, boot_safe_mode;
 
 void mm_init(uint32_t mbaddr) {
     mb_info_t *mb = (mb_info_t *)mbaddr;
-    uint32_t lowest = 16 * 1024 * 1024;        /* 4..16 MiB reserved for process images */
+    /* 4..16 MiB is reserved for Win32 process images; the kernel itself is loaded at 16 MiB */
+    uint32_t lowest = ((uint32_t)kernel_end + 0xFFF) & ~0xFFFu;
+    if (lowest < 16 * 1024 * 1024) lowest = 16 * 1024 * 1024;
     uint32_t top = 64 * 1024 * 1024;
     if (mb->flags & 1) phys_total = (mb->mem_upper + 1024) * 1024;
     if (mb->flags & (1 << 6)) {

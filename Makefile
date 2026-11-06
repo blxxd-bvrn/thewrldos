@@ -13,9 +13,17 @@ LDFLAGS := -m32 -nostdlib -no-pie -static -T linker.ld -Wl,--build-id=none -Wl,-
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
 BUILD   := build
-CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c)
+CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c)
+# BearSSL (TLS), built freestanding for i686 without SSE/AES-NI
+BSSL    := third_party/bearssl
+BSSL_SRC := $(shell find $(BSSL)/src -name '*.c' 2>/dev/null)
+BSSL_OBJ := $(patsubst $(BSSL)/src/%.c,$(BUILD)/bearssl/%.o,$(BSSL_SRC))
+BSSL_CFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+           -fno-builtin -mno-sse -mno-mmx -O2 -g0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -I$(BSSL)/src \
+           -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_RDRAND=0 -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 \
+           -DBR_USE_WIN32_RAND=0 -DBR_USE_WIN32_TIME=0 -DBR_POWER8=0
 ASRC    := $(wildcard src/kernel/*.asm)
-OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC))
+OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(BSSL_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 ISO     := wrldos.iso
 MINGW   := i686-w64-mingw32-gcc
@@ -55,6 +63,14 @@ all: $(ISO)
 $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/net/%.o: src/net/%.c $(wildcard src/include/*.h)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -c $< -o $@
+
+$(BUILD)/bearssl/%.o: $(BSSL)/src/%.c
+	@mkdir -p $(dir $@)
+	@$(CC) $(BSSL_CFLAGS) -c $< -o $@
 
 $(BUILD)/kernel/assets.o: src/kernel/assets.asm assets/fonts.bin assets/icons.bin assets/globe.bin
 	@mkdir -p $(dir $@)

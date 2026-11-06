@@ -89,6 +89,7 @@ uint32_t mm_phys_total(void);
 uint32_t *paging_kernel_dir(void);
 uint32_t *paging_new_dir(void);
 void paging_free_dir(uint32_t *dir);
+void paging_set_uncached(uint32_t addr);
 
 /* ---- tasks (cooperative kernel scheduler) ---- */
 enum { TASK_READY, TASK_SLEEPING, TASK_BLOCKED, TASK_DEAD };
@@ -131,6 +132,10 @@ extern void (*task_kill_hook)(task_t *t);
 void cpu_get_info(char *vendor, char *brand);
 typedef struct { uint8_t bus, dev, fn; uint16_t vendor, device; uint8_t cls, sub, prog; } pci_dev_t;
 int pci_scan(pci_dev_t *out, int max);
+uint32_t pci_cfg_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
+void pci_cfg_write(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v);
+bool cpu_has_rdrand(void);
+static inline uint64_t rdtsc(void) { uint32_t lo, hi; __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi)); return ((uint64_t)hi << 32) | lo; }
 const char *pci_class_name(uint8_t cls, uint8_t sub);
 const char *pci_vendor_name(uint16_t v);
 void system_poweroff(void);   /* returns if power-off is not supported */
