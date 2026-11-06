@@ -323,7 +323,7 @@ static void paint_start_button(canvas_t *c, bool hot, bool down) {
     if (T.renderer == RENDER_AERO) { paint_orb(c, 27, y + T.taskbar_h / 2, MIN(19, T.taskbar_h / 2 - 1), hot, down); return; }
     if (T.renderer == RENDER_PLEX) {   /* Longhorn: a plain globe + "start", highlighted on hover */
         rect_t r = R(2, y + 3, start_w() - 6, T.taskbar_h - 6);
-        if (hot || down) { fill_round_rect_blend(c, r.x, r.y, r.w, r.h, 4, down ? T.select : WHITE, down ? 90 : 150); fill_round_rect_blend(c, r.x, r.y, r.w, 1, 0, T.tray_border, 120); }
+        if (hot || down) { fill_round_rect_blend(c, r.x, r.y, r.w, r.h, 4, down ? T.tray_border : WHITE, down ? 140 : 60); fill_round_rect_blend(c, r.x + 1, r.y + 1, r.w - 2, r.h / 2, 3, WHITE, 40); }
         draw_icon(c, ICON_START_LOGO, 16, r.x + 6, r.y + (r.h - 16) / 2);
         draw_text(c, FONT_LARGE, r.x + 27, r.y + (r.h - font_height(FONT_LARGE)) / 2, "start", T.start_text);
         return;
@@ -366,7 +366,8 @@ void taskbar_paint(canvas_t *c) {
         hline(c, 0, y, SCREEN_W, HEX(0x0A1018)); blend_rect(c, 0, y + 1, SCREEN_W, 1, T.tb_hi, 140);
     } else if (plex) {
         gradient_v3(c, 0, y, SCREEN_W, h, T.tb_hi, T.tb_top, T.tb_bot, 3);
-        hline(c, 0, y, SCREEN_W, T.tray_border); hline(c, 0, y + 1, SCREEN_W, WHITE);
+        for (int j = 1; j < h / 2; j++) blend_rect(c, 0, y + j, SCREEN_W, 1, WHITE, 50 - j * 100 / h);
+        hline(c, 0, y, SCREEN_W, T.tray_border); blend_rect(c, 0, y + 1, SCREEN_W, 1, WHITE, 120);
     } else {
         gradient_v3(c, 0, y, SCREEN_W, h, T.tb_hi, T.tb_top, T.tb_bot, 4);
         hline(c, 0, y, SCREEN_W, darken(T.tb_top, 60));
@@ -376,7 +377,7 @@ void taskbar_paint(canvas_t *c) {
     /* quick launch */
     int qx = ql_x();
     if (T.classic) { vline(c, qx - 3, y + 4, h - 6, HEX(0x808080)); vline(c, qx - 2, y + 4, h - 6, WHITE); }
-    else if (plex) { vline(c, qx - 3, y + 5, h - 9, T.tray_border); vline(c, qx - 2, y + 5, h - 9, WHITE); }
+    else if (plex) { vline(c, qx - 3, y + 5, h - 9, T.tray_border); blend_rect(c, qx - 2, y + 5, 1, h - 9, WHITE, 110); }
     else if (!aero) { vline(c, qx - 3, y + 3, h - 5, darken(T.tb_top, 50)); vline(c, qx - 2, y + 3, h - 5, lighten(T.tb_top, 60)); }
     for (int i = 0; i < QL_N; i++) {
         rect_t r = R(qx + i * 24, y + (h - 22) / 2, 22, 22);
@@ -398,6 +399,7 @@ void taskbar_paint(canvas_t *c) {
             if (act || hot) {
                 fill_round_rect(c, r.x, r.y, r.w, r.h, 3, T.tbtn_border);
                 gradient_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 2, act ? T.tbtn_act_top : T.tbtn_hot, act ? T.tbtn_act_bot : T.tbtn_bot);
+                fill_round_rect_blend(c, r.x + 2, r.y + 2, r.w - 4, (r.h - 4) / 2, 2, WHITE, 50);
             }
             draw_icon(c, w->icon >= 0 ? w->icon : ICON_EXE, 16, r.x + 6, r.y + (r.h - 16) / 2);
             draw_text_ellipsis(c, act ? FONT_UI_BOLD : FONT_UI, r.x + 26, r.y + (r.h - 14) / 2, r.w - 32, w->title, T.tbtn_text);
@@ -645,7 +647,7 @@ static void paint_startmenu(canvas_t *c) {
         blend_rect(c, m.x + 196, by, m.w - 202, bh, T.sm_right, 110);
     } else if (T.renderer == RENDER_PLEX) {
         gradient_v(c, m.x + 1, by, 190, bh, T.sm_left, darken(T.sm_left, 40));
-        gradient_v(c, m.x + 191, by, m.w - 192, bh, T.sm_right, WHITE);
+        gradient_v(c, m.x + 191, by, m.w - 192, bh, lighten(T.sm_right, 60), darken(T.sm_right, 30));
         vline(c, m.x + 191, by, bh, T.sm_right_line);
     } else {
         fill_rect(c, m.x + 1, by, 190, bh, T.sm_left);
