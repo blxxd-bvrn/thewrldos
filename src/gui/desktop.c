@@ -25,6 +25,7 @@ static int isin(int a) {   /* a: 0..1023 = 0..2pi, returns -256..256 */
     int v = num * 256 / (den ? den : 1);
     return neg ? -v : v;
 }
+int ext_isin(int a) { return isin(a); }
 static uint32_t hash2(int x, int y, int seed) { uint32_t h = x * 374761393u + y * 668265263u + seed * 2246822519u; h = (h ^ (h >> 13)) * 1274126177u; return h ^ (h >> 16); }
 static int vnoise(int x, int y, int scale, int seed) {   /* 0..255 */
     int gx = x / scale, gy = y / scale, fx = (x % scale) * 256 / scale, fy = (y % scale) * 256 / scale;
