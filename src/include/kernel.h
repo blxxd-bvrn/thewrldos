@@ -118,6 +118,7 @@ void task_yield(void);
 void task_sleep(uint32_t ms);
 void task_exit(int code);
 bool task_kill(int pid);
+int task_exit_code(int pid);
 task_t *task_current(void);
 task_t *task_find(int pid);
 task_t *task_list(void);

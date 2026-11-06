@@ -20,3 +20,4 @@ W void recycle_empty(void) {}
 W int pe_spawn(const char *p, const char *a, console_t *c, char *e, int ec) { (void)p; (void)a; (void)c; snprintf(e, ec, "PE loader not built"); return -1; }
 W void w32_init(void) {}
 W void pe_task_cleanup(task_t *t) { (void)t; }
+W void pe_set_stdin(int pid, console_t *in) { (void)pid; (void)in; }

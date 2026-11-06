@@ -8,6 +8,10 @@ static task_t *tasks = &task0;
 static int next_pid = 1;
 static task_t *zombies;
 void (*task_kill_hook)(task_t *t);
+static struct { int pid, code; } exit_ring[32];
+static int exit_ring_pos;
+static void record_exit(task_t *t) { exit_ring[exit_ring_pos].pid = t->pid; exit_ring[exit_ring_pos].code = t->exit_code; exit_ring_pos = (exit_ring_pos + 1) % 32; }
+int task_exit_code(int pid) { for (int i = 0; i < 32; i++) if (exit_ring[i].pid == pid) return exit_ring[i].code; return -1; }
 
 void task_init(void) {
     task0.pid = 0;
@@ -107,6 +111,7 @@ void task_exit(int code) {
     t->exit_code = code;
     klog("task: pid %d '%s' exited (%d)", t->pid, t->name, code);
     if (task_kill_hook) task_kill_hook(t);
+    record_exit(t);
     t->state = TASK_DEAD;
     unlink_task(t);
     t->next = NULL;
@@ -129,6 +134,7 @@ bool task_kill(int pid) {
     uint32_t f = irq_save();
     klog("task: killed pid %d '%s'", t->pid, t->name);
     if (task_kill_hook) task_kill_hook(t);
+    t->exit_code = -1; record_exit(t);
     t->state = TASK_DEAD;
     unlink_task(t);
     t->next = zombies; zombies = t;
