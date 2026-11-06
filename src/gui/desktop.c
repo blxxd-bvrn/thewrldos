@@ -269,7 +269,7 @@ static int task_btns(window_t **out, int max) {
     int n = 0;
     for (int i = 0; i < wm_window_count() && n < max; i++) {
         window_t *w = wm_window_at(i);
-        if (w->flags & (WF_DIALOG | WF_POPUP)) continue;
+        if (w->flags & (WF_DIALOG | WF_POPUP | WF_HIDDEN)) continue;
         out[n++] = w;
     }
     /* order by id so buttons don't jump when focus changes */

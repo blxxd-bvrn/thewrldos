@@ -86,7 +86,10 @@ bool shell_open(const char *path, const char *cwd) {
     const char *e = vfs_ext(n->name);
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) {
         char err[256];
-        if (pe_spawn(full, "", NULL, err, sizeof err) < 0) err_box(n->name, err);
+        extern bool pe_is_gui(vnode_t *n);
+        if (!pe_probe(n, err, sizeof err)) err_box(n->name, err);
+        else if (pe_is_gui(n)) { if (pe_spawn(full, "", NULL, err, sizeof err) < 0) err_box(n->name, err); }
+        else { char dir[512]; path_dirname(full, dir, sizeof dir); terminal_open(full, dir); }
     } else if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash")) {
         char dir[512]; path_dirname(full, dir, sizeof dir);
         terminal_open(full, dir);

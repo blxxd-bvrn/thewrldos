@@ -42,9 +42,9 @@ assets:
 # Win32 sample programs (needs mingw-w64). Prebuilt copies are committed.
 samples: $(SAMPLE_EXES)
 rootfs/Samples/winhello.exe: samples/winhello.c
-	$(MINGW) -O2 -mwindows -o $@ $< -lgdi32
+	$(MINGW) -O2 -s -mwindows -o $@ $< -lgdi32
 rootfs/Samples/%.exe: samples/%.c
-	$(MINGW) -O2 -o $@ $<
+	$(MINGW) -O2 -s -o $@ $<
 
 dmg: rootfs/Samples/Sample.dmg
 rootfs/Samples/Sample.dmg: tools/mkdmg.py $(shell find dmgroot -type f 2>/dev/null)

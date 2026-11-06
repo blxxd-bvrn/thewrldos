@@ -1292,7 +1292,9 @@ static int run_external(sh_t *s, int argc, char **argv, io_t *io) {
         int pid = pe_spawn(path, args, io->out, err, sizeof err);
         if (pid < 0) { err_f(io, "%s: %s\n", argv[0], err); return 126; }
         extern void pe_set_stdin(int pid, console_t *in);
+        extern bool pe_is_gui(vnode_t *n);
         pe_set_stdin(pid, io->in);
+        if (pe_is_gui(n)) { out_f(io, "Started %s (pid %d)\n", n->name, pid); return 0; }
         return wait_pid(s, pid);
     }
     if (!strcasecmp(ext, "sh") || !strcasecmp(ext, "bash") || (n->size > 2 && n->data[0] == '#' && n->data[1] == '!')) return sh_run_file_io(s, path, argc, argv, io);
