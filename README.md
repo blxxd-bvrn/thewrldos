@@ -52,6 +52,13 @@ make run-disk      # boot the installed disk.img on its own (no CD)
 
 ### Building on Windows
 
+**Easiest:** double-click **`Build to ISO.bat`** in the source folder. It builds through WSL
+(or Docker Desktop if WSL is not set up), installs the Linux build tools automatically on the
+first run (you may be asked for your Linux password), and writes `wrldos.iso` next to the .bat.
+If neither WSL nor Docker is available it offers to install WSL with Ubuntu for you.
+
+To build by hand:
+
 MSYS2, MinGW and Cygwin cannot build the kernel: their `gcc` produces Windows PE objects rather
 than the 32-bit ELF kernel GRUB loads, and they do not ship the BIOS GRUB tools (`grub-mkrescue`,
 `grub-mkimage`, `/usr/lib/grub/i386-pc`). Use WSL instead:

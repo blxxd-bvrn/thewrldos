@@ -1,0 +1,12 @@
+# Keep LF line endings in the working tree on every OS: the Makefile, shell
+# scripts and GRUB config break with Windows (CRLF) line endings.
+* text=auto eol=lf
+# ...except Windows batch files, which need CRLF.
+*.bat text eol=crlf
+*.bin binary
+*.exe binary
+*.dmg binary
+*.png binary
+*.bmp binary
+*.iso binary
+*.img binary
