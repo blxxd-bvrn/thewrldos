@@ -5,6 +5,7 @@
  * Also keeps the user's settings in C:\Windows\wrld.ini. */
 #include "kernel.h"
 #include "disk.h"
+#include "gfx.h"
 #include "theme.h"
 #include "wm.h"
 
@@ -131,6 +132,24 @@ void settings_set(const char *key, const char *val) {
     for (int i = 0; i < nkv; i++) if (!strcasecmp(kv[i].k, key)) { strlcpy(kv[i].v, val, sizeof kv[i].v); return; }
     if (nkv < 40) { strlcpy(kv[nkv].k, key, sizeof kv[nkv].k); strlcpy(kv[nkv].v, val, sizeof kv[nkv].v); nkv++; }
 }
+/* account pictures are saved by name, so adding icons never changes them */
+static const struct { const char *name; int icon; } pictures[] = {
+    { "flower", ICON_USER_FLOWER }, { "planet", ICON_USER_PLANET }, { "fish", ICON_USER_FISH }, { "mountain", ICON_USER_MOUNTAIN } };
+static int picture_from_name(const char *s, int def) {
+    if (!s) return def;
+    if (isdigit(s[0])) { int v = atoi(s); for (unsigned i = 0; i < ARRAY_LEN(pictures); i++) if (pictures[i].icon == v) return v; return def; }  /* older wrld.ini */
+    for (unsigned i = 0; i < ARRAY_LEN(pictures); i++) if (!strcasecmp(s, pictures[i].name)) return pictures[i].icon;
+    return def;
+}
+static const char *picture_name(int icon) {
+    for (unsigned i = 0; i < ARRAY_LEN(pictures); i++) if (pictures[i].icon == icon) return pictures[i].name;
+    return pictures[0].name;
+}
+void persist_status(char *b, int cap) {
+    if (!system_volume) { snprintf(b, cap, "Live session from the CD (in memory; changes are not saved)"); return; }
+    snprintf(b, cap, "Disk %d, Partition %d: FAT32 \"%s\", %u MB free of %u MB", system_disk_index, system_part_index + 1,
+             fat32_label(system_volume), (uint32_t)(fat32_free_bytes(system_volume) >> 20), (uint32_t)(fat32_total_bytes(system_volume) >> 20));
+}
 static int geti(const char *k, int def) { const char *v = settings_get(k); return v ? atoi(v) : def; }
 void settings_load(void) {
     uint32_t len;
@@ -149,7 +168,7 @@ void settings_load(void) {
     const char *s;
     if ((s = settings_get("user")) && *s) strlcpy(user_name, s, sizeof user_name);
     if ((s = settings_get("computer")) && *s) strlcpy(computer_name, s, sizeof computer_name);
-    user_picture = geti("picture", user_picture);
+    user_picture = picture_from_name(settings_get("picture"), user_picture);
     tz_offset_minutes = geti("tz", tz_offset_minutes);
     mouse_speed = geti("mouse_speed", mouse_speed);
     clock_24h = geti("clock24", clock_24h);
@@ -161,7 +180,7 @@ void settings_load(void) {
 static void capture(void) {
     char b[16];
     settings_set("user", user_name); settings_set("computer", computer_name);
-    snprintf(b, sizeof b, "%d", user_picture); settings_set("picture", b);
+    settings_set("picture", picture_name(user_picture));
     snprintf(b, sizeof b, "%d", theme_id); settings_set("theme", b);
     snprintf(b, sizeof b, "%d", theme_hue); settings_set("hue", b);
     snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);

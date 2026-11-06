@@ -5,6 +5,7 @@
 #include "wm.h"
 #include "apps.h"
 #include "theme.h"
+#include "disk.h"
 
 bool console_interrupted(console_t *c);
 void console_clear_interrupt(console_t *c);
@@ -956,6 +957,14 @@ static int b_kill(sh_t *s, int argc, char **argv, io_t *io) {
     for (int i = 1; i < argc; i++) { if (argv[i][0] == '-') continue; int pid = atoi(argv[i]); if (!task_kill(pid)) { err_f(io, "kill: (%d) - No such process\n", pid); rc = 1; } }
     return rc;
 }
+static int b_sync(sh_t *s, int argc, char **argv, io_t *io) {
+    if (!system_volume) { out_s(io, "sync: this is the live session from the CD; nothing is saved to a disk.\nInstall " OS_NAME " (desktop icon or Control Panel > System) to keep your files.\n"); return 0; }
+    int n = persist_pending();
+    persist_flush();
+    char st[120]; persist_status(st, sizeof st);
+    out_f(io, "sync: %d changed file(s) written. %s\n", n, st);
+    return 0;
+}
 static int b_free(sh_t *s, int argc, char **argv, io_t *io) {
     out_f(io, "              total        used        free\nMem:     %10u  %10u  %10u  (KB)\n", mm_total() / 1024, mm_used() / 1024, (mm_total() - mm_used()) / 1024);
     out_f(io, "Physical: %u MB installed\n", mm_phys_total() / (1024 * 1024));
@@ -1204,7 +1213,7 @@ static const builtin_t builtins[] = {
     { "true", b_true, NULL }, { "false", b_false, NULL }, { ":", b_true, NULL }, { "sleep", b_sleep, "wait N seconds" },
     { "date", b_date, "show date (+FORMAT)" }, { "uname", b_uname, "system name (-a)" }, { "ver", b_ver, "OS version" },
     { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
-    { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "mem", b_free, NULL },
+    { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "sync", b_sync, "write changes to the system disk now" }, { "mem", b_free, NULL },
     { "uptime", b_uptime, NULL }, { "dmesg", b_dmesg, "kernel log" }, { "export", b_export, "set variables" }, { "set", b_env, NULL },
     { "unset", b_unset, NULL }, { "env", b_env, "list variables" }, { "read", b_read, "read a line into variables" },
     { "test", b_test, "evaluate conditions" }, { "[", b_test, NULL }, { "[[", b_test, NULL }, { "seq", b_seq, "number sequences" },

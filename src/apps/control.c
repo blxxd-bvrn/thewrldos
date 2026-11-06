@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "wm.h"
 #include "apps.h"
+#include "disk.h"
 
 typedef struct { const char *id, *name, *desc; int icon; int cat; } applet_t;
 enum { CAT_SYSTEM, CAT_NETWORK, CAT_HARDWARE, CAT_PROGRAMS, CAT_USERS, CAT_APPEARANCE, CAT_CLOCK, CAT_EASE, CAT_N };
@@ -341,15 +342,18 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     y += 30;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "System", HEX(0x1E3287)); hline(s, ox + 80, y + 8, s->w - ox - 120, HEX(0xD8E0EA)); y += 24;
     char v[16], br[52], b[160]; cpu_get_info(v, br);
-    const char *lab[] = { "Processor:", "Installed memory:", "Kernel heap:", "System type:", "Uptime:", "Tasks:" };
-    char vals[6][96];
+    const char *lab[] = { "Computer name:", "Installed on:", "Processor:", "Installed memory:", "Kernel heap:", "System type:", "Uptime:", "Tasks:" };
+    char vals[8][96];
+    strlcpy(vals[6], computer_name, 96);
+    persist_status(vals[7], 96);
     snprintf(vals[0], 96, "%s (%s)", br, v);
     snprintf(vals[1], 96, "%u MB", mm_phys_total() / (1024 * 1024));
     snprintf(vals[2], 96, "%u KB used of %u MB", mm_used() / 1024, mm_total() / (1024 * 1024));
     snprintf(vals[3], 96, "32-bit operating system (i686 protected mode, 4 MiB paging)");
     uint32_t up = timer_ticks() / 1000; snprintf(vals[4], 96, "%u:%02u:%02u", up / 3600, (up / 60) % 60, up % 60);
     snprintf(vals[5], 96, "%d running (cooperative scheduler)", task_count());
-    for (int i = 0; i < 6; i++) { draw_text(s, FONT_UI, ox + 40, y, lab[i], HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, ox + 170, y, s->w - ox - 200, vals[i], BLACK); y += 20; }
+    static const int order[8] = { 6, 7, 0, 1, 2, 3, 4, 5 };
+    for (int k = 0; k < 8; k++) { int i = order[k]; draw_text(s, FONT_UI, ox + 40, y, lab[k], HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, ox + 170, y, s->w - ox - 200, vals[i], BLACK); y += 20; }
     y += 14;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Compatibility", HEX(0x1E3287)); hline(s, ox + 110, y + 8, s->w - ox - 150, HEX(0xD8E0EA)); y += 24;
     snprintf(b, sizeof b, "Win32 PE32 (.exe): %d kernel32, %d msvcrt, %d user32, %d gdi32 functions", 0, 0, 0, 0);
@@ -359,6 +363,7 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     draw_text(s, FONT_UI, ox + 40, y, "Shell scripts (.sh): built-in POSIX-style interpreter", BLACK); y += 18;
     draw_text(s, FONT_UI, ox + 40, y, "Apple disk images (.dmg): UDIF raw/zlib, FAT volumes, script .app bundles", BLACK); y += 26;
     if (ui_link(w, ox + 40, y, FONT_UI, "Device Manager", W7_LINK)) cp_go(c, "devices", true);
+    if (!system_volume && ui_link(w, ox + 310, y, FONT_UI, "Install " OS_NAME " to a hard disk", W7_LINK)) setup_launch_from_desktop();
     if (ui_link(w, ox + 160, y, FONT_UI, "Kernel log (dmesg)", W7_LINK)) { vfs_write_file("C:\\tmp\\dmesg.log", klog_buffer(), strlen(klog_buffer())); notepad_open("C:\\tmp\\dmesg.log"); }
 }
 static void page_devices(window_t *w, cp_t *c, int ox, int oy) {

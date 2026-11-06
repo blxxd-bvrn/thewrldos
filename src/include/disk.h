@@ -54,6 +54,7 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap);
 void persist_start(void);           /* enable write-back + background flush task */
 void persist_flush(void);           /* write everything dirty now (shutdown/restart) */
 int persist_pending(void);
+void persist_status(char *buf, int cap);   /* "Disk 0, Partition 1: ..." or live session */
 void settings_load(void);
 void settings_save(void);
 const char *settings_get(const char *key);

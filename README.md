@@ -62,7 +62,8 @@ make            # builds build/wrld.elf and wrldos.iso
 make run        # boots the CD in QEMU: live session, nothing is saved
 ```
 
-`make check-tools` lists any missing tool. Fedora's `grub2-*` tool names are detected
+Tested with Ubuntu 22.04 (gcc 11, binutils 2.38, GRUB 2.06) and 24.04 (gcc 13, binutils
+2.42). `make check-tools` lists any missing tool. Fedora's `grub2-*` tool names are detected
 automatically. On WSL, clone the repository inside the Linux file system (for example
 `~/XPLikeTest`, not `/mnt/c/...`). On Windows 11 the QEMU window opens on the normal desktop.
 
@@ -114,8 +115,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
    It then finishes with *Finalizing installation*.
 3. From then on, changes to `C:` are written back to the disk: new folders, deletes and
    renames immediately, file contents within about 2 seconds and at shutdown/restart.
-   Settings (theme, hue, wallpaper, user and computer name, time zone, mouse and clock
-   options) are kept in `C:\Windows\wrld.ini`.
+   Settings (theme, hue, wallpaper, account picture, user and computer name, time zone, mouse
+   and clock options) are kept in `C:\Windows\wrld.ini`. Control Panel > System and About show
+   which disk and partition the system runs from, and how much space is free.
 
 ## Using THE WRLD OS
 
@@ -129,6 +131,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `open C:/Samples/Sample.dmg` mounts the disk image;
   - `hdiutil info` shows mounted images;
   - `theme olive 185` sets Olive Green with a 185° hue;
+  - `sync` writes pending changes to the disk now (installed systems);
   - `hostname`, `ps`, `free`, `shutdown -r`;
   - `help` lists all commands.
 - **Keyboard**:

@@ -8,7 +8,9 @@ CFLAGS  := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protecto
            -fno-asynchronous-unwind-tables -fno-builtin -mno-sse -mno-mmx -O2 -g0 \
            -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers \
            -Wno-sign-compare -Wno-misleading-indentation -std=gnu11 -Isrc/include
-LDFLAGS := -m32 -nostdlib -no-pie -static -T linker.ld -Wl,--build-id=none -Wl,-z,noexecstack -Wl,--no-warn-rwx-segments
+LDFLAGS := -m32 -nostdlib -no-pie -static -T linker.ld -Wl,--build-id=none -Wl,-z,noexecstack
+# --no-warn-rwx-segments only exists in binutils 2.39+ (Ubuntu 22.04 ships 2.38)
+LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
 BUILD   := build
 CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c)

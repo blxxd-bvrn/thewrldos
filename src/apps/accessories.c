@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "wm.h"
 #include "apps.h"
+#include "disk.h"
 
 void file_dialog(const char *title, const char *initial, bool save, const char *ext, void (*cb)(void *, const char *), void *ctx);
 
@@ -461,11 +462,14 @@ static void about_paint(window_t *w) {
     draw_text(c, FONT_UI, 20, y + 6, b, HEX(0x404040));
     snprintf(b, sizeof b, "This product is licensed to: %s", user_name);
     draw_text(c, FONT_UI, 20, y + 24, b, HEX(0x404040));
+    char st[120]; persist_status(st, sizeof st);
+    snprintf(b, sizeof b, "%s: %s", system_volume ? "Installed on" : "Running as", st);
+    draw_text_ellipsis(c, FONT_UI, 20, y + 42, c->w - 40, b, HEX(0x404040));
     if (ui_button_ex(w, R(c->w - 90, c->h - 34, 76, 24), "OK", true, true)) wm_destroy(w);
 }
 static void about_tick(window_t *w) { w->dirty = true; }
 void about_open(void) {
-    window_t *w = wm_create("About " OS_NAME, -1, -1, 440, 330, WF_NO_MAX | WF_NO_MIN);
+    window_t *w = wm_create("About " OS_NAME, -1, -1, 470, 352, WF_NO_MAX | WF_NO_MIN);
     w->paint = about_paint; w->icon = ICON_ABOUT;
     wm_set_timer(w, 50, about_tick);
     wm_center(w);
