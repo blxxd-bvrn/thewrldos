@@ -1,4 +1,4 @@
-; Lumina OS - multiboot entry point
+; THE WRLD OS - multiboot entry point
 MBALIGN  equ 1 << 0
 MEMINFO  equ 1 << 1
 VIDEO    equ 1 << 2

@@ -198,3 +198,4 @@ void format_size(char *buf, size_t n, uint32_t b) {
 static uint32_t rng = 0x12345678;
 void rand_seed(uint32_t s) { rng = s ? s : 1; }
 uint32_t rand_next(void) { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }
+void *memchr(const void *s, int c, size_t n) { const unsigned char *p = s; for (size_t i = 0; i < n; i++) if (p[i] == (unsigned char)c) return (void *)(p + i); return NULL; }

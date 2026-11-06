@@ -229,7 +229,7 @@ void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool 
     /* caption buttons: close, max, min (right to left) */
     int s = T.cap_btn;
     int bx = x + w - (T.classic ? 6 : 5) - s, by = y + (T.classic ? 6 : (th - s) / 2 + 1);
-    cap_button(c, bx, by, s, 3, active, hot_btn == 3, pressed_btn == 3);
+    if (!(flags & WF_NOCLOSE)) cap_button(c, bx, by, s, 3, active, hot_btn == 3, pressed_btn == 3);
     if (!(flags & WF_NO_MAX) || !(flags & WF_NO_MIN)) {
         bx -= s + (T.classic ? 2 : 2);
         if (!(flags & WF_NO_MAX)) cap_button(c, bx, by, s, maxed ? 2 : 1, active, hot_btn == 1, pressed_btn == 1);

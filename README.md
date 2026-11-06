@@ -1,4 +1,4 @@
-# Lumina OS
+# THE WRLD OS
 
 An original 32-bit x86 operating system written from scratch in C and assembly, with an
 XP-style "Luna" desktop, a Windows 7-style Control Panel, and compatibility layers that run
@@ -16,23 +16,59 @@ a welcome/log-on screen and then the desktop.
 
 ## Build and run
 
-Requirements (Ubuntu/Debian): `gcc` (with `-m32`), `nasm`, `make`, `grub-pc-bin`, `grub-common`,
-`xorriso`, `mtools`, `qemu-system-x86`. Optional: `gcc-mingw-w64-i686` (to rebuild the sample
-`.exe` files), `dosfstools` + `python3` (to rebuild `Sample.dmg`), Pillow (to regenerate assets).
+THE WRLD OS is built on **Linux** (or **WSL** on Windows). Requirements (Ubuntu/Debian):
 
 ```bash
-make            # builds build/lumina.elf and lumina.iso
+sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-common xorriso mtools qemu-system-x86
+```
+
+Optional: `gcc-mingw-w64-i686` (to rebuild the sample `.exe` files), `dosfstools` + `python3`
+(to rebuild `Sample.dmg`), Pillow + NumPy (to regenerate fonts, icons and the globe).
+`make check-tools` lists anything that is missing.
+
+```bash
+make            # builds build/wrld.elf and wrldos.iso
 ```
 
 ```bash
-make run        # boots the ISO in QEMU (256 MB RAM, std VGA, serial log on stdout)
+make run        # live session from the CD in QEMU (nothing is saved)
 ```
 
-GRUB offers three entries: normal boot, **verbose boot** (kernel log on the boot screen),
-and **safe mode** (Classic theme).
+### Installing to a (virtual) hard disk
+
+```bash
+make run-install   # CD + a blank 512 MB disk.img
+```
+
+Pick **Install THE WRLD OS** in the boot menu (or double-click the *Install THE WRLD OS* icon in
+the live desktop). Setup partitions and formats the disk (FAT32), copies the system, installs the
+GRUB boot loader and restarts. The first boot from the disk runs a short wizard (time zone, your
+name, computer name, visual style), and from then on every file and setting is saved to the disk.
+With the CD still attached, its boot menu starts the hard disk by default.
+
+```bash
+make run-disk      # boot the installed disk.img on its own (no CD)
+```
+
+### Building on Windows
+
+MSYS2, MinGW and Cygwin cannot build the kernel: their `gcc` produces Windows PE objects rather
+than the 32-bit ELF kernel GRUB loads, and they do not ship the BIOS GRUB tools (`grub-mkrescue`,
+`grub-mkimage`, `/usr/lib/grub/i386-pc`). Use WSL instead:
+
+1. In PowerShell (as administrator): `wsl --install -d Ubuntu`, then restart and open *Ubuntu*.
+2. Install the packages listed above with `sudo apt install ...`.
+3. Clone the repository **inside** the WSL file system (e.g. `~/XPLikeTest`, not `/mnt/c/...`)
+   and run `make run`. On Windows 11 the QEMU window opens on the Windows desktop via WSLg.
+
+You can also build in WSL and boot `wrldos.iso` with QEMU for Windows, VirtualBox or VMware
+(BIOS/legacy boot, IDE disk controller for installing).
+
+GRUB on the CD offers: *Boot from the hard disk* (when installed), *Live*, *Install*, *verbose
+boot* (kernel log on the boot screen) and *safe mode* (Classic theme).
 
 Other targets: `make samples` (rebuild the Win32 samples with mingw-w64), `make dmg`
-(rebuild `rootfs/Samples/Sample.dmg`), `make assets` (regenerate fonts/icons).
+(rebuild `rootfs/Samples/Sample.dmg`), `make assets` (regenerate fonts/icons/globe).
 `tools/qemu_harness.py` drives a headless QEMU over QMP (mouse, keyboard, screenshots).
 
 ## What's inside
@@ -49,6 +85,12 @@ Other targets: `make samples` (rebuild the Win32 samples with mingw-w64), `make 
   serial (COM1) kernel log.
 - In-memory VFS with drive letters, populated from a tar initrd; read-only FAT12/16/32
   driver with long file names; DEFLATE/zlib decompressor; UDIF `.dmg` parser.
+- ATA/IDE disk driver (PIO, LBA28/LBA48), MBR partition tables, and a **read/write FAT32**
+  driver (format, long file names, create/replace/delete/rename) used by Setup and by the
+  installed system's write-back layer (`persist.c`), which also keeps settings in
+  `C:\Windows\wrld.ini`.
+- **Setup** (`src/apps/setup.c`): XP-style text-mode installer (create/delete partitions,
+  quick or full format, file copy, GRUB boot loader install) and a first-boot wizard.
 
 ### Desktop (`src/gui`)
 - Double-buffered framebuffer renderer (1024×768×32), anti-aliased fonts (Liberation, SIL OFL),
@@ -99,7 +141,10 @@ graphs), Calculator, Paint (BMP open/save), Image Viewer, Snake, Properties, Run
 - macOS cannot be emulated: **native Mach-O binaries inside a `.dmg` are identified but not
   executed**; only script-based bundles run. HFS+/APFS volumes and bzip2/LZFSE/LZMA-compressed
   images are detected and reported as unsupported (FAT volumes with raw/zlib chunks work).
-- Storage is a RAM disk (changes are lost on reboot); no network stack, no USB, no sound
+- The live CD session runs from RAM. Installed systems keep C: on a FAT32 partition of an
+  IDE/ATA disk (PIO mode; no AHCI/SATA, NVMe or USB storage drivers). Files are loaded into
+  memory at boot and written back to the disk as they change (within ~2 s, and on shutdown),
+  so the installed system's size is limited by RAM. No network stack, no USB, no sound
   card beyond the PC speaker, fixed 1024×768 resolution, single CPU, cooperative (not
   preemptive) scheduling, programs run in ring 0.
 - "Luna", "Olive Green", "Silver" and "Classic" describe the visual styles this project

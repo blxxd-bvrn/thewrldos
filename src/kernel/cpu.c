@@ -1,5 +1,6 @@
 /* GDT, IDT, PIC, exception handling, serial log */
 #include "kernel.h"
+#include "disk.h"
 
 /* ---------------- GDT ---------------- */
 typedef struct PACKED { uint16_t limit_lo, base_lo; uint8_t base_mid, access, gran, base_hi; } gdt_entry_t;
@@ -241,6 +242,7 @@ const char *pci_vendor_name(uint16_t v) {
     }
 }
 void system_poweroff(void) {
+    persist_flush();
     cli();
     outw(0x604, 0x2000);   /* QEMU (newer) */
     outw(0xB004, 0x2000);  /* Bochs / old QEMU */
@@ -248,6 +250,7 @@ void system_poweroff(void) {
     for (;;) hlt();
 }
 void system_reboot(void) {
+    persist_flush();
     cli();
     for (int i = 0; i < 100000 && (inb(0x64) & 2); i++) {}
     outb(0x64, 0xFE);

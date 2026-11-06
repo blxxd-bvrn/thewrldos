@@ -163,6 +163,10 @@ void mm_init(uint32_t mbaddr) {
         const char *cmd = (const char *)mb->cmdline;
         if (strstr(cmd, "verbose")) boot_verbose = true;
         if (strstr(cmd, "safe")) boot_safe_mode = true;
+        extern bool boot_setup_mode; extern uint32_t boot_root_serial;
+        if (strstr(cmd, "setup")) boot_setup_mode = true;
+        const char *r = strstr(cmd, "root=");
+        if (r) boot_root_serial = strtoul(r + 5, NULL, 16);
     }
     paging_init();
     heap_init(lowest, top);

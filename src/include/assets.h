@@ -12,7 +12,8 @@ enum {
     FONT_MONO = 7,
     FONT_SMALL = 8,
     FONT_XL = 9,
-    FONT_COUNT = 10
+    FONT_LOGO = 10,
+    FONT_COUNT = 11
 };
 enum {
     ICON_COMPUTER = 0,
@@ -78,6 +79,7 @@ enum {
     ICON_GAME = 60,
     ICON_DESKTOP = 61,
     ICON_SHELL_FOLDER = 62,
-    ICON_COUNT = 63
+    ICON_SETUP = 63,
+    ICON_COUNT = 64
 };
 #endif

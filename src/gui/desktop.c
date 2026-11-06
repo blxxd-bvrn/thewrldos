@@ -8,6 +8,7 @@
 int wallpaper_id = 0;
 uint32_t desktop_color = HEX(0x3A6EA5);
 char user_name[32] = "User";
+char computer_name[32] = "WRLD-PC";
 int user_picture = ICON_USER_FLOWER;
 bool show_clock = true, show_seconds = false, clock_24h = false;
 const char *wallpaper_names[] = { "Meadow", "Azure", "Sunset", "Aurora", "Dunes", "(None)" };

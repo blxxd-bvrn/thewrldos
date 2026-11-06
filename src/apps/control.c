@@ -195,7 +195,7 @@ static void heading(canvas_t *s, int x, int y, const char *t, const char *sub) {
     draw_text(s, FONT_LARGE, x, y, t, W7_HEAD);
     if (sub) draw_text_wrapped(s, FONT_UI, x, y + 30, s->w - x - 30, sub, W7_TEXT, 2);
 }
-static void theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
+void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     theme_t save = T;
     theme_compute(id, hue, &T);
     canvas_t *pre = canvas_new(120, 80);
@@ -219,7 +219,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     for (int i = 0; i < THEME_COUNT; i++) {
         int x = ox + 24 + i * 140;
         bool sel = theme_id == i;
-        theme_thumb(s, x, y, i, theme_hue, sel);
+        cp_theme_thumb(s, x, y, i, theme_hue, sel);
         if (ui_click_area(w, R(x - 4, y - 4, 128, 108))) { theme_apply(i, theme_hue); wm_redraw_all(); }
         draw_text_centered(s, FONT_UI, R(x - 4, y + 84, 128, 16), theme_names[i], BLACK);
     }
@@ -366,7 +366,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     heading(s, ox + 20, oy + 16, "Device Manager", "Hardware enumerated from PCI configuration space and the kernel's built-in drivers.");
     pci_dev_t d[32]; int n = pci_scan(d, 32);
     int y = oy + 80 - c->scroll;
-    draw_icon(s, ICON_COMPUTER, 16, ox + 20, y); draw_text(s, FONT_UI_BOLD, ox + 40, y + 1, "LUMINA-PC", BLACK); y += 22;
+    draw_icon(s, ICON_COMPUTER, 16, ox + 20, y); draw_text(s, FONT_UI_BOLD, ox + 40, y + 1, computer_name, BLACK); y += 22;
     const struct { const char *g; int icon; } builtin[] = { { "Keyboards: Standard PS/2 Keyboard (IRQ 1)", ICON_CP_KEYBOARD }, { "Mice: PS/2 IntelliMouse-compatible (IRQ 12)", ICON_CP_MOUSE },
         { "System timer: Intel 8253/8254 PIT @ 1000 Hz (IRQ 0)", ICON_CP_DATETIME }, { "System CMOS/real time clock", ICON_CP_CLOCK }, { "Ports: Communications Port (COM1)", ICON_CP_DEVICES }, { "Sound: PC speaker", ICON_CP_SOUND } };
     for (unsigned i = 0; i < ARRAY_LEN(builtin); i++) { draw_icon(s, builtin[i].icon, 16, ox + 40, y); draw_text(s, FONT_UI, ox + 62, y + 1, builtin[i].g, BLACK); y += 20; }
@@ -381,7 +381,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
 static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "View your basic network information", NULL);
-    draw_icon(s, ICON_COMPUTER, 48, ox + 40, oy + 80); draw_text(s, FONT_UI, ox + 30, oy + 134, "LUMINA-PC", BLACK);
+    draw_icon(s, ICON_COMPUTER, 48, ox + 40, oy + 80); draw_text(s, FONT_UI, ox + 30, oy + 134, computer_name, BLACK);
     for (int x = ox + 100; x < ox + 240; x += 8) hline(s, x, oy + 104, 4, HEX(0xC03030));
     draw_icon(s, ICON_ERROR, 16, ox + 162, oy + 96);
     draw_icon(s, ICON_CP_NETWORK, 48, ox + 250, oy + 80); draw_text(s, FONT_UI, ox + 254, oy + 134, "Internet", BLACK);
@@ -420,7 +420,7 @@ static void page_keyboard(window_t *w, cp_t *c, int ox, int oy) {
 }
 static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Sound", "Lumina drives the PC speaker through PIT channel 2. Click a tone to test it.");
+    heading(s, ox + 20, oy + 16, "Sound", "THE WRLD OS drives the PC speaker through PIT channel 2. Click a tone to test it.");
     static const struct { const char *n; int f; } tones[] = { { "Default Beep", 880 }, { "Asterisk", 1200 }, { "Critical Stop", 330 }, { "Notify", 660 } };
     for (int i = 0; i < 4; i++) {
         draw_icon(s, ICON_CP_SOUND, 32, ox + 30, oy + 80 + i * 44);
@@ -433,7 +433,7 @@ static void page_programs(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Uninstall or change a program", "Built-in programs are part of the system. Programs installed under C:\\Program Files can be removed.");
     const char *names[64]; int icons[64]; const char *pub[64]; vnode_t *nodes[64]; int n = 0;
-    for (int i = 0; i < app_count && n < 64; i++) { names[n] = app_table[i].title; icons[n] = app_table[i].icon; pub[n] = "Lumina OS (built-in)"; nodes[n] = NULL; n++; }
+    for (int i = 0; i < app_count && n < 64; i++) { names[n] = app_table[i].title; icons[n] = app_table[i].icon; pub[n] = "THE WRLD OS (built-in)"; nodes[n] = NULL; n++; }
     vnode_t *pf = vfs_resolve("C:\\Program Files", NULL);
     for (vnode_t *k = pf ? pf->child : NULL; k && n < 64; k = k->next) { names[n] = k->name; icons[n] = file_icon(k); pub[n] = "Installed by user"; nodes[n] = k; n++; }
     vnode_t *sm = vfs_resolve("C:\\Samples", NULL);
@@ -462,8 +462,8 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Associate a file type with a program", NULL);
     static const struct { const char *ext, *desc, *prog; int icon; } assoc[] = {
-        { ".exe", "Win32 application (PE32, i386)", "Lumina Win32 subsystem", ICON_EXE },
-        { ".sh", "Shell script", "Lumina shell (sh)", ICON_SCRIPT },
+        { ".exe", "Win32 application (PE32, i386)", "WRLD Win32 subsystem", ICON_EXE },
+        { ".sh", "Shell script", "WRLD shell (sh)", ICON_SCRIPT },
         { ".dmg", "Apple disk image (UDIF)", "Disk Image Mounter", ICON_DMG },
         { ".app", "macOS application bundle", "Bundle launcher (script executables)", ICON_APP_BUNDLE },
         { ".txt / .log / .ini / .c", "Text document", "Notepad", ICON_TEXT_FILE },

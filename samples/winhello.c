@@ -20,7 +20,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         switch (LOWORD(wp)) {
         case ID_BTN_HELLO:
             clicks++;
-            MessageBoxA(hwnd, "Hello from a Win32 GUI program running on Lumina OS!", "winhello.exe", MB_OK | MB_ICONINFORMATION);
+            MessageBoxA(hwnd, "Hello from a Win32 GUI program running on THE WRLD OS!", "winhello.exe", MB_OK | MB_ICONINFORMATION);
             InvalidateRect(hwnd, NULL, TRUE);
             break;
         case ID_BTN_COLOR:
@@ -57,7 +57,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         SetTextColor(dc, RGB(0, 0, 0));
         TextOutA(dc, 20, 50, b, lstrlenA(b));
         RECT r2 = { 20, 80, rc.right - 20, 140 };
-        DrawTextA(dc, "This window, its buttons and this text are drawn through the Lumina Win32 subsystem (user32 / gdi32).", -1, &r2, DT_WORDBREAK);
+        DrawTextA(dc, "This window, its buttons and this text are drawn through the WRLD Win32 subsystem (user32 / gdi32).", -1, &r2, DT_WORDBREAK);
         HPEN pen = CreatePen(PS_SOLID, 2, RGB(200, 60, 40));
         HGDIOBJ old = SelectObject(dc, pen);
         MoveToEx(dc, 20, 195, NULL); LineTo(dc, rc.right - 20, 195);
@@ -82,9 +82,9 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
-    wc.lpszClassName = "LuminaHello";
+    wc.lpszClassName = "WrldHello";
     if (!RegisterClassA(&wc)) return 1;
-    HWND hwnd = CreateWindowExA(0, "LuminaHello", "Hello Windows (winhello.exe)", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExA(0, "WrldHello", "Hello Windows (winhello.exe)", WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 380, 290, NULL, NULL, hInst, NULL);
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);

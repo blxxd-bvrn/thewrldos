@@ -9,3 +9,8 @@ asset_fonts_end:
 align 16
 asset_icons: incbin "assets/icons.bin"
 asset_icons_end:
+align 16
+global asset_globe
+global asset_globe_end
+asset_globe: incbin "assets/globe.bin"
+asset_globe_end:

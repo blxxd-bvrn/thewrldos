@@ -1,4 +1,4 @@
-/* user32.dll + gdi32.dll: Win32 windows are hosted as Lumina WM windows; messages are
+/* user32.dll + gdi32.dll: Win32 windows are hosted as WRLD WM windows; messages are
  * queued per process and dispatched on the program's own thread. */
 #include "w32.h"
 #include "theme.h"
@@ -924,7 +924,7 @@ static int WINAPI MessageBoxW(HWND h, const WCHAR *t, const WCHAR *c, UINT type)
 }
 static int WINAPI MessageBoxExA(HWND h, const char *t, const char *c, UINT ty, WORD l) { return MessageBoxA(h, t, c, ty); }
 static BOOL WINAPI MessageBeep(UINT t) { speaker_beep(t == 0x10 ? 440 : 880, 80); return 1; }
-static INT WINAPI DialogBoxParamA(HINSTANCE i, const char *t, HWND p, void *fn, LPARAM lp) { MessageBoxA(p, "Dialog resources are not supported by the Lumina Win32 subsystem yet.", "DialogBox", 0x30); return -1; }
+static INT WINAPI DialogBoxParamA(HINSTANCE i, const char *t, HWND p, void *fn, LPARAM lp) { MessageBoxA(p, "Dialog resources are not supported by the WRLD Win32 subsystem yet.", "DialogBox", 0x30); return -1; }
 static HWND WINAPI CreateDialogParamA(HINSTANCE i, const char *t, HWND p, void *fn, LPARAM lp) { return 0; }
 static BOOL WINAPI EndDialog(HWND h, INT r) { return DestroyWindow(h); }
 

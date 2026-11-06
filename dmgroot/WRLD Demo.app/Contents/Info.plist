@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>Lumina Demo</string>
+    <string>WRLD Demo</string>
     <key>CFBundleIdentifier</key>
-    <string>org.lumina.demo</string>
+    <string>org.wrldos.demo</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleExecutable</key>

@@ -412,8 +412,8 @@ static BOOL WINAPI IsProcessorFeaturePresent(DWORD f) { return f == 0 || f == 1;
 static BOOL WINAPI Beep(DWORD f, DWORD d) { speaker_beep(f, d); return 1; }
 static DWORD WINAPI GetVersion(void) { return 0x0A280105; }   /* 5.1 build 2600 */
 typedef struct { DWORD size, major, minor, build, platform; char csd[128]; } OSVERSIONINFOA;
-static BOOL WINAPI GetVersionExA(OSVERSIONINFOA *v) { v->major = 5; v->minor = 1; v->build = 2600; v->platform = 2; strcpy(v->csd, "Lumina OS"); return 1; }
-static BOOL WINAPI GetComputerNameA(char *b, DWORD *n) { strlcpy(b, "LUMINA-PC", *n); *n = 9; return 1; }
+static BOOL WINAPI GetVersionExA(OSVERSIONINFOA *v) { v->major = 5; v->minor = 1; v->build = 2600; v->platform = 2; strcpy(v->csd, "THE WRLD OS"); return 1; }
+static BOOL WINAPI GetComputerNameA(char *b, DWORD *n) { strlcpy(b, computer_name, *n); *n = strlen(b); return 1; }
 static BOOL WINAPI GetUserNameA(char *b, DWORD *n) { strlcpy(b, user_name, *n); *n = strlen(b) + 1; return 1; }
 typedef struct { WORD arch, r; DWORD page, minaddr, maxaddr, mask, ncpu, type, gran; WORD level, rev; } SYSTEM_INFO;
 static void WINAPI GetSystemInfo(SYSTEM_INFO *s) { memset(s, 0, sizeof *s); s->page = 4096; s->minaddr = 0x10000; s->maxaddr = 0x7FFEFFFF; s->mask = 1; s->ncpu = 1; s->type = 586; s->gran = 65536; s->level = 6; }
@@ -439,14 +439,14 @@ static int WINAPI WideCharToMultiByte(UINT cp, DWORD f, const WCHAR *w, int n, c
 }
 static DWORD WINAPI GetEnvironmentVariableA(const char *n, char *b, DWORD sz) {
     const char *v = NULL;
-    if (!strcasecmp(n, "OS")) v = "Lumina_OS"; else if (!strcasecmp(n, "USERPROFILE") || !strcasecmp(n, "HOME")) v = USER_HOME;
+    if (!strcasecmp(n, "OS")) v = "THE_WRLD_OS"; else if (!strcasecmp(n, "USERPROFILE") || !strcasecmp(n, "HOME")) v = USER_HOME;
     else if (!strcasecmp(n, "TEMP") || !strcasecmp(n, "TMP")) v = "C:\\tmp"; else if (!strcasecmp(n, "USERNAME")) v = user_name;
     else if (!strcasecmp(n, "SystemRoot") || !strcasecmp(n, "windir")) v = "C:\\Windows"; else if (!strcasecmp(n, "PATH")) v = "C:\\Windows\\System32;C:\\Windows";
     if (!v) { set_err(203); return 0; }
     DWORD l = strlen(v); if (b && sz > l) strcpy(b, v); return sz > l ? l : l + 1;
 }
 static BOOL WINAPI SetEnvironmentVariableA(const char *n, const char *v) { return 1; }
-static char env_block[] = "OS=Lumina_OS\0USERPROFILE=" USER_HOME "\0\0";
+static char env_block[] = "OS=THE_WRLD_OS\0USERPROFILE=" USER_HOME "\0\0";
 static char *WINAPI GetEnvironmentStringsA(void) { return env_block; }
 static WCHAR envw[4] = { 0, 0, 0, 0 };
 static WCHAR *WINAPI GetEnvironmentStringsW(void) { return envw; }

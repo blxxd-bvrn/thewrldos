@@ -1,7 +1,7 @@
-Welcome to Lumina OS!
+Welcome to THE WRLD OS!
 =====================
 
-Lumina OS is a from-scratch 32-bit x86 operating system with an XP-style
+THE WRLD OS is a from-scratch 32-bit x86 operating system with an XP-style
 shell. Things to try:
 
   * Start > All Programs > Samples: run a real Win32 .exe, a shell script

@@ -11,6 +11,7 @@ typedef struct vnode {
     struct vnode *parent, *child, *next;
     rtc_time_t mtime;
     int drive;
+    bool dirty;          /* pending write-back to the system disk */
 } vnode_t;
 
 void vfs_init(void);
@@ -39,6 +40,9 @@ void vfs_sort_children(vnode_t *dir);
 const char *vfs_ext(const char *name);
 uint32_t vfs_tree_size(vnode_t *n);
 extern uint32_t vfs_generation;    /* bumps on every change */
+/* change notifications (used to write C: back to an installed system disk) */
+enum { VH_CREATE, VH_WRITE, VH_DELETE, VH_RENAME };
+extern void (*vfs_hook)(int op, vnode_t *n, const char *oldpath);
 
 void path_join(char *out, int cap, const char *a, const char *b);
 void path_normalize(char *p);

@@ -1,6 +1,6 @@
 #!/bin/sh
-# Lumina OS shell script demo - runs on the built-in POSIX-style shell
-echo -e "\e[96m=== Lumina shell script demo ===\e[0m"
+# THE WRLD OS shell script demo - runs on the built-in POSIX-style shell
+echo -e "\e[96m=== WRLD shell script demo ===\e[0m"
 echo "Running on: $(uname -a)"
 echo "Today is $(date +%Y-%m-%d), user is $USER"
 

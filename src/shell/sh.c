@@ -933,15 +933,15 @@ static int b_date(sh_t *s, int argc, char **argv, io_t *io) {
     return 0;
 }
 static int b_uname(sh_t *s, int argc, char **argv, io_t *io) {
-    if (argc > 1 && !strcmp(argv[1], "-a")) out_f(io, "Lumina lumina-pc %s.%s Lumina-Kernel i686 %s\n", OS_VERSION, OS_BUILD, OS_NAME);
+    if (argc > 1 && !strcmp(argv[1], "-a")) out_f(io, "WRLD %s %s.%s WRLD-Kernel i686 %s\n", computer_name, OS_VERSION, OS_BUILD, OS_NAME);
     else if (argc > 1 && !strcmp(argv[1], "-r")) out_f(io, "%s.%s\n", OS_VERSION, OS_BUILD);
     else if (argc > 1 && !strcmp(argv[1], "-m")) out_s(io, "i686\n");
-    else out_s(io, "Lumina\n");
+    else out_s(io, "WRLD\n");
     return 0;
 }
 static int b_ver(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "\n%s %s [Version %s.%s]\n\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD); return 0; }
 static int b_whoami(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "%s\n", user_name); return 0; }
-static int b_hostname(sh_t *s, int argc, char **argv, io_t *io) { out_s(io, "LUMINA-PC\n"); return 0; }
+static int b_hostname(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "%s\n", computer_name); return 0; }
 static int b_ps(sh_t *s, int argc, char **argv, io_t *io) {
     static const char *kinds[] = { "kernel", "shell", "win32", "app" };
     out_f(io, "  PID  STATE     CPU(ms)   MEM(KB)  TYPE    NAME\n");
@@ -1219,7 +1219,7 @@ static const builtin_t builtins[] = {
 };
 static const builtin_t *find_builtin(const char *name) { for (unsigned i = 0; i < ARRAY_LEN(builtins); i++) if (!strcmp(builtins[i].name, name)) return &builtins[i]; return NULL; }
 static int b_help(sh_t *s, int argc, char **argv, io_t *io) {
-    out_s(io, "\x1b[93mLumina shell - built-in commands:\x1b[0m\n");
+    out_s(io, "\x1b[93mWRLD shell - built-in commands:\x1b[0m\n");
     int col = 0;
     for (unsigned i = 0; i < ARRAY_LEN(builtins); i++) {
         if (!builtins[i].help) continue;
@@ -1564,7 +1564,7 @@ void sh_interactive(console_t *con, const char *cwd) {
     if (rc && !rc->dir) { char *src = strndup((char *)rc->data, rc->size); run_string(s, src, &io); kfree(src); }
     sbuf_t acc = { 0 };
     while (!s->exiting) {
-        if (!acc.n) con_printf(con, "\x1b[92m%s\x1b[0m@lumina \x1b[93m%s\x1b[0m$ ", user_name, s->cwd);
+        if (!acc.n) con_printf(con, "\x1b[92m%s\x1b[0m@wrld \x1b[93m%s\x1b[0m$ ", user_name, s->cwd);
         else con_puts(con, "> ");
         char line[512];
         int n = con->readline(con, line, sizeof line);

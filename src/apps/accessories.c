@@ -448,10 +448,9 @@ static void about_paint(window_t *w) {
     canvas_t *c = w->surf;
     gfx_clear(c, T.face);
     gradient_h(c, 0, 0, c->w, 78, HEX(0x0A3CA8), HEX(0x5A8EF0));
-    draw_icon(c, ICON_LOGO, 48, 18, 15);
-    draw_text(c, FONT_HUGE, 80, 14, "Lumina", WHITE);
-    draw_text(c, FONT_LARGE_BOLD, 80 + text_width(FONT_HUGE, "Lumina") + 6, 16, "OS", HEX(0xFFB050));
-    draw_text(c, FONT_UI, 82, 52, OS_EDITION, HEX(0xE0E8FF));
+    draw_globe(c, 10, 7, 64, (int)(timer_ticks() / 40));
+    draw_wordmark(c, 84, 6, WORDMARK_MEDIUM, WHITE);
+    draw_text(c, FONT_UI, 86, 58, OS_EDITION, HEX(0xE0E8FF));
     hline(c, 0, 78, c->w, HEX(0xF09A3C));
     int y = 92;
     const char *lines[] = { "Version " OS_VERSION " (Build " OS_BUILD ")", "32-bit x86 kernel: GDT/IDT, PIC, PIT, paging, heap, scheduler",
@@ -464,9 +463,11 @@ static void about_paint(window_t *w) {
     draw_text(c, FONT_UI, 20, y + 24, b, HEX(0x404040));
     if (ui_button_ex(w, R(c->w - 90, c->h - 34, 76, 24), "OK", true, true)) wm_destroy(w);
 }
+static void about_tick(window_t *w) { w->dirty = true; }
 void about_open(void) {
     window_t *w = wm_create("About " OS_NAME, -1, -1, 440, 330, WF_NO_MAX | WF_NO_MIN);
     w->paint = about_paint; w->icon = ICON_ABOUT;
+    wm_set_timer(w, 50, about_tick);
     wm_center(w);
 }
 

@@ -1,18 +1,20 @@
 #!/usr/bin/env python3
-"""Drive Lumina OS in headless QEMU via QMP: move/click the mouse, type, take screenshots.
-Usage (as a library): h = Harness('lumina.iso'); h.wait(5); h.click(100,200); h.shot('x.png')"""
+"""Drive THE WRLD OS in headless QEMU via QMP: move/click the mouse, type, take screenshots.
+Usage (as a library): h = Harness('wrldos.iso'); h.wait(5); h.click(100,200); h.shot('x.png')"""
 import json, os, socket, subprocess, sys, time, tempfile
 from PIL import Image
 
 class Harness:
-    def __init__(self, iso, mem=256, outdir="."):
+    def __init__(self, iso, mem=256, outdir=".", hda=None, boot="d"):
         self.dir = tempfile.mkdtemp()
         self.sock = os.path.join(self.dir, "qmp.sock")
         self.serial = os.path.join(outdir, "serial.log")
         self.outdir = outdir
-        self.p = subprocess.Popen(["qemu-system-i386", "-cdrom", iso, "-m", str(mem), "-vga", "std",
-            "-display", "none", "-serial", "file:" + self.serial, "-qmp", "unix:%s,server,nowait" % self.sock,
-            "-boot", "d"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        args = ["qemu-system-i386", "-m", str(mem), "-vga", "std", "-display", "none", "-serial", "file:" + self.serial,
+                "-qmp", "unix:%s,server,nowait" % self.sock, "-boot", boot]
+        if iso: args += ["-cdrom", iso]
+        if hda: args += ["-drive", "file=%s,format=raw,if=ide,index=0" % hda]
+        self.p = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(100):
             try:
                 self.s = socket.socket(socket.AF_UNIX); self.s.connect(self.sock); break

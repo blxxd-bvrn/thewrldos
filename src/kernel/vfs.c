@@ -6,6 +6,8 @@ static vnode_t *drives[26];
 static char drive_labels[26][32];
 static int drive_kinds[26];
 uint32_t vfs_generation;
+void (*vfs_hook)(int op, vnode_t *n, const char *oldpath);
+#define HOOK(op, n, old) do { if (vfs_hook) vfs_hook(op, n, old); } while (0)
 
 const char *vfs_ext(const char *name) { const char *d = strrchr(name, '.'); return d && d != name ? d + 1 : ""; }
 
@@ -18,6 +20,7 @@ vnode_t *vfs_new_node(vnode_t *parent, const char *name, bool dir) {
         n->parent = parent; n->drive = parent->drive;
         /* append to keep insertion order */
         vnode_t **pp = &parent->child; while (*pp) pp = &(*pp)->next; *pp = n;
+        HOOK(VH_CREATE, n, NULL);
     }
     vfs_generation++;
     return n;
@@ -149,9 +152,11 @@ vnode_t *vfs_mkdir_p(const char *path) {
 }
 bool vfs_write_node(vnode_t *n, const void *data, uint32_t len) {
     if (!n || n->dir || n->readonly) return false;
+    if (n->data && n->size == len && !memcmp(n->data, data, len)) return true;   /* unchanged */
     if (len > n->cap || !n->data) { kfree(n->data); n->cap = len + 64; n->data = kmalloc(n->cap); }
     memcpy(n->data, data, len); n->size = len;
     rtc_now(&n->mtime); vfs_generation++;
+    HOOK(VH_WRITE, n, NULL);
     return true;
 }
 bool vfs_append_node(vnode_t *n, const void *data, uint32_t len) {
@@ -159,6 +164,7 @@ bool vfs_append_node(vnode_t *n, const void *data, uint32_t len) {
     if (n->size + len > n->cap) { n->cap = (n->size + len) * 2 + 64; n->data = krealloc(n->data, n->cap); }
     memcpy(n->data + n->size, data, len); n->size += len;
     rtc_now(&n->mtime); vfs_generation++;
+    HOOK(VH_WRITE, n, NULL);
     return true;
 }
 vnode_t *vfs_write_file(const char *path, const void *data, uint32_t len) {
@@ -181,6 +187,7 @@ static void unlink_node(vnode_t *n) {
 }
 bool vfs_delete(vnode_t *n) {
     if (!n || !n->parent || n->readonly || (n->parent && n->parent->readonly)) return false;
+    HOOK(VH_DELETE, n, NULL);
     unlink_node(n);
     free_tree(n);
     vfs_generation++;
@@ -189,17 +196,21 @@ bool vfs_delete(vnode_t *n) {
 bool vfs_rename(vnode_t *n, const char *nn) {
     if (!n || !n->parent || n->readonly || !*nn) return false;
     if (vfs_lookup_child(n->parent, nn) && strcasecmp(n->name, nn)) return false;
+    char old[512]; vfs_path(n, old, sizeof old);
     strlcpy(n->name, nn, sizeof n->name); vfs_generation++;
+    HOOK(VH_RENAME, n, old);
     return true;
 }
 bool vfs_move(vnode_t *n, vnode_t *nd) {
     if (!n || !nd || !nd->dir || nd->readonly || n->readonly) return false;
     for (vnode_t *p = nd; p; p = p->parent) if (p == n) return false;
+    char old[512]; vfs_path(n, old, sizeof old);
     unlink_node(n);
     n->parent = nd;
     vnode_t **pp = &nd->child; while (*pp) pp = &(*pp)->next; *pp = n;
     set_drive(n, nd->drive);
     vfs_generation++;
+    HOOK(VH_RENAME, n, old);
     return true;
 }
 vnode_t *vfs_copy(vnode_t *n, vnode_t *dd, const char *newname) {

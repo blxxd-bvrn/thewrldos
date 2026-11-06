@@ -1,10 +1,11 @@
-/* Lumina OS kernel entry point */
+/* THE WRLD OS kernel entry point */
 #include "kernel.h"
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
 #include "fs.h"
 #include "apps.h"
+#include "disk.h"
 
 typedef struct PACKED {
     uint32_t flags, mem_lower, mem_upper, boot_device, cmdline, mods_count, mods_addr;
@@ -17,11 +18,12 @@ typedef struct PACKED {
 extern void (*panic_hook)(const char *msg);
 extern void (*fault_hook)(task_t *t, const char *msg);
 static bool gfx_ready;
+static const char *panic_code = "KERNEL_MODE_EXCEPTION_NOT_HANDLED";
 
 static void text_panic(const char *msg) {
     volatile uint16_t *vga = (uint16_t *)0xB8000;
     for (int i = 0; i < 80 * 25; i++) vga[i] = 0x1F20;
-    const char *hdr = "*** STOP: Lumina OS kernel panic ***";
+    const char *hdr = "*** STOP: THE WRLD OS kernel panic ***";
     for (int i = 0; hdr[i]; i++) vga[i] = 0x1F00 | hdr[i];
     int row = 2, col = 0;
     for (; *msg && row < 25; msg++) { if (*msg == '\n') { row++; col = 0; continue; } vga[row * 80 + col++] = 0x1F00 | *msg; if (col >= 80) { row++; col = 0; } }
@@ -34,7 +36,7 @@ static void gfx_panic(const char *msg) {
     int y = 40;
     draw_text(c, FONT_MONO, 40, y, "A problem has been detected and " OS_NAME " has been halted to prevent", WHITE); y += 18;
     draw_text(c, FONT_MONO, 40, y, "damage to your computer.", WHITE); y += 36;
-    draw_text(c, FONT_MONO, 40, y, "KERNEL_MODE_EXCEPTION_NOT_HANDLED", WHITE); y += 36;
+    draw_text(c, FONT_MONO, 40, y, panic_code, WHITE); y += 36;
     const char *p = msg;
     while (*p) { const char *e = strchr(p, '\n'); if (!e) e = p + strlen(p); draw_text_n(c, FONT_MONO, 40, y, p, e - p, WHITE); y += 18; p = *e ? e + 1 : e; }
     y += 18;
@@ -71,7 +73,7 @@ static void write_system_files(void) {
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) {
         char p[128], body[128];
         snprintf(p, sizeof p, "C:\\Windows\\System32\\%s", dlls[i]);
-        snprintf(body, sizeof body, "Built-in %s: implemented natively by the Lumina Win32 subsystem.\r\n", dlls[i]);
+        snprintf(body, sizeof body, "Built-in %s: implemented natively by the WRLD Win32 subsystem.\r\n", dlls[i]);
         vnode_t *n = vfs_write_file(p, body, strlen(body)); if (n) n->readonly = true;
     }
 }
@@ -110,20 +112,34 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     klog("cpu: %s (%s)", brand, vendor);
     pci_dev_t devs[32]; int nd = pci_scan(devs, 32);
     for (int i = 0; i < nd; i++) klog("pci %02x:%02x.%x %04x:%04x %s", devs[i].bus, devs[i].dev, devs[i].fn, devs[i].vendor, devs[i].device, pci_class_name(devs[i].cls, devs[i].sub));
+    boot_screen_progress("Detecting hard disks...", 25);
+    ata_init();
     boot_screen_progress("Mounting file systems...", 35);
     vfs_init();
-    if (initrd_data) tar_extract(initrd_data, initrd_size, vfs_root('C'));
+    if (boot_root_serial) {
+        char err[256];
+        if (!persist_boot_from_disk(boot_root_serial, err, sizeof err)) { panic_code = "INACCESSIBLE_BOOT_DEVICE"; panic("%s", err); }
+    } else if (initrd_data) tar_extract(initrd_data, initrd_size, vfs_root('C'));
     else klog("initrd: none supplied");
     write_system_files();
+    if (!system_volume) {   /* live session: offer installation */
+        const char *lnk = "setup\r\n";
+        vfs_write_file(USER_DESKTOP "\\Install " OS_NAME ".lnk", lnk, strlen(lnk));
+    }
     boot_screen_progress("Starting Win32 subsystem...", 60);
     w32_init();
     boot_screen_progress("Loading personal settings...", 85);
     wm_init();
     shell_init();
+    settings_load();
+    persist_start();
     boot_screen_progress("Starting shell...", 100);
     boot_screen_end();
+    if (boot_setup_mode && !system_volume) setup_text_mode(false);
+    if (setup_oobe_pending()) setup_oobe();
     welcome_screen();
     wm_redraw_all();
-    notify_balloon("Welcome to " OS_NAME, "Try the samples in C:\\Samples: a Win32 .exe, a shell script and a .dmg disk image.");
+    if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
+    else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
     wm_run();
 }

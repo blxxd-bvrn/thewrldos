@@ -88,6 +88,12 @@ void draw_icon_alpha(canvas_t *c, int icon, int size, int x, int y, int alpha);
 void draw_icon_tinted(canvas_t *c, int icon, int size, int x, int y, uint32_t tint, int amt);
 const uint32_t *icon_pixels(int icon, int size);
 
+/* THE WRLD OS branding: spinning globe (sizes 160, 96, 64) and the wordmark */
+void draw_globe(canvas_t *c, int x, int y, int size, int rot);   /* rot: 0..511 = one revolution */
+enum { WORDMARK_LARGE, WORDMARK_MEDIUM, WORDMARK_SMALL };
+int draw_wordmark(canvas_t *c, int x, int y, int style, uint32_t col);   /* returns width */
+int wordmark_width(int style);
+
 /* cursor + presentation */
 enum { CURSOR_ARROW, CURSOR_IBEAM, CURSOR_HAND, CURSOR_SIZE_NS, CURSOR_SIZE_EW, CURSOR_SIZE_NWSE, CURSOR_SIZE_NESW, CURSOR_BUSY, CURSOR_MOVE, CURSOR_CROSS, CURSOR_COUNT };
 void gfx_present(int cursor, int mx, int my);

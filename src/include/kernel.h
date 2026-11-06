@@ -3,10 +3,11 @@
 #include "types.h"
 #include "lib.h"
 
-#define OS_NAME     "Lumina OS"
+#define OS_NAME     "THE WRLD OS"
 #define OS_EDITION  "Home Edition"
 #define OS_VERSION  "1.0"
 #define OS_BUILD    "2600"
+extern char computer_name[32];
 
 /* ---- port I/O ---- */
 static inline void outb(uint16_t p, uint8_t v) { __asm__ volatile("outb %0,%1"::"a"(v),"Nd"(p)); }

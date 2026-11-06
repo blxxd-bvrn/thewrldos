@@ -158,6 +158,7 @@ void shell_logoff(void);
 extern int wallpaper_id;
 extern uint32_t desktop_color;
 extern char user_name[32];
+extern char computer_name[32];
 extern int user_picture;
 extern bool show_clock, show_seconds, clock_24h, font_smoothing_dummy;
 extern bool wm_animations;

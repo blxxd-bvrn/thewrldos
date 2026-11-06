@@ -476,3 +476,71 @@ void gfx_move_cursor(int kind, int mx, int my) {
     fb_draw_cursor(kind, mx, my);
     cur_x = mx; cur_y = my; cur_kind = kind;
 }
+
+/* ---------------- THE WRLD OS globe + wordmark ---------------- */
+extern const uint8_t asset_globe[];
+typedef struct { int size; const uint32_t *lut, *ov; } globe_size_t;
+static const uint16_t *globe_tex;
+static int globe_tw, globe_th, globe_n;
+static globe_size_t globe_sizes[4];
+static void globe_load(void) {
+    const uint32_t *h = (const uint32_t *)asset_globe;
+    if (h[0] != 0x31424C47) return;     /* "GLB1" */
+    globe_tw = h[1]; globe_th = h[2]; globe_n = MIN((int)h[3], 4);
+    globe_tex = (const uint16_t *)(h + 4);
+    const uint32_t *p = (const uint32_t *)(globe_tex + globe_tw * globe_th);
+    for (int i = 0; i < globe_n; i++) {
+        int s = *p++;
+        globe_sizes[i].size = s; globe_sizes[i].lut = p; p += s * s;
+        globe_sizes[i].ov = p; p += s * s;
+    }
+}
+void draw_globe(canvas_t *c, int x, int y, int size, int rot) {
+    if (!globe_tex) globe_load();
+    if (!globe_n) { draw_icon(c, ICON_LOGO, 48, x, y); return; }
+    globe_size_t *g = &globe_sizes[0];
+    for (int i = 0; i < globe_n; i++) if (globe_sizes[i].size <= size) { g = &globe_sizes[i]; break; }
+    int S = g->size, tw = globe_tw;
+    rot = ((rot % tw) + tw) % tw;
+    for (int j = 0; j < S; j++) {
+        int py = y + j;
+        if (py < c->clip.y || py >= c->clip.y + c->clip.h) continue;
+        for (int i = 0; i < S; i++) {
+            int px = x + i;
+            if (px < c->clip.x || px >= c->clip.x + c->clip.w) continue;
+            uint32_t e = g->lut[j * S + i], ov = g->ov[j * S + i];
+            uint32_t *d = &c->px[py * c->stride + px];
+            int a = (e >> 25) * 2 + ((e >> 25) >> 6);
+            if (a) {
+                int col = ((e & 511) + rot) % tw, row = (e >> 9) & 255, sh = ((e >> 17) & 255) * 276 >> 8;
+                uint16_t t = globe_tex[row * tw + col];
+                int r = ((t >> 11) << 3) * sh >> 8, gg = (((t >> 5) & 63) << 2) * sh >> 8, b = ((t & 31) << 3) * sh >> 8;
+                uint32_t p = RGB(MIN(r, 255), MIN(gg, 255), MIN(b, 255));
+                *d = a >= 255 ? p : mix(*d, p, a);
+            }
+            int oa = ov >> 24;
+            if (oa) *d = mix(*d, ov | 0xFF000000, oa);
+        }
+    }
+}
+static const struct { int f_the, f_wrld, f_os, the_space, gap; } wm_styles[3] = {
+    { FONT_UI_BOLD, FONT_LOGO, FONT_HUGE, 5, 8 },
+    { FONT_SMALL, FONT_HUGE, FONT_LARGE_BOLD, 3, 5 },
+    { FONT_SMALL, FONT_LARGE_BOLD, FONT_UI_BOLD, 2, 3 },
+};
+static int spaced_width(int f, const char *s, int sp) { int w = 0; for (; *s; s++) { char b[2] = { *s, 0 }; w += text_width(f, b) + sp; } return w - sp; }
+int wordmark_width(int st) { return text_width(wm_styles[st].f_wrld, "WRLD") + wm_styles[st].gap + text_width(wm_styles[st].f_os, "OS"); }
+int draw_wordmark(canvas_t *c, int x, int y, int st, uint32_t col) {
+    int fw = wm_styles[st].f_wrld, fo = wm_styles[st].f_os, ft = wm_styles[st].f_the;
+    int th = font_height(ft);
+    /* "THE" letter-spaced over the left part of WRLD */
+    int sx = x + 2;
+    for (const char *s = "THE"; *s; s++) { char b[2] = { *s, 0 }; draw_text(c, ft, sx, y, b, mix(col, HEX(0x808080), 70)); sx += text_width(ft, b) + wm_styles[st].the_space; }
+    (void)spaced_width;
+    int wy = y + th - font_height(fw) / 7;
+    draw_text(c, fw, x, wy, "WRLD", col);
+    int ww = text_width(fw, "WRLD");
+    int oy = wy + font_ascent(fw) - font_ascent(fo);
+    draw_text(c, fo, x + ww + wm_styles[st].gap, oy, "OS", HEX(0xF08A24));
+    return wordmark_width(st);
+}

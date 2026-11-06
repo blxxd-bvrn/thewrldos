@@ -1,2 +1,2 @@
-# Lumina shell profile - runs when a Command Prompt starts
+# WRLD shell profile - runs when a Command Prompt starts
 alias_help() { help; }

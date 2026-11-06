@@ -5,6 +5,8 @@ Fonts are rasterised (anti-aliased) from the Liberation font family (SIL OFL).
 Icons are original artwork drawn procedurally here and supersampled.
 """
 import struct, os, math, sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import globe
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageChops
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -21,6 +23,7 @@ FONTS = [  # (enum name, file, pixel size)
     ("FONT_MONO",      "LiberationMono-Regular.ttf", 13),
     ("FONT_SMALL",     "LiberationSans-Regular.ttf", 10),
     ("FONT_XL",        "LiberationSans-Regular.ttf", 24),
+    ("FONT_LOGO",      "LiberationSans-Bold.ttf", 46),
 ]
 
 def gen_fonts():
@@ -470,17 +473,24 @@ def ic_sys_file():
         line(i, [(50 + math.cos(a) * 16, 56 + math.sin(a) * 16), (50 + math.cos(a) * 22, 56 + math.sin(a) * 22)], hexc("#5A6472"), 6)
     ellipse(i, 43, 49, 57, 63, hexc("#FFFFFF"), hexc("#C8CED6")); return i
 
-def logo_orb(i, x0, y0, x1, y1):
-    """Lumina OS logo: a glowing orb with a sunrise arc (original design)."""
-    ellipse(i, x0, y0, x1, y1, hexc("#FFB347"), hexc("#E8520E"), ol=hexc("#9A3208"), ow=1.2)
-    w, h = x1 - x0, y1 - y0
-    poly(i, [(x0 + w * .05, y0 + h * .62), (x0 + w * .35, y0 + h * .48), (x0 + w * .65, y0 + h * .52), (x0 + w * .95, y0 + h * .62), (x0 + w * .85, y0 + h * .85), (x0 + w * .5, y0 + h * .98), (x0 + w * .15, y0 + h * .85)], hexc("#7FD45C"), hexc("#2E8E2E"))
-    poly(i, [(x0 + w * .1, y0 + h * .76), (x0 + w * .5, y0 + h * .64), (x0 + w * .92, y0 + h * .74), (x0 + w * .7, y0 + h * .94), (x0 + w * .3, y0 + h * .94)], hexc("#5AB0FF"), hexc("#1C5EC8"))
-    ellipse(i, x0 + w * .2, y0 + h * .06, x0 + w * .8, y0 + h * .46, (255, 255, 255, 130), (255, 255, 255, 0))
+_GLOBE = {}
+def globe_img():
+    """THE WRLD OS logo: a globe (see tools/globe.py), rendered at the icon canvas size."""
+    if "g" not in _GLOBE: _GLOBE["g"] = globe.render(SS, -20.0)
+    return _GLOBE["g"]
+def logo_globe(i, x0, y0, x1, y1):
+    g = globe_img().resize((int(P(x1 - x0)), int(P(y1 - y0))), Image.LANCZOS)
+    i.alpha_composite(g, (int(P(x0)), int(P(y0))))
+def ic_setup():
+    i = ic_drive()
+    g = globe_img().resize((int(SS * .58),) * 2, Image.LANCZOS)
+    i.alpha_composite(g, (int(SS * .40), int(SS * .02)))
+    poly(i, [(14, 18), (34, 18), (34, 8), (50, 26), (34, 44), (34, 34), (14, 34)], hexc("#7CE07C"), hexc("#1E8E1E"), ol=hexc("#106010"), ow=1.4)
+    return i
 def ic_logo():
-    i = new(); logo_orb(i, 6, 6, 94, 94); return i
+    i = new(); logo_globe(i, 0, 0, 100, 100); return i
 def ic_start_logo():
-    i = new(); logo_orb(i, 2, 2, 98, 98); return i
+    i = new(); logo_globe(i, -4, -4, 104, 104); return i
 
 def nav(c1, c2, olc, direction):
     def f():
@@ -526,7 +536,7 @@ def user_pic(kind):
     return f
 
 def ic_about():
-    i = new(); window_frame(i, 6, 12, 94, 88); logo_orb(i, 30, 32, 70, 80); return i
+    i = new(); window_frame(i, 6, 12, 94, 88); logo_globe(i, 26, 30, 74, 78); return i
 def ic_explorer():
     i = new(); folder_shape(i); search = ic_search().resize((int(SS * .55),) * 2, Image.LANCZOS); i.alpha_composite(search, (int(SS * .44), int(SS * .42))); return i
 def ic_game():
@@ -558,7 +568,7 @@ ICONS = [
     ("back", nav("#7CE07C", "#1E8E1E", "#106010", "l")), ("forward", nav("#7CE07C", "#1E8E1E", "#106010", "r")),
     ("up", nav("#FFD24A", "#D8900A", "#8A5A04", "u")), ("go", nav("#7CE07C", "#1E8E1E", "#106010", "r")),
     ("user_flower", user_pic("flower")), ("user_planet", user_pic("planet")), ("user_fish", user_pic("fish")), ("user_mountain", user_pic("mountain")),
-    ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder),
+    ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder), ("setup", ic_setup),
 ]
 SIZES = [48, 32, 16]
 
@@ -576,6 +586,7 @@ def gen_icons():
             for (r, g, b, a) in small.getdata():
                 out += struct.pack("<I", (a << 24) | (r << 16) | (g << 8) | b)
     open(os.path.join(ROOT, "assets/icons.bin"), "wb").write(out)
+    open(os.path.join(ROOT, "assets/globe.bin"), "wb").write(globe.tables([160, 96, 64]))
     # preview sheet
     sheet = Image.new("RGBA", (len(ICONS) * 52, 104), (236, 233, 216, 255))
     for k, (name, fn) in enumerate(ICONS):

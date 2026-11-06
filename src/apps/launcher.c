@@ -15,6 +15,7 @@ const app_info_t app_table[] = {
     { "snake", "Snake", "A small arcade game", ICON_GAME },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
+    { "setup", "Install " OS_NAME, "Install to a hard disk", ICON_SETUP },
 };
 const int app_count = ARRAY_LEN(app_table);
 const app_info_t *app_find(const char *id) { for (int i = 0; i < app_count; i++) if (!strcasecmp(app_table[i].id, id)) return &app_table[i]; return NULL; }
@@ -31,6 +32,7 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
     else if (!strcasecmp(name, "help")) notepad_open("C:\\Windows\\Help.txt");
     else if (!strcasecmp(name, "run")) shell_show_run();
+    else if (!strcasecmp(name, "setup")) { extern void setup_launch_from_desktop(void); setup_launch_from_desktop(); }
     else msgbox("Error", "Unknown application.", MBI_ERROR, MBX_OK, NULL, NULL);
 }
 

@@ -1,5 +1,6 @@
 build/
-lumina.iso
+wrldos.iso
 *.ppm
 serial.log
 __pycache__/
+disk.img

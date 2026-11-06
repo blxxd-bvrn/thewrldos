@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "wm.h"
 #include "apps.h"
+#include "disk.h"
 
 /* ---------------- boot screen ---------------- */
 static int boot_frame;
@@ -12,11 +13,11 @@ static void boot_draw(int pct) {
     canvas_t *c = &screen;
     gfx_clear(c, BLACK);
     int cx = SCREEN_W / 2, cy = SCREEN_H / 2 - 60;
-    draw_icon(c, ICON_LOGO, 48, cx - 150, cy - 10);
-    draw_text(c, FONT_HUGE, cx - 92, cy - 4, "Lumina", WHITE);
-    int lw = text_width(FONT_HUGE, "Lumina");
-    draw_text(c, FONT_LARGE_BOLD, cx - 92 + lw + 6, cy - 2, "OS", HEX(0xF08A24));
-    draw_text(c, FONT_UI, cx - 90, cy + 34, OS_EDITION, HEX(0xBBBBBB));
+    /* spinning globe above the wordmark */
+    draw_globe(c, cx - 80, cy - 200, 160, -36 + boot_frame * 2);
+    int ww = wordmark_width(WORDMARK_LARGE);
+    draw_wordmark(c, cx - ww / 2, cy - 22, WORDMARK_LARGE, WHITE);
+    draw_text(c, FONT_UI, cx - text_width(FONT_UI, OS_EDITION) / 2, cy + 52, OS_EDITION, HEX(0xBBBBBB));
     /* progress well with sweeping blocks */
     rect_t r = R(cx - 62, cy + 100, 124, 14);
     fill_round_rect(c, r.x, r.y, r.w, r.h, 4, HEX(0xB2B2B2));
@@ -77,9 +78,8 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
     canvas_t *c = &screen;
     welcome_bg(c);
     int lx = SCREEN_W / 2 - 330;
-    draw_icon(c, ICON_LOGO, 48, lx + 180, SCREEN_H / 2 - 90);
-    draw_text(c, FONT_HUGE, lx + 236, SCREEN_H / 2 - 84, "Lumina", WHITE);
-    draw_text(c, FONT_LARGE_BOLD, lx + 236 + text_width(FONT_HUGE, "Lumina") + 4, SCREEN_H / 2 - 82, "OS", HEX(0xF08A24));
+    draw_globe(c, lx + 88, SCREEN_H / 2 - 150, 96, -36 + frame * 2);
+    draw_wordmark(c, lx + 190, SCREEN_H / 2 - 126, WORDMARK_MEDIUM, WHITE);
     const char *msg = logging_in ? "welcome" : "To begin, click your user name";
     int f = logging_in ? FONT_XL : FONT_LARGE;
     draw_text(c, f, SCREEN_W / 2 - 30 - text_width(f, msg), SCREEN_H / 2 - 10, msg, WHITE);
@@ -138,10 +138,19 @@ static void desaturate_screen(void) {
 static void final_screen(const char *msg, bool reboot) {
     canvas_t *c = &screen;
     welcome_bg(c);
-    draw_icon(c, ICON_LOGO, 48, SCREEN_W / 2 - 160, SCREEN_H / 2 - 70);
-    draw_text(c, FONT_HUGE, SCREEN_W / 2 - 104, SCREEN_H / 2 - 64, "Lumina", WHITE);
+    draw_globe(c, SCREEN_W / 2 - 210, SCREEN_H / 2 - 92, 96, -36);
+    draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
     draw_text(c, FONT_LARGE, SCREEN_W / 2 - 104, SCREEN_H / 2, msg, WHITE);
     gfx_present(CURSOR_BUSY, -100, -100);
+    if (system_volume) {
+        uint32_t t0 = timer_ticks() + 600; while ((int32_t)(timer_ticks() - t0) < 0) hlt();
+        welcome_bg(c);
+        draw_globe(c, SCREEN_W / 2 - 210, SCREEN_H / 2 - 92, 96, -36);
+        draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
+        draw_text(c, FONT_LARGE, SCREEN_W / 2 - 104, SCREEN_H / 2, "Saving your settings...", WHITE);
+        gfx_present(CURSOR_BUSY, -100, -100);
+        persist_flush();
+    }
     uint32_t t = timer_ticks() + 1500; while ((int32_t)(timer_ticks() - t) < 0) hlt();
     if (reboot) system_reboot();
     system_poweroff();

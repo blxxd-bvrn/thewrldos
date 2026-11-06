@@ -1,1 +1,0 @@
-Lumina Demo - a script-based application bundle shipped on a disk image.

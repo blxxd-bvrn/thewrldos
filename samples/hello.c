@@ -1,4 +1,4 @@
-/* Console Win32 program built with mingw-w64; runs unmodified on Lumina OS. */
+/* Console Win32 program built with mingw-w64; runs unmodified on THE WRLD OS. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
