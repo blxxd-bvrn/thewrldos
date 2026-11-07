@@ -95,6 +95,20 @@ uint32_t hue_shift(uint32_t c, int deg) {
     return (c & 0xFF000000u) | (hsv_to_rgb(h + deg, s, v) & 0xFFFFFF);
 }
 
+/* saturation and lightness, -100..100 each: 0 leaves the colour unchanged,
+ * saturation -100 gives grey, lightness +-100 gives white / black */
+uint32_t color_adjust(uint32_t c, int sat, int light) {
+    if (!sat && !light) return c;
+    int r = C_R(c), g = C_G(c), b = C_B(c);
+    if (sat) {
+        int y = (r * 77 + g * 150 + b * 29) >> 8, f = 100 + CLAMP(sat, -100, 100);
+        r = CLAMP(y + (r - y) * f / 100, 0, 255); g = CLAMP(y + (g - y) * f / 100, 0, 255); b = CLAMP(y + (b - y) * f / 100, 0, 255);
+    }
+    if (light > 0) { light = MIN(light, 100); r += (255 - r) * light / 100; g += (255 - g) * light / 100; b += (255 - b) * light / 100; }
+    else if (light < 0) { light = MIN(-light, 100); r -= r * light / 100; g -= g * light / 100; b -= b * light / 100; }
+    return (c & 0xFF000000u) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+
 /* ---------------- primitives ---------------- */
 void gfx_clear(canvas_t *c, uint32_t col) { for (int y = 0; y < c->h; y++) memset32(c->px + y * c->stride, col, c->w); }
 void put_pixel(canvas_t *c, int x, int y, uint32_t col) { if (pt_in(c->clip, x, y)) c->px[y * c->stride + x] = col; }

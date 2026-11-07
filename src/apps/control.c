@@ -47,7 +47,7 @@ typedef struct {
     int scroll;
     char search[64];
     /* applet state */
-    int hue, theme; int wall; int style_page; uint32_t style_gen; int res_sel;
+    int hue, theme, sat, light; int wall; int style_page; uint32_t style_gen; int res_sel;
     char uname[32];
     int dbl, speed; bool swap; uint32_t dbl_test_t; bool dbl_open;
     int tz; char keytest[64];
@@ -69,7 +69,7 @@ static void cp_go(cp_t *c, const char *page, bool push) {
     const applet_t *a = find_applet(page);
     wm_set_title(c->win, a ? a->name : !strncmp(page, "cat:", 4) ? cats[atoi(page + 4)].name : c->view ? "All Control Panel Items" : "Control Panel");
     c->win->icon = a ? a->icon : ICON_CONTROL_PANEL;
-    c->hue = theme_hue; c->theme = theme_id; c->wall = wallpaper_id; c->res_sel = 0;
+    c->hue = theme_hue; c->sat = theme_sat; c->light = theme_light; c->theme = theme_id; c->wall = wallpaper_id; c->res_sel = 0;
     strlcpy(c->uname, user_name, sizeof c->uname);
     c->dbl = wm_dblclick_ms; c->speed = mouse_speed; c->swap = mouse_swap_buttons;
     c->tz = tz_offset_minutes; c->anim = wm_animations;
@@ -141,7 +141,7 @@ static void nav_pane(window_t *w, cp_t *c, int cat) {
         bool cur = i == cat;
         if (cur) draw_text_wrapped(s, FONT_UI_BOLD, 16, y, NAV_W - 30, cats[i].name, BLACK, 1);
         else if (ui_link(w, 16, y, FONT_UI, cats[i].name, W7_LINK)) { char p[16]; snprintf(p, sizeof p, "cat:%d", i); cp_go(c, p, true); return; }
-        y += (text_width(FONT_UI, cats[i].name) > NAV_W - 30 ? 30 : 22);
+        y += (cur && text_width(FONT_UI_BOLD, cats[i].name) > NAV_W - 30) ? 2 * font_height(FONT_UI_BOLD) + 8 : 22;
     }
     y += 14;
     hline(s, 16, y, NAV_W - 32, HEX(0xC8D4E4)); y += 12;
@@ -237,7 +237,7 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
 }
 static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, rotate its colour hue and choose a background. Changes apply at once.");
+    heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, adjust its hue, saturation and lightness, and choose a background.");
     /* pick up new or edited .wrldstyle files */
     if (c->style_gen != vfs_generation) { c->style_gen = vfs_generation; styles_load(); theme_compute(theme_id, theme_hue, &T); wm_theme_changed(); }
     int y = oy + 78;
@@ -269,25 +269,49 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     y += MIN(2, (n + 3) / 4) * 104 + (pages > 1 ? 18 : 0);
     draw_text_ellipsis(s, FONT_UI, ox + 20, y - 4, s->w - ox - 40, style_desc(hovered >= 0 ? hovered : theme_id), W7_TEXT);
     y += 16;
+    int cw = s->w - ox - 40;                     /* usable width */
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Colour hue", BLACK);
     char hb[40]; snprintf(hb, sizeof hb, "%d degrees", c->hue);
-    draw_text(s, FONT_UI, ox + 120, y, hb, W7_TEXT);
-    y += 20;
-    theme_t base; theme_compute(theme_id, 0, &base);
+    draw_text(s, FONT_UI, ox + 110, y, hb, W7_TEXT);
+    theme_t base;
+    { int s0 = theme_sat, l0 = theme_light; theme_sat = theme_light = 0; theme_compute(theme_id, 0, &base); theme_sat = s0; theme_light = l0; }
     uint32_t basec = base.renderer == RENDER_AERO || base.renderer == RENDER_PLEX ? base.glass : base.classic ? base.title_top : base.title_mid;
-    for (int i = 0; i < 360; i += 2) fill_rect(s, ox + 25 + i * 300 / 360, y, 2, 10, hue_shift(basec | 0xFF000000, i));
-    if (ui_slider(w, R(ox + 20, y + 12, 310, 24), &c->hue, 0, 359)) { theme_apply(theme_id, c->hue); wm_redraw_all(); }
-    if (ui_button(w, R(ox + 350, y + 10, 90, 24), "Reset hue")) { c->hue = 0; theme_apply(theme_id, 0); wm_redraw_all(); }
     static const int presets[] = { 0, 30, 120, 160, 200, 280, 320 };
     static const char *pnames[] = { "Default", "Violet", "Rose", "Ruby", "Amber", "Emerald", "Teal" };
+    int px0 = ox + 200;
     for (int i = 0; i < 7; i++) {
-        int x = ox + 450 + i * 26;
-        fill_round_rect(s, x, y + 10, 22, 22, 4, HEX(0x606060));
-        fill_round_rect(s, x + 1, y + 11, 20, 20, 3, hue_shift(basec | 0xFF000000, presets[i]));
-        if (ui_click_area(w, R(x, y + 10, 22, 22))) { c->hue = presets[i]; theme_apply(theme_id, presets[i]); wm_redraw_all(); }
-        if (ui_hover(w, R(x, y + 10, 22, 22))) draw_text(s, FONT_SMALL, ox + 450, y + 36, pnames[i], W7_TEXT);
+        int x = px0 + i * 22;
+        fill_round_rect(s, x, y - 2, 18, 18, 3, HEX(0x606060));
+        fill_round_rect(s, x + 1, y - 1, 16, 16, 2, hue_shift(basec | 0xFF000000, presets[i]));
+        if (ui_click_area(w, R(x, y - 2, 18, 18))) { c->hue = presets[i]; theme_apply(theme_id, presets[i]); wm_redraw_all(); }
+        if (ui_hover(w, R(x, y - 2, 18, 18))) draw_text(s, FONT_SMALL, px0 + 7 * 22 + 6, y + 1, pnames[i], W7_TEXT);
     }
-    y += 50;
+    if (ui_link(w, ox + 20 + cw - text_width(FONT_UI, "Reset colours"), y, FONT_UI, "Reset colours", W7_LINK)) {
+        c->hue = c->sat = c->light = 0; theme_sat = theme_light = 0; theme_apply(theme_id, 0); wm_redraw_all();
+    }
+    y += 20;
+    int hw = MIN(cw, 560);
+    for (int i = 0; i < hw - 10; i += 2) fill_rect(s, ox + 25 + i, y, 2, 8, hue_shift(basec | 0xFF000000, i * 360 / (hw - 10)));
+    if (ui_slider(w, R(ox + 20, y + 10, hw, 24), &c->hue, 0, 359)) { theme_apply(theme_id, c->hue); wm_redraw_all(); }
+    y += 42;
+    /* saturation and lightness, side by side */
+    {
+        char vb[24];
+        int half = (MIN(cw, 560) - 20) / 2, x2 = ox + 20 + half + 20;
+        draw_text(s, FONT_UI_BOLD, ox + 20, y, "Saturation", BLACK);
+        snprintf(vb, sizeof vb, "%+d%%", c->sat); draw_text(s, FONT_UI, ox + 105, y, c->sat ? vb : "normal", W7_TEXT);
+        draw_text(s, FONT_UI_BOLD, x2, y, "Lightness", BLACK);
+        snprintf(vb, sizeof vb, "%+d%%", c->light); draw_text(s, FONT_UI, x2 + 80, y, c->light ? vb : "normal", W7_TEXT);
+        uint32_t bc = hue_shift(basec | 0xFF000000, c->hue);
+        for (int i = 0; i < half - 10; i += 2) {
+            fill_rect(s, ox + 25 + i, y + 20, 2, 8, color_adjust(bc, -100 + i * 200 / (half - 10), 0));
+            fill_rect(s, x2 + 5 + i, y + 20, 2, 8, color_adjust(bc, 0, -60 + i * 120 / (half - 10)));
+        }
+        bool ch = ui_slider(w, R(ox + 20, y + 30, half, 24), &c->sat, -100, 100);
+        ch |= ui_slider(w, R(x2, y + 30, half, 24), &c->light, -60, 60);
+        if (ch) { theme_set_tone(c->sat, c->light); wm_redraw_all(); }
+        y += 64;
+    }
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK); y += 22;
     static canvas_t *thumbs[8];
     for (int i = 0; i < wallpaper_count; i++) {
@@ -708,7 +732,7 @@ static void cp_mouse(window_t *w, int type, int x, int y, int b) { cp_t *c = w->
 static void cp_menu(window_t *w, int id) { (void)id; w->dirty = true; }
 static void cp_destroy(window_t *w) { kfree(w->data); }
 void control_open(const char *page) {
-    window_t *w = wm_create("Control Panel", -1, -1, 800, 560, WF_RESIZABLE);
+    window_t *w = wm_create("Control Panel", -1, -1, MIN(840, SCREEN_W - 40), MIN(660, SCREEN_H - 70), WF_RESIZABLE);
     cp_t *c = kzalloc(sizeof *c);
     c->win = w; c->prog_sel = -1;
     w->data = c; w->paint = cp_paint; w->destroy = cp_destroy; w->mouse = cp_mouse; w->menu_cmd = cp_menu;

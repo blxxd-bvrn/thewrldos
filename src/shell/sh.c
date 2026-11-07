@@ -1303,9 +1303,16 @@ static int b_open(sh_t *s, int argc, char **argv, io_t *io) {
 static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2 || !strcmp(argv[1], "list")) {
         styles_load();
-        out_f(io, "Current style: %s, hue %d\n\nVisual styles (" STYLE_DIR "\\*.wrldstyle):\n", style_name(theme_id), theme_hue);
+        out_f(io, "Current style: %s, hue %d, saturation %d, lightness %d\n\nVisual styles (" STYLE_DIR "\\*.wrldstyle):\n", style_name(theme_id), theme_hue, theme_sat, theme_light);
         for (int i = 0; i < THEME_COUNT; i++) out_f(io, "  %c %-18s %s\n", i == theme_id ? '*' : ' ', style_file(i), style_desc(i));
-        out_s(io, "\nusage: theme STYLE [HUE 0-359]   e.g. theme aero, theme plex 200, theme \"Luna Blue\"\n");
+        out_s(io, "\nusage: theme STYLE [HUE 0-359]   e.g. theme aero, theme plex 200, theme \"Luna Blue\"\n"
+                  "       theme saturation -100..100   theme lightness -60..60\n");
+        return 0;
+    }
+    if (argc > 2 && (!strcasecmp(argv[1], "saturation") || !strcasecmp(argv[1], "lightness"))) {
+        if (tolower(argv[1][0]) == 's') theme_set_tone(atoi(argv[2]), theme_light); else theme_set_tone(theme_sat, atoi(argv[2]));
+        wm_redraw_all();
+        out_f(io, "Saturation %d, lightness %d\n", theme_sat, theme_light);
         return 0;
     }
     static const struct { const char *alias, *file; } aliases[] = { { "blue", "Luna Blue" }, { "luna", "Luna Blue" }, { "olive", "Olive Green" }, { "classic", "WRLD Classic" } };

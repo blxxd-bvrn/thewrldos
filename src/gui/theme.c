@@ -6,6 +6,7 @@
 
 theme_t T;
 int theme_id = THEME_LUNA_BLUE, theme_hue = 0;
+int theme_sat, theme_light;
 
 /* built-in fallback (safe mode, or when the style files are missing) */
 static void make_classic(theme_t *t) {
@@ -164,10 +165,14 @@ void theme_compute(int id, int hue, theme_t *t) {
     hue = ((hue % 360) + 360) % 360;
     *t = styles[id].base;
     t->id = id;
-    if (hue) for (unsigned i = 0; i < ARRAY_LEN(fields); i++) if (fields[i].shift) {
+    if (hue || theme_sat || theme_light) for (unsigned i = 0; i < ARRAY_LEN(fields); i++) if (fields[i].shift) {
         uint32_t *c = (uint32_t *)((uint8_t *)t + fields[i].off);
-        if (*c) *c = hue_shift(*c, hue);
+        if (*c) *c = color_adjust(hue_shift(*c, hue), theme_sat, theme_light);
     }
+}
+void theme_set_tone(int sat, int light) {
+    theme_sat = CLAMP(sat, -100, 100); theme_light = CLAMP(light, -60, 60);
+    theme_apply(theme_id, theme_hue);
 }
 void theme_apply(int id, int hue) {
     theme_id = CLAMP(id, 0, style_count() - 1);

@@ -42,6 +42,7 @@ uint32_t mix(uint32_t a, uint32_t b, int t);       /* t 0..255: a->b */
 uint32_t lighten(uint32_t c, int amt);
 uint32_t darken(uint32_t c, int amt);
 uint32_t hue_shift(uint32_t c, int deg);
+uint32_t color_adjust(uint32_t c, int sat, int light);
 void rgb_to_hsv(uint32_t c, int *h, int *s, int *v);
 uint32_t hsv_to_rgb(int h, int s, int v);
 

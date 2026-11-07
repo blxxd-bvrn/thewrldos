@@ -47,6 +47,8 @@ typedef struct {
 extern theme_t T;
 extern int theme_id, theme_hue;
 void theme_apply(int id, int hue);
+extern int theme_sat, theme_light;             /* -100..100 / -60..60, applied with the hue */
+void theme_set_tone(int sat, int light);
 void theme_compute(int id, int hue, theme_t *out);
 
 /* decorated drawing helpers */

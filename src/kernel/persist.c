@@ -198,6 +198,7 @@ void settings_load(void) {
     const char *th = settings_get("theme");
     if (!boot_safe_mode && th) {
         int id = isdigit(th[0]) ? atoi(th) : style_find(th);    /* numbers: older wrld.ini */
+        theme_sat = CLAMP(geti("saturation", 0), -100, 100); theme_light = CLAMP(geti("lightness", 0), -60, 60);
         if (id >= 0 && id < THEME_COUNT) theme_apply(id, geti("hue", 0));
     }
     if (settings_get("wallpaper")) { wallpaper_id = geti("wallpaper", wallpaper_id); if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count) wallpaper_id = 0; shell_wallpaper_changed(); }
@@ -210,6 +211,8 @@ static void capture(void) {
     settings_set("theme", style_file(theme_id));
     if (video_can_set_mode()) { snprintf(b, sizeof b, "%dx%d", SCREEN_W, SCREEN_H); settings_set("resolution", b); }
     snprintf(b, sizeof b, "%d", theme_hue); settings_set("hue", b);
+    snprintf(b, sizeof b, "%d", theme_sat); settings_set("saturation", b);
+    snprintf(b, sizeof b, "%d", theme_light); settings_set("lightness", b);
     snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);
     snprintf(b, sizeof b, "%d", tz_offset_minutes); settings_set("tz", b);
     snprintf(b, sizeof b, "%d", mouse_speed); settings_set("mouse_speed", b);
