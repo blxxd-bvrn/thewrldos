@@ -357,13 +357,31 @@ static uint16_t es_io;
 #define ES_DAC2_EN 0x20
 #define ES_SCTRL_P2_16BIT 0x08
 #define ES_SCTRL_P2_STEREO 0x04
+#define ES_SCTRL_P2_INT_EN (1u << 9)
+#define ES_STATUS_DAC2 (1u << 1)
+static uint32_t es_ctrl, es_sctrl;
+static uint32_t es_restarts, es_acks;
+/* DAC2 plays the whole ring in a loop. Its sample counter is set to the whole ring
+ * and its end-of-count interrupt enabled (as Linux does) but acknowledged by
+ * polling (es_service): VMware's ES1371 stops at the end of a count until that
+ * interrupt has been acknowledged. The PCI interrupt line itself is disabled. */
 static void es_start_dac2(uint32_t ctrl_bits) {
+    es_ctrl = ctrl_bits;
+    outl(es_io + ES_CTRL, es_ctrl);                        /* DAC2 off while it is set up */
     outl(es_io + ES_PAGE, 0x0C);
     outl(es_io + ES_DAC2_FRAMEADR, (uint32_t)(uintptr_t)ring);
     outl(es_io + ES_DAC2_FRAMECNT, NBUF * BUFBYTES / 4 - 1);
-    outl(es_io + ES_SCTRL, ES_SCTRL_P2_16BIT | ES_SCTRL_P2_STEREO | (2u << 19));   /* end increment 2 for 16-bit */
-    outl(es_io + ES_DAC2_COUNT, BUFFRAMES - 1);
-    outl(es_io + ES_CTRL, ctrl_bits | ES_DAC2_EN);
+    es_sctrl = ES_SCTRL_P2_16BIT | ES_SCTRL_P2_STEREO | (2u << 19) | ES_SCTRL_P2_INT_EN;   /* end increment 2 for 16-bit */
+    outl(es_io + ES_SCTRL, es_sctrl);
+    outl(es_io + ES_DAC2_COUNT, NBUF * BUFFRAMES - 1);     /* one end-of-count per trip round the ring */
+    outl(es_io + ES_CTRL, es_ctrl | ES_DAC2_EN);
+}
+static void es_service(void) {                            /* timer interrupt: acknowledge DAC2's end of count */
+    if (inl(es_io + ES_STATUS) & ES_STATUS_DAC2) {
+        outl(es_io + ES_SCTRL, es_sctrl & ~ES_SCTRL_P2_INT_EN);
+        outl(es_io + ES_SCTRL, es_sctrl);
+        es_acks++;
+    }
 }
 static uint32_t es_raw;
 static int es_position(void) {
@@ -380,7 +398,7 @@ static void es1370_codec(uint8_t reg, uint8_t val) {
 }
 static bool es1370_init(pci_dev_t *p) {
     uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
-    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x05);
+    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x05 | 0x400);   /* I/O, bus master, INTx off: we poll */
     uint32_t bar = pci_cfg_read(p->bus, p->dev, p->fn, 0x10);
     if (!(bar & 1)) return false;
     es_io = bar & ~3u;
@@ -447,7 +465,7 @@ static void es1371_rate(uint8_t base, uint32_t rate) {
 }
 static bool es1371_init(pci_dev_t *p) {
     uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
-    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x05);
+    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x05 | 0x400);   /* I/O, bus master, INTx off: we poll */
     uint32_t bar = pci_cfg_read(p->bus, p->dev, p->fn, 0x10);
     if (!(bar & 1)) return false;
     es_io = bar & ~3u;
@@ -570,6 +588,15 @@ static bool est_set;
 static void refill(void) {
     int cur = cur_position();
     uint32_t now = timer_ticks();
+    if (dev == DEV_ES1370 || dev == DEV_ES1371) {             /* stalled DAC2: restart it */
+        static uint32_t es_last = ~0u, es_last_tick;
+        if (es_raw != es_last) { es_last = es_raw; es_last_tick = now; }
+        else if (now - es_last_tick > 150) {
+            es_restarts++;
+            es_start_dac2(es_ctrl);
+            es_last_tick = now;
+        }
+    }
     if (cur >= 0) { est_bytes = cur * BUFBYTES; est_tick = now; est_set = true; }
     else {
         bad_positions++;
@@ -595,7 +622,10 @@ static void refill(void) {
         if (!(inb(nabm + 0x1B) & 1)) outb(nabm + 0x1B, 0x01);   /* (re)start */
     }
 }
-static void audio_tick(uint32_t t) { if ((t & 3) == 0) refill(); }
+static void audio_tick(uint32_t t) {
+    if (dev == DEV_ES1370 || dev == DEV_ES1371) es_service();
+    if ((t & 3) == 0) refill();
+}
 
 void audio_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
@@ -620,11 +650,11 @@ void audio_diag(char *buf, int cap) {
     char r0[160] = "", r1[160] = "";
     uint32_t f = irq_save(); int a = cur_position(); irq_restore(f);
     if (dev == DEV_HDA) hda_regs(r0, sizeof r0);
-    else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r0, sizeof r0, "CTRL %08x SCTRL %08x frame %08x\n", inl(es_io + ES_CTRL), inl(es_io + ES_SCTRL), es_raw);
+    else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r0, sizeof r0, "CTRL %08x STATUS %08x SCTRL %08x frame %08x\n", inl(es_io + ES_CTRL), inl(es_io + ES_STATUS), inl(es_io + ES_SCTRL), es_raw);
     sleep_ms(60);
     f = irq_save(); int b = cur_position(); irq_restore(f);
     if (dev == DEV_HDA) hda_regs(r1, sizeof r1);
-    else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r1, sizeof r1, "CTRL %08x SCTRL %08x frame %08x\n", inl(es_io + ES_CTRL), inl(es_io + ES_SCTRL), es_raw);
+    else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r1, sizeof r1, "CTRL %08x STATUS %08x SCTRL %08x frame %08x\n%u end-of-count acks, %u restarts\n", inl(es_io + ES_CTRL), inl(es_io + ES_STATUS), inl(es_io + ES_SCTRL), es_raw, es_acks, es_restarts);
     const char *st = a < 0 || b < 0 ? "UNREADABLE (using the timer estimate)" : a != b ? "advancing" : "NOT advancing (the card is not playing)";
     snprintf(buf, cap, "%s, %u Hz\n%s%s%sPlayback position: %s (buffer %d -> %d)\n%u underruns, %u unusable position readings\nVolume %d%s\n",
              devname, out_rate, dev == DEV_HDA ? hda_diag : "", r0, r1, st, a, b, underruns, bad_positions, audio_volume, audio_muted ? " (muted)" : "");
