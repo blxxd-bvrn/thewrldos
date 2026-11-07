@@ -2,19 +2,27 @@
  * and a WAV loader. Output is always 48 kHz, 16-bit stereo. A ring of DMA
  * buffers is kept filled ~170 ms ahead of the hardware from the timer
  * interrupt, so a busy desktop (or a slow VM) cannot starve it.
- *   - Intel HDA: QEMU (intel-hda), VirtualBox (default), VMware, real PCs
- *   - AC'97 (Intel ICH): QEMU (AC97), VirtualBox (older guest OS types) */
+ *   - Intel High Definition Audio (any vendor's controller): QEMU (intel-hda,
+ *     ich9-intel-hda), VirtualBox (default), VMware, real PCs
+ *   - AC'97 with the Intel ICH bus master: Intel, nVidia nForce, AMD, SiS;
+ *     QEMU (AC97), VirtualBox (ICH AC97)
+ *   - Ensoniq AudioPCI ES1370 (QEMU es1370) and ES1371/ES1373/CT5880
+ *     (VMware's "Ensoniq AudioPCI")
+ *   - Creative Sound Blaster 16 (ISA, 16-bit auto-init DMA): QEMU (sb16),
+ *     VirtualBox (SoundBlaster 16)
+ * The output rate is 48 kHz, or 44.1 kHz on cards that cannot do 48. */
 #include "kernel.h"
 #include "audio.h"
 
-#define RATE 48000
+static uint32_t out_rate = 48000;            /* the mixer's (and the card's) sample rate */
+#define RATE out_rate
 #define NBUF 32
 #define BUFFRAMES 512                     /* 10.7 ms per buffer */
 #define BUFBYTES (BUFFRAMES * 4)
 #define LEAD 16                           /* buffers kept ahead of the hardware */
 #define NVOICE 4
 
-enum { DEV_NONE, DEV_HDA, DEV_AC97 };
+enum { DEV_NONE, DEV_HDA, DEV_AC97, DEV_ES1370, DEV_ES1371, DEV_SB16 };
 static int dev;
 static char devname[80] = "No sound device";
 static int16_t *ring;                     /* NBUF * BUFFRAMES stereo frames */
@@ -90,7 +98,7 @@ static bool hda_init(pci_dev_t *p) {
     pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x06);
     uint32_t bar = pci_cfg_read(p->bus, p->dev, p->fn, 0x10) & ~0xFu;
     paging_set_uncached(bar);
-    hda = (volatile uint8_t *)bar;
+    hda = (volatile uint8_t *)(uintptr_t)bar;
     /* controller reset */
     R32(0x08) &= ~1u;
     for (int i = 0; i < 1000 && (R32(0x08) & 1); i++) spin(10);
@@ -105,12 +113,12 @@ static bool hda_init(pci_dev_t *p) {
     corb = kmalloc_aligned(1024, 128); memset(corb, 0, 1024);
     rirb = kmalloc_aligned(2048, 128); memset(rirb, 0, 2048);
     R8(0x4C) = 0; R8(0x5C) = 0; spin(100);
-    R32(0x40) = (uint32_t)corb; R32(0x44) = 0;
+    R32(0x40) = (uint32_t)(uintptr_t)corb; R32(0x44) = 0;
     R8(0x4E) = (R8(0x4E) & 0xF0) | 2;
     R16(0x4A) = 0x8000; for (int i = 0; i < 1000 && !(R16(0x4A) & 0x8000); i++) spin(1);
     R16(0x4A) = 0; for (int i = 0; i < 1000 && (R16(0x4A) & 0x8000); i++) spin(1);
     R16(0x48) = 0;
-    R32(0x50) = (uint32_t)rirb; R32(0x54) = 0;
+    R32(0x50) = (uint32_t)(uintptr_t)rirb; R32(0x54) = 0;
     R8(0x5E) = (R8(0x5E) & 0xF0) | 2;
     R16(0x58) = 0x8000; rirb_rp = 0;
     R16(0x5A) = 0xFF;                                     /* response interrupt count */
@@ -173,11 +181,11 @@ static bool hda_init(pci_dev_t *p) {
     R8(sd) |= 1; for (int i = 0; i < 1000 && !(R8(sd) & 1); i++) spin(1);
     R8(sd) &= ~1; for (int i = 0; i < 1000 && (R8(sd) & 1); i++) spin(1);
     uint32_t *bdl = kmalloc_aligned(NBUF * 16, 128);
-    for (int i = 0; i < NBUF; i++) { bdl[i * 4] = (uint32_t)(ring + i * BUFFRAMES * 2); bdl[i * 4 + 1] = 0; bdl[i * 4 + 2] = BUFBYTES; bdl[i * 4 + 3] = 0; }
+    for (int i = 0; i < NBUF; i++) { bdl[i * 4] = (uint32_t)(uintptr_t)(ring + i * BUFFRAMES * 2); bdl[i * 4 + 1] = 0; bdl[i * 4 + 2] = BUFBYTES; bdl[i * 4 + 3] = 0; }
     R32(sd + 0x08) = NBUF * BUFBYTES;
     R16(sd + 0x0C) = NBUF - 1;
     R16(sd + 0x12) = 0x0011;
-    R32(sd + 0x18) = (uint32_t)bdl; R32(sd + 0x1C) = 0;
+    R32(sd + 0x18) = (uint32_t)(uintptr_t)bdl; R32(sd + 0x1C) = 0;
     R32(sd) = (R32(sd) & 0xFF0FFFFF) | (1u << 20);          /* stream tag 1 */
     R8(sd) |= 2;                                             /* run */
     snprintf(devname, sizeof devname, "High Definition Audio (%04x:%04x, codec %08x)", p->vendor, p->device, vid);
@@ -203,6 +211,8 @@ static bool ac97_init(pci_dev_t *p) {
     sleep_ms(50);
     for (int i = 0; i < 100 && !(inl(nabm + 0x30) & 0x100); i++) sleep_ms(2);
     outw(nam + 0x00, 0);                                     /* reset mixer */
+    outw(nam + 0x26, 0);                                     /* power up every section */
+    for (int i = 0; i < 100 && (inw(nam + 0x26) & 0x0F) != 0x0F; i++) sleep_ms(1);
     outw(nam + 0x02, 0x0000);                                /* master: 0 dB, unmuted */
     outw(nam + 0x04, 0x0000);                                /* headphones */
     outw(nam + 0x18, 0x0808);                                /* PCM out */
@@ -210,13 +220,204 @@ static bool ac97_init(pci_dev_t *p) {
     outb(nabm + 0x1B, 0x02);                                 /* reset PCM-out box */
     for (int i = 0; i < 1000 && (inb(nabm + 0x1B) & 2); i++) io_wait();
     ac_bdl = kmalloc_aligned(NBUF * 8, 8);
-    for (int i = 0; i < NBUF; i++) { ac_bdl[i * 2] = (uint32_t)(ring + i * BUFFRAMES * 2); ac_bdl[i * 2 + 1] = BUFFRAMES * 2; }
-    outl(nabm + 0x10, (uint32_t)ac_bdl);
-    snprintf(devname, sizeof devname, "AC'97 Audio Controller (%04x:%04x)", p->vendor, p->device);
+    for (int i = 0; i < NBUF; i++) { ac_bdl[i * 2] = (uint32_t)(uintptr_t)(ring + i * BUFFRAMES * 2); ac_bdl[i * 2 + 1] = BUFFRAMES * 2; }
+    outl(nabm + 0x10, (uint32_t)(uintptr_t)ac_bdl);
+    static const struct { uint16_t v; const char *n; } vn[] = { { 0x8086, "Intel" }, { 0x10DE, "nVidia nForce" }, { 0x1022, "AMD" }, { 0x1039, "SiS" } };
+    const char *vend = "";
+    for (unsigned i = 0; i < ARRAY_LEN(vn); i++) if (vn[i].v == p->vendor) vend = vn[i].n;
+    snprintf(devname, sizeof devname, "%s%sAC'97 Audio Controller (%04x:%04x)", vend, *vend ? " " : "", p->vendor, p->device);
     klog("ac97: %s, mixer %x, bus master %x", devname, nam, nabm);
     return true;
 }
 static int ac97_position(void) { return inb(nabm + 0x14) & (NBUF - 1); }
+
+
+/* ======================= Ensoniq AudioPCI (ES1370, ES1371/ES1373) =======================
+ * DAC2 plays our ring as one looping "frame"; its position is read from the
+ * frame count register (page 0x0C, offset 0x3C, upper half in longwords). */
+static uint16_t es_io;
+#define ES_CTRL 0x00
+#define ES_STATUS 0x04
+#define ES_PAGE 0x0C
+#define ES1370_CODEC 0x10
+#define ES1371_SRC 0x10
+#define ES1371_CODEC 0x14
+#define ES1371_LEGACY 0x18
+#define ES_SCTRL 0x20
+#define ES_DAC2_COUNT 0x28
+#define ES_DAC2_FRAMEADR 0x38
+#define ES_DAC2_FRAMECNT 0x3C
+#define ES_DAC2_EN 0x20
+#define ES_SCTRL_P2_16BIT 0x08
+#define ES_SCTRL_P2_STEREO 0x04
+static void es_start_dac2(uint32_t ctrl_bits) {
+    outl(es_io + ES_PAGE, 0x0C);
+    outl(es_io + ES_DAC2_FRAMEADR, (uint32_t)(uintptr_t)ring);
+    outl(es_io + ES_DAC2_FRAMECNT, NBUF * BUFBYTES / 4 - 1);
+    outl(es_io + ES_SCTRL, ES_SCTRL_P2_16BIT | ES_SCTRL_P2_STEREO | (2u << 19));   /* end increment 2 for 16-bit */
+    outl(es_io + ES_DAC2_COUNT, BUFFRAMES - 1);
+    outl(es_io + ES_CTRL, ctrl_bits | ES_DAC2_EN);
+}
+static int es_position(void) {
+    outl(es_io + ES_PAGE, 0x0C);
+    uint32_t v = inl(es_io + ES_DAC2_FRAMECNT);
+    uint32_t bytes = (v >> 16) * 4;
+    if (bytes >= NBUF * BUFBYTES) return -1;
+    return bytes / BUFBYTES;
+}
+static void es1370_codec(uint8_t reg, uint8_t val) {
+    for (int i = 0; i < 2000 && (inl(es_io + ES_STATUS) & 0x400); i++) io_wait();   /* codec write in progress */
+    outw(es_io + ES1370_CODEC, (reg << 8) | val);
+}
+static bool es1370_init(pci_dev_t *p) {
+    uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
+    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x05);
+    uint32_t bar = pci_cfg_read(p->bus, p->dev, p->fn, 0x10);
+    if (!(bar & 1)) return false;
+    es_io = bar & ~3u;
+    out_rate = 44100;                                      /* DAC2 clock: 1411200 / (div + 2) */
+    uint32_t ctrl = 0x02 | (30u << 16);                    /* codec enable, divider 30 = 44100 Hz */
+    outl(es_io + ES_CTRL, ctrl); outl(es_io + ES_SCTRL, 0);
+    /* AK4531 codec: out of reset, master and voice (wave) at 0 dB, voice routed to the output */
+    es1370_codec(0x16, 0x03); sleep_ms(2); es1370_codec(0x17, 0x00);
+    es1370_codec(0x00, 0x00); es1370_codec(0x01, 0x00);
+    es1370_codec(0x02, 0x06); es1370_codec(0x03, 0x06);
+    es1370_codec(0x10, 0x00); es1370_codec(0x11, 0x0C);
+    es_start_dac2(ctrl);
+    snprintf(devname, sizeof devname, "Ensoniq AudioPCI ES1370 (%04x:%04x)", p->vendor, p->device);
+    klog("es1370: %s at %x, 44.1 kHz", devname, es_io);
+    return true;
+}
+/* ES1371/ES1373: an AC'97 codec plus a sample rate converter in front of the DACs */
+#define SRC_RAM_WE (1u << 24)
+#define SRC_RAM_BUSY (1u << 23)
+#define SRC_DISABLE (1u << 22)
+#define SRC_DIS_P1 (1u << 21)
+#define SRC_DIS_P2 (1u << 20)
+#define SRC_DIS_R1 (1u << 19)
+#define SRC_KEEP (SRC_DISABLE | SRC_DIS_P1 | SRC_DIS_P2 | SRC_DIS_R1)
+#define SMP_DAC1 0x70
+#define SMP_DAC2 0x74
+#define SMP_ADC 0x78
+#define SMP_VOL_ADC 0x6C
+#define SMP_VOL_DAC1 0x7C
+#define SMP_VOL_DAC2 0x7E
+#define SMP_TRUNC_N 0x00
+#define SMP_INT_REGS 0x01
+#define SMP_VFREQ_FRAC 0x03
+static uint32_t src_ready(void) {
+    uint32_t v = 0;
+    for (int i = 0; i < 10000; i++) { v = inl(es_io + ES1371_SRC); if (!(v & SRC_RAM_BUSY)) break; io_wait(); }
+    return v;
+}
+static void src_write(uint8_t addr, uint16_t data) {
+    uint32_t r = src_ready() & SRC_KEEP;
+    outl(es_io + ES1371_SRC, r | ((uint32_t)(addr & 0x7F) << 25) | SRC_RAM_WE | data);
+}
+static void es1371_codec(uint8_t reg, uint16_t val) {
+    for (int i = 0; i < 10000 && (inl(es_io + ES1371_CODEC) & (1u << 30)); i++) io_wait();   /* write in progress */
+    outl(es_io + ES1371_CODEC, ((uint32_t)(reg & 0x7F) << 16) | val);
+}
+static void es1371_rate(uint8_t base, uint32_t rate) {
+    uint32_t freq = ((rate << 15) + 1500) / 3000;
+    uint32_t r = src_ready() & (SRC_DISABLE | SRC_DIS_P1 | SRC_DIS_R1);
+    outl(es_io + ES1371_SRC, r | SRC_DIS_P2);              /* hold DAC2 while changing it */
+    src_write(base + SMP_INT_REGS, (freq >> 5) & 0xFC00);  /* the low byte was cleared at init */
+    src_write(base + SMP_VFREQ_FRAC, freq & 0x7FFF);
+    r = src_ready() & (SRC_DISABLE | SRC_DIS_P1 | SRC_DIS_R1);
+    outl(es_io + ES1371_SRC, r);
+}
+static bool es1371_init(pci_dev_t *p) {
+    uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
+    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x05);
+    uint32_t bar = pci_cfg_read(p->bus, p->dev, p->fn, 0x10);
+    if (!(bar & 1)) return false;
+    es_io = bar & ~3u;
+    outl(es_io + ES_CTRL, 1u << 14); inl(es_io + ES_CTRL); sleep_ms(1);   /* AC-link warm reset */
+    outl(es_io + ES_CTRL, 0); outl(es_io + ES_SCTRL, 0); outl(es_io + ES1371_LEGACY, 0);
+    /* sample rate converter: clear its RAM, unity volumes, 48 kHz on DAC2 */
+    outl(es_io + ES1371_SRC, SRC_DISABLE);
+    for (int i = 0; i < 0x80; i++) src_write(i, 0);
+    src_write(SMP_DAC1 + SMP_TRUNC_N, 16 << 4); src_write(SMP_DAC1 + SMP_INT_REGS, 16 << 10);
+    src_write(SMP_DAC2 + SMP_TRUNC_N, 16 << 4); src_write(SMP_DAC2 + SMP_INT_REGS, 16 << 10);
+    src_write(SMP_VOL_ADC, 1 << 12); src_write(SMP_VOL_ADC + 1, 1 << 12);
+    src_write(SMP_VOL_DAC1, 1 << 12); src_write(SMP_VOL_DAC1 + 1, 1 << 12);
+    src_write(SMP_VOL_DAC2, 1 << 12); src_write(SMP_VOL_DAC2 + 1, 1 << 12);
+    es1371_rate(SMP_DAC2, 48000);
+    src_ready(); outl(es_io + ES1371_SRC, 0);              /* SRC on */
+    /* AC'97 codec: reset, power up, unmute master and PCM */
+    es1371_codec(0x00, 0); sleep_ms(5);
+    es1371_codec(0x26, 0x0000);
+    es1371_codec(0x02, 0x0000); es1371_codec(0x04, 0x0000); es1371_codec(0x18, 0x0808);
+    out_rate = 48000;
+    es_start_dac2(0);
+    snprintf(devname, sizeof devname, "%s (%04x:%04x)", p->device == 0x1371 ? "Ensoniq AudioPCI ES1371" : p->vendor == 0x1102 ? "Creative Ectiva EV1938" : "Ensoniq AudioPCI ES1373", p->vendor, p->device);
+    klog("es1371: %s at %x", devname, es_io);
+    return true;
+}
+
+/* ======================= Sound Blaster 16 =======================
+ * 16-bit stereo, auto-initialising ISA DMA over the whole ring; the position
+ * comes from the DMA controller's count register. ISA DMA can only reach the
+ * first 16 MiB and must not cross a 128 KiB boundary, so the ring lives in a
+ * fixed low-memory area (2 MiB, below every other user). */
+#define ISA_DMA_AREA 0x00200000u
+static uint16_t sb_base;
+static int sb_dma = 5, sb_irq = 5;
+static bool sb_reset(uint16_t base) {
+    outb(base + 6, 1); spin(10); outb(base + 6, 0);
+    for (int i = 0; i < 2000; i++) { if ((inb(base + 0xE) & 0x80) && inb(base + 0xA) == 0xAA) return true; spin(5); }
+    return false;
+}
+static void dsp_w(uint8_t v) { for (int i = 0; i < 20000 && (inb(sb_base + 0xC) & 0x80); i++) {} outb(sb_base + 0xC, v); }
+static int dsp_r(void) { for (int i = 0; i < 20000; i++) if (inb(sb_base + 0xE) & 0x80) return inb(sb_base + 0xA); return -1; }
+static void sb_mix(uint8_t reg, uint8_t val) { outb(sb_base + 4, reg); outb(sb_base + 5, val); }
+static uint8_t sb_mix_r(uint8_t reg) { outb(sb_base + 4, reg); return inb(sb_base + 5); }
+static void sb_irq_handler(regs_t *r) { (void)r; inb(sb_base + 0xF); inb(sb_base + 0xE); }   /* acknowledge 16- and 8-bit */
+static const uint8_t dma_addr_port[8] = { 0x00, 0x02, 0x04, 0x06, 0xC0, 0xC4, 0xC8, 0xCC };
+static const uint8_t dma_count_port[8] = { 0x01, 0x03, 0x05, 0x07, 0xC2, 0xC6, 0xCA, 0xCE };
+static const uint8_t dma_page_port[8] = { 0x87, 0x83, 0x81, 0x82, 0x8F, 0x8B, 0x89, 0x8A };
+static bool sb16_init(void) {
+    static const uint16_t bases[] = { 0x220, 0x240, 0x260, 0x280 };
+    for (unsigned i = 0; i < ARRAY_LEN(bases) && !sb_base; i++) if (sb_reset(bases[i])) sb_base = bases[i];
+    if (!sb_base) return false;
+    dsp_w(0xE1);
+    int major = dsp_r(), minor = dsp_r();
+    if (major < 4) { klog("sb16: DSP %d.%02d at %x is older than a Sound Blaster 16", major, minor, sb_base); sb_base = 0; return false; }
+    uint8_t irqsel = sb_mix_r(0x80), dmasel = sb_mix_r(0x81);
+    sb_irq = irqsel & 2 ? 5 : irqsel & 4 ? 7 : irqsel & 8 ? 10 : irqsel & 1 ? 9 : 5;
+    sb_dma = dmasel & 0x20 ? 5 : dmasel & 0x40 ? 6 : dmasel & 0x80 ? 7 : 5;
+    out_rate = 44100;
+    ring = (int16_t *)(uintptr_t)ISA_DMA_AREA;
+    memset(ring, 0, NBUF * BUFBYTES);
+    /* 8237 slave controller: channel sb_dma, single mode, auto-init, memory -> device */
+    int c = sb_dma & 3;
+    uint32_t a = ISA_DMA_AREA, words = NBUF * BUFBYTES / 2;
+    outb(0xD4, 0x04 | c);                                  /* mask */
+    outb(0xD8, 0);                                         /* clear flip-flop */
+    outb(0xD6, 0x58 | c);
+    outb(dma_addr_port[sb_dma], (a >> 1) & 0xFF); outb(dma_addr_port[sb_dma], (a >> 9) & 0xFF);
+    outb(dma_page_port[sb_dma], (a >> 16) & 0xFE);
+    outb(dma_count_port[sb_dma], (words - 1) & 0xFF); outb(dma_count_port[sb_dma], ((words - 1) >> 8) & 0xFF);
+    outb(0xD4, c);                                         /* unmask */
+    irq_install(sb_irq, sb_irq_handler);
+    sb_mix(0x22, 0xFF); sb_mix(0x30, 0xF8); sb_mix(0x31, 0xF8); sb_mix(0x32, 0xF8); sb_mix(0x33, 0xF8);
+    dsp_w(0xD1);                                           /* speaker on */
+    dsp_w(0x41); dsp_w(out_rate >> 8); dsp_w(out_rate & 0xFF);
+    uint32_t blk = BUFFRAMES * 2 - 1;                      /* samples per interrupt - 1 */
+    dsp_w(0xB6); dsp_w(0x30); dsp_w(blk & 0xFF); dsp_w(blk >> 8);   /* 16-bit, auto-init, FIFO; stereo signed */
+    snprintf(devname, sizeof devname, "Creative Sound Blaster 16 (DSP %d.%02d, port %x, IRQ %d, DMA %d)", major, minor, sb_base, sb_irq, sb_dma);
+    klog("sb16: %s", devname);
+    return true;
+}
+static int sb16_position(void) {
+    outb(0xD8, 0);
+    uint16_t lo = inb(dma_count_port[sb_dma]), hi = inb(dma_count_port[sb_dma]);
+    uint32_t left = ((hi << 8) | lo) + 1, words = NBUF * BUFBYTES / 2;
+    if (left > words) left = words;
+    uint32_t pos = (words - left) * 2;
+    return pos / BUFBYTES;
+}
 
 /* ======================= mixer + task ======================= */
 static void mix_into(int16_t *out, int frames) {
@@ -241,7 +442,7 @@ static void mix_into(int16_t *out, int frames) {
 static int last_cur = -1;
 static uint32_t underruns;
 static void refill(void) {
-    int cur = dev == DEV_HDA ? hda_position() : ac97_position();
+    int cur = dev == DEV_HDA ? hda_position() : dev == DEV_AC97 ? ac97_position() : dev == DEV_SB16 ? sb16_position() : es_position();
     if (cur < 0) return;
     if (last_cur >= 0)
         for (int b = last_cur; b != cur; b = (b + 1) % NBUF) memset(ring + b * BUFFRAMES * 2, 0, BUFBYTES);
@@ -268,8 +469,14 @@ void audio_init(void) {
     ring = kmalloc_aligned(NBUF * BUFBYTES, 128);
     memset(ring, 0, NBUF * BUFBYTES);
     for (int i = 0; i < n && !dev; i++) if (devs[i].cls == 0x04 && devs[i].sub == 0x03 && hda_init(&devs[i])) dev = DEV_HDA;
-    for (int i = 0; i < n && !dev; i++) if (devs[i].cls == 0x04 && devs[i].sub == 0x01 && devs[i].vendor == 0x8086 && ac97_init(&devs[i])) dev = DEV_AC97;
-    if (!dev) { klog("audio: no supported sound device (Intel HDA or AC'97)"); return; }
+    for (int i = 0; i < n && !dev; i++) {
+        pci_dev_t *d = &devs[i];
+        if (d->vendor == 0x1274 && d->device == 0x5000) { if (es1370_init(d)) dev = DEV_ES1370; }
+        else if ((d->vendor == 0x1274 && (d->device == 0x1371 || d->device == 0x5880)) || (d->vendor == 0x1102 && d->device == 0x8938)) { if (es1371_init(d)) dev = DEV_ES1371; }
+        else if (d->cls == 0x04 && d->sub == 0x01 && (d->vendor == 0x8086 || d->vendor == 0x10DE || d->vendor == 0x1022 || d->vendor == 0x1039) && ac97_init(d)) dev = DEV_AC97;
+    }
+    if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
+    if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI or Sound Blaster 16)"); return; }
     next_fill = 0;
     { uint32_t f = irq_save(); refill(); irq_restore(f); }
     timer_tick_hook = audio_tick;

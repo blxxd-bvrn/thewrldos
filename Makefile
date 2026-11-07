@@ -51,11 +51,14 @@ DISK_MB := 512
 # otherwise silent. Override with e.g. "make run AUDIO=alsa" or "AUDIO=sdl".
 AUDIO   ?= $(shell if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then echo pa; \
              elif [ -n "$$PULSE_SERVER" ] || [ -S "$${XDG_RUNTIME_DIR:-/nonexistent}/pulse/native" ]; then echo pa; else echo none; fi)
-# Emulated hardware: SOUND=hda (Intel HD Audio) or ac97; VGA=std (Bochs/BGA) or vmware (SVGA II)
+# Emulated hardware: SOUND=hda (Intel HD Audio), ich9, ac97, es1370 or sb16; VGA=std (Bochs/BGA) or vmware (SVGA II)
 SOUND   ?= hda
 VGA     ?= std
 SOUND_DEV_hda  := -device intel-hda -device hda-output,audiodev=snd0
 SOUND_DEV_ac97 := -device AC97,audiodev=snd0
+SOUND_DEV_es1370 := -device ES1370,audiodev=snd0
+SOUND_DEV_sb16 := -device sb16,audiodev=snd0
+SOUND_DEV_ich9 := -device ich9-intel-hda -device hda-output,audiodev=snd0
 QEMU    := qemu-system-i386 -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 

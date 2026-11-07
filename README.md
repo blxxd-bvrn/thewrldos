@@ -15,7 +15,8 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 - **Networking:** an Intel PRO/1000 driver, a TCP/IP stack with DHCP and DNS, and HTTPS with
   certificate checking.
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
-- **Sound:** Intel HD Audio and AC'97 drivers. A startup sound plays when you log on and a
+- **Sound:** drivers for Intel HD Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI
+  (ES1370, ES1371/ES1373) and Sound Blaster 16. A startup sound plays when you log on and a
   shutdown sound plays before the computer turns off.
 - **Graphics:** drivers for the Bochs/QEMU, VirtualBox and VMware display adapters, so the
   resolution can be changed at runtime (1024×768 up to 1920×1200 or more).
@@ -100,7 +101,8 @@ automatically. On WSL, clone the repository inside the Linux file system (for ex
 
 You can also choose the emulated hardware:
 
-- `make run SOUND=ac97` uses an AC'97 sound card instead of HD Audio.
+- `make run SOUND=ac97` (or `ich9`, `es1370`, `sb16`) picks another emulated sound card
+  instead of HD Audio.
 - `make run VGA=vmware` uses the VMware SVGA II display adapter.
 - `make run AUDIO=alsa` (or `sdl`, or `none`) picks QEMU's host sound output.
 
@@ -108,7 +110,8 @@ You can also choose the emulated hardware:
 
 Boot `wrldos.iso` with **legacy BIOS** boot (not UEFI) and at least **256 MB RAM**. To install,
 attach a hard disk on an **IDE** controller. SATA/AHCI, NVMe and USB disks are not supported.
-For sound, choose **Intel HD Audio** or **ICH AC97**. Graphics work with **VBoxVGA**, **VMSVGA** or
+For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
+**SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
 VMware's SVGA, and those can change resolution. For networking, use an **Intel PRO/1000** adapter. That's the default in VirtualBox ("Intel
 PRO/1000 MT Desktop", NAT) and in QEMU, and usually in VMware (e1000).
 
@@ -212,8 +215,14 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - **Sound (`audio.c`):**
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
       DAC to the speaker or headphone pins.
-    - **AC'97:** bus-master DMA.
-    - Output is always 48 kHz, 16-bit stereo, fed by a ring of DMA buffers.
+    - **AC'97:** bus-master DMA, for Intel ICH and the compatible nVidia nForce, AMD and SiS
+      controllers.
+    - **Ensoniq AudioPCI:** ES1370 (AK4531 codec) and ES1371/ES1373/CT5880 (AC'97 codec and
+      the sample rate converter); DAC2 loops over the ring.
+    - **Sound Blaster 16:** DSP 4.x, 16-bit stereo auto-init ISA DMA from a buffer below
+      16 MiB; the 8237 count register gives the position.
+    - Output is 48 kHz 16-bit stereo (44.1 kHz on the ES1370 and Sound Blaster 16), fed by a
+      ring of DMA buffers refilled from the timer interrupt.
     - A 4-voice mixer with volume and mute, and a WAV loader for 8/16/24-bit PCM at any sample
       rate and channel count.
   - PCI enumeration, CPUID, PC speaker.
