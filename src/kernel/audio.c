@@ -32,6 +32,7 @@ bool audio_muted;
 
 typedef struct { const sound_t *s; uint32_t pos; bool active; } voice_t;
 static voice_t voices[NVOICE];
+void audio_disable(const char *why);
 
 /* ======================= Intel HDA ======================= */
 static volatile uint8_t *hda;
@@ -588,12 +589,18 @@ static bool est_set;
 static void refill(void) {
     int cur = cur_position();
     uint32_t now = timer_ticks();
-    if (dev == DEV_ES1370 || dev == DEV_ES1371) {             /* stalled DAC2: restart it */
-        static uint32_t es_last = ~0u, es_last_tick;
+    if (dev == DEV_ES1370 || dev == DEV_ES1371) {
+        es_service();                                         /* acknowledge DAC2's end of count */
+        /* stalled DAC2: restart it, but only a few times (restarting a channel can be
+         * slow on a VM: never let it eat the machine) */
+        static uint32_t es_last = ~0u, es_last_tick, es_restart_tick;
         if (es_raw != es_last) { es_last = es_raw; es_last_tick = now; }
-        else if (now - es_last_tick > 150) {
-            es_restarts++;
-            es_start_dac2(es_ctrl);
+        else if (now - es_last_tick > 300) {
+            if (es_restarts >= 3) { audio_disable("the card stopped playing and did not restart"); return; }
+            if (!es_restarts || now - es_restart_tick >= 2000) {
+                es_restarts++; es_restart_tick = now;
+                es_start_dac2(es_ctrl);
+            }
             es_last_tick = now;
         }
     }
@@ -622,11 +629,34 @@ static void refill(void) {
         if (!(inb(nabm + 0x1B) & 1)) outb(nabm + 0x1B, 0x01);   /* (re)start */
     }
 }
+/* Time budget: the sound work runs in the timer interrupt, so if the card makes it
+ * slow (VM device models can block on the host's audio), sound is switched off
+ * rather than letting it starve the desktop, keyboard and mouse. */
+static uint64_t tsc_per_ms, budget_used, budget_start;
 static void audio_tick(uint32_t t) {
-    if (dev == DEV_ES1370 || dev == DEV_ES1371) es_service();
-    if ((t & 3) == 0) refill();
+    if ((t & 3) != 0 || !dev) return;
+    uint64_t a = rdtsc();
+    refill();
+    if (!tsc_per_ms) return;
+    uint64_t d = rdtsc() - a;
+    if (d > tsc_per_ms * 20) { audio_disable("the sound card took too long to respond"); return; }
+    budget_used += d;
+    if (a - budget_start >= tsc_per_ms * 1000) {              /* each second: more than 15% of the CPU? */
+        if (budget_used > tsc_per_ms * 150) { audio_disable("the sound card was using too much of the CPU"); return; }
+        budget_used = 0; budget_start = a;
+    }
 }
 
+static char off_reason[96];
+void audio_disable(const char *why) {
+    timer_tick_hook = NULL;
+    if (dev == DEV_ES1370 || dev == DEV_ES1371) outl(es_io + ES_CTRL, es_ctrl);   /* DAC2 off */
+    else if (dev == DEV_HDA) R8(sd) &= ~2;
+    else if (dev == DEV_AC97) outb(nabm + 0x1B, 0);
+    strlcpy(off_reason, why, sizeof off_reason);
+    for (int v = 0; v < NVOICE; v++) voices[v].active = false;
+    klog("audio: sound switched off: %s", why);
+}
 void audio_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     ring = kmalloc_aligned(NBUF * BUFBYTES, 128);
@@ -641,12 +671,17 @@ void audio_init(void) {
     if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
     if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI or Sound Blaster 16)"); return; }
     next_fill = 0;
+    { uint64_t a = rdtsc(); sleep_ms(20); tsc_per_ms = (rdtsc() - a) / 20; budget_start = rdtsc(); }
     { uint32_t f = irq_save(); refill(); irq_restore(f); }
     timer_tick_hook = audio_tick;
 }
 /* what the driver found and whether the card is really playing (for the "sndinfo" command) */
 void audio_diag(char *buf, int cap) {
     if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16).\n"); return; }
+    if (off_reason[0]) {
+        snprintf(buf, cap, "%s\nSound is switched off: %s.\n%u end-of-count acks, %u restarts\n", devname, off_reason, es_acks, es_restarts);
+        return;
+    }
     char r0[160] = "", r1[160] = "";
     uint32_t f = irq_save(); int a = cur_position(); irq_restore(f);
     if (dev == DEV_HDA) hda_regs(r0, sizeof r0);
@@ -662,7 +697,7 @@ void audio_diag(char *buf, int cap) {
 bool audio_present(void) { return dev != DEV_NONE; }
 const char *audio_device_name(void) { return devname; }
 int audio_play(const sound_t *s) {
-    if (!dev || !s || !s->frames) return -1;
+    if (!dev || off_reason[0] || !s || !s->frames) return -1;
     uint32_t f = irq_save();
     int v = 0;
     while (v < NVOICE && voices[v].active) v++;
