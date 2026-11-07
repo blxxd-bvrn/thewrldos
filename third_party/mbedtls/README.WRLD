@@ -1,0 +1,14 @@
+Mbed TLS 4.1.0 (with TF-PSA-Crypto 1.1.0) for THE WRLD OS
+
+Source: the official release archive
+  https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-4.1.0/mbedtls-4.1.0.tar.bz2
+  SHA-256 377a09cf8eb81b5fb2707045e5522d5489d3309fed5006c9874e60558fc81d10
+
+Kept, unmodified: LICENSE, README.md, include/, library/, and from tf-psa-crypto/:
+LICENSE, include/, core/, dispatch/, platform/, utilities/, extras/, drivers/builtin/.
+Left out: tests, programs, docs, scripts, the build-system files (CMakeLists.txt,
+*.make, Makefile) and the optional drivers (everest, p256-m, pqcp/ML-DSA).
+
+The configuration is in ../mbedtls-config (selected with MBEDTLS_CONFIG_FILE and
+TF_PSA_CRYPTO_CONFIG_FILE in the Makefile); the glue is src/tls/tls.c.
+Licence: Apache-2.0 (see LICENSE).

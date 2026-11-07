@@ -62,7 +62,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, uint32_t len);
 void tcp_timers(void);
 int tcp_count(void);
 
-/* ---- TLS (BearSSL) ---- */
+/* ---- TLS: Mbed TLS (src/tls/tls.c), TLS 1.3 and 1.2 ---- */
 typedef struct tls_conn tls_conn_t;
 tls_conn_t *tls_open(tcb_t *t, const char *host, uint32_t ip, uint16_t port, char *err, int errcap);   /* TLS 1.3, else 1.2 (may reconnect) */
 int tls_write(tls_conn_t *c, const void *data, uint32_t len);       /* -1 on error */
@@ -71,6 +71,7 @@ void tls_close(tls_conn_t *c);                                       /* also clo
 const char *tls_error_text(tls_conn_t *c);
 const char *tls_cipher_name(tls_conn_t *c);
 int tls_trust_anchor_count(void);
+const char *tls_library_version(void);                               /* "Mbed TLS 4.1.0" */
 void entropy_add(uint32_t v);
 void sha256_hex(const void *data, uint32_t len, char out[65]);                                        /* timing noise from IRQs */
 

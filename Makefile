@@ -29,14 +29,22 @@ LDFLAGS := $(firstword $(ARCHFLAGS)) -nostdlib -no-pie -static -T src/arch/$(ARC
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
 CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c)
-# BearSSL (TLS), built freestanding for i686 without SSE/AES-NI
-BSSL    := third_party/bearssl
-BSSL_SRC := $(shell find $(BSSL)/src -name '*.c' 2>/dev/null)
-BSSL_OBJ := $(patsubst $(BSSL)/src/%.c,$(BUILD)/bearssl/%.o,$(BSSL_SRC))
-BSSL_CFLAGS := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
-           -fno-builtin -O2 -g0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -I$(BSSL)/src \
-           -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_RDRAND=0 -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 \
-           -DBR_USE_WIN32_RAND=0 -DBR_USE_WIN32_TIME=0 -DBR_POWER8=0
+# Mbed TLS 4.1 (TLS 1.3/1.2 for The WRLD Xplorer, wget and curl): the TLS library and
+# TF-PSA-Crypto, built freestanding against the same C library shim as QuickJS,
+# configured by third_party/mbedtls-config. src/tls/*.c is the glue.
+MBED    := third_party/mbedtls
+MBED_SRC := $(wildcard $(MBED)/library/*.c $(MBED)/tf-psa-crypto/core/*.c $(MBED)/tf-psa-crypto/drivers/builtin/src/*.c \
+            $(MBED)/tf-psa-crypto/platform/*.c $(MBED)/tf-psa-crypto/utilities/*.c $(MBED)/tf-psa-crypto/extras/*.c)
+MBED_OBJ := $(patsubst $(MBED)/%.c,$(BUILD)/mbedtls/%.o,$(MBED_SRC)) $(patsubst src/tls/%.c,$(BUILD)/tls/%.o,$(wildcard src/tls/*.c))
+MBED_CFLAGS = $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+           -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
+           -I$(QSHIM)/include -Ithird_party/mbedtls-config -I$(MBED)/include -I$(MBED)/library \
+           -I$(MBED)/tf-psa-crypto/include -I$(MBED)/tf-psa-crypto/drivers/builtin/include -I$(MBED)/tf-psa-crypto/core \
+           -I$(MBED)/tf-psa-crypto/dispatch -I$(MBED)/tf-psa-crypto/platform -I$(MBED)/tf-psa-crypto/utilities \
+           -I$(MBED)/tf-psa-crypto/extras -I$(MBED)/tf-psa-crypto/drivers/builtin/src \
+           -DMBEDTLS_CONFIG_FILE='"wrld_mbedtls_config.h"' -DTF_PSA_CRYPTO_CONFIG_FILE='"wrld_crypto_config.h"' -DNDEBUG \
+           -U__unix__ -U__unix -Uunix -U__linux__ -U__linux -Ulinux -U__gnu_linux__
+MBED_HDRS = $(wildcard third_party/mbedtls-config/*.h) $(QSHIM)/include/qjs_libc.h
 # QuickJS (JavaScript for The WRLD Xplorer and the "js" command), built against
 # a small C library shim; src/js/*.c is the glue and sees only the shim headers
 QJS     := third_party/quickjs
@@ -47,7 +55,7 @@ QJS_CFLAGS := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector
            -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
            -I$(QSHIM)/include -I$(QJS) -Isrc/js -D__DJGPP=1 -D__STDC_NO_ATOMICS__=1 -DNDEBUG -D_GNU_SOURCE -w
 ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
-OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(BSSL_OBJ) $(QJS_OBJ)
+OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 MINGW   := i686-w64-mingw32-gcc
 SAMPLES := $(wildcard samples/*.c)
@@ -108,13 +116,13 @@ $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/net/%.o: src/net/%.c $(wildcard src/include/*.h src/net/*.h)
+$(BUILD)/mbedtls/%.o: $(MBED)/%.c $(MBED_HDRS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -c $< -o $@
-
-$(BUILD)/bearssl/%.o: $(BSSL)/src/%.c
+	@echo "  CC (mbedtls) $<"
+	@$(CC) $(MBED_CFLAGS) -w -c $< -o $@
+$(BUILD)/tls/%.o: src/tls/%.c $(wildcard src/tls/*.h) $(MBED_HDRS)
 	@mkdir -p $(dir $@)
-	@$(CC) $(BSSL_CFLAGS) -c $< -o $@
+	$(CC) $(MBED_CFLAGS) -iquote src/include -Wall -Wextra -Wno-unused-parameter -c $< -o $@
 
 $(BUILD)/qjs/%.o: $(QJS)/%.c $(wildcard $(QJS)/*.h) $(QSHIM)/include/qjs_libc.h
 	@mkdir -p $(dir $@)

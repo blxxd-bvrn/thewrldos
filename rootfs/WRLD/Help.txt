@@ -23,8 +23,8 @@ VISUAL STYLES
 
 THE INTERNET
   The WRLD Xplorer (Start menu > Internet, or the globe on the Quick Launch
-  bar) opens web pages over HTTP and HTTPS (TLS 1.3, or TLS 1.2 for older
-  servers). It shows HTML, simple CSS,
+  bar) opens web pages over HTTP and HTTPS (TLS 1.3 or 1.2, through Mbed TLS).
+  It shows HTML, simple CSS,
   tables, forms and PNG/GIF/JPEG/BMP pictures, and runs JavaScript (QuickJS)
   with a DOM, events, timers, localStorage and fetch/XMLHttpRequest.
   Big web apps may still not work; text-heavy sites work best.

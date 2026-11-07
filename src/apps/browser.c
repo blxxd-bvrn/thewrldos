@@ -1478,6 +1478,7 @@ static void br_key(window_t *w, key_event_t *e) {
 static void br_tick(window_t *w) { browser_t *b = w->data; if (b->loading || b->focus_ctrl >= 0) w->dirty = true; }
 static void br_destroy(window_t *w) {
     browser_t *b = w->data; b->closed = true; b->gen++; b->w = NULL;
+    w->menus = NULL;                  /* the static br_menus: not the window manager's to free */
     for (int i = 0; i < b->ncon; i++) kfree(b->con[i]);
     b->ncon = 0;
     browser_release(b);
@@ -1551,7 +1552,7 @@ static void br_menu(window_t *w, int id) {
     case BM_ABOUT: {
         char m[600];
         snprintf(m, sizeof m, "The WRLD Xplorer 1.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
-                 "Secure connections use BearSSL (TLS 1.2) with %d trusted root certificates.\nJavaScript runs on QuickJS-ng %s with a built-in DOM.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_trust_anchor_count(), js_engine_version());
+                 "Secure connections (TLS 1.3 and 1.2) use %s with %d trusted root certificates.\nJavaScript runs on QuickJS-ng %s with a built-in DOM.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_library_version(), tls_trust_anchor_count(), js_engine_version());
         msgbox("About The WRLD Xplorer", m, MBI_INFO, MBX_OK, NULL, NULL);
         break;
     }

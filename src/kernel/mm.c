@@ -73,7 +73,7 @@ void *kmalloc(size_t n) {
 void kfree(void *p) {
     if (!p) return;
     block_t *b = (block_t *)((uint8_t *)p - HDR);
-    if (b->magic != MAGIC_USED) { klog("kfree: bad pointer %p", p); return; }
+    if (b->magic != MAGIC_USED) { klog("kfree: bad pointer %p (from %p)", p, __builtin_return_address(0)); return; }
     uintptr_t f = irq_save();
     b->magic = MAGIC_FREE;
     heap_used -= b->size;
