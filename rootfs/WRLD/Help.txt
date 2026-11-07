@@ -44,7 +44,7 @@ THE INTERNET
 INSTALLING TO A HARD DISK
   Double-click "Install THE WRLD OS" on the live desktop, or pick "Install
   THE WRLD OS" in the CD boot menu. Setup (keyboard: arrows, ENTER, F8, F3)
-  lets you create/delete partitions, formats FAT32, copies the system and
+  lets you create/delete partitions, formats NTFS or FAT32, copies the system and
   installs the GRUB boot loader, then restarts. The first boot from the disk
   asks for your name, computer name, time zone and visual style. Settings are
   saved in C:\WRLD\wrld.ini; files are written back to the disk within a

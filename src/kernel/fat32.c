@@ -464,7 +464,7 @@ bool fat32_rename(fatvol_t *v, const char *from, const char *to) {
 
 /* ---------------- loading into the VFS ---------------- */
 typedef struct { fatvol_t *v; vnode_t *parent; int files, depth; } load_ctx_t;
-void (*fat32_load_progress)(uint64_t done, uint64_t total);
+extern void (*vol_load_progress)(uint64_t done, uint64_t total);
 static uint64_t load_done, load_total;
 static uint32_t load_last_tick;
 static bool load_cb(de_t *e, int idx, int first, const char *name, void *ctx) {
@@ -494,7 +494,7 @@ static bool load_cb(de_t *e, int idx, int first, const char *name, void *ctx) {
         n->readonly = (e->attr & A_RO) != 0;
         L->files++;
         load_done += (e->size + v->csz - 1) / v->csz * v->csz;
-        if (fat32_load_progress && timer_ticks() - load_last_tick >= 50) { load_last_tick = timer_ticks(); fat32_load_progress(load_done, load_total); }
+        if (vol_load_progress && timer_ticks() - load_last_tick >= 50) { load_last_tick = timer_ticks(); vol_load_progress(load_done, load_total); }
     }
     return true;
 }
@@ -504,7 +504,7 @@ int fat32_load_tree(fatvol_t *v, vnode_t *root) {
     load_ctx_t L = { v, root, 0, 0 };
     load_done = 0; load_total = (uint64_t)(v->nclus - v->free_count) * v->csz; load_last_tick = timer_ticks();
     dir_iter(&d, load_cb, &L);
-    if (fat32_load_progress) fat32_load_progress(load_total, load_total);
+    if (vol_load_progress) vol_load_progress(load_total, load_total);
     dir_free(&d);
     vfs_generation++;
     return L.files;

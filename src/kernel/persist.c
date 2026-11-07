@@ -10,7 +10,7 @@
 #include "wm.h"
 #include "audio.h"
 
-fatvol_t *system_volume;
+vol_t *system_volume;
 int system_disk_index = -1, system_part_index = -1;
 static bool persist_on, fat_changed;
 static vnode_t **dirty;
@@ -29,7 +29,7 @@ static void mark_dirty(vnode_t *n) {
 static void mark_tree(vnode_t *n) {
     if (n->dir) {
         char p[512]; rel_path(n, p, sizeof p);
-        if (fat32_mkdir(system_volume, p)) fat_changed = true;
+        if (vol_mkdir(system_volume, p)) fat_changed = true;
         for (vnode_t *c = n->child; c; c = c->next) mark_tree(c);
     } else mark_dirty(n);
 }
@@ -45,7 +45,7 @@ static void hook(int op, vnode_t *n, const char *old) {
     switch (op) {
     case VH_CREATE:
         if (!on_sys(n)) return;
-        if (n->dir) { rel_path(n, p, sizeof p); fat32_mkdir(system_volume, p); fat_changed = true; }
+        if (n->dir) { rel_path(n, p, sizeof p); vol_mkdir(system_volume, p); fat_changed = true; }
         else mark_dirty(n);
         break;
     case VH_WRITE:
@@ -55,15 +55,15 @@ static void hook(int op, vnode_t *n, const char *old) {
         if (!on_sys(n)) return;
         purge(n);
         rel_path(n, p, sizeof p);
-        fat32_delete(system_volume, p); fat_changed = true;
+        vol_delete(system_volume, p); fat_changed = true;
         break;
     case VH_RENAME: {
         bool was = old && toupper(old[0]) == 'C' && old[1] == ':';
         bool now = on_sys(n);
         if (was && now) {
             rel_path(n, p, sizeof p);
-            if (!fat32_rename(system_volume, old + 2, p)) mark_tree(n);
-        } else if (was) { fat32_delete(system_volume, old + 2); purge(n); }
+            if (!vol_rename(system_volume, old + 2, p)) mark_tree(n);
+        } else if (was) { vol_delete(system_volume, old + 2); purge(n); }
         else if (now) mark_tree(n);
         fat_changed = true;
         break;
@@ -80,10 +80,10 @@ void persist_flush(void) {
         f->dirty = false;
         if (f->dir || vfs_drive_letter(f) != 'C') continue;
         char p[512]; rel_path(f, p, sizeof p);
-        if (!fat32_write(system_volume, p, f->data, f->size, f->readonly)) klog("persist: could not write %s", p);
+        if (!vol_write(system_volume, p, f->data, f->size, f->readonly)) klog("persist: could not write %s", p);
     }
     ndirty = 0;
-    if (n || fat_changed) { fat32_sync(system_volume); fat_changed = false; }
+    if (n || fat_changed) { vol_sync(system_volume); fat_changed = false; }
     if (n) klog("persist: wrote %d file(s) to the system disk", n);
 }
 int persist_pending(void) { return ndirty; }
@@ -106,33 +106,33 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
         part_t parts[4];
         if (!mbr_read(dev, parts)) continue;
         for (int i = 0; i < 4; i++) {
-            if (parts[i].type != 0x0B && parts[i].type != 0x0C) continue;
-            fatvol_t *v = fat32_mount(dev, parts[i].lba, parts[i].sectors);
+            if (parts[i].type != 0x0B && parts[i].type != 0x0C && parts[i].type != 0x07) continue;
+            vol_t *v = vol_mount(dev, parts[i].lba, parts[i].sectors);
             if (!v) continue;
-            if ((serial && fat32_serial(v) == serial) || (!serial && fat32_exists(v, "boot\\wrld.elf"))) {
+            if ((serial && vol_serial(v) == serial) || (!serial && vol_exists(v, "boot\\wrld.elf"))) {
                 system_volume = v; system_disk_index = d; system_part_index = i;
                 /* systems installed before the system folder was renamed */
-                if (fat32_exists(v, "Windows") && !fat32_exists(v, "WRLD")) {
-                    bool ok = fat32_rename(v, "Windows", "WRLD");
+                if (vol_exists(v, "Windows") && !vol_exists(v, "WRLD")) {
+                    bool ok = vol_rename(v, "Windows", "WRLD");
                     const char *oldst = "WRLD\\Resources\\Themes\\Windows Classic.wrldstyle";
-                    uint32_t sl; uint8_t *st = ok ? fat32_read(v, oldst, &sl) : NULL;
+                    uint32_t sl; uint8_t *st = ok ? vol_read(v, oldst, &sl) : NULL;
                     if (st) {                                 /* rename the style and its Name= line */
                         char *nb = kmalloc(sl + 16); uint32_t o = 0;
                         for (uint32_t k = 0; k < sl; k++) {
                             if (k + 20 <= sl && !memcmp(st + k, "Name=Windows Classic", 20)) { memcpy(nb + o, "Name=WRLD Classic", 17); o += 17; k += 19; }
                             else nb[o++] = st[k];
                         }
-                        if (fat32_write(v, "WRLD\\Resources\\Themes\\WRLD Classic.wrldstyle", nb, o, false)) fat32_delete(v, oldst);
+                        if (vol_write(v, "WRLD\\Resources\\Themes\\WRLD Classic.wrldstyle", nb, o, false)) vol_delete(v, oldst);
                         kfree(nb); kfree(st);
                     }
-                    fat32_sync(v);
+                    vol_sync(v);
                     klog("persist: renamed C:\\Windows to C:\\WRLD (%s)", ok ? "ok" : "failed");
                 }
-                int files = fat32_load_tree(v, vfs_root('C'));
+                int files = vol_load_tree(v, vfs_root('C'));
                 klog("persist: system disk %d partition %d, %d files loaded", d, i + 1, files);
                 return files >= 0;
             }
-            fat32_unmount(v);
+            vol_unmount(v);
         }
     }
     snprintf(err, errcap, "THE WRLD OS could not find its system partition (volume serial %08X).\n"
@@ -165,8 +165,8 @@ static const char *picture_name(int icon) {
 }
 void persist_status(char *b, int cap) {
     if (!system_volume) { snprintf(b, cap, "Live session from the CD (in memory; changes are not saved)"); return; }
-    snprintf(b, cap, "Disk %d, Partition %d: FAT32 \"%s\", %u MB free of %u MB", system_disk_index, system_part_index + 1,
-             fat32_label(system_volume), (uint32_t)(fat32_free_bytes(system_volume) >> 20), (uint32_t)(fat32_total_bytes(system_volume) >> 20));
+    snprintf(b, cap, "Disk %d, Partition %d: %s \"%s\", %u MB free of %u MB", system_disk_index, system_part_index + 1,
+             vol_fs_name(system_volume), vol_label(system_volume), (uint32_t)(vol_free_bytes(system_volume) >> 20), (uint32_t)(vol_total_bytes(system_volume) >> 20));
 }
 static int geti(const char *k, int def) { const char *v = settings_get(k); return v ? atoi(v) : def; }
 void settings_load(void) {

@@ -139,14 +139,14 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     ata_init();
     boot_screen_progress("Mounting file systems...", 35);
     vfs_init();
-    fat32_load_progress = boot_load_progress;
+    vol_load_progress = boot_load_progress;
     if (boot_root_serial) {
         char err[256];
         if (!persist_boot_from_disk(boot_root_serial, err, sizeof err)) { panic_code = "INACCESSIBLE_BOOT_DEVICE"; panic("%s", err); }
     } else if (initrd_data) tar_extract(initrd_data, initrd_size, vfs_root('C'));
     else klog("initrd: none supplied");
     { extern void mm_release_initrd(void); mm_release_initrd(); }
-    fat32_load_progress = NULL;
+    vol_load_progress = NULL;
     write_system_files();
     if (!system_volume) {   /* live session: offer installation */
         const char *lnk = "setup\r\n";

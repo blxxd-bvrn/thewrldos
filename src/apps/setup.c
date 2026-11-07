@@ -1,5 +1,5 @@
 /* THE WRLD OS Setup.
- *  1. Text-mode setup (blue screens): partition the disk, format FAT32, copy the
+ *  1. Text-mode setup (blue screens): partition the disk, format NTFS or FAT32, copy the
  *     system from the live C: drive, install the GRUB boot loader, restart.
  *  2. First boot from the hard disk: a graphical wizard collects the user's
  *     name, computer name, time zone and look, then finishes the installation. */
@@ -115,7 +115,7 @@ static bool confirm_quit(void) {
 
 /* ---------------- disks and partitions ---------------- */
 enum { IT_DISK, IT_PART, IT_FREE };
-typedef struct { int kind, disk, slot; uint32_t lba, sectors; uint8_t type; char letter; int free_mb; bool fat; char fslabel[16]; } item_t;
+typedef struct { int kind, disk, slot; uint32_t lba, sectors; uint8_t type; char letter; int free_mb; bool fat; int fskind; char fslabel[16]; } item_t;   /* fat: has a usable file system (FAT32 or NTFS) */
 static item_t items[40];
 static int nitems;
 static part_t ptab[4][4];
@@ -127,8 +127,8 @@ static void disk_desc(int d, char *b, int n) {
 static void part_desc(item_t *it, char *b, int n) {
     if (it->kind == IT_FREE) { snprintf(b, n, "    Unpartitioned space          %8u MB", it->sectors / 2048); return; }
     char fs[24];
-    if (it->fat) snprintf(fs, sizeof fs, "[FAT32]");
-    else if (it->type == 0x0C && !it->fat) snprintf(fs, sizeof fs, "[New (Raw)]");
+    if (it->fat) snprintf(fs, sizeof fs, "[%s]", it->fskind == FS_NTFS ? "NTFS" : "FAT32");
+    else if ((it->type == 0x0C || it->type == 0x07) && !it->fat) snprintf(fs, sizeof fs, "[New (Raw)]");
     else snprintf(fs, sizeof fs, "[%s]", part_type_name(it->type));
     char lab[48]; snprintf(lab, sizeof lab, "%c:  Partition%d %s", it->letter, it->slot + 1, fs);
     if (it->fat) snprintf(b, n, "%-33s%8u MB (%6d MB free)", lab, it->sectors / 2048, it->free_mb);
@@ -152,9 +152,9 @@ static void build_items(void) {
             if (k == no) break;
             part_t *p = &ptab[d][order[k]];
             item_t it = { .kind = IT_PART, .disk = d, .slot = order[k], .lba = p->lba, .sectors = p->sectors, .type = p->type, .letter = letter++ };
-            if (p->type == 0x0B || p->type == 0x0C) {
-                fatvol_t *v = fat32_mount(dv, p->lba, p->sectors);
-                if (v) { it.fat = true; it.free_mb = fat32_free_bytes(v) / (1024 * 1024); strlcpy(it.fslabel, fat32_label(v), sizeof it.fslabel); fat32_unmount(v); }
+            if (p->type == 0x0B || p->type == 0x0C || p->type == 0x07) {
+                vol_t *v = vol_mount(dv, p->lba, p->sectors);
+                if (v) { it.fat = true; it.fskind = vol_kind(v); it.free_mb = vol_free_bytes(v) / (1024 * 1024); strlcpy(it.fslabel, vol_label(v), sizeof it.fslabel); vol_unmount(v); }
             }
             items[nitems++] = it;
             pos = p->lba + p->sectors;
@@ -246,7 +246,8 @@ static void message_screen(const char *msg, const char *status) {
     while (ts_key() != KEY_ENTER) {}
 }
 
-static bool do_install(int disk, int slot, int mode /* 0 quick, 1 full, 2 keep */) {
+/* mode: 0 NTFS quick, 1 NTFS full, 2 FAT32 quick, 3 FAT32 full, 4 keep the file system */
+static bool do_install(int disk, int slot, int mode) {
     blkdev_t *dv = blk_get(disk);
     part_t *p = &ptab[disk][slot];
     char dd[96]; disk_desc(disk, dd, sizeof dd);
@@ -267,38 +268,39 @@ static bool do_install(int disk, int slot, int mode /* 0 quick, 1 full, 2 keep *
         message_screen(err, "ENTER=Continue"); kfree(bootimg); kfree(core); return false;
     }
     /* format */
-    if (mode != 2) {
+    if (mode != 4) {
+        int kind = mode < 2 ? FS_NTFS : FS_FAT32;
         ts_begin("", NULL);
         tx(2, 3, "Please wait while Setup formats the partition", TS_FG);
-        item_t it = { .kind = IT_PART, .disk = disk, .slot = slot, .lba = p->lba, .sectors = p->sectors, .type = 0x0C, .letter = 'C' };
+        item_t it = { .kind = IT_PART, .disk = disk, .slot = slot, .lba = p->lba, .sectors = p->sectors, .type = vol_part_type(kind), .letter = 'C' };
         char pd[96]; part_desc(&it, pd, sizeof pd); tx(6, 5, pd, TS_HI);
         tx(2, 7, "on", TS_FG); tx(2, 8, dd, TS_FG);
         fmt_pct = -1;
-        p->type = 0x0C; write_ptab(disk);
-        if (!fat32_format(dv, p->lba, p->sectors, "WRLD OS", mode == 1, serial, fmt_progress, err, sizeof err)) {
+        p->type = vol_part_type(kind); write_ptab(disk);
+        if (!vol_format(kind, dv, p->lba, p->sectors, "WRLD OS", mode == 1 || mode == 3, serial, fmt_progress, err, sizeof err)) {
             char m[300]; snprintf(m, sizeof m, "%s\n\nPress ENTER to return.", err); message_screen(m, "ENTER=Continue");
             kfree(bootimg); kfree(core); return false;
         }
     }
-    fatvol_t *v = fat32_mount(dv, p->lba, p->sectors);
+    vol_t *v = vol_mount(dv, p->lba, p->sectors);
     if (!v) { message_screen("Setup could not open the file system on the selected partition.\n\nPress ENTER to return.", "ENTER=Continue"); kfree(bootimg); kfree(core); return false; }
-    serial = fat32_serial(v);
+    serial = vol_serial(v);
     /* copy files */
     flist_t L = { 0 };
     collect(vfs_root('C'), &L);
-    if ((uint64_t)L.bytes + 4 * 1024 * 1024 > fat32_free_bytes(v)) {
+    if ((uint64_t)L.bytes + 4 * 1024 * 1024 > vol_free_bytes(v)) {
         message_screen("The selected partition does not have enough free space for " OS_NAME ".\n\nPress ENTER to return.", "ENTER=Continue");
-        fat32_unmount(v); kfree(bootimg); kfree(core); return false;
+        vol_unmount(v); kfree(bootimg); kfree(core); return false;
     }
     uint64_t done = 0; uint32_t last = 0;
     for (int i = 0; i < L.n; i++) {
         vnode_t *n = L.v[i];
         if (!n->parent) continue;
         char path[512]; rel(n, path, sizeof path);
-        bool ok = n->dir ? fat32_mkdir(v, path) : fat32_write(v, path, n->data, n->size, n->readonly);
+        bool ok = n->dir ? vol_mkdir(v, path) : vol_write(v, path, n->data, n->size, n->readonly);
         if (!ok) {
             char m[600]; snprintf(m, sizeof m, "Setup cannot copy the file %s.\n\nThe disk may be full or damaged. Press ENTER to return.", path);
-            message_screen(m, "ENTER=Continue"); fat32_unmount(v); kfree(L.v); kfree(bootimg); kfree(core); return false;
+            message_screen(m, "ENTER=Continue"); vol_unmount(v); kfree(L.v); kfree(bootimg); kfree(core); return false;
         }
         if (!n->dir) done += n->size;
         if (timer_ticks() - last > 30 || i == L.n - 1) {
@@ -312,7 +314,7 @@ static bool do_install(int disk, int slot, int mode /* 0 quick, 1 full, 2 keep *
         }
     }
     kfree(L.v);
-    fat32_delete(v, "Documents and Settings\\User\\Desktop\\Install " OS_NAME ".lnk");
+    vol_delete(v, "Documents and Settings\\User\\Desktop\\Install " OS_NAME ".lnk");
     /* configuration */
     ts_begin("", NULL);
     tx(2, 3, "Please wait while Setup initializes your " OS_NAME " configuration.", TS_FG);
@@ -326,13 +328,13 @@ static bool do_install(int disk, int slot, int mode /* 0 quick, 1 full, 2 keep *
         "menuentry \"" OS_NAME " (verbose boot)\" {\n    multiboot /boot/wrld.elf root=%08X verbose\n    boot\n}\n"
         "menuentry \"" OS_NAME " (safe mode - Classic theme)\" {\n    multiboot /boot/wrld.elf root=%08X safe\n    boot\n}\n",
         serial, serial, serial);
-    fat32_write(v, "boot\\grub\\grub.cfg", cfg, strlen(cfg), false);
+    vol_write(v, "boot\\grub\\grub.cfg", cfg, strlen(cfg), false);
     rtc_time_t t; rtc_now(&t);
     char ini[256];
     snprintf(ini, sizeof ini, "; THE WRLD OS settings\r\n[WRLD]\r\nsetup=oobe\r\ninstalled=%04d-%02d-%02d %02d:%02d\r\nserial=%08X\r\n", t.year, t.month, t.day, t.hour, t.minute, serial);
-    fat32_write(v, "WRLD\\wrld.ini", ini, strlen(ini), false);
-    fat32_sync(v);
-    fat32_unmount(v);
+    vol_write(v, "WRLD\\wrld.ini", ini, strlen(ini), false);
+    vol_sync(v);
+    vol_unmount(v);
     /* boot loader: core image in the gap after the MBR, boot code in the MBR */
     uint8_t *cbuf = kzalloc(core_secs * 512); memcpy(cbuf, core, cl);
     bool ok = blk_write(dv, 1, core_secs, cbuf);
@@ -400,7 +402,7 @@ void setup_text_mode(bool from_desktop) {
     /* loading */
     if (!from_desktop) {
         static const char *load[] = { "Setup is loading files (Kernel Debugger DLL)...", "Setup is loading files (ATA/IDE Disk Driver)...",
-            "Setup is loading files (FAT32 File System)...", "Setup is loading files (GRUB Boot Loader)...", "Setup is loading files (Win32 Subsystem)...",
+            "Setup is loading files (NTFS File System)...", "Setup is loading files (FAT32 File System)...", "Setup is loading files (GRUB Boot Loader)...", "Setup is loading files (Win32 Subsystem)...",
             "Setup is loading files (Luna Visual Styles)...", "Setup is starting " OS_NAME "..." };
         for (unsigned i = 0; i < ARRAY_LEN(load); i++) { ts_begin(load[i], NULL); ts_present(); task_sleep(230); }
     }
@@ -491,13 +493,14 @@ void setup_text_mode(bool from_desktop) {
                 }
                 /* file system choice */
                 bool keep_ok = !fresh && it.fat;
-                const char *opts[3] = { "Format the partition using the FAT32 file system (Quick)", "Format the partition using the FAT32 file system",
+                const char *opts[5] = { "Format the partition using the NTFS file system (Quick)", "Format the partition using the NTFS file system",
+                                        "Format the partition using the FAT file system (Quick)", "Format the partition using the FAT file system",
                                         "Leave the current file system intact (no changes)" };
-                int nopt = keep_ok ? 3 : 2, o = 0;
+                int nopt = keep_ok ? 5 : 4, o = 0;
                 bool back = false;
                 for (;;) {
                     ts_begin("ENTER=Continue  ESC=Cancel", NULL);
-                    item_t cur = it; cur.kind = IT_PART; cur.slot = slot; cur.type = 0x0C; cur.letter = it.kind == IT_FREE ? 'C' : it.letter;
+                    item_t cur = it; cur.kind = IT_PART; cur.slot = slot; cur.type = fresh ? 0x07 : it.type; cur.letter = it.kind == IT_FREE ? 'C' : it.letter;
                     if (fresh) { cur.lba = ptab[it.disk][slot].lba; cur.sectors = ptab[it.disk][slot].sectors; cur.fat = false; }
                     char pd[128], dd[96]; part_desc(&cur, pd, sizeof pd); disk_desc(it.disk, dd, sizeof dd);
                     if (fresh || !it.fat) tx_wrap(2, 3, "The partition you selected is not formatted. Setup will now format the partition.", TS_FG);
@@ -515,7 +518,7 @@ void setup_text_mode(bool from_desktop) {
                     else if (k2 == KEY_DOWN) o = (o + 1) % nopt;
                     else if (k2 == KEY_ESC) { back = true; break; }
                     else if (k2 == KEY_ENTER) {
-                        if (o < 2 && it.fat && !fresh) {
+                        if (o < 4 && it.fat && !fresh) {
                             ts_begin("F=Format  ESC=Cancel", NULL);
                             tx(2, 3, "WARNING: Formatting this drive will delete all files on it.", TS_HI);
                             tx(2, 5, "To format the drive, press F. To select a different partition, press ESC.", TS_FG);

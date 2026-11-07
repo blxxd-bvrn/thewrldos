@@ -58,7 +58,7 @@ SAMPLE_EXES64 := $(patsubst samples/%.c,rootfs64/Samples/%.exe,$(SAMPLES))
 GRUBDIR ?= $(firstword $(wildcard /usr/lib/grub/i386-pc /usr/lib/grub2/i386-pc /usr/share/grub/i386-pc) /usr/lib/grub/i386-pc)
 GRUB_MKRESCUE ?= $(firstword $(shell command -v grub-mkrescue grub2-mkrescue 2>/dev/null) grub-mkrescue)
 GRUB_MKIMAGE  ?= $(firstword $(shell command -v grub-mkimage grub2-mkimage 2>/dev/null) grub-mkimage)
-GRUB_MODS := biosdisk part_msdos fat multiboot normal configfile boot vbe vga video_bochs video_cirrus echo test
+GRUB_MODS := biosdisk part_msdos fat ntfs multiboot normal configfile boot vbe vga video_bochs video_cirrus echo test
 SYS     := $(BUILD)/sys
 CORES   := $(foreach n,1 2 3 4,$(SYS)/boot/grub/core$(n).img)
 DISK    := $(if $(filter x86_64,$(ARCH)),disk64.img,disk.img)
@@ -168,7 +168,7 @@ rootfs/Samples/Sample.dmg: tools/mkdmg.py FORCE
 $(SYS)/boot/grub/boot.img: $(GRUBDIR)/boot.img
 	@mkdir -p $(dir $@)
 	cp $< $@
-$(SYS)/boot/grub/core%.img:
+$(SYS)/boot/grub/core%.img: Makefile
 	@mkdir -p $(dir $@)
 	$(GRUB_MKIMAGE) -O i386-pc -d $(GRUBDIR) -o $@ -p '(,msdos$*)/boot/grub' $(GRUB_MODS)
 $(SYS)/boot/wrld.elf: $(KERNEL)

@@ -156,7 +156,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 1. **Text-mode Setup** (blue screens, keyboard-driven, like XP's):
    - welcome screen and licence (F8 to agree);
    - **partition list**, where you can create (C) and delete (D) partitions;
-   - **format** as FAT32, quick or full, or keep the existing FAT32 file system;
+   - **format** as NTFS or FAT32, quick or full, or keep the existing file system;
    - **copies the system** and writes the boot loader: GRUB's boot code in the MBR and its core
      image after the MBR;
    - restarts.
@@ -258,9 +258,21 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     keyboard controller.
   - Serial (COM1) kernel log.
 - **Storage:**
-  - ATA/IDE disk driver (polled PIO, LBA28/LBA48) and MBR partition tables.
+  - ATA/IDE disk driver (bus-master DMA with a PIO fallback, LBA28/LBA48) and MBR partition tables.
   - **Read/write FAT32** driver: format, long file names, create/replace, recursive delete,
     rename/move, in-memory FAT with write-back.
+  - **Read/write NTFS** driver (`ntfs.c`), written from scratch for NTFS 3.1:
+    - Format: boot sector and its backup, `$MFT` and `$MFTMirr`, an empty `$LogFile`,
+      `$Volume`, `$AttrDef`, `$Bitmap`, `$Boot`, `$BadClus`, `$Secure`, `$UpCase`, `$Extend`.
+    - 1 KB MFT records and 4 KB index blocks with update-sequence fixups; resident and
+      non-resident attributes with run lists; files keep `$STANDARD_INFORMATION`,
+      `$FILE_NAME` (Win32 names), a security descriptor and `$DATA`.
+    - Folders are `$I30` B-tree indexes (`$INDEX_ROOT`, `$INDEX_ALLOCATION`, `$BITMAP`),
+      rebuilt as a balanced tree when they change.
+    - Create/replace, mkdir, rename/move, recursive delete, read; GRUB boots from it through
+      its `ntfs` module.
+    - Volumes it creates pass `ntfsfix`, and `ntfs-3g` lists and reads every file.
+  - `vol.c` puts FAT32 and NTFS behind one interface for Setup and persistence.
   - Read-only FAT12/16/32 reader for disk images.
   - DEFLATE/zlib decompressor and UDIF `.dmg` parser.
 - **Files:** in-memory VFS with drive letters, filled from a tar initrd (live CD) or from the
@@ -331,7 +343,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - Error pages, `file://` folder listings, and downloads saved to `My Documents\Downloads`.
 
 ### Setup (`src/apps/setup.c`)
-- **Text mode:** partition editor, FAT32 format (quick/full), file copy with progress, GRUB
+- **Text mode:** partition editor, NTFS or FAT32 format (quick/full), file copy with progress, GRUB
   install.
 - **First boot:** the graphical wizard. It runs before the log-on screen, using the normal
   widgets.
@@ -449,12 +461,17 @@ used to test every screen above, including a full install from a blank disk.
   are reported as unsupported. FAT volumes with raw or zlib chunks work.
 - **Storage:**
   - The live CD runs from RAM.
-  - An installed system keeps `C:` on a FAT32 partition of an **IDE/ATA** disk (bus-master DMA,
+  - An installed system keeps `C:` on an NTFS or FAT32 partition of an **IDE/ATA** disk (bus-master DMA,
     with PIO as a fallback). SATA/AHCI controllers are not supported, so set the VM's disk
     controller to IDE.
   - At boot the whole partition is loaded into memory and changes are written back, so the
     installed system's size is limited by RAM.
   - BIOS/MBR only: no UEFI or GPT install.
+  - NTFS: no compression, encryption, alternate data streams or attribute lists, and the MFT
+    has a fixed size (4096 files and folders on partitions under 512 MB, 16384 above), so
+    FAT32 is the choice for very many small files. The driver mounts volumes it formatted;
+    volumes made by Windows may use features it does not read. Checked with `ntfs-3g`'s tools,
+    not with Windows' own chkdsk.
 - **Network and browser:**
   - Only Intel PRO/1000 cards, IPv4 only, and no Wi-Fi.
   - HTTPS uses TLS 1.2, so the few sites that only accept TLS 1.3 can't be opened.
@@ -479,7 +496,7 @@ used to test every screen above, including a full install from a blank disk.
 ```
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
-src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 (r/w),
+src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    FAT reader, inflate, DMG, persistence
 src/net            e1000 driver, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP, root certificates
 src/gui            graphics, globe + wordmark, themes, window manager, widgets, desktop, screens
@@ -488,7 +505,7 @@ src/apps           explorer, notepad, terminal, control panel, accessories, laun
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/shell          sh interpreter
 src/win32          PE loader, kernel32, msvcrt, user32/gdi32
-src/include        headers (disk.h: disks/FAT32/setup; net.h: network stack)
+src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/bearssl  BearSSL 0.6 (TLS), MIT licence
 third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against

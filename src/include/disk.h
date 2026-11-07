@@ -47,10 +47,31 @@ bool fat32_rename(fatvol_t *v, const char *from, const char *to);
 uint8_t *fat32_read(fatvol_t *v, const char *path, uint32_t *len);
 int fat32_load_tree(fatvol_t *v, vnode_t *root);                 /* materialise into the VFS; returns files */
 void fat32_sync(fatvol_t *v);
-extern void (*fat32_load_progress)(uint64_t done, uint64_t total);   /* called while fat32_load_tree runs */
+/* ---- volumes: FAT32 or NTFS behind one interface (vol.c, ntfs.c) ---- */
+typedef struct vol vol_t;
+enum { FS_FAT32 = 1, FS_NTFS = 2 };
+extern void (*vol_load_progress)(uint64_t done, uint64_t total);   /* called while a volume's files are loaded */
+vol_t *vol_mount(blkdev_t *d, uint32_t lba, uint32_t sectors);       /* FAT32 or NTFS */
+void vol_unmount(vol_t *v);
+bool vol_format(int kind, blkdev_t *d, uint32_t lba, uint32_t sectors, const char *label, bool full, uint32_t serial, progress_fn cb, char *err, int errcap);
+int vol_kind(vol_t *v);
+const char *vol_fs_name(vol_t *v);
+uint8_t vol_part_type(int kind);                                      /* MBR partition type */
+uint32_t vol_serial(vol_t *v);
+const char *vol_label(vol_t *v);
+uint64_t vol_free_bytes(vol_t *v);
+uint64_t vol_total_bytes(vol_t *v);
+bool vol_exists(vol_t *v, const char *path);
+bool vol_mkdir(vol_t *v, const char *path);
+bool vol_write(vol_t *v, const char *path, const void *data, uint32_t len, bool readonly);
+bool vol_delete(vol_t *v, const char *path);
+bool vol_rename(vol_t *v, const char *from, const char *to);
+uint8_t *vol_read(vol_t *v, const char *path, uint32_t *len);
+int vol_load_tree(vol_t *v, vnode_t *root);
+void vol_sync(vol_t *v);
 
 /* ---- persistence: installed systems keep C: on a FAT32 partition ---- */
-extern fatvol_t *system_volume;     /* NULL when running live from CD/RAM */
+extern vol_t *system_volume;        /* NULL when running live from CD/RAM */
 extern int system_disk_index, system_part_index;
 bool persist_boot_from_disk(uint32_t serial, char *err, int errcap);
 void persist_start(void);           /* enable write-back + background flush task */
