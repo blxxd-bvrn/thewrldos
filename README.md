@@ -16,8 +16,9 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 - Visual styles **Luna (Blue), Olive Green, Silver, WRLD Classic, Aero** (translucent
   blurred glass) and **Plex** (Longhorn-style). Each one is a `.wrldstyle` text file you can edit
   or copy, and each can be recoloured with **hue, saturation and lightness** sliders.
-- **Networking:** an Intel PRO/1000 driver, a TCP/IP stack with DHCP and DNS, and HTTPS with
-  certificate checking.
+- **Networking:** drivers for Intel (PRO/1000, e1000e, I217-I219, I210/I211/I350), Realtek
+  (RTL8111/8168/8125, RTL8139), AMD PCnet, VMware VMXNET3 and virtio-net cards, a TCP/IP stack
+  with DHCP and DNS, and HTTPS with certificate checking.
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
 - **Sound:** drivers for Intel HD Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI
   (ES1370, ES1371/ES1373) and Sound Blaster 16. A startup sound plays when you log on and a
@@ -128,8 +129,9 @@ attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **
 **virtio-blk** disk in QEMU/KVM/Proxmox. USB disks and BusLogic adapters are not supported.
 For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
 **SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
-VMware's SVGA, and those can change resolution. For networking, use an **Intel PRO/1000** adapter. That's the default in VirtualBox ("Intel
-PRO/1000 MT Desktop", NAT) and in QEMU, and usually in VMware (e1000).
+VMware's SVGA, and those can change resolution. Every network adapter VMware offers works (**e1000**, **e1000e**,
+**VMXNET3**, and the **AMD PCnet** "vlance" it picks for Windows XP guests), as do VirtualBox's (**Intel PRO/1000**,
+**PCnet**, **virtio-net**) and QEMU's e1000, e1000e, igb, rtl8139, pcnet, vmxnet3 and virtio-net.
 
 While an installed system starts, the boot screen shows what it is doing, including
 "Loading files from the hard disk… N%". If it stops on one step, that step names the device
@@ -295,7 +297,15 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   settings file.
 
 ### Networking (`src/net`)
-- **Network card:** Intel PRO/1000 (e1000/e1000e) driver, polled.
+- **Network cards** (all polled; the first one found is used):
+  - Intel PRO/1000 8254x, 8257x (VMware's e1000e is an 82574L), ICH8-10/PCH and I217/I218/I219 (`e1000.c`).
+  - Intel 82575/82576/I350/I210/I211 (`igb.c`), with advanced descriptors.
+  - Realtek RTL8111/8168, RTL8169, RTL810x and RTL8125 (`rtl8169.c`), and RTL8139 (`rtl8139.c`).
+  - AMD PCnet-PCI II/FAST III (`pcnet.c`), VMware VMXNET3 (`vmxnet3.c`), and virtio-net
+    over the modern or legacy transport shared with the virtio disks (`virtionet.c`).
+  - Tested in QEMU on both editions. On real hardware, the Realtek and I217/I218/I219 drivers
+    leave the PHY as the firmware set it up, so a board whose firmware powers the port down may
+    show "cable unplugged".
 - **Protocols:** Ethernet, ARP, IPv4, ICMP, UDP, DHCP client, and a DNS resolver (with
   `C:\WRLD\hosts`).
 - **TCP:** client side, with MSS, a 64 KiB window, retransmission with back-off, and graceful
@@ -495,7 +505,7 @@ used to test every screen above, including a full install from a blank disk.
     volumes made by Windows may use features it does not read. Checked with `ntfs-3g`'s tools,
     not with Windows' own chkdsk.
 - **Network and browser:**
-  - Only Intel PRO/1000 cards, IPv4 only, and no Wi-Fi.
+  - Wired Ethernet only (no Wi-Fi, no USB adapters, no Broadcom), and IPv4 only.
   - HTTPS: no HTTP/2, and no post-quantum (hybrid ML-KEM) key exchange.
   - JavaScript works for ordinary pages, but big web apps (which need layout-accurate CSS,
     canvas, modules or web workers) mostly won't.
@@ -520,7 +530,7 @@ Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    FAT reader, inflate, DMG, persistence
-src/net            e1000 driver, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP, root certificates
+src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
 src/gui            graphics, globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup,
                    browser (html.c, imgdec.c, dom.c, adblock.c)

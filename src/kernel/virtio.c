@@ -4,22 +4,7 @@
  * devices. One split virtqueue per device, one request at a time, polled. */
 #include "kernel.h"
 #include "disk.h"
-
-typedef struct { uint64_t addr; uint32_t len; uint16_t flags, next; } __attribute__((packed)) vq_desc_t;
-#define VQ_NEXT 1
-#define VQ_WRITE 2
-
-typedef struct {
-    bool modern;
-    uint16_t io;                                   /* legacy BAR0 */
-    volatile uint8_t *common, *notify, *devcfg;    /* modern */
-    uint32_t notify_mult;
-    /* the one virtqueue we use */
-    uint16_t qindex, qsize, last_used, notify_off;
-    vq_desc_t *desc;
-    volatile uint16_t *avail;                      /* flags, idx, ring[] */
-    volatile uint8_t *used;                        /* flags, idx, ring[] of {id, len} */
-} vdev_t;
+#include "virtio.h"
 
 /* ---- transport ---- */
 static inline uint8_t c8(vdev_t *v, int off) { return *(volatile uint8_t *)(v->common + off); }
@@ -29,14 +14,19 @@ static inline void w8(vdev_t *v, int off, uint8_t x) { *(volatile uint8_t *)(v->
 static inline void w16(vdev_t *v, int off, uint16_t x) { *(volatile uint16_t *)(v->common + off) = x; }
 static inline void w32(vdev_t *v, int off, uint32_t x) { *(volatile uint32_t *)(v->common + off) = x; }
 
-static uint8_t get_status(vdev_t *v) { return v->modern ? c8(v, 0x14) : inb(v->io + 0x12); }
-static void set_status(vdev_t *v, uint8_t s) { if (v->modern) w8(v, 0x14, s); else outb(v->io + 0x12, s); }
-static uint32_t cfg32(vdev_t *v, int off) { return v->modern ? *(volatile uint32_t *)(v->devcfg + off) : inl(v->io + 0x14 + off); }
-static uint16_t cfg16(vdev_t *v, int off) { return v->modern ? *(volatile uint16_t *)(v->devcfg + off) : inw(v->io + 0x14 + off); }
-static uint64_t cfg64(vdev_t *v, int off) { return cfg32(v, off) | ((uint64_t)cfg32(v, off + 4) << 32); }
+uint8_t virtio_get_status(vdev_t *v) { return v->modern ? c8(v, 0x14) : inb(v->io + 0x12); }
+void virtio_set_status(vdev_t *v, uint8_t s) { if (v->modern) w8(v, 0x14, s); else outb(v->io + 0x12, s); }
+uint32_t virtio_cfg32(vdev_t *v, int off) { return v->modern ? *(volatile uint32_t *)(v->devcfg + off) : inl(v->io + 0x14 + off); }
+uint16_t virtio_cfg16(vdev_t *v, int off) { return v->modern ? *(volatile uint16_t *)(v->devcfg + off) : inw(v->io + 0x14 + off); }
+uint8_t virtio_cfg8(vdev_t *v, int off) { return v->modern ? *(volatile uint8_t *)(v->devcfg + off) : inb(v->io + 0x14 + off); }
+static uint64_t cfg64(vdev_t *v, int off) { return virtio_cfg32(v, off) | ((uint64_t)virtio_cfg32(v, off + 4) << 32); }
+#define cfg32 virtio_cfg32
+#define cfg16 virtio_cfg16
+#define get_status virtio_get_status
+#define set_status virtio_set_status
 
 /* reset, acknowledge, negotiate: returns the device feature bits we accepted (low 32) */
-static bool negotiate(vdev_t *v, uint32_t want, uint32_t *got) {
+bool virtio_negotiate(vdev_t *v, uint32_t want, uint32_t *got) {
     set_status(v, 0);
     uint32_t t0 = timer_ticks();
     while (get_status(v) && timer_ticks() - t0 < 1000) {}
@@ -58,13 +48,13 @@ static bool negotiate(vdev_t *v, uint32_t want, uint32_t *got) {
     return true;
 }
 
-static bool queue_setup(vdev_t *v, uint16_t index) {
+bool virtio_queue_setup(vdev_t *v, virtq_t *q, uint16_t index, uint16_t max) {
     uint16_t size;
     if (v->modern) {
         w16(v, 0x16, index);
         size = c16(v, 0x18);
         if (!size) return false;
-        if (size > 64) size = 64;
+        if (size > max) size = max;
         w16(v, 0x18, size);
     } else {
         outw(v->io + 0x0E, index);
@@ -75,17 +65,17 @@ static bool queue_setup(vdev_t *v, uint16_t index) {
     uint32_t total = used_off + 6 + 8u * size;
     uint8_t *mem = kmalloc_aligned((total + 4095) & ~4095u, 4096);
     memset(mem, 0, total);
-    v->qindex = index; v->qsize = size; v->last_used = 0;
-    v->desc = (vq_desc_t *)mem;
-    v->avail = (volatile uint16_t *)(mem + avail_off);
-    v->used = mem + used_off;
-    v->avail[0] = 1;                                          /* VRING_AVAIL_F_NO_INTERRUPT: we poll */
+    q->index = index; q->size = size; q->last_used = 0;
+    q->desc = (vq_desc_t *)mem;
+    q->avail = (volatile uint16_t *)(mem + avail_off);
+    q->used = mem + used_off;
+    q->avail[0] = 1;                                          /* VRING_AVAIL_F_NO_INTERRUPT: we poll */
     if (v->modern) {
         uint64_t d = dma_addr(mem), a = d + avail_off, u = d + used_off;
         w32(v, 0x20, (uint32_t)d); w32(v, 0x24, (uint32_t)(d >> 32));
         w32(v, 0x28, (uint32_t)a); w32(v, 0x2C, (uint32_t)(a >> 32));
         w32(v, 0x30, (uint32_t)u); w32(v, 0x34, (uint32_t)(u >> 32));
-        v->notify_off = c16(v, 0x1E);
+        q->notify_off = c16(v, 0x1E);
         w16(v, 0x1C, 1);                                      /* queue_enable */
     } else {
         outl(v->io + 0x08, (uint32_t)(dma_addr(mem) >> 12));
@@ -93,29 +83,35 @@ static bool queue_setup(vdev_t *v, uint16_t index) {
     return true;
 }
 
+void virtio_notify(vdev_t *v, virtq_t *q) {
+    if (v->modern) *(volatile uint16_t *)(v->notify + q->notify_off * v->notify_mult) = q->index;
+    else outw(v->io + 0x10, q->index);
+}
+void virtio_driver_ok(vdev_t *v) { set_status(v, v->modern ? (1 | 2 | 8 | 4) : (1 | 2 | 4)); }
+
 /* run one descriptor chain and wait for the device to return it */
 static bool vq_run(vdev_t *v, int n, void *const bufs[], const uint32_t lens[], const bool dev_writes[]) {
+    virtq_t *q = &v->q;
     for (int i = 0; i < n; i++) {
-        v->desc[i].addr = dma_addr(bufs[i]); v->desc[i].len = lens[i];
-        v->desc[i].flags = (i + 1 < n ? VQ_NEXT : 0) | (dev_writes[i] ? VQ_WRITE : 0);
-        v->desc[i].next = i + 1;
+        q->desc[i].addr = dma_addr(bufs[i]); q->desc[i].len = lens[i];
+        q->desc[i].flags = (i + 1 < n ? VQ_NEXT : 0) | (dev_writes[i] ? VQ_WRITE : 0);
+        q->desc[i].next = i + 1;
     }
-    uint16_t idx = v->avail[1];
-    v->avail[2 + idx % v->qsize] = 0;
+    uint16_t idx = q->avail[1];
+    q->avail[2 + idx % q->size] = 0;
     __asm__ volatile("mfence" ::: "memory");
-    v->avail[1] = idx + 1;
+    q->avail[1] = idx + 1;
     __asm__ volatile("mfence" ::: "memory");
-    if (v->modern) *(volatile uint16_t *)(v->notify + v->notify_off * v->notify_mult) = v->qindex;
-    else outw(v->io + 0x10, v->qindex);
+    virtio_notify(v, q);
     uint32_t t0 = timer_ticks();
-    while (*(volatile uint16_t *)(v->used + 2) == v->last_used)
+    while (*(volatile uint16_t *)(q->used + 2) == q->last_used)
         if (timer_ticks() - t0 > 10000) { klog("virtio: request timed out"); return false; }
-    v->last_used++;
+    q->last_used++;
     return true;
 }
 
 /* find the transport: modern capabilities if reachable, else legacy BAR0 */
-static bool transport(pci_dev_t *pd, vdev_t *v) {
+bool virtio_transport(pci_dev_t *pd, vdev_t *v) {
     uint32_t status = pci_cfg_read(pd->bus, pd->dev, pd->fn, 0x04) >> 16;
     if (status & 0x10) {
         volatile uint8_t *common = NULL, *notify = NULL, *devcfg = NULL;
@@ -188,7 +184,7 @@ static int nvblk;
 static void vblk_init(pci_dev_t *pd) {
     vblk_t *b = kzalloc(sizeof *b);
     uint32_t got;
-    if (!transport(pd, &b->v) || !negotiate(&b->v, (1u << 6) | (1u << 9), &got) || !queue_setup(&b->v, 0)) {
+    if (!virtio_transport(pd, &b->v) || !virtio_negotiate(&b->v, (1u << 6) | (1u << 9), &got) || !virtio_queue_setup(&b->v, &b->v.q, 0, 64)) {
         klog("virtio-blk: %02x:%02x.%d: setup failed", pd->bus, pd->dev, pd->fn); return;
     }
     set_status(&b->v, b->v.modern ? (1 | 2 | 8 | 4) : (1 | 2 | 4));   /* DRIVER_OK */
@@ -237,7 +233,7 @@ static int nvscsi;
 static void vscsi_init(pci_dev_t *pd) {
     vscsi_t *s = kzalloc(sizeof *s);
     uint32_t got;
-    if (!transport(pd, &s->v) || !negotiate(&s->v, 0, &got) || !queue_setup(&s->v, 2)) {
+    if (!virtio_transport(pd, &s->v) || !virtio_negotiate(&s->v, 0, &got) || !virtio_queue_setup(&s->v, &s->v.q, 2, 64)) {
         klog("virtio-scsi: %02x:%02x.%d: setup failed", pd->bus, pd->dev, pd->fn); return;
     }
     set_status(&s->v, s->v.modern ? (1 | 2 | 8 | 4) : (1 | 2 | 4));

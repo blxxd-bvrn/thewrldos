@@ -356,7 +356,15 @@ static void net_loop(void *arg) {
 }
 void net_init(void) {
     memset(&netif, 0, sizeof netif);
-    if (!e1000_probe(&nic)) { klog("net: no supported network adapter found"); strcpy(netif.driver, "No supported adapter"); return; }
+    /* first match wins: paravirtual cards first, then the emulated/real ones */
+    static bool (*const probes[])(nic_ops_t *) = { virtionet_probe, vmxnet3_probe, e1000_probe, igb_probe, rtl8169_probe, rtl8139_probe, pcnet_probe };
+    bool found = false;
+    for (unsigned i = 0; i < ARRAY_LEN(probes) && !found; i++) { memset(&nic, 0, sizeof nic); found = probes[i](&nic); }
+    if (!found) {
+        pci_dev_t *devs; int n = pci_list(&devs);
+        for (int i = 0; i < n; i++) if (devs[i].cls == 0x02) klog("net: no driver for network adapter %04x:%04x", devs[i].vendor, devs[i].device);
+        klog("net: no supported network adapter found"); strcpy(netif.driver, "No supported adapter"); return;
+    }
     netif.present = true;
     udp_bind(68, dhcp_input, NULL);
     net_task = task_create("netd", net_loop, NULL, 32768);

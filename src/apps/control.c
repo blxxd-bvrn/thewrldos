@@ -525,7 +525,7 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open The WRLD Xplorer", W7_LINK)) browser_open(NULL);
     y += 40;
     snprintf(b, sizeof b, "Secure websites are checked against %d trusted root certificates (add your own in C:\\WRLD\\Certificates).", tls_trust_anchor_count());
-    draw_text_wrapped(s, FONT_UI, ox + 30, y, s->w - ox - 60, netif.present ? b : "No supported network adapter was found. THE WRLD OS supports Intel PRO/1000 (e1000) adapters, the default in QEMU, VirtualBox and VMware.", W7_TEXT, 2);
+    draw_text_wrapped(s, FONT_UI, ox + 30, y, s->w - ox - 60, netif.present ? b : "No supported network adapter was found. THE WRLD OS supports Intel PRO/1000, e1000e, I217-I219 and I210/I211/I350, Realtek RTL8111/8168/8125 and RTL8139, AMD PCnet, VMware VMXNET3 and VirtIO adapters. Wireless adapters are not supported.", W7_TEXT, 2);
 }
 static void page_mouse(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;

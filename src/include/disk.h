@@ -59,7 +59,6 @@ struct scsi_host {
 };
 void scsi_scan(scsi_host_t *h);
 /* DMA helpers: memory the devices can reach (identity-mapped, below 4 GiB) */
-static inline uint64_t dma_addr(const void *p) { return (uint64_t)(uintptr_t)p; }
 
 /* ---- MBR partition tables ---- */
 typedef struct { uint8_t type, boot; uint32_t lba, sectors; } part_t;

@@ -39,8 +39,11 @@ THE INTERNET
                   wget URL [-O FILE], curl URL, sha256sum FILE
   Extra trusted certificates (.crt/.pem) go in C:\WRLD\Certificates.
   Host name overrides go in C:\WRLD\hosts ("10.0.0.5  myserver").
-  Supported network card: Intel PRO/1000 (e1000), the default in QEMU,
-  VirtualBox and VMware.
+  Supported network cards (wired only):
+    Intel PRO/1000, e1000e, I217/I218/I219, I210/I211/I350 (igb)
+    Realtek RTL8111/8168/8169/810x/8125 and RTL8139
+    AMD PCnet (VMware "vlance", VirtualBox PCnet), VMware VMXNET3, VirtIO
+  Type lspci to see your card; ipconfig shows the driver in use.
 
 INSTALLING TO A HARD DISK
   Double-click "Install THE WRLD OS" on the live desktop, or pick "Install

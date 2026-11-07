@@ -29,7 +29,13 @@ typedef struct {
     void (*poll)(void);                                   /* deliver received frames to net_rx() */
     bool (*link_up)(void);
 } nic_ops_t;
-bool e1000_probe(nic_ops_t *ops);
+bool e1000_probe(nic_ops_t *ops);       /* Intel PRO/1000, 82574 (VMware e1000e), I217/I218/I219 */
+bool igb_probe(nic_ops_t *ops);         /* Intel 82575/82576/I210/I211/I350 */
+bool virtionet_probe(nic_ops_t *ops);   /* virtio-net (QEMU/KVM, Proxmox, VirtualBox) */
+bool vmxnet3_probe(nic_ops_t *ops);     /* VMware VMXNET3 */
+bool pcnet_probe(nic_ops_t *ops);       /* AMD PCnet (VMware vlance, VirtualBox PCnet) */
+bool rtl8169_probe(nic_ops_t *ops);     /* Realtek RTL8111/8168/8169/810x/8125 */
+bool rtl8139_probe(nic_ops_t *ops);     /* Realtek RTL8139 */
 void net_rx(const uint8_t *frame, uint32_t len);
 
 void net_init(void);                                      /* probe NIC, start the net task and DHCP */
