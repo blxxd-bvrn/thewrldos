@@ -121,6 +121,7 @@ uintptr_t paging_kernel_root(void);                   /* CR3 of the kernel addre
 #ifdef __x86_64__
 uintptr_t vm_space_new(void);                          /* a private address space sharing the kernel's 0..4 GiB */
 bool vm_map_2m(uintptr_t space, uint64_t va, uintptr_t pa);   /* map one 2 MiB page */
+bool vm_map_4k(uintptr_t space, uint64_t va, uintptr_t pa);   /* map one 4 KiB page */
 void vm_space_free(uintptr_t space);
 #else
 uint32_t *paging_kernel_dir(void);

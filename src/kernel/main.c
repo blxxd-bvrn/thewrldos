@@ -118,8 +118,8 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
 
     boot_screen_begin();
     uint32_t ram_mb = mm_phys_total() / (1024 * 1024);
-    if (ram_mb < 120) {
-        char w[96]; snprintf(w, sizeof w, "Low memory: %u MB. Give the virtual machine 256 MB or more.", ram_mb);
+    if (ram_mb < 64) {
+        char w[96]; snprintf(w, sizeof w, "Low memory: %u MB. Give the virtual machine 128 MB or more.", ram_mb);
         for (int i = 0; i < 6; i++) boot_screen_progress(w, 5);
     }
     boot_screen_progress("Initializing devices...", 10);
@@ -145,6 +145,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
         if (!persist_boot_from_disk(boot_root_serial, err, sizeof err)) { panic_code = "INACCESSIBLE_BOOT_DEVICE"; panic("%s", err); }
     } else if (initrd_data) tar_extract(initrd_data, initrd_size, vfs_root('C'));
     else klog("initrd: none supplied");
+    { extern void mm_release_initrd(void); mm_release_initrd(); }
     fat32_load_progress = NULL;
     write_system_files();
     if (!system_volume) {   /* live session: offer installation */

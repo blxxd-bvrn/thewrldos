@@ -187,6 +187,7 @@ static void free_proc(w32_proc_t *p) {
     vm_space_free(p->space);
 #else
     paging_free_dir(p->pagedir);
+    for (int i = 0; i < p->nptabs; i++) kfree_aligned(p->ptabs[i]);
 #endif
     kfree(p->teb); kfree(p->peb); kfree(p->tls_block); kfree(p->tls_array);
     if (p->argv) { for (int i = 0; i < p->argc; i++) kfree(p->argv[i]); kfree(p->argv); }
@@ -281,7 +282,7 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
      * window (4..16 MiB) or above the kernel's 4 GiB, inside the first 512 GiB */
     bool in_window = base >= WIN_LO && base + size <= WIN_HI;
     bool high_ok = base >= 0x100000000ull && base + size <= (1ull << 39);
-    if (!((in_window || high_ok) && !(base & 0x1FFFFF) && size <= 64u * 1024 * 1024)) {
+    if (!((in_window || high_ok) && !(base & 0xFFF) && size <= 64u * 1024 * 1024)) {
         if (!has_reloc) { snprintf(err, ecap, "Image base 0x%llx cannot be used here and the file has no relocations.", (unsigned long long)base); return -1; }
         base = WIN_LO;
     }
@@ -306,25 +307,38 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
     p->fmode = 0x4000; /* _O_TEXT */
     uint8_t *img;
 #ifdef __x86_64__
-    /* private address space: 2 MiB pages from base (rounded down) to the end of the image */
-    uint64_t vlo = base & ~0x1FFFFFull, vhi = (base + size + 0x1FFFFF) & ~0x1FFFFFull;
-    uint32_t npg = (vhi - vlo) >> 21;
-    p->frames = kmalloc_aligned(npg * 0x200000u, 0x200000);
+    /* private address space: the image in 4 KiB pages, only as much memory as it needs */
+    p->frames = kmalloc_aligned(size, 4096);
     p->space = p->frames ? vm_space_new() : 0;
     if (!p->space) { kfree_aligned(p->frames); kfree(p); snprintf(err, ecap, "Not enough memory to load the program."); return -1; }
-    memset(p->frames, 0, npg * 0x200000u);
-    for (uint32_t i = 0; i < npg; i++) vm_map_2m(p->space, vlo + (uint64_t)i * 0x200000, (uintptr_t)p->frames + i * 0x200000u);
-    img = p->frames + (base - vlo);                    /* kernel-visible alias of the image */
+    memset(p->frames, 0, size);
+    for (uint32_t off = 0; off < size; off += 4096)
+        if (!vm_map_4k(p->space, base + off, (uintptr_t)p->frames + off)) {
+            vm_space_free(p->space); kfree_aligned(p->frames); kfree(p);
+            snprintf(err, ecap, "Not enough memory to map the program."); return -1;
+        }
+    img = p->frames;                                   /* kernel-visible alias of the image */
 #else
-    uint32_t pde_first = WIN_LO >> 22, pde_last = (uint32_t)(base + size - 1) >> 22;
-    uint32_t npde = pde_last - pde_first + 1;
-    p->frames = kmalloc_aligned(npde * 0x400000, 0x400000);
+    /* private page directory; the image is mapped in 4 KiB pages through page tables */
+    if (base & 0xFFF) { kfree(p); snprintf(err, ecap, "Image base 0x%08x is not page aligned.", (uint32_t)base); return -1; }
+    p->frames = kmalloc_aligned(size, 4096);
     if (!p->frames) { kfree(p); snprintf(err, ecap, "Not enough memory to load the program."); return -1; }
-    memset(p->frames, 0, npde * 0x400000);
+    memset(p->frames, 0, size);
     p->pagedir = paging_new_dir();
-    for (uint32_t i = 0; i < npde; i++) p->pagedir[pde_first + i] = ((uint32_t)p->frames + i * 0x400000) | 0x83;
+    uint32_t pde_first = (uint32_t)base >> 22, pde_last = (uint32_t)(base + size - 1) >> 22;
+    for (uint32_t pd = pde_first; pd <= pde_last && p->nptabs < 4; pd++) {
+        uint32_t *pt = kmalloc_aligned(4096, 4096);
+        memset(pt, 0, 4096);
+        p->ptabs[p->nptabs++] = pt;
+        p->pagedir[pd] = (uint32_t)pt | 0x07;
+    }
+    for (uint32_t off = 0; off < size; off += 4096) {
+        uint32_t va = (uint32_t)base + off;
+        uint32_t *pt = (uint32_t *)(p->pagedir[va >> 22] & ~0xFFFu);
+        pt[(va >> 12) & 1023] = ((uint32_t)p->frames + off) | 0x07;
+    }
     p->space = (uintptr_t)p->pagedir;
-    img = p->frames + (base - WIN_LO);
+    img = p->frames;
 #endif
     p->base = base; p->size = size; p->entry = pi.entry;
     /* headers + sections */

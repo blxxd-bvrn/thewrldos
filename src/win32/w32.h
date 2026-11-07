@@ -49,6 +49,7 @@ typedef struct w32_proc {
     uint32_t size, entry;
     uintptr_t space;            /* CR3 of the process address space */
     uint32_t *pagedir;          /* x86 */
+    uint32_t *ptabs[4]; int nptabs;   /* x86: page tables for the image window */
     uint8_t *frames;
     uint8_t *teb, *peb;
     uintptr_t tls_index_addr; uint8_t *tls_block; uintptr_t *tls_array;

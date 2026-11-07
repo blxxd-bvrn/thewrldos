@@ -134,10 +134,10 @@ void paging_set_uncached(uintptr_t addr) {
  * page directories are shared with the kernel (identity 0..4 GiB) until a 2 MiB
  * page inside one is replaced, then that directory is copied. Tables are
  * remembered so the space can be freed. */
-typedef struct { uint64_t *pml4; void *tables[64]; int ntables; } vmspace_t;
+typedef struct { uint64_t *pml4; void *tables[192]; int ntables; } vmspace_t;
 static vmspace_t spaces[64];
 static uint64_t *new_table(vmspace_t *v, const uint64_t *copy) {
-    if (v->ntables >= 64) return NULL;
+    if (v->ntables >= 192) return NULL;
     uint64_t *t = kmalloc_aligned(4096, 4096);
     if (!t) return NULL;
     if (copy) memcpy(t, copy, 4096); else memset(t, 0, 4096);
@@ -170,6 +170,28 @@ bool vm_map_2m(uintptr_t root, uint64_t va, uintptr_t pa) {
         pdpt[gi] = (uintptr_t)pd | 7;
     }
     pd[di] = pa | 0x87;                                  /* present, writable, user, 2 MiB */
+    if (root == ({ uintptr_t c; __asm__ volatile("mov %%cr3,%0" : "=r"(c)); c; })) flush_tlb();
+    return true;
+}
+/* map one 4 KiB page; a 2 MiB page that was there (the kernel's identity map) is replaced */
+bool vm_map_4k(uintptr_t root, uint64_t va, uintptr_t pa) {
+    vmspace_t *v = space_of(root);
+    if (!v || (va >> 39) != 0 || (va & 0xFFF) || (pa & 0xFFF)) return false;
+    uint64_t *pdpt = (uint64_t *)(uintptr_t)(v->pml4[0] & ~0xFFFull);
+    int gi = (va >> 30) & 511, di = (va >> 21) & 511, ti = (va >> 12) & 511;
+    uint64_t *pd = (pdpt[gi] & 1) ? (uint64_t *)(uintptr_t)(pdpt[gi] & ~0xFFFull) : NULL;
+    if (!pd || !owned(v, pd)) {
+        pd = new_table(v, pd);
+        if (!pd) return false;
+        pdpt[gi] = (uintptr_t)pd | 7;
+    }
+    uint64_t *pt = ((pd[di] & 1) && !(pd[di] & 0x80)) ? (uint64_t *)(uintptr_t)(pd[di] & ~0xFFFull) : NULL;
+    if (!pt || !owned(v, pt)) {
+        pt = new_table(v, NULL);
+        if (!pt) return false;
+        pd[di] = (uintptr_t)pt | 7;
+    }
+    pt[ti] = pa | 7;                                     /* present, writable, user */
     if (root == ({ uintptr_t c; __asm__ volatile("mov %%cr3,%0" : "=r"(c)); c; })) flush_tlb();
     return true;
 }
@@ -210,6 +232,13 @@ static void paging_init(void) {
 }
 #endif
 
+/* the initrd's files now live in the VFS: free the archive */
+void mm_release_initrd(void) {
+    if (!initrd_data) return;
+    klog("memory: %u KB initrd archive freed after unpacking", initrd_size / 1024);
+    kfree(initrd_data);
+    initrd_data = NULL; initrd_size = 0;
+}
 uint8_t *initrd_data;
 uint32_t initrd_size;
 bool boot_verbose, boot_safe_mode;
@@ -254,10 +283,13 @@ void mm_init(uint32_t mbaddr) {
     }
     paging_init();
     heap_init(lowest, top);
+    /* GRUB may load the initrd in low memory, where the ISA DMA buffer and the Win32
+     * program window also live: copy it to the heap now; mm_release_initrd() frees
+     * the copy once its files are unpacked */
     if (mod_end > mod_start) {
         initrd_size = mod_end - mod_start;
         initrd_data = kmalloc(initrd_size);
-        memcpy(initrd_data, (void *)(uintptr_t)mod_start, initrd_size);
+        if (initrd_data) memcpy(initrd_data, (void *)(uintptr_t)mod_start, initrd_size);
     }
     (void)kernel_end;
 }

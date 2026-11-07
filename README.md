@@ -122,7 +122,7 @@ You can also choose the emulated hardware:
 
 Boot `wrldos.iso` (or `wrldos64.iso`, in a VM set up for a 64-bit guest, for example
 VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** boot (not UEFI) and at least
-**256 MB RAM**. To install,
+**64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). To install,
 attach a hard disk on an **IDE** controller. SATA/AHCI, NVMe and USB disks are not supported.
 For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
 **SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
@@ -131,7 +131,7 @@ PRO/1000 MT Desktop", NAT) and in QEMU, and usually in VMware (e1000).
 
 While an installed system starts, the boot screen shows what it is doing, including
 "Loading files from the hard disk… N%". If it stops on one step, that step names the device
-involved. It also warns when the machine has less than about 128 MB of memory.
+involved. It also warns when the machine has less than 64 MB of memory.
 
 If the desktop ever stops responding while the clock still runs, a red banner at the top of the
 screen names the task that is busy (the same line goes to the serial log). Please include it
@@ -468,7 +468,8 @@ used to test every screen above, including a full install from a blank disk.
   - No USB, and sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.
-  - Single CPU. Both editions use memory below 4 GiB only (about 3.75 GB at most).
+  - Single CPU. Both editions use memory below 4 GiB only (about 3.75 GB at most); the desktop
+    itself needs about 16 MB.
   - Cooperative (not preemptive) scheduling, and programs run in ring 0.
 - **Names and artwork:** "Luna", "Olive Green", "Silver", "Classic", "Aero" and "Plex" name the
   visual styles this project recreates. All artwork, icons, wallpapers and the globe logo are original.
