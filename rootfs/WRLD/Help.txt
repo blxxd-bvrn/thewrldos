@@ -58,6 +58,9 @@ SOUND AND DISPLAY
   shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High
   Definition Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI ES1370
   and ES1371/ES1373, and Sound Blaster 16. Command Prompt: volume 60, play FILE.wav
+  No sound? "sndinfo" in the Command Prompt shows the card, the codec route
+  and whether playback is advancing. In VMware, also check that the sound
+  card is connected (VM > Settings > Sound Card > Connected).
   Control Panel > Appearance > Display: screen resolution (QEMU/Bochs VGA,
   VirtualBox VBoxVGA/VMSVGA, VMware SVGA). Command Prompt: display 1280x800
 

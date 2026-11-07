@@ -1098,6 +1098,11 @@ static int b_play(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc > 2 && !strcmp(argv[2], "-w")) audio_wait(600000);
     return 0;
 }
+static int b_sndinfo(sh_t *s, int argc, char **argv, io_t *io) {
+    char b[1024]; audio_diag(b, sizeof b);
+    out_s(io, b);
+    return 0;
+}
 static int b_volume(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc > 1) { if (!strcmp(argv[1], "mute")) audio_muted = true; else if (!strcmp(argv[1], "unmute")) audio_muted = false; else audio_volume = CLAMP(atoi(argv[1]), 0, 100); }
     out_f(io, "Sound device: %s\nVolume: %d%%%s\n", audio_device_name(), audio_volume, audio_muted ? " (muted)" : "");
@@ -1409,7 +1414,7 @@ static const builtin_t builtins[] = {
     { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew)" }, { "ifconfig", b_ipconfig, NULL },
     { "ping", b_ping, "send ICMP echo requests" }, { "nslookup", b_nslookup, "look up a host name" },
     { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "js", b_js, "run JavaScript (js FILE or js -e CODE)" }, { "display", b_display, "show or change the screen resolution" },
-    { "play", b_play, "play a .wav file" }, { "volume", b_volume, "show or set the volume (0-100, mute)" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
+    { "play", b_play, "play a .wav file" }, { "volume", b_volume, "show or set the volume (0-100, mute)" }, { "sndinfo", b_sndinfo, "sound card diagnostics" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
     { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "sync", b_sync, "write changes to the system disk now" }, { "mem", b_free, NULL },
     { "uptime", b_uptime, NULL }, { "dmesg", b_dmesg, "kernel log" }, { "export", b_export, "set variables" }, { "set", b_env, NULL },
     { "unset", b_unset, NULL }, { "env", b_env, "list variables" }, { "read", b_read, "read a line into variables" },

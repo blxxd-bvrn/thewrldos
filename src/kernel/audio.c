@@ -43,23 +43,50 @@ static bool use_immediate;
 #define R16(o) (*(volatile uint16_t *)(hda + (o)))
 #define R32(o) (*(volatile uint32_t *)(hda + (o)))
 static void spin(uint32_t us) { for (uint32_t i = 0; i < us; i++) io_wait(); }
-static uint32_t hda_cmd(int cad, int nid, uint32_t verb_payload) {
-    uint32_t c = ((uint32_t)cad << 28) | ((uint32_t)nid << 20) | (verb_payload & 0xFFFFF);
-    if (use_immediate) {
-        for (int i = 0; i < 10000 && (R16(0x68) & 1); i++) spin(1);
-        R32(0x60) = c; R16(0x68) = 2; R16(0x68) = 1;
-        for (int i = 0; i < 10000; i++) { if (R16(0x68) & 2) { R16(0x68) = 2; return R32(0x64); } spin(1); }
-        return 0;
-    }
+static bool hda_dead;                     /* neither command interface answers */
+static uint32_t imm_cmd(uint32_t c, bool *ok) {
+    for (int i = 0; i < 10000 && (R16(0x68) & 1); i++) spin(1);
+    R32(0x60) = c; R16(0x68) = 2; R16(0x68) = 1;           /* clear "result valid", then send */
+    for (int i = 0; i < 20000; i++) { if (R16(0x68) & 2) { R16(0x68) = 2; *ok = true; return R32(0x64); } spin(1); }
+    *ok = false;
+    return 0xFFFFFFFF;
+}
+static uint32_t corb_cmd(uint32_t c, bool *ok) {
     uint16_t wp = (R16(0x48) + 1) & 0xFF;
     corb[wp] = c;
+    __asm__ volatile("" ::: "memory");
     R16(0x48) = wp;
     for (int i = 0; i < 20000; i++) {
         uint16_t w = R16(0x58) & 0xFF;
-        if (w != rirb_rp) { rirb_rp = (rirb_rp + 1) & 0xFF; R8(0x5D) = 0x05; return (uint32_t)rirb[rirb_rp]; }   /* ack RIRB status so the controller keeps going */
+        if (w != rirb_rp) {
+            rirb_rp = (rirb_rp + 1) & 0xFF;
+            uint64_t e = rirb[rirb_rp];
+            R8(0x5D) = 0x05;                                   /* ack RIRB status so the controller keeps going */
+            if ((e >> 32) & 0x10) { i = 0; continue; }         /* unsolicited response: not ours */
+            *ok = true;
+            return (uint32_t)e;
+        }
         spin(1);
     }
+    *ok = false;
     return 0xFFFFFFFF;
+}
+static uint32_t hda_cmd(int cad, int nid, uint32_t verb_payload) {
+    uint32_t c = ((uint32_t)cad << 28) | ((uint32_t)nid << 20) | (verb_payload & 0xFFFFF);
+    bool ok = false;
+    uint32_t r;
+    if (hda_dead) return 0;
+    if (!use_immediate) {
+        r = corb_cmd(c, &ok);
+        if (ok) return r;
+        /* some emulations (and chips) stop answering through the rings: use the immediate interface */
+        klog("hda: CORB/RIRB stopped answering, switching to immediate commands");
+        R8(0x4C) = 0; R8(0x5C) = 0;
+        use_immediate = true;
+    }
+    r = imm_cmd(c, &ok);
+    if (!ok) { klog("hda: the codec does not answer commands"); hda_dead = true; return 0; }
+    return r;
 }
 #define VERB(v, p) (((uint32_t)(v) << 8) | (p))         /* 12-bit verb, 8-bit payload */
 #define VERB4(v, p) (((uint32_t)(v) << 16) | (p))       /* 4-bit verb, 16-bit payload */
@@ -70,16 +97,21 @@ static widget_t wg[128];
 static int wstart, wcount;
 static widget_t *W(int nid) { return nid >= wstart && nid < wstart + wcount ? &wg[nid - wstart] : NULL; }
 static int path[8], plen;
+static uint32_t afg_in_amp;                  /* the function group's default input amp caps */
 static bool find_dac(int cad, int nid, int depth) {
     widget_t *w = W(nid);
     if (!w || depth > 6) return false;
     path[depth] = nid; plen = depth + 1;
-    if (w->type == 0) return true;                        /* audio output (DAC) */
+    if (w->type == 0) return !(w->caps & (1 << 9));       /* analog audio output (DAC), not S/PDIF */
+    if (w->type != 2 && w->type != 3 && w->type != 4) return false;   /* only mixers, selectors, pins lead to DACs */
     for (int i = 0; i < w->nconn; i++) {
         if (find_dac(cad, w->conn[i], depth + 1)) {
             if (w->type != 2 && w->nconn > 1) hda_cmd(cad, nid, VERB(0x701, i));   /* select that input */
-            if (w->type == 2) hda_cmd(cad, nid, VERB4(0x3, 0x7000 | (i << 8) | 0x40)); /* mixer: unmute that input */
-            plen = MAX(plen, depth + 2);
+            if (w->type == 2 && (w->caps & (1 << 1))) {                           /* mixer input amp: that input at 0 dB, unmuted */
+                uint32_t ic = (w->caps & (1 << 3)) ? param(cad, nid, 0x0D) : afg_in_amp;
+                int g = (ic & 0x7F) ? (ic & 0x7F) : ((ic >> 8) & 0x7F);
+                hda_cmd(cad, nid, VERB4(0x3, 0x7000 | (i << 8) | g));
+            }
             return true;
         }
     }
@@ -91,28 +123,48 @@ static void amp_unmute(int cad, int nid, uint32_t afg_ampcaps) {
     uint32_t caps = (w->caps & (1 << 3)) ? param(cad, nid, 0x12) : afg_ampcaps;
     int steps = (caps >> 8) & 0x7F, offset = caps & 0x7F;
     int gain = offset ? offset : steps;                     /* 0 dB if known, else the top of the range */
-    hda_cmd(cad, nid, VERB4(0x3, 0xB000 | gain));
+    hda_cmd(cad, nid, VERB4(0x3, 0xB000 | gain));           /* output amp, left + right, unmuted */
+}
+char hda_diag[600];
+static void diag(const char *fmt, ...) {
+    size_t n = strlen(hda_diag);
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(hda_diag + n, sizeof hda_diag - n, fmt, ap);
+    va_end(ap);
+}
+static const char *pin_kind(int devtype) {
+    static const char *k[16] = { "line out", "speaker", "headphones", "CD", "S/PDIF out", "digital out", "modem line", "modem handset",
+                                 "line in", "aux", "mic", "telephony", "S/PDIF in", "digital in", "other", "other" };
+    return k[devtype & 15];
 }
 static bool hda_init(pci_dev_t *p) {
     uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
     pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x06);
+    if (p->vendor != 0x1002 && p->vendor != 0x1022) {        /* TCSEL = TC0 (as Linux does; avoids static on some codecs) */
+        uint32_t v = pci_cfg_read(p->bus, p->dev, p->fn, 0x44);
+        pci_cfg_write(p->bus, p->dev, p->fn, 0x44, v & ~7u);
+    }
     uint32_t bar = pci_cfg_read(p->bus, p->dev, p->fn, 0x10) & ~0xFu;
+    if (!bar) return false;
     paging_set_uncached(bar);
     hda = (volatile uint8_t *)(uintptr_t)bar;
+    hda_diag[0] = 0;
+    diag("controller %04x:%04x\n", p->vendor, p->device);
     /* controller reset */
+    R8(0x4C) = 0; R8(0x5C) = 0;                              /* stop the rings before resetting */
     R32(0x08) &= ~1u;
     for (int i = 0; i < 1000 && (R32(0x08) & 1); i++) spin(10);
     spin(100);
     R32(0x08) |= 1;
     for (int i = 0; i < 1000 && !(R32(0x08) & 1); i++) spin(10);
-    sleep_ms(20);
-    uint16_t codecs = R16(0x0E);
+    uint16_t codecs = 0;
+    for (int t = 0; t < 10 && !(codecs = R16(0x0E)); t++) sleep_ms(10);   /* codecs report in within ~1 ms; allow 100 */
     if (!codecs) { klog("hda: no codec found"); return false; }
     R32(0x20) = 0;                                          /* no interrupts: we poll */
     /* CORB / RIRB rings */
     corb = kmalloc_aligned(1024, 128); memset(corb, 0, 1024);
     rirb = kmalloc_aligned(2048, 128); memset(rirb, 0, 2048);
-    R8(0x4C) = 0; R8(0x5C) = 0; spin(100);
+    spin(100);
     R32(0x40) = (uint32_t)(uintptr_t)corb; R32(0x44) = 0;
     R8(0x4E) = (R8(0x4E) & 0xF0) | 2;
     R16(0x4A) = 0x8000; for (int i = 0; i < 1000 && !(R16(0x4A) & 0x8000); i++) spin(1);
@@ -121,18 +173,31 @@ static bool hda_init(pci_dev_t *p) {
     R32(0x50) = (uint32_t)(uintptr_t)rirb; R32(0x54) = 0;
     R8(0x5E) = (R8(0x5E) & 0xF0) | 2;
     R16(0x58) = 0x8000; rirb_rp = 0;
-    R16(0x5A) = 0xFF;                                     /* response interrupt count */
-    R8(0x4C) = 2; R8(0x5C) = 2;
+    /* As Linux does: a response "interrupt" after every response, acknowledged in
+     * corb_cmd. Controllers count responses and stop taking commands when the count
+     * is reached until the flag is acknowledged, and the flag only exists with RIRB
+     * interrupts enabled (no CPU interrupt: INTCTL stays 0). Without this the codec
+     * stops answering after RINTCNT responses: enough for QEMU's small codec, not for
+     * big ones like VMware's Realtek-style codec. */
+    R16(0x5A) = 1;
+    R8(0x4C) = 2; R8(0x5C) = 3;                              /* CORB run; RIRB DMA + response flag */
     int cad = 0; while (cad < 15 && !(codecs & (1 << cad))) cad++;
     uint32_t vid = param(cad, 0, 0x00);
-    if (vid == 0xFFFFFFFF || !vid) { use_immediate = true; R8(0x4C) = 0; R8(0x5C) = 0; vid = param(cad, 0, 0x00); }
+    if (vid == 0xFFFFFFFF || !vid) {                         /* rings answer nonsense: immediate commands */
+        R8(0x4C) = 0; R8(0x5C) = 0; use_immediate = true; hda_dead = false;
+        vid = param(cad, 0, 0x00);
+    }
+    if (hda_dead || !vid || vid == 0xFFFFFFFF) { klog("hda: codec %d does not answer", cad); return false; }
+    diag("codec %d: %08x, %s commands\n", cad, vid, use_immediate ? "immediate" : "CORB/RIRB");
     /* find the audio function group */
     uint32_t sub = param(cad, 0, 0x04);
     int afg = 0;
     for (int n = (sub >> 16) & 0xFF, k = 0; k < (int)(sub & 0xFF); k++, n++) if ((param(cad, n, 0x05) & 0xFF) == 1) { afg = n; break; }
     if (!afg) { klog("hda: codec %d has no audio function group", cad); return false; }
     hda_cmd(cad, afg, VERB(0x705, 0));                      /* power D0 */
+    for (int t = 0; t < 20 && ((hda_cmd(cad, afg, VERB(0xF05, 0)) >> 4) & 0xF) != 0; t++) sleep_ms(5);
     uint32_t afg_amp = param(cad, afg, 0x12);
+    afg_in_amp = param(cad, afg, 0x0D);
     sub = param(cad, afg, 0x04);
     wstart = (sub >> 16) & 0xFF; wcount = MIN((int)(sub & 0xFF), 128);
     for (int i = 0; i < wcount; i++) {
@@ -145,51 +210,69 @@ static bool hda_init(pci_dev_t *p) {
                 uint32_t e = hda_cmd(cad, nid, VERB(0xF02, o));
                 for (int b = 0; b < 4 && o + b < n && w->nconn < 16; b++) w->conn[w->nconn++] = (e >> (8 * b)) & 0xFF;
             }
-        hda_cmd(cad, nid, VERB(0x705, 0));
+        if (w->caps & (1 << 10)) hda_cmd(cad, nid, VERB(0x705, 0));   /* widgets with power control: D0 */
     }
-    /* route every connected output pin (speaker, line out, headphones) to a DAC */
-    int dac = 0, pins = 0;
-    for (int pass = 0; pass < 2; pass++)
+    /* Route output pins to DACs: jacks the codec reports as connected first (line out,
+     * speaker, headphones, then the rest); if it reports none, every output-capable
+     * pin. All the DACs used play the same stream. */
+    int dacs[8], ndacs = 0, pins = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        if (pass == 2 && pins) break;
         for (int i = 0; i < wcount; i++) {
             widget_t *w = &wg[i]; int nid = wstart + i;
             if (w->type != 4) continue;
             uint32_t pcaps = param(cad, nid, 0x0C), cfg = hda_cmd(cad, nid, VERB(0xF1C, 0));
             int conn = cfg >> 30, devtype = (cfg >> 20) & 0xF;
-            if (!(pcaps & (1 << 4)) || conn == 1) continue;             /* not output capable / not connected */
-            bool preferred = devtype == 0 || devtype == 1 || devtype == 2;
-            if ((pass == 0) != preferred) continue;
+            if (!(pcaps & (1 << 4))) continue;                        /* not output capable */
+            if (devtype == 4 || devtype == 5 || (w->caps & (1 << 9))) continue;   /* digital */
+            bool preferred = devtype <= 2;
+            if (pass == 0 && (conn == 1 || !preferred)) continue;
+            if (pass == 1 && (conn == 1 || preferred)) continue;
+            if (pass == 2 && conn != 1) continue;
             plen = 0;
             if (!find_dac(cad, nid, 0)) continue;
-            int d = path[plen - 1];
-            if (dac && d != dac) continue;
-            dac = d; pins++;
-            for (int k = 0; k < plen; k++) amp_unmute(cad, path[k], afg_amp);
-            hda_cmd(cad, nid, VERB(0x707, 0x40 | (devtype == 2 ? 0x80 : 0)));
-            if (pcaps & (1 << 16)) hda_cmd(cad, nid, VERB(0x70C, 2));
+            int d = path[plen - 1], k;
+            for (k = 0; k < ndacs && dacs[k] != d; k++) {}
+            if (k == ndacs && ndacs < 8) dacs[ndacs++] = d;
+            pins++;
+            for (int j = 0; j < plen; j++) amp_unmute(cad, path[j], afg_amp);
+            hda_cmd(cad, nid, VERB(0x707, 0x40 | (devtype == 2 ? 0x80 : 0)));   /* output enable (+ headphone amp) */
+            if (pcaps & (1 << 16)) hda_cmd(cad, nid, VERB(0x70C, 2));        /* external amplifier (EAPD) on */
+            diag("pin %d (%s%s) -> DAC %d\n", nid, pin_kind(devtype), conn == 1 ? ", reported unconnected" : "", d);
         }
-    if (!dac) {   /* no pin path: use the first DAC anyway */
-        for (int i = 0; i < wcount; i++) if (wg[i].type == 0) { dac = wstart + i; amp_unmute(cad, dac, afg_amp); break; }
     }
-    if (!dac) { klog("hda: no output converter found"); return false; }
-    /* output stream 1 -> DAC */
-    hda_cmd(cad, dac, VERB(0x706, 1 << 4));
-    hda_cmd(cad, dac, VERB4(0x2, 0x0011));                  /* 48 kHz, 16-bit, 2 channels */
+    if (!ndacs)   /* no pin path: use the first analog DAC anyway */
+        for (int i = 0; i < wcount; i++) if (wg[i].type == 0 && !(wg[i].caps & (1 << 9))) { dacs[ndacs++] = wstart + i; amp_unmute(cad, wstart + i, afg_amp); break; }
+    if (!ndacs) { klog("hda: no output converter found"); return false; }
+    /* output stream 1 -> every DAC used */
+    for (int k = 0; k < ndacs; k++) {
+        hda_cmd(cad, dacs[k], VERB(0x706, 1 << 4));         /* stream 1, channel 0 */
+        hda_cmd(cad, dacs[k], VERB4(0x2, 0x0011));          /* 48 kHz, 16-bit, 2 channels */
+    }
     uint16_t gcap = R16(0x00);
     int iss = (gcap >> 8) & 0xF, oss = (gcap >> 12) & 0xF;
     if (!oss) { klog("hda: no output streams"); return false; }
     sd = 0x80 + iss * 0x20;
+    R8(sd) = 0;                                              /* stop */
     R8(sd) |= 1; for (int i = 0; i < 1000 && !(R8(sd) & 1); i++) spin(1);
     R8(sd) &= ~1; for (int i = 0; i < 1000 && (R8(sd) & 1); i++) spin(1);
+    R8(sd + 3) = 0x1C;                                       /* clear stream status */
     uint32_t *bdl = kmalloc_aligned(NBUF * 16, 128);
     for (int i = 0; i < NBUF; i++) { bdl[i * 4] = (uint32_t)(uintptr_t)(ring + i * BUFFRAMES * 2); bdl[i * 4 + 1] = 0; bdl[i * 4 + 2] = BUFBYTES; bdl[i * 4 + 3] = 0; }
     R32(sd + 0x08) = NBUF * BUFBYTES;
     R16(sd + 0x0C) = NBUF - 1;
     R16(sd + 0x12) = 0x0011;
     R32(sd + 0x18) = (uint32_t)(uintptr_t)bdl; R32(sd + 0x1C) = 0;
-    R32(sd) = (R32(sd) & 0xFF0FFFFF) | (1u << 20);          /* stream tag 1 */
+    R8(sd + 2) = (R8(sd + 2) & 0x0F) | (1 << 4);             /* stream tag 1 */
     R8(sd) |= 2;                                             /* run */
+    /* is the DMA engine moving? */
+    uint32_t l0 = R32(sd + 0x04);
+    sleep_ms(40);
+    uint32_t l1 = R32(sd + 0x04);
+    bool moving = l1 != l0;
+    diag("output stream %d (registers at 0x%x), DMA %s\n", iss + 1, sd, moving ? "running" : "NOT moving");
     snprintf(devname, sizeof devname, "High Definition Audio (%04x:%04x, codec %08x)", p->vendor, p->device, vid);
-    klog("hda: %s, DAC %d, %d output pin(s)%s", devname, dac, pins, use_immediate ? ", immediate commands" : "");
+    klog("hda: %s, %d DAC(s), %d output pin(s)%s, DMA %s", devname, ndacs, pins, use_immediate ? ", immediate commands" : "", moving ? "running" : "not moving");
     return true;
 }
 static int hda_position(void) {
@@ -314,9 +397,18 @@ static void src_write(uint8_t addr, uint16_t data) {
     uint32_t r = src_ready() & SRC_KEEP;
     outl(es_io + ES1371_SRC, r | ((uint32_t)(addr & 0x7F) << 25) | SRC_RAM_WE | data);
 }
+/* AC'97 codec write, the way Linux does it: wait for the codec interface, then
+ * write while the sample rate converter is in a safe state (writes at other
+ * moments can be lost on real chips) */
 static void es1371_codec(uint8_t reg, uint16_t val) {
     for (int i = 0; i < 10000 && (inl(es_io + ES1371_CODEC) & (1u << 30)); i++) io_wait();   /* write in progress */
+    uint32_t x = src_ready();
+    outl(es_io + ES1371_SRC, (x & SRC_KEEP) | 0x00010000);
+    for (int i = 0; i < 10000 && (inl(es_io + ES1371_SRC) & 0x00870000) != 0; i++) {}
+    for (int i = 0; i < 10000 && (inl(es_io + ES1371_SRC) & 0x00870000) != 0x00010000; i++) {}
     outl(es_io + ES1371_CODEC, ((uint32_t)(reg & 0x7F) << 16) | val);
+    src_ready();
+    outl(es_io + ES1371_SRC, x);
 }
 static void es1371_rate(uint8_t base, uint32_t rate) {
     uint32_t freq = ((rate << 15) + 1500) / 3000;
@@ -346,8 +438,8 @@ static bool es1371_init(pci_dev_t *p) {
     es1371_rate(SMP_DAC2, 48000);
     src_ready(); outl(es_io + ES1371_SRC, 0);              /* SRC on */
     /* AC'97 codec: reset, power up, unmute master and PCM */
-    es1371_codec(0x00, 0); sleep_ms(5);
-    es1371_codec(0x26, 0x0000);
+    es1371_codec(0x00, 0); sleep_ms(20);
+    es1371_codec(0x26, 0x0000); sleep_ms(5);
     es1371_codec(0x02, 0x0000); es1371_codec(0x04, 0x0000); es1371_codec(0x18, 0x0808);
     out_rate = 48000;
     es_start_dac2(0);
@@ -439,10 +531,13 @@ static void mix_into(int16_t *out, int frames) {
  * Buffers it has finished are cleared, so if we ever fall behind it plays
  * silence instead of repeating stale sound; if it has overtaken us, start
  * again just ahead of it. Runs with interrupts off (timer IRQ or irq_save). */
+static int cur_position(void) {
+    return dev == DEV_HDA ? hda_position() : dev == DEV_AC97 ? ac97_position() : dev == DEV_SB16 ? sb16_position() : es_position();
+}
 static int last_cur = -1;
 static uint32_t underruns;
 static void refill(void) {
-    int cur = dev == DEV_HDA ? hda_position() : dev == DEV_AC97 ? ac97_position() : dev == DEV_SB16 ? sb16_position() : es_position();
+    int cur = cur_position();
     if (cur < 0) return;
     if (last_cur >= 0)
         for (int b = last_cur; b != cur; b = (b + 1) % NBUF) memset(ring + b * BUFFRAMES * 2, 0, BUFBYTES);
@@ -480,6 +575,18 @@ void audio_init(void) {
     next_fill = 0;
     { uint32_t f = irq_save(); refill(); irq_restore(f); }
     timer_tick_hook = audio_tick;
+}
+/* what the driver found and whether the card is really playing (for the "sndinfo" command) */
+void audio_diag(char *buf, int cap) {
+    if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16).\n"); return; }
+    uint32_t f = irq_save(); int a = cur_position(); irq_restore(f);
+    uint32_t hdl = 0; if (dev == DEV_HDA) hdl = R32(sd + 0x04);
+    sleep_ms(60);
+    f = irq_save(); int b = cur_position(); irq_restore(f);
+    bool moving = a != b || (dev == DEV_HDA && R32(sd + 0x04) != hdl);
+    snprintf(buf, cap, "%s, %u Hz\n%sPlayback position: %s (buffer %d -> %d), %u underruns\nVolume %d%s\n",
+             devname, out_rate, dev == DEV_HDA ? hda_diag : "", moving ? "advancing" : "NOT advancing (the card is not playing)", a, b,
+             underruns, audio_volume, audio_muted ? " (muted)" : "");
 }
 bool audio_present(void) { return dev != DEV_NONE; }
 const char *audio_device_name(void) { return devname; }
