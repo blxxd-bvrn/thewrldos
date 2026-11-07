@@ -6,6 +6,7 @@
 #include "apps.h"
 #include "disk.h"
 #include "audio.h"
+#include "fs.h"
 
 /* ---------------- boot screen ---------------- */
 static int boot_frame;
@@ -59,7 +60,43 @@ void boot_screen_end(void) {
 }
 
 /* ---------------- welcome screen ---------------- */
-static void welcome_bg(canvas_t *c) {
+/* The logon screen's centre divider is an ordinary transparent PNG you can
+ * replace; it is stretched to the height of the panel. Only the logon screen
+ * draws it, so the shutdown/restart text never has a line behind it. */
+#define DIVIDER_PNG "C:\\WRLD\\Resources\\Logon Divider.png"
+static canvas_t *divider_img;
+static bool divider_tried;
+static void draw_divider(canvas_t *c, int x, int y0, int h) {
+    if (!divider_tried) {
+        divider_tried = true;
+        uint32_t n; uint8_t *d = vfs_read_file(DIVIDER_PNG, &n);
+        if (d) {
+            char err[64];
+            divider_img = image_decode(d, n, err, sizeof err);
+            if (!divider_img) klog("logon: %s: %s", DIVIDER_PNG, err);
+            kfree(d);
+        }
+    }
+    if (!divider_img || divider_img->h <= 0 || h <= 0) {
+        /* file missing or unreadable: the same line, drawn directly */
+        for (int y = 0; y < h; y++) {
+            int dd = ABSDIFF(2 * y, h) * 255 / MAX(h, 1);
+            blend_pixel(c, x, y0 + y, WHITE, 216 - 216 * MIN(255, dd) / 255);
+        }
+        return;
+    }
+    canvas_t *im = divider_img;
+    int w = im->w;
+    for (int y = 0; y < h; y++) {
+        int sy = (int)((int64_t)y * im->h / h);
+        for (int i = 0; i < w; i++) {
+            uint32_t p = im->px[sy * im->stride + i];
+            int a = p >> 24;
+            if (a) blend_pixel(c, x - w / 2 + i, y0 + y, p | 0xFF000000u, a);
+        }
+    }
+}
+static void welcome_bg(canvas_t *c, bool divider) {
     int top = 76, bot = 76;
     gradient_v(c, 0, 0, SCREEN_W, top, HEX(0x00309C), HEX(0x003CB4));
     gradient_h(c, 0, top - 2, SCREEN_W / 2, 2, HEX(0x5A7EDC), HEX(0xB8D0FF));
@@ -74,15 +111,11 @@ static void welcome_bg(canvas_t *c) {
     gradient_v(c, 0, SCREEN_H - bot, SCREEN_W, bot, HEX(0x003CB4), HEX(0x00309C));
     gradient_h(c, 0, SCREEN_H - bot, SCREEN_W / 2, 2, HEX(0xE88A30), HEX(0xFFD08A));
     gradient_h(c, SCREEN_W / 2, SCREEN_H - bot, SCREEN_W / 2, 2, HEX(0xFFD08A), HEX(0xE88A30));
-    /* centre divider */
-    for (int y = top + 40; y < SCREEN_H - bot - 40; y++) {
-        int mid = (SCREEN_H) / 2, d = ABSDIFF(y, mid) * 255 / ((SCREEN_H - top - bot) / 2);
-        put_pixel(c, SCREEN_W / 2, y, mix(WHITE, HEX(0x7AA0F0), MIN(255, d)));
-    }
+    if (divider) draw_divider(c, SCREEN_W / 2, top + 40, SCREEN_H - top - bot - 80);
 }
 static void welcome_draw(int hot, bool logging_in, int frame) {
     canvas_t *c = &screen;
-    welcome_bg(c);
+    welcome_bg(c, true);
     int lx = SCREEN_W / 2 - 330;
     draw_globe(c, lx + 88, SCREEN_H / 2 - 150, 96, -36 + frame * 2);
     draw_wordmark(c, lx + 190, SCREEN_H / 2 - 126, WORDMARK_MEDIUM, WHITE);
@@ -143,7 +176,7 @@ static void desaturate_screen(void) {
 }
 static void final_screen(const char *msg, bool reboot) {
     canvas_t *c = &screen;
-    welcome_bg(c);
+    welcome_bg(c, false);
     draw_globe(c, SCREEN_W / 2 - 210, SCREEN_H / 2 - 92, 96, -36);
     draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
     draw_text(c, FONT_LARGE, SCREEN_W / 2 - 104, SCREEN_H / 2, msg, WHITE);
@@ -153,7 +186,7 @@ static void final_screen(const char *msg, bool reboot) {
     if (system_sounds) { audio_stop_all(); audio_play_file(SOUND_SHUTDOWN, err, sizeof err); }
     if (system_volume) {
         task_sleep(600);
-        welcome_bg(c);
+        welcome_bg(c, false);
         draw_globe(c, SCREEN_W / 2 - 210, SCREEN_H / 2 - 92, 96, -36);
         draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
         draw_text(c, FONT_LARGE, SCREEN_W / 2 - 104, SCREEN_H / 2, "Saving your settings...", WHITE);
