@@ -9,6 +9,7 @@ typedef struct {
     int bus, slave;            /* 0 primary / 1 secondary, 0 master / 1 slave */
     uint16_t io, ctl;
     bool lba48;
+    bool dma;                  /* bus-master IDE DMA available */
     uint32_t sectors;          /* 512-byte sectors */
     char model[41];
 } blkdev_t;
@@ -46,6 +47,7 @@ bool fat32_rename(fatvol_t *v, const char *from, const char *to);
 uint8_t *fat32_read(fatvol_t *v, const char *path, uint32_t *len);
 int fat32_load_tree(fatvol_t *v, vnode_t *root);                 /* materialise into the VFS; returns files */
 void fat32_sync(fatvol_t *v);
+extern void (*fat32_load_progress)(uint64_t done, uint64_t total);   /* called while fat32_load_tree runs */
 
 /* ---- persistence: installed systems keep C: on a FAT32 partition ---- */
 extern fatvol_t *system_volume;     /* NULL when running live from CD/RAM */

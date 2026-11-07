@@ -1,6 +1,7 @@
 /* Sound: Intel High Definition Audio and AC'97 drivers, a small software mixer
  * and a WAV loader. Output is always 48 kHz, 16-bit stereo. A ring of DMA
- * buffers is kept filled ~170 ms ahead of the hardware by the audio task.
+ * buffers is kept filled ~170 ms ahead of the hardware from the timer
+ * interrupt, so a busy desktop (or a slow VM) cannot starve it.
  *   - Intel HDA: QEMU (intel-hda), VirtualBox (default), VMware, real PCs
  *   - AC'97 (Intel ICH): QEMU (AC97), VirtualBox (Windows XP-type VMs) */
 #include "kernel.h"
@@ -183,7 +184,11 @@ static bool hda_init(pci_dev_t *p) {
     klog("hda: %s, DAC %d, %d output pin(s)%s", devname, dac, pins, use_immediate ? ", immediate commands" : "");
     return true;
 }
-static int hda_position(void) { return (R32(sd + 0x04) / BUFBYTES) % NBUF; }
+static int hda_position(void) {
+    uint32_t lpib = R32(sd + 0x04);
+    if (lpib >= NBUF * BUFBYTES) return -1;               /* nonsense (device gone / not running) */
+    return lpib / BUFBYTES;
+}
 
 /* ======================= AC'97 ======================= */
 static uint16_t nam, nabm;
@@ -211,7 +216,7 @@ static bool ac97_init(pci_dev_t *p) {
     klog("ac97: %s, mixer %x, bus master %x", devname, nam, nabm);
     return true;
 }
-static int ac97_position(void) { return inb(nabm + 0x14) % NBUF; }
+static int ac97_position(void) { return inb(nabm + 0x14) & (NBUF - 1); }
 
 /* ======================= mixer + task ======================= */
 static void mix_into(int16_t *out, int frames) {
@@ -229,9 +234,25 @@ static void mix_into(int16_t *out, int frames) {
     }
     for (int i = 0; i < frames * 2; i++) { int32_t s = acc[i] * vol / 100; out[i] = s > 32767 ? 32767 : s < -32768 ? -32768 : s; }
 }
+/* Keep LEAD buffers queued in front of the buffer the hardware is playing.
+ * Buffers it has finished are cleared, so if we ever fall behind it plays
+ * silence instead of repeating stale sound; if it has overtaken us, start
+ * again just ahead of it. Runs with interrupts off (timer IRQ or irq_save). */
+static int last_cur = -1;
+static uint32_t underruns;
 static void refill(void) {
     int cur = dev == DEV_HDA ? hda_position() : ac97_position();
-    while (((next_fill - cur + NBUF) % NBUF) < LEAD) {
+    if (cur < 0) return;
+    if (last_cur >= 0)
+        for (int b = last_cur; b != cur; b = (b + 1) % NBUF) memset(ring + b * BUFFRAMES * 2, 0, BUFBYTES);
+    last_cur = cur;
+    int ahead = (next_fill - cur + NBUF) % NBUF;          /* 1 + buffers queued after the playing one */
+    if (ahead == 0 || ahead > LEAD + 1) {                     /* hardware caught up with / passed us */
+        if (ahead) underruns++;
+        next_fill = (cur + 1) % NBUF;
+        ahead = 1;
+    }
+    for (; ahead <= LEAD; ahead++) {
         mix_into(ring + next_fill * BUFFRAMES * 2, BUFFRAMES);
         next_fill = (next_fill + 1) % NBUF;
     }
@@ -240,7 +261,7 @@ static void refill(void) {
         if (!(inb(nabm + 0x1B) & 1)) outb(nabm + 0x1B, 0x01);   /* (re)start */
     }
 }
-static void audio_task(void *arg) { for (;;) { refill(); task_sleep(4); } }
+static void audio_tick(uint32_t t) { if ((t & 3) == 0) refill(); }
 
 void audio_init(void) {
     pci_dev_t devs[48]; int n = pci_scan(devs, 48);
@@ -250,18 +271,22 @@ void audio_init(void) {
     for (int i = 0; i < n && !dev; i++) if (devs[i].cls == 0x04 && devs[i].sub == 0x01 && devs[i].vendor == 0x8086 && ac97_init(&devs[i])) dev = DEV_AC97;
     if (!dev) { klog("audio: no supported sound device (Intel HDA or AC'97)"); return; }
     next_fill = 0;
-    refill();
-    task_create("audiod", audio_task, NULL, 16384);
+    { uint32_t f = irq_save(); refill(); irq_restore(f); }
+    timer_tick_hook = audio_tick;
 }
 bool audio_present(void) { return dev != DEV_NONE; }
 const char *audio_device_name(void) { return devname; }
 int audio_play(const sound_t *s) {
     if (!dev || !s || !s->frames) return -1;
-    for (int v = 0; v < NVOICE; v++) if (!voices[v].active) { voices[v].s = s; voices[v].pos = 0; voices[v].active = true; return v; }
-    voices[0].s = s; voices[0].pos = 0; voices[0].active = true;     /* all busy: replace the oldest */
-    return 0;
+    uint32_t f = irq_save();
+    int v = 0;
+    while (v < NVOICE && voices[v].active) v++;
+    if (v == NVOICE) v = 0;                                          /* all busy: replace the first */
+    voices[v].s = s; voices[v].pos = 0; voices[v].active = true;
+    irq_restore(f);
+    return v;
 }
-void audio_stop_all(void) { for (int v = 0; v < NVOICE; v++) voices[v].active = false; }
+void audio_stop_all(void) { uint32_t f = irq_save(); for (int v = 0; v < NVOICE; v++) voices[v].active = false; irq_restore(f); }
 bool audio_busy(void) { for (int v = 0; v < NVOICE; v++) if (voices[v].active) return true; return false; }
 bool audio_voice_active(int v, const sound_t *s) { return v >= 0 && v < NVOICE && voices[v].active && voices[v].s == s; }
 
@@ -319,7 +344,9 @@ bool audio_play_file(const char *path, char *err, int errcap) {
         int lru = 0; for (int i = 1; i < 4; i++) if (cache[i].used < cache[lru].used) lru = i;
         c = &cache[lru];
         if (c->s) {                                       /* evict: make sure nothing still plays it */
+            uint32_t f = irq_save();
             for (int v = 0; v < NVOICE; v++) if (voices[v].s == c->s) voices[v].active = false;
+            irq_restore(f);
             sound_free(c->s);
         }
         strlcpy(c->path, full, sizeof c->path); c->size = n->size; c->s = s;

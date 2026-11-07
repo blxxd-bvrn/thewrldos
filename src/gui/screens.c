@@ -49,6 +49,11 @@ void boot_screen_progress(const char *msg, int pct) {
     uint32_t until = timer_ticks() + (boot_verbose ? 60 : 260);
     while ((int32_t)(timer_ticks() - until) < 0) { boot_frame++; boot_draw(pct); task_sleep(16); }
 }
+/* one frame, no minimum display time: for progress inside long operations */
+void boot_screen_status(const char *msg, int pct) {
+    strlcpy(boot_msg, msg, sizeof boot_msg);
+    boot_frame++; boot_draw(pct);
+}
 void boot_screen_end(void) {
     for (int i = 0; i < 16; i++) { blend_rect(&screen, 0, 0, SCREEN_W, SCREEN_H, BLACK, 60); gfx_present(CURSOR_BUSY, -100, -100); task_sleep(15); }
 }

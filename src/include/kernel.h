@@ -46,6 +46,7 @@ extern bool boot_verbose;
 
 /* ---- timer / rtc ---- */
 #define TIMER_HZ 1000
+extern void (*timer_tick_hook)(uint32_t ticks);
 void timer_init(void);
 uint32_t timer_ticks(void);           /* milliseconds since boot */
 extern volatile uint32_t idle_ticks;

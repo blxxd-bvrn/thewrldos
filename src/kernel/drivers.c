@@ -5,9 +5,11 @@
 static volatile uint32_t ticks;
 volatile uint32_t idle_ticks;
 volatile bool cpu_idle_flag;
+void (*timer_tick_hook)(uint32_t ticks);    /* runs in interrupt context every tick */
 static void timer_irq(regs_t *r) {
     (void)r;
     ticks++;
+    if (timer_tick_hook) timer_tick_hook(ticks);
     if (cpu_idle_flag) idle_ticks++;
     else { task_t *t = task_current(); if (t) t->cpu_ms++; }
 }

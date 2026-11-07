@@ -22,16 +22,73 @@ static inline void insw(uint16_t port, void *buf, uint32_t n) { __asm__ volatile
 static inline void outsw(uint16_t port, const void *buf, uint32_t n) { __asm__ volatile("cld; rep outsw" : "+S"(buf), "+c"(n) : "d"(port)); }
 
 static void delay400(blkdev_t *d) { for (int i = 0; i < 4; i++) inb(d->ctl); }
-static int wait_ready(uint16_t io, uint16_t ctl, bool need_drq) {
-    for (uint32_t i = 0; i < 4000000; i++) {
+/* waits are bounded by time, not by loop counts: on a VM every register read
+ * is a slow exit to the hypervisor, so a fixed count can take minutes */
+static int wait_ready_ms(uint16_t ctl, bool need_drq, uint32_t ms) {
+    uint32_t t0 = timer_ticks();
+    for (uint32_t i = 0;; i++) {
         uint8_t s = inb(ctl);
         if (s == 0xFF) return -1;
-        if (s & ST_BSY) continue;
-        if (s & (ST_ERR | ST_DF)) return -2;
-        if (!need_drq || (s & ST_DRQ)) return 0;
+        if (!(s & ST_BSY)) {
+            if (s & (ST_ERR | ST_DF)) return -2;
+            if (!need_drq || (s & ST_DRQ)) return 0;
+        }
+        if ((i & 63) == 63 && timer_ticks() - t0 > ms) return -3;
     }
-    (void)io;
-    return -3;
+}
+static int wait_ready(uint16_t io, uint16_t ctl, bool need_drq) { (void)io; return wait_ready_ms(ctl, need_drq, 5000); }
+
+/* ---- bus-master IDE DMA (PIIX/ICH IDE in QEMU, VirtualBox, VMware) ---- */
+static uint16_t bmide;                    /* bus master base (primary; secondary is +8) */
+static uint32_t *prdt[2];
+static uint8_t *bounce;                   /* 64 KiB, never crosses a 64 KiB boundary */
+static void dma_setup(void) {
+    pci_dev_t devs[48]; int n = pci_scan(devs, 48);
+    for (int i = 0; i < n; i++) {
+        if (devs[i].cls != 0x01 || devs[i].sub != 0x01) continue;
+        uint32_t bar4 = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x20);
+        if (!(bar4 & 1) || !(bar4 & ~3u)) continue;
+        uint32_t cmd = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x04);
+        pci_cfg_write(devs[i].bus, devs[i].dev, devs[i].fn, 0x04, (cmd & 0xFFFF) | 0x05);    /* I/O + bus master */
+        bmide = bar4 & ~3u;
+        for (int c = 0; c < 2; c++) prdt[c] = kmalloc_aligned(16, 16);
+        bounce = kmalloc_aligned(65536, 65536);
+        klog("ata: bus-master DMA at %x (%04x:%04x)", bmide, devs[i].vendor, devs[i].device);
+        return;
+    }
+}
+static bool dma_xfer(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
+    uint16_t bm = bmide + (d->bus ? 8 : 0), io = d->io;
+    uint32_t *prd = prdt[d->bus];
+    prd[0] = (uint32_t)bounce; prd[1] = 0x80000000u | ((n * 512) & 0xFFFF);   /* 0 means 64 KiB */
+    outb(bm, 0);                                       /* stop */
+    outb(bm + 2, inb(bm + 2) | 0x06);                  /* clear error + interrupt */
+    outl(bm + 4, (uint32_t)prd);
+    if (wait_ready_ms(d->ctl, false, 2000) < -1) return false;
+    bool ext = d->lba48 && (lba + n > 0x0FFFFFFF);
+    if (ext) {
+        outb(io + ATA_DRIVE, 0x40 | (d->slave << 4)); delay400(d);
+        outb(io + ATA_COUNT, 0); outb(io + ATA_LBA0, (lba >> 24) & 0xFF); outb(io + ATA_LBA1, 0); outb(io + ATA_LBA2, 0);
+        outb(io + ATA_COUNT, n & 0xFF); outb(io + ATA_LBA0, lba & 0xFF); outb(io + ATA_LBA1, (lba >> 8) & 0xFF); outb(io + ATA_LBA2, (lba >> 16) & 0xFF);
+        outb(io + ATA_CMD, write ? 0x35 : 0x25);
+    } else {
+        outb(io + ATA_DRIVE, 0xE0 | (d->slave << 4) | ((lba >> 24) & 0x0F)); delay400(d);
+        outb(io + ATA_COUNT, n & 0xFF); outb(io + ATA_LBA0, lba & 0xFF); outb(io + ATA_LBA1, (lba >> 8) & 0xFF); outb(io + ATA_LBA2, (lba >> 16) & 0xFF);
+        outb(io + ATA_CMD, write ? 0xCA : 0xC8);
+    }
+    outb(bm, write ? 0x01 : 0x09);                     /* start; bit 3 = transfer into memory */
+    uint32_t t0 = timer_ticks();
+    for (;;) {
+        uint8_t bs = inb(bm + 2), st = inb(d->ctl);
+        if (bs & 0x02) break;                          /* bus master error */
+        if (!(bs & 0x01) && !(st & ST_BSY)) break;     /* finished */
+        if (timer_ticks() - t0 > 5000) { outb(bm, 0); klog("ata: DMA timeout at lba %u", lba); return false; }
+    }
+    outb(bm, 0);
+    uint8_t bs = inb(bm + 2), st = inb(io + 7);
+    outb(bm + 2, bs | 0x06);
+    if ((bs & 0x02) || (st & (ST_ERR | ST_DF))) { klog("ata: DMA error at lba %u (bm %02x, status %02x)", lba, bs, st); return false; }
+    return true;
 }
 
 static void identify(int bus, int slave) {
@@ -44,9 +101,9 @@ static void identify(int bus, int slave) {
     outb(io + ATA_CMD, 0xEC);
     uint8_t st = inb(io + 7);
     if (!st) return;
-    for (uint32_t i = 0; i < 1000000 && (inb(io + 7) & ST_BSY); i++) {}
+    { uint32_t t0 = timer_ticks(); while ((inb(io + 7) & ST_BSY) && timer_ticks() - t0 < 1000) {} }
     if (inb(io + ATA_LBA1) || inb(io + ATA_LBA2)) return;   /* ATAPI / SATA signature: not an ATA disk */
-    for (uint32_t i = 0; i < 1000000; i++) { st = inb(io + 7); if (st & (ST_DRQ | ST_ERR)) break; }
+    { uint32_t t0 = timer_ticks(); do { st = inb(io + 7); if (st & (ST_DRQ | ST_ERR)) break; } while (timer_ticks() - t0 < 1000); }
     if (st & ST_ERR || !(st & ST_DRQ)) return;
     uint16_t id[256];
     insw(io, id, 256);
@@ -54,6 +111,7 @@ static void identify(int bus, int slave) {
     memset(d, 0, sizeof *d);
     d->index = ndisks; d->bus = bus; d->slave = slave; d->io = io; d->ctl = ctl;
     d->lba48 = (id[83] & (1 << 10)) != 0;
+    d->dma = (id[49] & (1 << 8)) != 0;
     uint32_t s28 = id[60] | ((uint32_t)id[61] << 16);
     uint32_t s48 = id[100] | ((uint32_t)id[101] << 16);
     d->sectors = (d->lba48 && s48) ? s48 : s28;
@@ -68,6 +126,7 @@ static void identify(int bus, int slave) {
 }
 void ata_init(void) {
     ndisks = 0;
+    if (!bmide) dma_setup();
     for (int b = 0; b < 2; b++) for (int s = 0; s < 2; s++) if (ndisks < 4) identify(b, s);
     if (!ndisks) klog("ata: no hard disks found");
 }
@@ -97,6 +156,15 @@ static bool setup_cmd(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
 bool blk_read(blkdev_t *d, uint32_t lba, uint32_t count, void *buf) {
     if (!d || lba + count > d->sectors || lba + count < lba) return false;
     uint8_t *p = buf;
+    if (bmide && d->dma) {
+        while (count) {
+            uint32_t n = MIN(count, 128u);
+            if (!dma_xfer(d, lba, n, false)) { d->dma = false; klog("ata: disk %d: falling back to PIO", d->index); break; }
+            memcpy(p, bounce, n * 512);
+            p += n * 512; lba += n; count -= n;
+        }
+        if (!count) return true;
+    }
     while (count) {
         uint32_t n = MIN(count, 128u);
         setup_cmd(d, lba, n, false);
@@ -112,6 +180,19 @@ bool blk_read(blkdev_t *d, uint32_t lba, uint32_t count, void *buf) {
 bool blk_write(blkdev_t *d, uint32_t lba, uint32_t count, const void *buf) {
     if (!d || lba + count > d->sectors || lba + count < lba) return false;
     const uint8_t *p = buf;
+    if (bmide && d->dma) {
+        while (count) {
+            uint32_t n = MIN(count, 128u);
+            memcpy(bounce, p, n * 512);
+            if (!dma_xfer(d, lba, n, true)) { d->dma = false; klog("ata: disk %d: falling back to PIO", d->index); break; }
+            p += n * 512; lba += n; count -= n;
+        }
+        if (!count) {
+            outb(d->io + ATA_CMD, d->lba48 ? 0xEA : 0xE7);     /* flush the write cache */
+            wait_ready_ms(d->ctl, false, 5000);
+            return true;
+        }
+    }
     while (count) {
         uint32_t n = MIN(count, 128u);
         bool ext = d->lba48 && (lba + n > 0x0FFFFFFF);

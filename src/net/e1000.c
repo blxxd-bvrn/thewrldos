@@ -44,16 +44,17 @@ static inline void wr(uint32_t r, uint32_t v) { *(volatile uint32_t *)(mmio + r)
 
 static uint16_t eeprom_read(uint8_t a) {
     wr(REG_EERD, eerd_new_layout ? ((uint32_t)a << 2) | 1 : ((uint32_t)a << 8) | 1);
-    for (int i = 0; i < 100000; i++) {
+    uint32_t t0 = timer_ticks();
+    do {
         uint32_t v = rd(REG_EERD);
         if (eerd_new_layout ? (v & 2) : (v & 0x10)) return v >> 16;
-    }
+    } while (timer_ticks() - t0 < 20);
     return 0;
 }
 static bool e1000_send(const void *frame, uint32_t len) {
     if (len > BUFSZ) return false;
     txd_t *d = &tx[tx_cur];
-    for (int i = 0; i < 200000 && d->cmd && !(d->status & 1); i++) {}   /* wait for this slot to be free */
+    { uint32_t t0 = timer_ticks(); while (d->cmd && !(*(volatile uint8_t *)&d->status & 1) && timer_ticks() - t0 < 50) {} }   /* wait for this slot to be free */
     memcpy(txbuf + tx_cur * BUFSZ, frame, len);
     if (len < 60) { memset(txbuf + tx_cur * BUFSZ + len, 0, 60 - len); len = 60; }
     d->addr = (uint32_t)(txbuf + tx_cur * BUFSZ);

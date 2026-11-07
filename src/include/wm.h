@@ -170,6 +170,7 @@ void wallpaper_render(canvas_t *c, int id);
 /* boot / welcome */
 void boot_screen_begin(void);
 void boot_screen_progress(const char *msg, int pct);
+void boot_screen_status(const char *msg, int pct);
 void boot_screen_end(void);
 void welcome_screen(void);   /* blocks until user logs on */
 #endif

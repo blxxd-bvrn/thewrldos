@@ -26,7 +26,12 @@ static volatile uint32_t *fifo;
 static bool svga_on;
 static void sw(int r, uint32_t v) { outl(svga_io, r); outl(svga_io + 1, v); }
 static uint32_t sr(int r) { outl(svga_io, r); return inl(svga_io + 1); }
-static void fifo_sync(void) { sw(S_SYNC, 1); for (int i = 0; i < 1000000 && sr(S_BUSY); i++) {} }
+/* bounded by time: every register access is a trip to the hypervisor */
+static void fifo_sync(void) {
+    sw(S_SYNC, 1);
+    uint32_t t0 = timer_ticks();
+    while (sr(S_BUSY) && timer_ticks() - t0 < 30) {}
+}
 static void fifo_put(uint32_t v) {
     uint32_t next = fifo[F_NEXT], n2 = next + 4 == fifo[F_MAX] ? fifo[F_MIN] : next + 4;
     if (n2 == fifo[F_STOP]) fifo_sync();

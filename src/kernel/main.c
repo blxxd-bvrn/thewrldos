@@ -80,6 +80,16 @@ static void write_system_files(void) {
     }
 }
 
+/* progress while the installed system's files are read from the hard disk */
+static void boot_load_progress(uint64_t done, uint64_t total) {
+    char msg[96];
+    int pct = total ? (int)(done * 100 / total) : 100;
+    if (pct > 100) pct = 100;
+    snprintf(msg, sizeof msg, "Loading files from the hard disk... %d%% (%u of %u MB)", pct,
+             (uint32_t)(done >> 20), (uint32_t)((total + (1 << 20) - 1) >> 20));
+    boot_screen_status(msg, 35 + pct * 24 / 100);
+}
+
 void kmain(uint32_t magic, uint32_t mbaddr) {
     serial_init();
     gdt_init();
@@ -107,6 +117,11 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     rand_seed(now.second * 1000 + now.minute * 60000 + timer_ticks());
 
     boot_screen_begin();
+    uint32_t ram_mb = mm_phys_total() / (1024 * 1024);
+    if (ram_mb < 120) {
+        char w[96]; snprintf(w, sizeof w, "Low memory: %u MB. Give the virtual machine 256 MB or more.", ram_mb);
+        for (int i = 0; i < 6; i++) boot_screen_progress(w, 5);
+    }
     boot_screen_progress("Initializing devices...", 10);
     keyboard_init();
     mouse_init(SCREEN_W, SCREEN_H);
@@ -124,11 +139,13 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     ata_init();
     boot_screen_progress("Mounting file systems...", 35);
     vfs_init();
+    fat32_load_progress = boot_load_progress;
     if (boot_root_serial) {
         char err[256];
         if (!persist_boot_from_disk(boot_root_serial, err, sizeof err)) { panic_code = "INACCESSIBLE_BOOT_DEVICE"; panic("%s", err); }
     } else if (initrd_data) tar_extract(initrd_data, initrd_size, vfs_root('C'));
     else klog("initrd: none supplied");
+    fat32_load_progress = NULL;
     write_system_files();
     if (!system_volume) {   /* live session: offer installation */
         const char *lnk = "setup\r\n";
