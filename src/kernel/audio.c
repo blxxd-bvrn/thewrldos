@@ -39,6 +39,8 @@ static uint32_t *corb; static uint64_t *rirb;
 static uint16_t rirb_rp;
 static uint32_t sd;                       /* output stream descriptor offset */
 static bool use_immediate;
+static volatile uint32_t *posbuf;
+static int sd_index;                      /* stream descriptor number (for the position buffer) */
 #define R8(o) (*(volatile uint8_t *)(hda + (o)))
 #define R16(o) (*(volatile uint16_t *)(hda + (o)))
 #define R32(o) (*(volatile uint32_t *)(hda + (o)))
@@ -264,21 +266,43 @@ static bool hda_init(pci_dev_t *p) {
     R16(sd + 0x12) = 0x0011;
     R32(sd + 0x18) = (uint32_t)(uintptr_t)bdl; R32(sd + 0x1C) = 0;
     R8(sd + 2) = (R8(sd + 2) & 0x0F) | (1 << 4);             /* stream tag 1 */
+    sd_index = iss;
+    posbuf = kmalloc_aligned(256, 128); memset((void *)posbuf, 0, 256);
+    R32(0x74) = 0; R32(0x70) = (uint32_t)(uintptr_t)posbuf | 1;   /* DMA position buffer on */
     R8(sd) |= 2;                                             /* run */
     /* is the DMA engine moving? */
-    uint32_t l0 = R32(sd + 0x04);
+    uint32_t l0 = R32(sd + 0x04), p0 = posbuf[sd_index * 2];
     sleep_ms(40);
-    uint32_t l1 = R32(sd + 0x04);
-    bool moving = l1 != l0;
+    uint32_t l1 = R32(sd + 0x04), p1 = posbuf[sd_index * 2];
+    bool moving = l1 != l0 || p1 != p0;
+    diag("start: LPIB %x -> %x, position buffer %x -> %x\n", l0, l1, p0, p1);
     diag("output stream %d (registers at 0x%x), DMA %s\n", iss + 1, sd, moving ? "running" : "NOT moving");
     snprintf(devname, sizeof devname, "High Definition Audio (%04x:%04x, codec %08x)", p->vendor, p->device, vid);
     klog("hda: %s, %d DAC(s), %d output pin(s)%s, DMA %s", devname, ndacs, pins, use_immediate ? ", immediate commands" : "", moving ? "running" : "not moving");
     return true;
 }
+/* Where is the stream? Two sources: the link position register (LPIB) and the
+ * DMA position buffer the controller writes to memory (what Linux prefers).
+ * A source counts only while it reads inside the buffer; if both are valid,
+ * one that has stopped changing loses to one that moves. */
+static int pos_src = -1;                  /* 0 LPIB, 1 position buffer, -1 none (timer estimate) */
+static uint32_t last_lp = ~0u, last_pb = ~0u, lp_tick, pb_tick;
 static int hda_position(void) {
-    uint32_t lpib = R32(sd + 0x04);
-    if (lpib >= NBUF * BUFBYTES) return -1;               /* nonsense (device gone / not running) */
-    return lpib / BUFBYTES;
+    uint32_t cbl = NBUF * BUFBYTES, now = timer_ticks();
+    uint32_t lp = R32(sd + 0x04), pb = posbuf ? posbuf[sd_index * 2] : ~0u;
+    if (lp != last_lp) { last_lp = lp; lp_tick = now; }
+    if (pb != last_pb) { last_pb = pb; pb_tick = now; }
+    bool lp_ok = lp < cbl, pb_ok = pb < cbl;
+    bool lp_live = lp_ok && now - lp_tick < 100, pb_live = pb_ok && now - pb_tick < 100;
+    if (lp_ok && (lp_live || !pb_live)) { pos_src = 0; return lp / BUFBYTES; }
+    if (pb_ok) { pos_src = 1; return pb / BUFBYTES; }
+    pos_src = -1;
+    return -1;
+}
+static void hda_regs(char *b, int cap) {
+    snprintf(b, cap, "SDCTL %06x STS %02x LPIB %x posbuf %x CBL %x (from %s)\n",
+             R32(sd) & 0xFFFFFF, R8(sd + 3), R32(sd + 0x04), posbuf ? posbuf[sd_index * 2] : 0, R32(sd + 0x08),
+             pos_src == 0 ? "LPIB" : pos_src == 1 ? "posbuf" : "timer");
 }
 
 /* ======================= AC'97 ======================= */
@@ -341,9 +365,11 @@ static void es_start_dac2(uint32_t ctrl_bits) {
     outl(es_io + ES_DAC2_COUNT, BUFFRAMES - 1);
     outl(es_io + ES_CTRL, ctrl_bits | ES_DAC2_EN);
 }
+static uint32_t es_raw;
 static int es_position(void) {
     outl(es_io + ES_PAGE, 0x0C);
     uint32_t v = inl(es_io + ES_DAC2_FRAMECNT);
+    es_raw = v;
     uint32_t bytes = (v >> 16) * 4;
     if (bytes >= NBUF * BUFBYTES) return -1;
     return bytes / BUFBYTES;
@@ -535,10 +561,22 @@ static int cur_position(void) {
     return dev == DEV_HDA ? hda_position() : dev == DEV_AC97 ? ac97_position() : dev == DEV_SB16 ? sb16_position() : es_position();
 }
 static int last_cur = -1;
-static uint32_t underruns;
+static uint32_t underruns, bad_positions;
+/* When the card reports no usable position, estimate it from the time since the
+ * last good reading at the card's sample rate, so the buffers keep being filled
+ * (some emulated cards play fine but report nonsense positions). */
+static uint32_t est_bytes, est_tick;
+static bool est_set;
 static void refill(void) {
     int cur = cur_position();
-    if (cur < 0) return;
+    uint32_t now = timer_ticks();
+    if (cur >= 0) { est_bytes = cur * BUFBYTES; est_tick = now; est_set = true; }
+    else {
+        bad_positions++;
+        if (!est_set) { est_bytes = 0; est_tick = now; est_set = true; }
+        uint64_t b = est_bytes + (uint64_t)(now - est_tick) * out_rate * 4 / 1000;
+        cur = (int)((b / BUFBYTES) % NBUF);
+    }
     if (last_cur >= 0)
         for (int b = last_cur; b != cur; b = (b + 1) % NBUF) memset(ring + b * BUFFRAMES * 2, 0, BUFBYTES);
     last_cur = cur;
@@ -579,14 +617,17 @@ void audio_init(void) {
 /* what the driver found and whether the card is really playing (for the "sndinfo" command) */
 void audio_diag(char *buf, int cap) {
     if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16).\n"); return; }
+    char r0[160] = "", r1[160] = "";
     uint32_t f = irq_save(); int a = cur_position(); irq_restore(f);
-    uint32_t hdl = 0; if (dev == DEV_HDA) hdl = R32(sd + 0x04);
+    if (dev == DEV_HDA) hda_regs(r0, sizeof r0);
+    else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r0, sizeof r0, "CTRL %08x SCTRL %08x frame %08x\n", inl(es_io + ES_CTRL), inl(es_io + ES_SCTRL), es_raw);
     sleep_ms(60);
     f = irq_save(); int b = cur_position(); irq_restore(f);
-    bool moving = a != b || (dev == DEV_HDA && R32(sd + 0x04) != hdl);
-    snprintf(buf, cap, "%s, %u Hz\n%sPlayback position: %s (buffer %d -> %d), %u underruns\nVolume %d%s\n",
-             devname, out_rate, dev == DEV_HDA ? hda_diag : "", moving ? "advancing" : "NOT advancing (the card is not playing)", a, b,
-             underruns, audio_volume, audio_muted ? " (muted)" : "");
+    if (dev == DEV_HDA) hda_regs(r1, sizeof r1);
+    else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r1, sizeof r1, "CTRL %08x SCTRL %08x frame %08x\n", inl(es_io + ES_CTRL), inl(es_io + ES_SCTRL), es_raw);
+    const char *st = a < 0 || b < 0 ? "UNREADABLE (using the timer estimate)" : a != b ? "advancing" : "NOT advancing (the card is not playing)";
+    snprintf(buf, cap, "%s, %u Hz\n%s%s%sPlayback position: %s (buffer %d -> %d)\n%u underruns, %u unusable position readings\nVolume %d%s\n",
+             devname, out_rate, dev == DEV_HDA ? hda_diag : "", r0, r1, st, a, b, underruns, bad_positions, audio_volume, audio_muted ? " (muted)" : "");
 }
 bool audio_present(void) { return dev != DEV_NONE; }
 const char *audio_device_name(void) { return devname; }
