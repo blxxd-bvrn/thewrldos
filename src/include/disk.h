@@ -29,6 +29,7 @@ struct blkdev {
     int bus, slave; uint16_t io, ctl; bool lba48, dma;
 };
 #define BLK_MAX 16
+extern char blk_failed[160];               /* a disk that was found but did not work (for Setup) */
 void storage_init(void);                    /* probe every controller (once; again re-probes) */
 blkdev_t *blk_register(void);               /* drivers: a zeroed slot, or NULL when full */
 void blk_commit(blkdev_t *d);               /* drivers: the disk is ready */

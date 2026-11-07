@@ -6,6 +6,7 @@
 static blkdev_t *disks[BLK_MAX];
 static int ndisks;
 static bool probed;
+char blk_failed[160];
 
 blkdev_t *blk_register(void) {
     if (ndisks >= BLK_MAX) return NULL;

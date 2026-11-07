@@ -420,7 +420,13 @@ void setup_text_mode(bool from_desktop) {
     }
     if (!blk_count()) {
         ts_begin("F3=Quit", NULL);
-        tx_wrap(2, 3, "Setup did not find any hard disk drives installed in your computer.\n\nMake sure the drives are connected (for QEMU, add a disk with -hda or run 'make run-install'). Setup cannot continue.\n\nTo quit Setup, press F3.", TS_FG);
+        if (blk_failed[0]) {
+            char m[600];
+            snprintf(m, sizeof m, "Setup found a hard disk, but it did not respond:\n\n    %s\n\n"
+                     "Try another disk controller type in the virtual machine's settings (IDE works everywhere; SATA, NVMe and SCSI are also supported). Setup cannot continue.\n\nTo quit Setup, press F3.", blk_failed);
+            tx_wrap(2, 3, m, TS_FG);
+        } else
+            tx_wrap(2, 3, "Setup did not find any hard disk drives installed in your computer.\n\nMake sure the drives are connected (for QEMU, add a disk with -hda or run 'make run-install'). Setup cannot continue.\n\nTo quit Setup, press F3.", TS_FG);
         ts_present();
         while (ts_key() != KEY_F3) {}
         quit_setup(); return;
