@@ -372,7 +372,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - **Aero:**
     - Window frames are drawn on real **blurred, tinted glass**, with reflection streaks.
     - Title text glows; there's a wide red close button.
-    - Glass taskbar, a glossy globe Start orb, and a glass Start menu.
+    - Glass taskbar, the globe on its own as the Start button (it glows on hover), and a glass
+      Start menu.
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.

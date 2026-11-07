@@ -261,7 +261,7 @@ void desktop_mouse(int type, int x, int y, int btn) {
 /* ---------------- taskbar ---------------- */
 #define START_W_LUNA 99
 #define START_W_CLASSIC 56
-static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? 54 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
+static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? T.taskbar_h + 8 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
 static int tray_w(void) { return show_clock ? (show_seconds ? 110 : 90) : 34; }
 static int tb_y(void) { return SCREEN_H - T.taskbar_h; }
 static int ql_x(void) { return start_w() + (T.classic ? 6 : 8); }
@@ -294,34 +294,20 @@ static void fmt_clock(char *b, int n) {
     }
 }
 /* glossy sphere: the Aero start orb */
-static void paint_orb(canvas_t *c, int cx, int cy, int r, bool hot, bool down) {
-    uint32_t top = T.start_top, bot = T.start_bot;
-    if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); }
-    if (down) { top = darken(top, 40); bot = darken(bot, 30); }
-    if (hot || down) for (int dy = -r - 4; dy <= r + 4; dy++) for (int dx = -r - 4; dx <= r + 4; dx++) {
-        int d2 = dx * dx + dy * dy; if (d2 <= r * r || d2 > (r + 4) * (r + 4)) continue;
-        blend_pixel(c, cx + dx, cy + dy, T.start_hi, 90 * ((r + 4) * (r + 4) - d2) / ((r + 4) * (r + 4) - r * r));
+/* Aero: the globe alone, sized to the taskbar; a soft glow behind it on hover / press */
+static void paint_start_globe(canvas_t *c, int cx, int cy, int size, bool hot, bool down) {
+    if (hot || down) {
+        int r = size / 2 + 5;
+        for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
+            int d2 = dx * dx + dy * dy; if (d2 > r * r) continue;
+            blend_pixel(c, cx + dx, cy + dy, down ? T.start_bot : T.start_hi, (down ? 150 : 110) * (r * r - d2) / (r * r));
+        }
     }
-    for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
-        int d2 = dx * dx + dy * dy;
-        if (d2 > r * r + r) continue;
-        uint32_t col = mix(top, bot, (dy + r) * 255 / (2 * r));
-        int edge = r * r - d2;
-        if (edge < 3 * r) col = mix(col, darken(bot, 60), 160 - MAX(0, edge) * 160 / (3 * r));
-        blend_pixel(c, cx + dx, cy + dy, col, edge < 0 ? 120 : 255);
-    }
-    draw_icon(c, ICON_LOGO, 32, cx - 16, cy - 16);
-    /* gloss */
-    int gx = r * 7 / 10, gy = r * 5 / 10, gcy = cy - r * 4 / 10;
-    for (int dy = -gy; dy <= gy; dy++) for (int dx = -gx; dx <= gx; dx++) {
-        int v = (dx * dx * 256) / (gx * gx) + (dy * dy * 256) / (gy * gy);
-        if (v <= 256) blend_pixel(c, cx + dx, gcy + dy, WHITE, (256 - v) * (dy < 0 ? 150 : 90) / 256);
-    }
-    draw_circle(c, cx, cy, r, darken(bot, 70));
+    draw_icon(c, ICON_LOGO, size, cx - size / 2, cy - size / 2 + (down ? 1 : 0));   /* the globe, pre-rendered at 32/48 px */
 }
 static void paint_start_button(canvas_t *c, bool hot, bool down) {
     int y = tb_y();
-    if (T.renderer == RENDER_AERO) { paint_orb(c, 27, y + T.taskbar_h / 2, MIN(19, T.taskbar_h / 2 - 1), hot, down); return; }
+    if (T.renderer == RENDER_AERO) { int sz = T.taskbar_h >= 56 ? 48 : 32; paint_start_globe(c, start_w() / 2, y + T.taskbar_h / 2, sz, hot, down); return; }
     if (T.renderer == RENDER_PLEX) {   /* Longhorn: a plain globe + "start", highlighted on hover */
         rect_t r = R(2, y + 3, start_w() - 6, T.taskbar_h - 6);
         if (hot || down) { fill_round_rect_blend(c, r.x, r.y, r.w, r.h, 4, down ? T.tray_border : WHITE, down ? 140 : 60); fill_round_rect_blend(c, r.x + 1, r.y + 1, r.w - 2, r.h / 2, 3, WHITE, 40); }
