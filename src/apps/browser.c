@@ -11,6 +11,13 @@
 #include "fs.h"
 #include "net.h"
 #include "browser.h"
+#include "jsapi.h"
+
+bool js_enabled = true;
+#ifndef PAGE_MEM_STEP_MB
+#define PAGE_MEM_STEP_MB 500
+#endif
+#define PAGE_MEM_STEP ((uint64_t)PAGE_MEM_STEP_MB * 1024 * 1024)   /* warn each time a page passes another 500 MB */
 
 #define HOME_URL "wrld://home"
 #define TOOLBAR_H 40
@@ -18,32 +25,8 @@
 #define STATUS_H 22
 #define SB_W 16
 
-enum { BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_FAV0 = 100 };
+enum { BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_JS, BM_CONSOLE, BM_FAV0 = 100 };
 static void br_menu(window_t *w, int id);
-
-/* ---------------- page model ---------------- */
-enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE };
-typedef struct { uint8_t kind; uint8_t under; int16_t font; int x, y, w, h, asc; uint32_t color; const char *text; int len; int link, idx; } item_t;
-typedef struct { char *url; canvas_t *img, *scaled; int state; /* 0 pending, 1 ok, 2 failed */ char *alt; } pimg_t;
-enum { C_TEXT, C_PASSWORD, C_SUBMIT, C_BUTTON, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT, C_TEXTAREA, C_RESET };
-typedef struct { int type, form; node_t *node; char name[64]; char value[512]; char label[64]; bool checked; int sel, nopts; char **opts, **optvals; rect_t r; } ctrl_t;
-typedef struct { char action[1024]; bool post; } form_t;
-typedef struct page {
-    doc_t *doc;
-    char url[1024], title[160];
-    bool secure; char tls[80];
-    char *source; uint32_t srclen;
-    pimg_t *imgs; int nimgs;
-    ctrl_t *ctrls; int nctrls;
-    form_t *forms; int nforms;
-    item_t *items; int nitems, capitems;
-    char **links; int nlinks, caplinks;
-    struct { const char *name; int y; } *anchors; int nanchors, capanchors;
-    int height, lay_width;
-    uint32_t bg, fg, linkc;
-    bool worker_running, orphan;
-    bool ads_ok; int blocked;                 /* ad blocker: site allowed / items removed */
-} page_t;
 
 typedef struct {
     window_t *w;
@@ -58,13 +41,15 @@ typedef struct {
     int hover_link, focus_ctrl;
     bool drag_sb; int drag_off;
     uint32_t prog_got, prog_total;
+    char *con[64]; int ncon;                  /* script messages (View > Script Messages) */
 } browser_t;
 
 /* ---------------- display list ---------------- */
+static node_t *lay_el;                       /* element being laid out (layout never yields) */
 static item_t *add_item(page_t *p, int kind) {
     if (p->nitems == p->capitems) { p->capitems = p->capitems ? p->capitems * 2 : 1024; p->items = krealloc(p->items, sizeof(item_t) * p->capitems); }
     item_t *it = &p->items[p->nitems++];
-    memset(it, 0, sizeof *it); it->kind = kind; it->link = -1;
+    memset(it, 0, sizeof *it); it->kind = kind; it->link = -1; it->node = lay_el;
     return it;
 }
 static int add_link(page_t *p, const char *href) {
@@ -377,12 +362,19 @@ static void layout_control(lay_t *L, node_t *n, sty_t *s) {
 }
 static void layout_children(lay_t *L, node_t *n, sty_t *s) { for (node_t *c = n->first; c; c = c->next) layout_node(L, c, s); }
 static int list_counter;
+static void layout_node_el(lay_t *L, node_t *n, sty_t *parent);
 static void layout_node(lay_t *L, node_t *n, sty_t *parent) {
     if (n->type == 1) { layout_text(L, parent, n->text); return; }
+    node_t *saved = lay_el; lay_el = n;
+    layout_node_el(L, n, parent);
+    lay_el = saved;
+}
+static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     if ((n->css.set & ST_DISPLAY) && n->css.display == 0) return;
     const char *t = n->tag;
-    static const char *skip[] = { "head", "template", "datalist", "map", "svg", "math", "object", "embed", "applet", "audio", "video", "canvas", "param", "option", "optgroup", "frameset" };
+    static const char *skip[] = { "head", "template", "datalist", "map", "svg", "math", "object", "embed", "applet", "audio", "video", "canvas", "param", "option", "optgroup", "frameset", "script", "style" };
     for (unsigned i = 0; i < ARRAY_LEN(skip); i++) if (!strcmp(t, skip[i])) return;
+    if (!strcmp(t, "noscript") && L->pg->js) return;       /* scripts are running: show the script version */
     page_t *p = L->pg;
     sty_t s = *parent;
     { const char *id = node_attr(n, "id"); if (!id && !strcmp(t, "a")) id = node_attr(n, "name"); if (id && *id) add_anchor(p, id, L->y); }
@@ -474,6 +466,7 @@ static void page_layout(page_t *p, int width) {
     sty_t s = { FONT_WEB, p->fg, false, false, false, false, false, false, 0, -1, 0 };
     lay_t L = { p, 10, MAX(100, width - 20), 10, 10, 0, 0, 0, 0, 0, 0, false };
     list_counter = 1;
+    lay_el = p->doc->root;
     layout_children(&L, p->doc->root, &s);
     newline(&L, false, FONT_WEB);
     p->height = L.y + 16;
@@ -508,7 +501,14 @@ static void collect(page_t *p, node_t *n, int form) {
             const char *a = node_attr(n, "action"), *m = node_attr(n, "method");
             url_resolve(p->doc->base[0] ? p->doc->base : p->url, a && *a ? a : p->url, fm->action, sizeof fm->action);
             fm->post = m && !strcasecmp(m, "post");
+            fm->node = n;
             f = p->nforms++;
+        } else if (!strcmp(n->tag, "iframe") && !p->ads_ok) {
+            const char *src = node_attr(n, "src");
+            char abs[1024];
+            if (src && url_resolve(p->doc->base[0] ? p->doc->base : p->url, src, abs, sizeof abs) && adblock_blocks(abs, NULL)) {
+                n->css.set |= ST_DISPLAY; n->css.display = 0; p->blocked++; continue;
+            }
         } else if (!strcmp(n->tag, "img")) {
             const char *src = node_attr(n, "src");
             if (!src || !*src) src = node_attr(n, "data-src");
@@ -562,17 +562,58 @@ static page_t *page_from_html(const char *url, const char *html, uint32_t len, c
     p->fg = p->doc->text ? p->doc->text : BLACK;
     p->linkc = p->doc->link ? p->doc->link : HEX(0x0000EE);
     p->ads_ok = adblock_page_allowed(url);
+    p->mem_limit = PAGE_MEM_STEP;
     collect(p, p->doc->root->first, -1);
     p->source = kmalloc(len + 1); memcpy(p->source, html, len); p->source[len] = 0; p->srclen = len;
     return p;
 }
 static void page_free(page_t *p) {
     if (!p) return;
+    if (p->js) { js_page_free(p->js); p->js = NULL; }
     for (int i = 0; i < p->nimgs; i++) { if (p->imgs[i].img) canvas_free(p->imgs[i].img); if (p->imgs[i].scaled) canvas_free(p->imgs[i].scaled); }
     for (int i = 0; i < p->nctrls; i++) { kfree(p->ctrls[i].opts); kfree(p->ctrls[i].optvals); }
     kfree(p->imgs); kfree(p->ctrls); kfree(p->forms); kfree(p->items); kfree(p->links); kfree(p->anchors); kfree(p->source);
     doc_free(p->doc);
     kfree(p);
+}
+
+/* the tree was changed by a script: collect pictures, controls and forms again,
+ * keeping pictures already downloaded and what the user typed */
+static void clear_aux(node_t *n) { for (; n; n = n->next) { if (!n->type && n->aux > 0) n->aux = 0; if (n->first) clear_aux(n->first); } }
+void page_rebuild(page_t *p) {
+    pimg_t *oi = p->imgs; int on = p->nimgs;
+    ctrl_t *oc = p->ctrls; int ocn = p->nctrls;
+    form_t *of = p->forms;
+    p->imgs = NULL; p->nimgs = 0; p->ctrls = NULL; p->nctrls = 0; p->forms = NULL; p->nforms = 0;
+    int blocked = p->blocked;
+    clear_aux(p->doc->root->first);
+    collect(p, p->doc->root->first, -1);
+    p->blocked = MAX(blocked, p->blocked);
+    for (int i = 0; i < p->nimgs; i++)
+        for (int k = 0; k < on; k++) if (oi[k].state && oi[k].url && !strcmp(oi[k].url, p->imgs[i].url)) {
+            p->imgs[i].state = oi[k].state; p->imgs[i].img = oi[k].img; oi[k].img = NULL; oi[k].state = 0; break;
+        }
+    for (int i = 0; i < p->nctrls; i++)
+        for (int k = 0; k < ocn; k++) if (oc[k].node == p->ctrls[i].node) {
+            ctrl_t *c = &p->ctrls[i];
+            strlcpy(c->value, oc[k].value, sizeof c->value); c->checked = oc[k].checked;
+            if (oc[k].sel < c->nopts) c->sel = oc[k].sel;
+            break;
+        }
+    for (int k = 0; k < on; k++) { if (oi[k].img) canvas_free(oi[k].img); if (oi[k].scaled) canvas_free(oi[k].scaled); }
+    for (int k = 0; k < ocn; k++) { kfree(oc[k].opts); kfree(oc[k].optvals); }
+    kfree(oi); kfree(oc); kfree(of);
+    p->tree_dirty = false;
+}
+uint64_t page_memory(page_t *p) {
+    uint64_t m = p->srclen + (uint64_t)p->capitems * sizeof(item_t);
+    for (arena_chunk_t *c = p->doc->arena.head; c; c = c->next) m += c->cap + sizeof *c;
+    for (int i = 0; i < p->nimgs; i++) {
+        if (p->imgs[i].img) m += (uint64_t)p->imgs[i].img->w * p->imgs[i].img->h * 4;
+        if (p->imgs[i].scaled) m += (uint64_t)p->imgs[i].scaled->w * p->imgs[i].scaled->h * 4;
+    }
+    if (p->js) m += (uint64_t)js_page_mem_kb(p->js) * 1024;
+    return m;
 }
 
 /* ---------------- built-in pages ---------------- */
@@ -594,10 +635,12 @@ static const char *home_html =
     "</td><td valign=\"top\">"
     "<h3>On this computer</h3><ul>"
     "<li><a href=\"file:///C:/Samples/Welcome.html\">Welcome page</a> - what the browser can show</li>"
+    "<li><a href=\"file:///C:/Samples/JavaScript%20demo.html\">JavaScript demo</a> - scripts, events and timers</li>"
     "<li><a href=\"file:///C:/\">Browse drive C:</a></li></ul>"
     "<h3>About</h3><p>The WRLD Xplorer understands HTML, simple CSS, tables, forms, links and PNG, GIF, JPEG and BMP images, "
     "over HTTP and HTTPS (TLS 1.2, certificates checked against the Mozilla root store).</p>"
-    "<p>It has <b>no JavaScript</b>, so interactive web apps will not work. Text-heavy sites work best.</p>"
+    "<p>Scripts run on the <b>QuickJS</b> JavaScript engine with a built-in DOM, events and timers. Large web apps may still not work; "
+    "text-heavy sites work best. Ads and trackers are blocked (Tools menu).</p>"
     "</td></tr></table></body></html>";
 
 static char *error_html(const char *url, const char *title, const char *msg) {
@@ -625,7 +668,7 @@ static char *dir_listing_html(const char *path, vnode_t *d) {
 }
 
 /* ---------------- loading (worker task) ---------------- */
-typedef struct { browser_t *b; int gen; char url[1024]; char *post; uint32_t postlen; bool push; int scroll_to; } job_t;
+typedef struct { browser_t *b; int gen; char url[1024]; char *post; uint32_t postlen; bool push; int scroll_to; char referrer[1024]; } job_t;
 static void set_status(browser_t *b, const char *s) { strlcpy(b->status, s, sizeof b->status); if (b->w && !b->closed) b->w->dirty = true; }
 static void progress(void *ctx, const char *st, uint32_t got, uint32_t total) {
     job_t *j = ctx;
@@ -715,6 +758,271 @@ static int find_anchor_y(page_t *p, const char *frag) {
     for (int i = 0; i < p->nanchors; i++) if (!strcmp(p->anchors[i].name, f)) return MAX(0, p->anchors[i].y - 6);
     return 0;
 }
+/* ---------------- scripts ---------------- */
+static void submit_form(browser_t *b, int form, int submitter);
+static void go_back(browser_t *b);
+static void go_fwd(browser_t *b);
+static rect_t content_rect(window_t *w);
+static void clamp_scroll(browser_t *b, rect_t v);
+void browser_navigate_ext(browser_t *b, const char *url, const char *post, bool push);
+static node_t *doc_next(node_t *n, node_t *root) {
+    if (n->first) return n->first;
+    while (n && n != root) { if (n->next) return n->next; n = n->parent; }
+    return NULL;
+}
+static char *latin1_to_utf8(const char *s, int n) {
+    char *o = kmalloc(n * 2 + 1); int k = 0;
+    for (int i = 0; i < n; i++) { uint8_t c = s[i]; if (c < 0x80) o[k++] = c; else { o[k++] = 0xC0 | (c >> 6); o[k++] = 0x80 | (c & 0x3F); } }
+    o[k] = 0; return o;
+}
+static bool is_js_type(const char *t) {
+    if (!t || !*t) return true;
+    static const char *ok[] = { "text/javascript", "application/javascript", "application/x-javascript", "text/ecmascript", "application/ecmascript", "text/jscript", "javascript" };
+    for (unsigned i = 0; i < ARRAY_LEN(ok); i++) if (!strncasecmp(t, ok[i], strlen(ok[i]))) return true;
+    return false;
+}
+/* run every script element that has not run yet, in document order */
+static void run_scripts(browser_t *b, job_t *j, page_t *p) {
+    p->scripts_pending = false;
+    node_t *root = p->doc->root;
+    for (node_t *n = root->first; n; n = doc_next(n, root)) {
+        if (b->gen != j->gen || b->closed) return;
+        if (n->type || strcmp(n->tag, "script") || n->aux) continue;
+        n->aux = -1;
+        if (!is_js_type(node_attr(n, "type"))) continue;
+        if (!p->js) {
+            p->js = js_page_new(p);
+            if (!p->js) { klog("xplorer: could not start the JavaScript engine"); return; }
+        }
+        const char *src = node_attr(n, "src");
+        int rc = 0;
+        if (src && *src) {
+            char abs[1024]; url_resolve(p->doc->base[0] ? p->doc->base : p->url, src, abs, sizeof abs);
+            if (!p->ads_ok && adblock_blocks(abs, NULL)) { p->blocked++; continue; }
+            char st[300]; snprintf(st, sizeof st, "Downloading script %s...", abs); set_status(b, st);
+            if (!strncasecmp(abs, "file:", 5)) {
+                const char *pth = abs + 5; while (*pth == '/') pth++;
+                uint32_t l; uint8_t *d = vfs_read_file(pth, &l);
+                if (d) { rc = js_page_eval(p->js, (const char *)d, l, abs); kfree(d); }
+            } else {
+                http_response_t r;
+                if (http_get(abs, &r, NULL, NULL) && r.status == 200) rc = js_page_eval(p->js, (const char *)r.body, r.body_len, abs);
+                else klog("xplorer: script %s could not be loaded (%s)", abs, r.error);
+                http_free(&r);
+            }
+        } else if (n->first && n->first->type == 1) {
+            char *u = latin1_to_utf8(n->first->text, strlen(n->first->text));
+            char name[1100]; snprintf(name, sizeof name, "%s (inline script %d)", p->url, p->scripts_run + 1);
+            rc = js_page_eval(p->js, u, strlen(u), name);
+            kfree(u);
+        }
+        p->scripts_run++;
+        if (rc == -1) p->script_errors++;
+        if (rc == -2) return;                        /* the page was stopped */
+        char *w = js_page_take_written(p->js);
+        if (w) { dom_insert_html(p, n, "write", w); js_free_str(w); }
+    }
+}
+/* after scripts ran: new title, new scripts, a changed tree */
+static void page_sync(browser_t *b, job_t *j, page_t *p) {
+    if (b->gen != j->gen || b->closed) return;
+    if (p->scripts_pending) run_scripts(b, j, p);
+    if (p->title_dirty && b->page == p && !b->closed) {
+        char t[200]; snprintf(t, sizeof t, "%s - The WRLD Xplorer", p->title[0] ? p->title : p->url);
+        wm_set_title(b->w, t);
+        p->title_dirty = false;
+    }
+    if (p->tree_dirty) {
+        page_rebuild(p);
+        page_layout(p, p->lay_width ? p->lay_width : view_width(b));
+        if (!b->closed) { clamp_scroll(b, content_rect(b->w)); b->w->dirty = true; }
+        bool pending = false;
+        for (int i = 0; i < p->nimgs; i++) if (!p->imgs[i].state) pending = true;
+        if (pending) load_images(b, j, p);
+    }
+}
+/* open a link (same-page anchors just scroll) */
+static void open_link(browser_t *b, const char *href) {
+    if (!strncasecmp(href, "mailto:", 7)) { set_status(b, "E-mail links are not supported."); return; }
+    if (!strncasecmp(href, "javascript:", 11)) {
+        if (b->page && b->page->js) { char *u = latin1_to_utf8(href + 11, strlen(href + 11)); js_page_eval(b->page->js, u, strlen(u), "javascript: link"); kfree(u); b->page->tree_dirty = true; }
+        return;
+    }
+    const char *hash = strchr(href, '#');
+    if (hash && b->page) {
+        int base_len = hash - href, cur_len = strchr(b->page->url, '#') ? (int)(strchr(b->page->url, '#') - b->page->url) : (int)strlen(b->page->url);
+        if (base_len == cur_len && !strncmp(href, b->page->url, base_len)) {
+            b->scroll = find_anchor_y(b->page, hash + 1);
+            if (!b->closed) { clamp_scroll(b, content_rect(b->w)); b->w->dirty = true; }
+            return;
+        }
+    }
+    browser_navigate_ext(b, href, NULL, true);
+}
+static ctrl_t *ctrl_for(page_t *p, node_t *n, int *idx) {
+    for (int i = 0; i < p->nctrls; i++) if (p->ctrls[i].node == n) { if (idx) *idx = i; return &p->ctrls[i]; }
+    return NULL;
+}
+static void submit_with_event(browser_t *b, page_t *p, int form, int submitter) {
+    if (form >= 0 && form < p->nforms && p->forms[form].node && js_page_dispatch(p->js, p->forms[form].node, "submit", 0)) return;
+    submit_form(b, form, submitter);
+}
+/* the default action of a click that no script cancelled */
+static void click_default(browser_t *b, page_t *p, node_t *n) {
+    int ci; ctrl_t *c = ctrl_for(p, n, &ci);
+    if (c) {
+        if (c->type == C_SUBMIT) submit_with_event(b, p, c->form, ci);
+        else if (c->type == C_CHECK || c->type == C_RADIO) js_page_dispatch(p->js, c->node, "change", 0);
+        return;
+    }
+    for (node_t *a = n; a; a = a->parent) {
+        if (a->type || strcmp(a->tag, "a")) continue;
+        const char *href = node_attr(a, "href");
+        if (!href || !*href || (href[0] == '#' && !href[1])) return;
+        char abs[1024];
+        if (!strncasecmp(href, "javascript:", 11)) strlcpy(abs, href, sizeof abs);
+        else url_resolve(p->doc->base[0] ? p->doc->base : p->url, href, abs, sizeof abs);
+        open_link(b, abs);
+        return;
+    }
+}
+void page_post(page_t *p, node_t *n, const char *type, int key) {
+    int nh = (p->evq_head + 1) % PAGE_EVQ;
+    if (nh == p->evq_tail) return;                     /* queue full: drop */
+    page_event_t *e = &p->evq[p->evq_head];
+    e->node = n ? n : p->doc->root; strlcpy(e->type, type, sizeof e->type); e->key = key; e->link = e->ctrl = -1;
+    p->evq_head = nh;
+}
+static void handle_event(browser_t *b, page_t *p, page_event_t *ev) {
+    if (!strcmp(ev->type, "enter")) {                  /* Enter in a text field */
+        if (js_page_dispatch(p->js, ev->node, "keydown", 13)) return;
+        int ci; ctrl_t *c = ctrl_for(p, ev->node, &ci);
+        if (c && c->type != C_TEXTAREA) submit_with_event(b, p, c->form, -1);
+        return;
+    }
+    bool prevented = js_page_dispatch(p->js, ev->node, ev->type, ev->key);
+    if (!strcmp(ev->type, "click") && !prevented) click_default(b, p, ev->node);
+}
+static void page_loop(browser_t *b, job_t *j, page_t *p) {
+    while (b->gen == j->gen && !b->closed && !p->orphan && p->js && !js_page_aborted(p->js)) {
+        while (p->evq_tail != p->evq_head && b->gen == j->gen) {
+            page_event_t ev = p->evq[p->evq_tail];
+            p->evq_tail = (p->evq_tail + 1) % PAGE_EVQ;
+            handle_event(b, p, &ev);
+            page_sync(b, j, p);
+        }
+        if (b->gen != j->gen) break;
+        int next = js_page_run_timers(p->js);
+        page_sync(b, j, p);
+        task_sleep(next < 0 ? 25 : CLAMP(next, 1, 25));
+    }
+}
+
+/* ---------------- services for the script engine (jsapi.h) ---------------- */
+static int alive(page_t *p) { browser_t *b = p->browser; return b && !b->closed && b->gen == p->gen && !p->orphan; }
+void dom_navigate(void *page, const char *url, int replace) { page_t *p = page; if (alive(p)) browser_navigate_ext(p->browser, url, NULL, !replace); }
+void dom_history(void *page, int d) { page_t *p = page; if (!alive(p)) return; if (d < 0) go_back(p->browser); else if (d > 0) go_fwd(p->browser); }
+void dom_reload(void *page) { page_t *p = page; if (alive(p)) browser_navigate_ext(p->browser, p->url, NULL, false); }
+void dom_alert(void *page, const char *kind, const char *text) {
+    page_t *p = page;
+    if (!alive(p) || ++p->alerts > 5) return;          /* no endless alert() loops */
+    char *l1 = kmalloc(strlen(text) * 3 + 1); latin1_from_utf8((const uint8_t *)text, strlen(text), l1);
+    char t[200]; snprintf(t, sizeof t, "Message from %s", p->title[0] ? p->title : "webpage");
+    msgbox(t, l1, !strcmp(kind, "alert") ? MBI_WARNING : MBI_QUESTION, MBX_OK, NULL, NULL);
+    kfree(l1);
+}
+static void con_add(browser_t *b, const char *line) {
+    if (b->ncon == 64) { kfree(b->con[0]); memmove(b->con, b->con + 1, sizeof(char *) * 63); b->ncon--; }
+    b->con[b->ncon++] = strdup(line);
+}
+void dom_console(void *page, int level, const char *text) {
+    page_t *p = page; browser_t *b = p->browser;
+    static const char *lv[] = { "log", "info", "warning", "error" };
+    char line[600]; snprintf(line, sizeof line, "[%s] %s", lv[CLAMP(level, 0, 3)], text);
+    klog("js: %s", line);
+    if (b && !b->closed) con_add(b, line);
+    if (level == 3 && b && alive(p)) {
+        p->script_errors++;
+        char st[200]; const char *nl = strchr(text, '\n');
+        snprintf(st, sizeof st, "Script error: %.*s", nl ? (int)(nl - text) : (int)strlen(text), text);
+        set_status(b, st);
+    }
+}
+void dom_status(void *page, const char *text) { page_t *p = page; if (alive(p)) set_status(p->browser, text); }
+int dom_viewport(void *page, int which) {
+    page_t *p = page; browser_t *b = p->browser;
+    rect_t v = b && !b->closed ? content_rect(b->w) : R(0, 0, 800, 600);
+    switch (which) { case 0: return v.w; case 1: return v.h; case 2: return b ? b->scroll : 0; case 3: return MAX(p->height, v.h); case 4: return SCREEN_W; case 5: return SCREEN_H; }
+    return 0;
+}
+void dom_scroll_to(void *page, int x, int y) {
+    page_t *p = page; browser_t *b = p->browser;
+    if (!alive(p) || b->page != p) return;
+    b->scroll = y; clamp_scroll(b, content_rect(b->w)); b->w->dirty = true;
+}
+int dom_rect(void *page, void *node, int *x, int *y, int *w, int *h) {
+    page_t *p = page; node_t *n = node;
+    if (p->tree_dirty) { page_rebuild(p); page_layout(p, p->lay_width ? p->lay_width : 800); }
+    int x0 = 1 << 30, y0 = 1 << 30, x1 = -1, y1 = -1;
+    for (int i = 0; i < p->nitems; i++) {
+        item_t *it = &p->items[i];
+        node_t *a = it->node;
+        while (a && a != n) a = a->parent;
+        if (!a) continue;
+        x0 = MIN(x0, it->x); y0 = MIN(y0, it->y); x1 = MAX(x1, it->x + it->w); y1 = MAX(y1, it->y + it->h);
+    }
+    if (x1 < 0) return 0;
+    *x = x0; *y = y0; *w = x1 - x0; *h = y1 - y0;
+    return 1;
+}
+void dom_focus(void *page, void *node) { page_t *p = page; int ci; if (alive(p) && ctrl_for(p, node, &ci) && p->browser && ((browser_t *)p->browser)->page == p) ((browser_t *)p->browser)->focus_ctrl = ci; }
+int dom_submit(void *page, void *form) {
+    page_t *p = page;
+    if (!alive(p)) return 0;
+    if (p->tree_dirty) page_rebuild(p);
+    for (int i = 0; i < p->nforms; i++) if (p->forms[i].node == form) { submit_form(p->browser, i, -1); return 1; }
+    return 0;
+}
+void dom_default_action(void *page, void *node, const char *type) {
+    page_t *p = page;
+    if (!alive(p) || strcmp(type, "click")) return;
+    if (p->tree_dirty) page_rebuild(p);
+    int ci; ctrl_t *c = ctrl_for(p, node, &ci);
+    if (c && (c->type == C_CHECK || c->type == C_RADIO)) { dom_set_checked(p, node, c->type == C_RADIO ? 1 : !c->checked); return; }
+    click_default(p->browser, p, node);
+}
+/* memory: ask once per 500 MB step; one question on screen at a time */
+static page_t *mem_asker;
+static volatile int mem_reply;
+static void mem_reply_cb(void *ctx, int r) { if (ctx == (void *)mem_asker) mem_reply = r == IDYES ? 1 : 2; }
+static int mem_ask(page_t *p) {           /* 1 = stop the page */
+    browser_t *b = p->browser;
+    if (p->mem_answer == 2) return 1;
+    while (mem_asker && mem_asker != p && alive(p)) task_sleep(50);
+    if (!alive(p)) return 1;
+    uint64_t used = page_memory(p);
+    if (used < p->mem_limit) return 0;
+    mem_asker = p; mem_reply = 0;
+    char m[700];
+    snprintf(m, sizeof m, "%s is using %u MB of memory, more than %u MB.\n\nPages that use this much memory can make " OS_NAME " slow or unresponsive.\n\nDo you want to let this page continue?\n(Yes = continue, No = stop the page)",
+             p->title[0] ? p->title : p->url, (uint32_t)(used >> 20), (uint32_t)(p->mem_limit >> 20));
+    msgbox("The WRLD Xplorer - High memory use", m, MBI_WARNING, MBX_YESNO, mem_reply_cb, p);
+    while (!mem_reply && alive(p)) task_sleep(50);
+    int r = mem_reply;
+    mem_asker = NULL;
+    if (r == 1) { p->mem_limit = used + PAGE_MEM_STEP; return 0; }
+    p->mem_answer = 2;
+    if (p->js) js_page_abort(p->js);
+    if (b && !b->closed) set_status(b, "Stopped: this page was using too much memory");
+    return 1;
+}
+int dom_interrupt(void *page) {
+    page_t *p = page;
+    if (!alive(p)) return 1;                          /* the page was closed or replaced */
+    if (page_memory(p) >= p->mem_limit) return mem_ask(p);
+    return 0;
+}
+
 static void nav_worker(void *arg) {
     job_t *j = arg;
     browser_t *b = j->b;
@@ -783,7 +1091,16 @@ static void nav_worker(void *arg) {
         http_free(&r);
     }
     if (!p || b->gen != j->gen || b->closed) { page_free(p); goto out; }
+    p->browser = b; p->gen = j->gen;
+    strlcpy(p->referrer, j->referrer, sizeof p->referrer);
     p->worker_running = true;
+    /* scripts run before the first layout, so document.write and DOM changes show at once */
+    if (js_enabled) {
+        run_scripts(b, j, p);
+        if (p->js && b->gen == j->gen) { js_page_fire(p->js, "DOMContentLoaded"); if (p->scripts_pending) run_scripts(b, j, p); }
+        if (p->tree_dirty) page_rebuild(p);
+    }
+    if (b->gen != j->gen || b->closed) { p->worker_running = false; page_free(p); goto out; }
     page_layout(p, view_width(b));
     { const char *h = strchr(j->url, '#'); j->scroll_to = h ? find_anchor_y(p, h + 1) : j->scroll_to; }
     install_page(b, p, j);
@@ -791,9 +1108,11 @@ static void nav_worker(void *arg) {
     if (!b->closed) b->w->dirty = true;
     bool complete = load_images(b, j, p);
     if (complete && b->gen == j->gen && !b->closed) {
+        if (p->js) { js_page_fire(p->js, "load"); page_sync(b, j, p); }
         char s[160];
         if (p->secure) snprintf(s, sizeof s, "Done - secure connection (%s)", p->tls); else strcpy(s, "Done");
         if (p->blocked) { char a[48]; snprintf(a, sizeof a, " - %d ad%s blocked", p->blocked, p->blocked == 1 ? "" : "s"); strlcat(s, a, sizeof s); }
+        if (p->script_errors) { char a[48]; snprintf(a, sizeof a, " - %d script error%s", p->script_errors, p->script_errors == 1 ? "" : "s"); strlcat(s, a, sizeof s); }
         set_status(b, s);
         b->loading = false;
         /* <meta http-equiv="refresh"> to another page */
@@ -805,6 +1124,8 @@ static void nav_worker(void *arg) {
                 browser_navigate_ext(b, to, NULL, false);
             }
         }
+        /* the page's scripts keep running: events from the window, timers */
+        if (p->js) page_loop(b, j, p);
     }
     p->worker_running = false;
     if (p->orphan) page_free(p);
@@ -820,11 +1141,12 @@ void browser_navigate_ext(browser_t *b, const char *url, const char *post, bool 
     j->b = b; j->gen = ++b->gen; j->push = push;
     strlcpy(j->url, url, sizeof j->url);
     if (post) { j->post = strdup(post); j->postlen = strlen(post); }
+    if (b->page) strlcpy(j->referrer, b->page->url, sizeof j->referrer);
     b->refs++;
     b->loading = true;
     strlcpy(b->addr, url, sizeof b->addr);
     set_status(b, "Opening page...");
-    task_create("xplorer", nav_worker, j, 65536);
+    task_create("xplorer", nav_worker, j, 256 * 1024);      /* page scripts run on this task */
 }
 static void normalize_address(const char *in, char *out, int cap) {
     while (*in == ' ') in++;
@@ -1044,9 +1366,21 @@ static int item_at(page_t *p, int x, int y, int kind_ctrl) {
     }
     return -1;
 }
+static node_t *node_at(page_t *p, int x, int y) {
+    for (int i = p->nitems - 1; i >= 0; i--) {
+        item_t *it = &p->items[i];
+        if (it->node && x >= it->x && x < it->x + it->w && y >= it->y - 1 && y < it->y + it->h + 1) return it->node;
+    }
+    return p->doc->root;
+}
+static bool scripted(browser_t *b) { return js_enabled && b->page && b->page->js && !js_page_aborted(b->page->js); }
+void page_post(page_t *p, node_t *n, const char *type, int key);
 static void select_cb(void *ctx, int id) {
     browser_t *b = ctx;
-    if (b->page && b->focus_ctrl >= 0 && b->focus_ctrl < b->page->nctrls) { b->page->ctrls[b->focus_ctrl].sel = id; b->w->dirty = true; }
+    if (b->page && b->focus_ctrl >= 0 && b->focus_ctrl < b->page->nctrls) {
+        b->page->ctrls[b->focus_ctrl].sel = id; b->w->dirty = true;
+        if (scripted(b)) { page_post(b->page, b->page->ctrls[b->focus_ctrl].node, "input", 0); page_post(b->page, b->page->ctrls[b->focus_ctrl].node, "change", 0); }
+    }
 }
 static void br_mouse(window_t *w, int type, int mx, int my, int btn) {
     browser_t *b = w->data;
@@ -1074,11 +1408,19 @@ static void br_mouse(window_t *w, int type, int mx, int my, int btn) {
     if (type == ME_DOWN && btn == MB_LEFT) {
         w->ui.focus = 0;                          /* leave the address bar */
         b->focus_ctrl = ctl;
+        bool js = scripted(b);
+        if (js) {                                 /* the page's scripts see the click first; defaults follow on the script task */
+            node_t *n = node_at(b->page, px, py);
+            page_post(b->page, n, "mousedown", 0);
+            page_post(b->page, n, "mouseup", 0);
+            if (ctl >= 0 && b->page->ctrls[ctl].type != C_SELECT) page_post(b->page, b->page->ctrls[ctl].node, "focus", 0);
+        }
         if (ctl >= 0) {
             ctrl_t *c = &b->page->ctrls[ctl];
             if (c->type == C_CHECK) c->checked = !c->checked;
             else if (c->type == C_RADIO) { for (int i = 0; i < b->page->nctrls; i++) { ctrl_t *o = &b->page->ctrls[i]; if (o->type == C_RADIO && o->form == c->form && !strcmp(o->name, c->name)) o->checked = false; } c->checked = true; }
-            else if (c->type == C_SUBMIT) submit_form(b, c->form, ctl);
+            if (js && c->type != C_SELECT) { page_post(b->page, c->node, "click", 0); w->dirty = true; return; }
+            if (c->type == C_SUBMIT) submit_form(b, c->form, ctl);
             else if (c->type == C_RESET) { for (int i = 0; i < b->page->nctrls; i++) if (b->page->ctrls[i].form == c->form && (b->page->ctrls[i].type == C_TEXT || b->page->ctrls[i].type == C_TEXTAREA)) b->page->ctrls[i].value[0] = 0; }
             else if (c->type == C_SELECT && c->nopts) {
                 menu_item_t mi[20]; int k = MIN(c->nopts, 20);
@@ -1089,16 +1431,8 @@ static void br_mouse(window_t *w, int type, int mx, int my, int btn) {
             w->dirty = true;
             return;
         }
-        if (link >= 0) {
-            const char *href = b->page->links[link];
-            if (!strncasecmp(href, "mailto:", 7)) { set_status(b, "E-mail links are not supported."); return; }
-            const char *hash = strchr(href, '#');
-            if (hash) {
-                int base_len = hash - href, cur_len = strchr(b->page->url, '#') ? (int)(strchr(b->page->url, '#') - b->page->url) : (int)strlen(b->page->url);
-                if (base_len == cur_len && !strncmp(href, b->page->url, base_len)) { b->scroll = find_anchor_y(b->page, hash + 1); clamp_scroll(b, v); w->dirty = true; return; }
-            }
-            browser_navigate_ext(b, href, NULL, true);
-        }
+        if (js) { page_post(b->page, node_at(b->page, px, py), "click", 0); w->dirty = true; return; }
+        if (link >= 0) open_link(b, b->page->links[link]);
         w->dirty = true;
     }
 }
@@ -1114,9 +1448,16 @@ static void br_key(window_t *w, key_event_t *e) {
         ctrl_t *c = &b->page->ctrls[b->focus_ctrl];
         if (c->type == C_TEXT || c->type == C_PASSWORD || c->type == C_TEXTAREA) {
             int l = strlen(c->value);
+            bool js = scripted(b);
+            if (js && e->key != KEY_ENTER) page_post(b->page, c->node, "keydown", e->key == KEY_BACKSPACE ? 8 : (uint8_t)e->ch);
             if (e->key == KEY_BACKSPACE) { if (l) c->value[l - 1] = 0; }
-            else if (e->key == KEY_ENTER) { if (c->type == C_TEXTAREA) { if (l < (int)sizeof c->value - 1) { c->value[l] = '\n'; c->value[l + 1] = 0; } } else submit_form(b, c->form, -1); }
+            else if (e->key == KEY_ENTER) {
+                if (c->type == C_TEXTAREA) { if (l < (int)sizeof c->value - 1) { c->value[l] = '\n'; c->value[l + 1] = 0; } }
+                else if (js) page_post(b->page, c->node, "enter", 13);
+                else submit_form(b, c->form, -1);
+            }
             else if (e->ch >= 32 && (uint8_t)e->ch < 255 && l < (int)sizeof c->value - 1 && !(e->mods & MOD_CTRL)) { c->value[l] = e->ch; c->value[l + 1] = 0; }
+            if (js && e->key != KEY_ENTER) { page_post(b->page, c->node, "input", 0); page_post(b->page, c->node, "keyup", e->key == KEY_BACKSPACE ? 8 : (uint8_t)e->ch); }
             w->dirty = true;
             return;
         }
@@ -1135,14 +1476,20 @@ static void br_key(window_t *w, key_event_t *e) {
     clamp_scroll(b, v); w->dirty = true;
 }
 static void br_tick(window_t *w) { browser_t *b = w->data; if (b->loading || b->focus_ctrl >= 0) w->dirty = true; }
-static void br_destroy(window_t *w) { browser_t *b = w->data; b->closed = true; b->gen++; b->w = NULL; browser_release(b); }
+static void br_destroy(window_t *w) {
+    browser_t *b = w->data; b->closed = true; b->gen++; b->w = NULL;
+    for (int i = 0; i < b->ncon; i++) kfree(b->con[i]);
+    b->ncon = 0;
+    browser_release(b);
+}
 static menu_t br_menus[] = {
     { "File", { { "New Window", BM_NEW, 0 }, { "Open Location...", BM_OPEN, 0 }, { "Save Page As...", BM_SAVE, 0 }, { "-", 0, 0 }, { "Close", BM_CLOSE, 0 }, { NULL } } },
     { "View", { { "Stop", BM_STOP, 0 }, { "Refresh", BM_REFRESH, 0 }, { "-", 0, 0 }, { "Page Source", BM_SOURCE, 0 }, { NULL } } },
     { "Go", { { "Back", BM_BACK, 0 }, { "Forward", BM_FWD, 0 }, { "Home Page", BM_HOME, 0 }, { NULL } } },
     { "Favorites", { { "Wikipedia", BM_FAV0, 0 }, { "Hacker News", BM_FAV0 + 1, 0 }, { "CNN Lite", BM_FAV0 + 2, 0 }, { "NPR text edition", BM_FAV0 + 3, 0 },
                      { "68k.news", BM_FAV0 + 4, 0 }, { "FrogFind", BM_FAV0 + 5, 0 }, { NULL } } },
-    { "Tools", { { "Block Ads", BM_ADBLOCK, MI_CHECKED }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { NULL } } },
+    { "Tools", { { "Block Ads", BM_ADBLOCK, MI_CHECKED }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { "-", 0, 0 },
+                 { "Enable JavaScript", BM_JS, MI_CHECKED }, { "Script Messages...", BM_CONSOLE, 0 }, { NULL } } },
     { "Help", { { "About The WRLD Xplorer", BM_ABOUT, 0 }, { NULL } } },
 };
 static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
@@ -1181,6 +1528,21 @@ static void br_menu(window_t *w, int id) {
         break;
     }
     case BM_ADLIST: adblock_page_allowed("http://x/"); notepad_open(ADBLOCK_LIST); break;
+    case BM_JS:
+        js_enabled = !js_enabled;
+        br_menus[4].items[4].flags = js_enabled ? MI_CHECKED : 0;
+        browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
+        break;
+    case BM_CONSOLE: {
+        uint32_t cap = 256; for (int i = 0; i < b->ncon; i++) cap += strlen(b->con[i]) + 2;
+        char *t = kmalloc(cap); int o = snprintf(t, cap, "Script messages for %s\r\n\r\n", b->page ? b->page->url : "(no page)");
+        if (!b->ncon) o += snprintf(t + o, cap - o, "(none)\r\n");
+        for (int i = 0; i < b->ncon; i++) o += snprintf(t + o, cap - o, "%s\r\n", b->con[i]);
+        vfs_mkdir_p("C:\\tmp");
+        vfs_write_file("C:\\tmp\\Script messages.txt", t, o); kfree(t);
+        notepad_open("C:\\tmp\\Script messages.txt");
+        break;
+    }
     case BM_STOP: stop_loading(b); break;
     case BM_REFRESH: browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false); break;
     case BM_BACK: go_back(b); break;
@@ -1189,7 +1551,7 @@ static void br_menu(window_t *w, int id) {
     case BM_ABOUT: {
         char m[600];
         snprintf(m, sizeof m, "The WRLD Xplorer 1.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
-                 "Secure connections use BearSSL (TLS 1.2) with %d trusted root certificates.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_trust_anchor_count());
+                 "Secure connections use BearSSL (TLS 1.2) with %d trusted root certificates.\nJavaScript runs on QuickJS-ng %s with a built-in DOM.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_trust_anchor_count(), js_engine_version());
         msgbox("About The WRLD Xplorer", m, MBI_INFO, MBX_OK, NULL, NULL);
         break;
     }

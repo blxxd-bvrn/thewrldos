@@ -49,6 +49,52 @@ const char *node_attr(node_t *n, const char *name);
 bool parse_color(const char *s, uint32_t *out);
 int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out);   /* returns length */
 
+
+/* ---------------- page model (shared by browser.c and dom.c) ---------------- */
+enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE };
+typedef struct { uint8_t kind; uint8_t under; int16_t font; int x, y, w, h, asc; uint32_t color; const char *text; int len; int link, idx; node_t *node; } item_t;
+typedef struct { char *url; canvas_t *img, *scaled; int state; /* 0 pending, 1 ok, 2 failed */ char *alt; } pimg_t;
+enum { C_TEXT, C_PASSWORD, C_SUBMIT, C_BUTTON, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT, C_TEXTAREA, C_RESET };
+typedef struct { int type, form; node_t *node; char name[64]; char value[512]; char label[64]; bool checked; int sel, nopts; char **opts, **optvals; rect_t r; } ctrl_t;
+typedef struct { char action[1024]; bool post; node_t *node; } form_t;
+/* events the window hands to the page's script task */
+typedef struct { node_t *node; char type[16]; int key; int link; int ctrl; } page_event_t;
+#define PAGE_EVQ 32
+struct jspage;
+typedef struct page {
+    doc_t *doc;
+    char url[1024], title[160], referrer[1024];
+    bool secure; char tls[80];
+    char *source; uint32_t srclen;
+    pimg_t *imgs; int nimgs;
+    ctrl_t *ctrls; int nctrls;
+    form_t *forms; int nforms;
+    item_t *items; int nitems, capitems;
+    char **links; int nlinks, caplinks;
+    struct { const char *name; int y; } *anchors; int nanchors, capanchors;
+    int height, lay_width;
+    uint32_t bg, fg, linkc;
+    bool worker_running, orphan;
+    bool ads_ok; int blocked;                 /* ad blocker: site allowed / items removed */
+    /* scripting */
+    struct jspage *js;
+    void *browser;                            /* browser_t that shows this page */
+    bool tree_dirty, title_dirty, scripts_pending;
+    page_event_t evq[PAGE_EVQ]; int evq_head, evq_tail;
+    uint64_t mem_limit;                       /* next memory warning (bytes) */
+    int mem_answer;                           /* 0 none, -1 waiting, 1 continue, 2 stop */
+    int scripts_run, script_errors, alerts;
+    int gen;                                  /* browser generation that loaded this page */
+} page_t;
+
+/* browser.c services used by dom.c */
+extern bool js_enabled;
+void page_rebuild(page_t *p);
+uint64_t page_memory(page_t *p);
+void html_restyle(doc_t *d, node_t *n);                 /* html.c: re-apply CSS to n and its subtree */
+void css_parse_decls(const char *s, int n, css_t *out); /* html.c */
+bool html_is_void(const char *tag);
+
 /* ad blocker (adblock.c) */
 extern bool adblock_enabled;
 bool adblock_blocks(const char *url, const char *page_url);     /* refuse this sub-resource? */

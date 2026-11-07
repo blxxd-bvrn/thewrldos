@@ -84,6 +84,7 @@ void *kzalloc(size_t n);
 void *krealloc(void *p, size_t n);
 void kfree(void *p);
 void *kmalloc_aligned(size_t n, size_t align);
+size_t kmalloc_usable(void *p);
 void kfree_aligned(void *p);
 uint32_t mm_total(void);
 uint32_t mm_used(void);

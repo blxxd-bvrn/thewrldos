@@ -1,0 +1,73 @@
+<html><head><title>JavaScript demo</title>
+<style>
+.box { background: #EAF1FB; }
+.done { color: #1E8A3C; }
+.warn { color: #C03020; }
+</style></head>
+<body bgcolor="#FFFFFF">
+<h1>JavaScript in The WRLD Xplorer</h1>
+<p id="engine">If you can read this, scripts are turned off (Tools &gt; Enable JavaScript).</p>
+<noscript><p class="warn">Scripts are disabled.</p></noscript>
+
+<h3>Events</h3>
+<p><button id="count">Click me</button> &nbsp; <span id="clicks">Not clicked yet.</span></p>
+
+<h3>Timers</h3>
+<p>The time is <b id="clock">...</b> (updated every second by <code>setInterval</code>).</p>
+
+<h3>Forms</h3>
+<p>Type your name: <input id="name" type="text" value=""> <button id="hello">Say hello</button></p>
+<p id="greeting" class="box">Hello, whoever you are.</p>
+
+<h3>Building the page</h3>
+<p><button id="add">Add a row</button> <button id="clear">Clear</button></p>
+<table border="1" cellpadding="4" id="table"><tr><th>#</th><th>Square</th><th>Added at</th></tr></table>
+
+<h3>The language</h3>
+<ul id="facts"></ul>
+
+<script>
+document.getElementById("engine").textContent = "Scripts are running. " + navigator.userAgent;
+let clicks = 0;
+document.getElementById("count").addEventListener("click", function () {
+    clicks++;
+    document.getElementById("clicks").textContent = "Clicked " + clicks + (clicks === 1 ? " time." : " times.");
+});
+function tick() { document.getElementById("clock").textContent = new Date().toLocaleTimeString(); }
+tick(); setInterval(tick, 1000);
+document.getElementById("hello").onclick = () => {
+    const n = document.getElementById("name").value.trim() || "stranger";
+    const g = document.getElementById("greeting");
+    g.innerHTML = "Hello, <b>" + n.replace(/</g, "&lt;") + "</b>! Your name has " + n.length + " letters.";
+    g.className = "box done";
+};
+let rows = 0;
+document.getElementById("add").addEventListener("click", () => {
+    rows++;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${rows}</td><td>${rows * rows}</td><td>${new Date().toLocaleTimeString()}</td>`;
+    document.getElementById("table").appendChild(tr);
+});
+document.getElementById("clear").addEventListener("click", () => {
+    const t = document.getElementById("table");
+    while (t.children.length > 1) t.lastElementChild.remove();
+    rows = 0;
+});
+const facts = [
+    ["Arrow functions and template literals", `${[1, 2, 3].map((x) => x * 2).join(", ")}`],
+    ["Classes", (class A { get v() { return 42; } }).name + " / " + new (class { get v() { return 42; } })().v],
+    ["BigInt", (2n ** 100n).toString()],
+    ["Promises", "resolved below"],
+    ["JSON", JSON.stringify({ os: "THE WRLD OS", year: new Date().getFullYear() })],
+    ["Regular expressions", "2026-11-07".replace(/(\d+)-(\d+)-(\d+)/, "$3/$2/$1")],
+];
+const ul = document.getElementById("facts");
+for (const [k, v] of facts) {
+    const li = document.createElement("li");
+    li.innerHTML = "<b>" + k + ":</b> " + v;
+    ul.appendChild(li);
+}
+Promise.resolve(7).then((x) => { ul.children[3].innerHTML = "<b>Promises:</b> resolved with " + x * 6; });
+console.log("demo page ready");
+</script>
+</body></html>

@@ -375,6 +375,17 @@ doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char
             char close[16]; snprintf(close, sizeof close, "</%s", tag);
             const char *c = s; while (c < e && strncasecmp(c, close, strlen(close))) c++;
             if (!strcmp(tag, "style")) parse_stylesheet(d, s, c - s);
+            else if (!strcmp(tag, "script")) {         /* kept for the JavaScript engine; never laid out */
+                node_t *n = arena_alloc(&d->arena, sizeof *n); strcpy(n->tag, tag);
+                n->attr = arena_alloc(&d->arena, sizeof(char *) * (na * 2 + 2)); n->nattr = na;
+                for (int i = 0; i < na; i++) { n->attr[i * 2] = names[i]; n->attr[i * 2 + 1] = vals[i]; }
+                append(b, n);
+                if (c > s) {
+                    node_t *t = arena_alloc(&d->arena, sizeof *t); t->type = 1;
+                    t->text = arena_strdup(&d->arena, s, c - s);
+                    t->parent = n; n->first = n->last = t;
+                }
+            }
             else if (!strcmp(tag, "title")) { char *t = arena_alloc(&d->arena, (c - s) * 4 + 1); decode_entities(s, c - s, t); for (char *q = t; *q; q++) if (*q == '\n' || *q == '\t') *q = ' '; char *tt = t; while (*tt == ' ') tt++; strlcpy(d->title, tt, sizeof d->title); }
             else if (!strcmp(tag, "textarea")) {
                 node_t *n = arena_alloc(&d->arena, sizeof *n); strcpy(n->tag, tag);
@@ -443,4 +454,12 @@ doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char
     apply_css(d, d->root->first);
     return d;
 }
+void html_restyle(doc_t *d, node_t *n) {
+    if (!n || n->type) return;
+    node_t *nx = n->next; n->next = NULL;
+    apply_css(d, n);
+    n->next = nx;
+}
+void css_parse_decls(const char *s, int n, css_t *out) { css_decls(s, n, out); }
+bool html_is_void(const char *t) { return is_void(t); }
 void doc_free(doc_t *d) { if (!d) return; arena_free(&d->arena); kfree(d); }

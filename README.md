@@ -1,7 +1,7 @@
 # THE WRLD OS
 
 An original 32-bit x86 operating system written from scratch in C and assembly (about 18,000
-lines, plus the BearSSL library for HTTPS). It has an XP-style "Luna" desktop and a
+lines, plus the BearSSL library for HTTPS and the QuickJS JavaScript engine). It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
 **The WRLD Xplorer**.
@@ -11,7 +11,7 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
   every file and setting is saved to the disk.
 - Visual styles **Luna (Blue), Olive Green, Silver, WRLD Classic, Aero** (translucent
   blurred glass) and **Plex** (Longhorn-style). Each one is a `.wrldstyle` text file you can edit
-  or copy, and each can be recoloured with a **hue slider**.
+  or copy, and each can be recoloured with **hue, saturation and lightness** sliders.
 - **Networking:** an Intel PRO/1000 driver, a TCP/IP stack with DHCP and DNS, and HTTPS with
   certificate checking.
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
@@ -112,6 +112,10 @@ For sound, choose **Intel HD Audio** or **ICH AC97**. Graphics work with **VBoxV
 VMware's SVGA, and those can change resolution. For networking, use an **Intel PRO/1000** adapter. That's the default in VirtualBox ("Intel
 PRO/1000 MT Desktop", NAT) and in QEMU, and usually in VMware (e1000).
 
+While an installed system starts, the boot screen shows what it is doing, including
+"Loading files from the hard disk… N%". If it stops on one step, that step names the device
+involved. It also warns when the machine has less than about 128 MB of memory.
+
 ### The CD boot menu
 
 | Entry | |
@@ -156,14 +160,17 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
 - **The WRLD Xplorer** (Start menu > Internet, or the globe on Quick Launch):
-  - The home page links to sites that work well without JavaScript, such as Wikipedia, Hacker
-    News, CNN Lite and 68k.news.
+  - It runs **JavaScript** (QuickJS) and has a built-in **ad blocker**. Try
+    `C:\Samples\JavaScript demo.html` (linked from the home page).
+  - The home page links to sites that work well, such as Wikipedia, Hacker News, CNN Lite and
+    68k.news.
   - It has DuckDuckGo search; you can also type words in the address bar to search.
   - `C:\Samples\Welcome.html` shows everything it can render.
 - **Command Prompt** examples:
   - `ipconfig`, `ping example.com`, `nslookup example.com`;
   - `wget https://example.com/file.zip` downloads a file; `curl URL` prints it;
-  - `theme list`, `theme aero`, `theme plex 200`;
+  - `theme list`, `theme aero`, `theme plex 200`, `theme saturation -40`, `theme lightness 20`;
+  - `js -e "[1,2,3].map(x => x * x)"` or `js script.js` runs JavaScript;
   - `open control personalization` opens Control Panel at Personalization;
   - `open C:/Samples/Sample.dmg` mounts the disk image;
   - `hdiutil info` shows mounted images;
@@ -244,6 +251,35 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - Tables: column widths from min/max content, `colspan`, cell colours, borders, `valign`.
   - Images, form controls and in-page `#anchors`.
 - **Forms:** text, password, checkbox, radio, select, textarea and submit, sent by GET or POST.
+- **JavaScript** (`src/js`, `src/apps/dom.c`):
+  - [QuickJS-ng](https://github.com/quickjs-ng/quickjs) 0.18 (`third_party/quickjs`), a
+    complete modern JavaScript engine, built inside the kernel against a small C library and an
+    x87 math library (`third_party/quickjs-shim`).
+  - DOM: `document`, elements and text nodes, `getElementById`, `querySelector(All)` (CSS
+    selectors with combinators, attributes and `:nth-child`), `innerHTML`/`outerHTML`,
+    `textContent`, `createElement`, `appendChild`/`insertBefore`/`remove`, attributes,
+    `classList`, `dataset`, `style`, form values, `document.write`.
+  - Events with bubbling: `addEventListener`, `onclick` properties and attributes,
+    `preventDefault`, click/input/change/keydown/submit, `DOMContentLoaded` and `load`.
+  - `setTimeout`/`setInterval`/`requestAnimationFrame`, Promises, `localStorage`,
+    `sessionStorage`, `document.cookie`, `fetch`, `XMLHttpRequest`, `location`, `history`,
+    `navigator`, `alert`, `console`.
+  - Inline and external scripts run in order before the first layout; each page then keeps a
+    script task for events and timers. The page is laid out again whenever a script changes it.
+  - Scripts that run long are interrupted regularly so the desktop stays responsive.
+  - **Memory guard:** a page's memory (scripts, document, pictures) is counted. When it passes
+    **500 MB**, the page is paused and you're asked whether to continue (asked again every
+    further 500 MB) or stop it. Allocations are refused before the OS itself runs short.
+  - Tools menu: Enable JavaScript, Script Messages (errors and `console` output).
+- **Ad blocker** (`src/apps/adblock.c`):
+  - Pictures, scripts and frames from about 140 ad and tracking servers, and ad-server URL
+    paths, are never requested.
+  - Elements whose class or id marks an ad slot (`ad-banner`, `adsbygoogle`, `div-gpt-ad-…`)
+    are hidden.
+  - Your own rules go in `C:\WRLD\adblock.txt`: host names (`||host^` also works), `##.class`
+    and `###id` hiding rules, and `@@site` to allow a site.
+  - The status bar shows how many items were blocked; Tools > Block Ads turns it off, Allow Ads
+    on This Site adds an allow rule.
 - **Images:**
   - PNG: all colour types, transparency and interlacing.
   - GIF: first frame, with transparency.
@@ -288,7 +324,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.
-  - A **hue slider (0–359°)** recolours any style.
+  - **Hue (0–359°), saturation and lightness** sliders recolour any style; they are saved with
+    your settings.
 - **`.wrldstyle` format:** plain INI text.
   - `[Style]` holds `Name`, `Renderer` (luna, classic, aero or plex), `Description`, a
     suggested `Wallpaper`, and `Base` (inherit everything from another style).
@@ -362,18 +399,21 @@ used to test every screen above, including a full install from a blank disk.
   are reported as unsupported. FAT volumes with raw or zlib chunks work.
 - **Storage:**
   - The live CD runs from RAM.
-  - An installed system keeps `C:` on a FAT32 partition of an **IDE/ATA** disk (PIO mode).
+  - An installed system keeps `C:` on a FAT32 partition of an **IDE/ATA** disk (bus-master DMA,
+    with PIO as a fallback). SATA/AHCI controllers are not supported, so set the VM's disk
+    controller to IDE.
   - At boot the whole partition is loaded into memory and changes are written back, so the
     installed system's size is limited by RAM.
   - BIOS/MBR only: no UEFI or GPT install.
 - **Network and browser:**
   - Only Intel PRO/1000 cards, IPv4 only, and no Wi-Fi.
   - HTTPS uses TLS 1.2, so the few sites that only accept TLS 1.3 can't be opened.
-  - The browser has **no JavaScript**.
+  - JavaScript works for ordinary pages, but big web apps (which need layout-accurate CSS,
+    canvas, modules or web workers) mostly won't.
   - It doesn't load external stylesheets or web fonts.
   - Unsupported images: WebP, SVG and progressive JPEG (the alt text is shown instead).
   - Text is limited to Latin-1; other scripts are replaced with `?`.
-  - Interactive web apps won't work. Text-heavy sites work well.
+  - Text-heavy sites work best.
 - **Hardware and design:**
   - No USB, and sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
@@ -392,11 +432,14 @@ src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 
 src/net            e1000 driver, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP, root certificates
 src/gui            graphics, globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup,
-                   browser (html.c, imgdec.c)
+                   browser (html.c, imgdec.c, dom.c, adblock.c)
+src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/shell          sh interpreter
 src/win32          PE loader, kernel32, msvcrt, user32/gdi32
 src/include        headers (disk.h: disks/FAT32/setup; net.h: network stack)
 third_party/bearssl  BearSSL 0.6 (TLS), MIT licence
+third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
+third_party/quickjs-shim  the small C and math library QuickJS is built against
 samples/           Win32 sample sources (hello.c, winhello.c)
 dmgroot/           contents of Sample.dmg
 rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrldstyle;
@@ -415,7 +458,10 @@ docs/screenshots/  the screenshots in this README
   the GNU project.
 - TLS: [BearSSL](https://bearssl.org/) 0.6 by Thomas Pornin (MIT licence), taken from the
   Debian/Ubuntu source package and built unmodified.
+- JavaScript: [QuickJS-ng](https://github.com/quickjs-ng/quickjs) 0.18 by Fabrice Bellard,
+  Charlie Gordon, Ben Noordhuis, Saúl Ibarra Corretgé and contributors (MIT licence), built
+  unmodified; the licence text is at the top of each source file.
 - Root certificates: the Mozilla CA certificate store, as shipped in Debian/Ubuntu's
   `ca-certificates` package.
-- Everything else (kernel, drivers, network stack, browser, GUI, applications, Win32 subsystem,
-  shell, artwork) was written for this project.
+- Everything else (kernel, drivers, network stack, browser, DOM, ad blocker, GUI, applications,
+  Win32 subsystem, shell, artwork) was written for this project.

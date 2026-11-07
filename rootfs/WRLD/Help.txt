@@ -12,18 +12,28 @@ VISUAL STYLES
   Control Panel > Appearance and Personalization > Personalization
   - Luna (Blue), Olive Green, Silver, WRLD Classic, Aero (translucent
     blurred glass) and Plex (Longhorn-style glossy blue)
-  - Colour hue slider (0-359 degrees) recolours any style
+  - Colour hue slider (0-359 degrees), saturation and lightness sliders
+    recolour any style
   - Desktop backgrounds: Meadow, Azure, Sunset, Aurora, Dunes or a solid colour
   Every style is a text file in C:\WRLD\Resources\Themes (*.wrldstyle).
   "Create a style..." in Personalization makes your own from the current one;
   double-click a .wrldstyle file to install and apply it.
   From the Command Prompt:  theme list   /   theme aero   /   theme olive 40
+                            theme saturation -40   /   theme lightness 20
 
 THE INTERNET
   The WRLD Xplorer (Start menu > Internet, or the globe on the Quick Launch
   bar) opens web pages over HTTP and HTTPS. It shows HTML, simple CSS,
-  tables, forms and PNG/GIF/JPEG/BMP pictures. There is no JavaScript, so
-  text-heavy sites work best (try the links on its home page).
+  tables, forms and PNG/GIF/JPEG/BMP pictures, and runs JavaScript (QuickJS)
+  with a DOM, events, timers, localStorage and fetch/XMLHttpRequest.
+  Big web apps may still not work; text-heavy sites work best.
+  Tools menu: Enable JavaScript, Script Messages (errors and console.log),
+  Block Ads, Allow Ads on This Site, Edit Ad Blocker List.
+  The ad blocker skips pictures/scripts from ~140 ad and tracking servers and
+  hides ad slots. Your own rules go in C:\WRLD\adblock.txt.
+  If a page uses more than 500 MB of memory, you are asked whether to let it
+  continue or stop it.
+  Command Prompt: js FILE.js, js -e "CODE" runs JavaScript.
   Command Prompt: ipconfig (/renew), ping HOST, nslookup NAME,
                   wget URL [-O FILE], curl URL, sha256sum FILE
   Extra trusted certificates (.crt/.pem) go in C:\WRLD\Certificates.

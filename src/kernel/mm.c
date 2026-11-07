@@ -100,6 +100,11 @@ void *kmalloc_aligned(size_t n, size_t align) {
     ((uint32_t *)a)[-1] = (uint32_t)raw;
     return (void *)a;
 }
+size_t kmalloc_usable(void *p) {
+    if (!p) return 0;
+    block_t *b = (block_t *)((uint8_t *)p - HDR);
+    return b->magic == MAGIC_USED ? b->size - HDR : 0;
+}
 void kfree_aligned(void *p) { if (p) kfree((void *)((uint32_t *)p)[-1]); }
 uint32_t mm_total(void) { return heap_end - heap_start; }
 uint32_t mm_used(void) { return heap_used; }

@@ -2,6 +2,7 @@
  * expansion ($var, ${..}, $(..), `..`, $((..)), ~, globs), pipelines, redirection,
  * if/while/until/for/case, functions, and a large set of builtins. */
 #include "kernel.h"
+#include "jsapi.h"
 #include "wm.h"
 #include "apps.h"
 #include "theme.h"
@@ -1048,6 +1049,29 @@ static int b_sha256sum(sh_t *s, int argc, char **argv, io_t *io) {
     }
     return 0;
 }
+/* js: run JavaScript (QuickJS) */
+static void js_out(void *u, const char *t) {
+    io_t *io = u;
+    int n = strlen(t); char *l1 = kmalloc(n * 3 + 1);
+    extern int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out);
+    int l = latin1_from_utf8((const uint8_t *)t, n, l1); l1[l] = 0;
+    out_s(io, l1); kfree(l1);
+}
+static int b_js(sh_t *s, int argc, char **argv, io_t *io) {
+    if (argc < 2) {
+        out_f(io, "JavaScript engine: QuickJS-ng %s\n\nusage: js FILE.js        run a script file\n       js -e \"CODE\"      run code and print the result, e.g. js -e \"[1,2,3].map(x => x * x)\"\n", js_engine_version());
+        return 0;
+    }
+    if (!strcmp(argv[1], "-e")) {
+        char code[2048]; code[0] = 0;
+        for (int i = 2; i < argc; i++) { if (i > 2) strlcat(code, " ", sizeof code); strlcat(code, argv[i], sizeof code); }
+        return js_shell_run(code, strlen(code), "<command line>", js_out, io);
+    }
+    vnode_t *n = vfs_resolve(argv[1], s->cwd);
+    if (!n || n->dir) { err_f(io, "js: %s: not found\n", argv[1]); return 1; }
+    char path[300]; vfs_path(n, path, sizeof path);
+    return js_shell_run((const char *)n->data, n->size, path, js_out, io);
+}
 static int b_display(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2) {
         out_f(io, "Adapter:    %s\nResolution: %d x %d, 32-bit colour\n", video_driver_name(), SCREEN_W, SCREEN_H);
@@ -1371,7 +1395,7 @@ static const builtin_t builtins[] = {
     { "date", b_date, "show date (+FORMAT)" }, { "uname", b_uname, "system name (-a)" }, { "ver", b_ver, "OS version" },
     { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew)" }, { "ifconfig", b_ipconfig, NULL },
     { "ping", b_ping, "send ICMP echo requests" }, { "nslookup", b_nslookup, "look up a host name" },
-    { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "display", b_display, "show or change the screen resolution" },
+    { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "js", b_js, "run JavaScript (js FILE or js -e CODE)" }, { "display", b_display, "show or change the screen resolution" },
     { "play", b_play, "play a .wav file" }, { "volume", b_volume, "show or set the volume (0-100, mute)" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
     { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "sync", b_sync, "write changes to the system disk now" }, { "mem", b_free, NULL },
     { "uptime", b_uptime, NULL }, { "dmesg", b_dmesg, "kernel log" }, { "export", b_export, "set variables" }, { "set", b_env, NULL },

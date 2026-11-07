@@ -22,8 +22,17 @@ BSSL_CFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-prot
            -fno-builtin -mno-sse -mno-mmx -O2 -g0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -I$(BSSL)/src \
            -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_RDRAND=0 -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 \
            -DBR_USE_WIN32_RAND=0 -DBR_USE_WIN32_TIME=0 -DBR_POWER8=0
+# QuickJS (JavaScript for The WRLD Xplorer and the "js" command), built against
+# a small C library shim; src/js/*.c is the glue and sees only the shim headers
+QJS     := third_party/quickjs
+QSHIM   := third_party/quickjs-shim
+QJS_SRC := $(QJS)/quickjs.c $(QJS)/libregexp.c $(QJS)/libunicode.c $(QJS)/dtoa.c $(QSHIM)/libc.c $(QSHIM)/libm.c
+QJS_OBJ := $(patsubst %.c,$(BUILD)/qjs/%.o,$(notdir $(QJS_SRC))) $(patsubst src/js/%.c,$(BUILD)/qjs/js_%.o,$(wildcard src/js/*.c))
+QJS_CFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+           -fno-builtin -mno-sse -mno-mmx -O2 -g0 -nostdinc -isystem $(shell $(CC) -m32 -print-file-name=include) \
+           -I$(QSHIM)/include -I$(QJS) -Isrc/js -D__DJGPP=1 -D__STDC_NO_ATOMICS__=1 -DNDEBUG -D_GNU_SOURCE -w
 ASRC    := $(wildcard src/kernel/*.asm)
-OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(BSSL_OBJ)
+OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(BSSL_OBJ) $(QJS_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 ISO     := wrldos.iso
 MINGW   := i686-w64-mingw32-gcc
@@ -81,6 +90,21 @@ $(BUILD)/net/%.o: src/net/%.c $(wildcard src/include/*.h)
 $(BUILD)/bearssl/%.o: $(BSSL)/src/%.c
 	@mkdir -p $(dir $@)
 	@$(CC) $(BSSL_CFLAGS) -c $< -o $@
+
+$(BUILD)/qjs/%.o: $(QJS)/%.c $(wildcard $(QJS)/*.h) $(QSHIM)/include/qjs_libc.h
+	@mkdir -p $(dir $@)
+	@echo "  CC (quickjs) $<"
+	@$(CC) $(QJS_CFLAGS) -c $< -o $@
+$(BUILD)/qjs/%.o: $(QSHIM)/%.c $(QSHIM)/include/qjs_libc.h
+	@mkdir -p $(dir $@)
+	$(CC) $(QJS_CFLAGS) -c $< -o $@
+$(BUILD)/qjs/js_%.o: src/js/%.c $(wildcard src/js/*.h) $(QJS)/quickjs.h $(QSHIM)/include/qjs_libc.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -w,$(QJS_CFLAGS)) -iquote src/include -Wall -Wno-unused-parameter -Wno-unused-function -c $< -o $@
+
+$(BUILD)/kernel/jsprelude.o: src/kernel/jsprelude.asm src/js/prelude.js
+	@mkdir -p $(dir $@)
+	$(NASM) -f elf32 $< -o $@
 
 $(BUILD)/kernel/assets.o: src/kernel/assets.asm assets/fonts.bin assets/icons.bin assets/globe.bin
 	@mkdir -p $(dir $@)
