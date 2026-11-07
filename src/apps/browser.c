@@ -648,7 +648,7 @@ static char *error_html(const char *url, const char *title, const char *msg) {
     snprintf(b, 4096, "<html><head><title>%s</title></head><body bgcolor=\"#FFFFFF\"><table width=\"100%%\" cellpadding=\"16\"><tr><td width=\"56\" valign=\"top\">"
         "<img src=\"wrld://error\" width=\"48\" height=\"48\"></td><td><h2>%s</h2><p>%s</p><p><small>%s</small></p>"
         "<ul><li>Check the address for typing errors.</li><li>Make sure the computer is connected (run <tt>ipconfig</tt> in the Command Prompt).</li>"
-        "<li>Some sites need a newer browser (TLS 1.3 or JavaScript).</li></ul><p><a href=\"%s\">Try again</a> &nbsp; <a href=\"wrld://home\">Home page</a></p></td></tr></table></body></html>",
+        "<li>Some sites need a newer browser (for example TLS 1.3).</li></ul><p><a href=\"%s\">Try again</a> &nbsp; <a href=\"wrld://home\">Home page</a></p></td></tr></table></body></html>",
         title, title, msg, url, url);
     return b;
 }

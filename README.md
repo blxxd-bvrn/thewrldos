@@ -116,6 +116,10 @@ While an installed system starts, the boot screen shows what it is doing, includ
 "Loading files from the hard disk… N%". If it stops on one step, that step names the device
 involved. It also warns when the machine has less than about 128 MB of memory.
 
+If the desktop ever stops responding while the clock still runs, a red banner at the top of the
+screen names the task that is busy (the same line goes to the serial log). Please include it
+when you report the problem.
+
 ### The CD boot menu
 
 | Entry | |

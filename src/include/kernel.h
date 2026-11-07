@@ -47,6 +47,8 @@ extern bool boot_verbose;
 /* ---- timer / rtc ---- */
 #define TIMER_HZ 1000
 extern void (*timer_tick_hook)(uint32_t ticks);
+struct regs;
+extern void (*watchdog_hook)(struct regs *r, uint32_t ticks);   /* timer interrupt, every 64 ms */
 void timer_init(void);
 uint32_t timer_ticks(void);           /* milliseconds since boot */
 extern volatile uint32_t idle_ticks;
@@ -120,6 +122,7 @@ typedef struct task {
 void task_init(void);
 task_t *task_create(const char *name, void (*entry)(void *), void *arg, uint32_t stack_size);
 void task_yield(void);
+extern volatile uint32_t gui_heartbeat;
 void task_sleep(uint32_t ms);
 void task_exit(int code);
 bool task_kill(int pid);

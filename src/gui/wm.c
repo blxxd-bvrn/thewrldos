@@ -629,10 +629,48 @@ static void screen_resized(void) {
 }
 void wm_init(void) {
     gfx_resized_hook = screen_resized; styles_load(); theme_apply(boot_safe_mode ? THEME_CLASSIC : THEME_LUNA_BLUE, 0); }
+bool gfx_ready_for_watchdog = true;
+/* ---------------- watchdog ----------------
+ * The desktop loop stamps a heartbeat. If it stops for several seconds while
+ * timer interrupts still arrive, some task is running without yielding: say
+ * which one, in the log and on the screen, so the hang can be reported. */
+static volatile bool wd_reported;
+static uint32_t wd_eips[4]; static int wd_neips;
+void video_update(int x, int y, int w, int h);
+static void wd_banner(const char *a, const char *b) {
+    canvas_t c; c.px = (uint32_t *)fb_info.addr; c.w = fb_info.width; c.h = fb_info.height;
+    c.stride = fb_info.pitch / 4; c.clip = R(0, 0, c.w, c.h);
+    int bw = MIN(c.w, 760), bx = (c.w - bw) / 2;
+    fill_rect(&c, bx, 0, bw, 50, HEX(0x9C1C1C));
+    draw_text(&c, FONT_UI_BOLD, bx + 10, 6, a, WHITE);
+    draw_text(&c, FONT_UI, bx + 10, 27, b, WHITE);
+    video_update(bx, 0, bw, 50);
+}
+static void watchdog(regs_t *r, uint32_t now) {
+    uint32_t idle = now - gui_heartbeat;
+    if (idle < 4000) {
+        if (wd_reported) { klog("watchdog: the desktop is running again after %u ms", idle); wd_reported = false; }
+        wd_neips = 0;
+        return;
+    }
+    if (wd_neips < 4) wd_eips[wd_neips++] = r->eip;
+    if (wd_reported || wd_neips < 4) return;
+    wd_reported = true;
+    task_t *t = task_current();
+    char a[160], b[200];
+    snprintf(a, sizeof a, "The desktop has stopped responding for %u seconds.", idle / 1000);
+    snprintf(b, sizeof b, "Busy task: %s (pid %d), code at %08x %08x %08x %08x. Please report this line.",
+             t ? t->name : "?", t ? t->pid : 0, wd_eips[0], wd_eips[1], wd_eips[2], wd_eips[3]);
+    klog("watchdog: %s %s", a, b);
+    if (gfx_ready_for_watchdog) wd_banner(a, b);
+}
 void wm_run(void) {
     mouse_state_t ms;
     uint32_t last_tick = 0;
+    gui_heartbeat = timer_ticks();
+    watchdog_hook = watchdog;
     for (;;) {
+        gui_heartbeat = timer_ticks();
         bool activity = false;
         key_event_t ke;
         while (keyboard_poll(&ke)) { handle_key(&ke); activity = true; }

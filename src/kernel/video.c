@@ -20,9 +20,10 @@ static uint16_t dr(int i) { outw(DISPI_INDEX, i); return inw(DISPI_DATA); }
 /* ---- VMware SVGA II ---- */
 enum { S_ID = 0, S_ENABLE = 1, S_WIDTH = 2, S_HEIGHT = 3, S_MAX_W = 4, S_MAX_H = 5, S_BPP = 7, S_BPL = 12, S_FB_START = 13, S_FB_OFFSET = 14,
        S_VRAM = 15, S_FB_SIZE = 16, S_CAPS = 17, S_MEM_START = 18, S_MEM_SIZE = 19, S_CONFIG_DONE = 20, S_SYNC = 21, S_BUSY = 22 };
-enum { F_MIN, F_MAX, F_NEXT, F_STOP };
+enum { F_MIN, F_MAX, F_NEXT, F_STOP, F_BUSY = 290, F_NUM_REGS = 291 };
 static uint16_t svga_io;
 static volatile uint32_t *fifo;
+static uint32_t fifo_size;
 static bool svga_on;
 static void sw(int r, uint32_t v) { outl(svga_io, r); outl(svga_io + 1, v); }
 static uint32_t sr(int r) { outl(svga_io, r); return inl(svga_io + 1); }
@@ -31,6 +32,10 @@ static void fifo_sync(void) {
     sw(S_SYNC, 1);
     uint32_t t0 = timer_ticks();
     while (sr(S_BUSY) && timer_ticks() - t0 < 30) {}
+}
+/* tell the host there are commands to process ("ring the doorbell") */
+static void fifo_kick(void) {
+    if (fifo[F_MIN] > F_BUSY * 4 && !fifo[F_BUSY]) { fifo[F_BUSY] = 1; sw(S_SYNC, 1); }
 }
 static void fifo_put(uint32_t v) {
     uint32_t next = fifo[F_NEXT], n2 = next + 4 == fifo[F_MAX] ? fifo[F_MIN] : next + 4;
@@ -74,9 +79,11 @@ void video_init(void) {
             fifo = (volatile uint32_t *)(pci_cfg_read(p->bus, p->dev, p->fn, 0x18) & ~0xFu);
             paging_set_uncached((uint32_t)fifo);
             max_w = sr(S_MAX_W); max_h = sr(S_MAX_H);
-            uint32_t fsize = sr(S_MEM_SIZE);
-            fifo[F_MIN] = 293 * 4; fifo[F_MAX] = fsize; fifo[F_NEXT] = 293 * 4; fifo[F_STOP] = 293 * 4;
-            sw(S_CONFIG_DONE, 1);
+            fifo_size = sr(S_MEM_SIZE);
+            /* Nothing else is touched until a mode is set: while the adapter stays
+             * in VGA/VESA mode the host keeps showing the boot framebuffer. Saying
+             * CONFIG_DONE now would make VMware wait for FIFO updates that a
+             * VESA-mode desktop never sends - a screen that looks frozen. */
             drv = DRV_SVGA;
             snprintf(name, sizeof name, "VMware SVGA II Adapter");
         }
@@ -102,6 +109,11 @@ bool video_set_mode(int w, int h) {
     } else if (drv == DRV_SVGA) {
         sw(S_WIDTH, w); sw(S_HEIGHT, h); sw(S_BPP, 32);
         sw(S_ENABLE, 1);
+        if (!svga_on) {                    /* VMware's order: enable, set up the FIFO, then CONFIG_DONE */
+            fifo[F_MIN] = F_NUM_REGS * 4; fifo[F_MAX] = fifo_size;
+            fifo[F_NEXT] = F_NUM_REGS * 4; fifo[F_STOP] = F_NUM_REGS * 4;
+            sw(S_CONFIG_DONE, 1);
+        }
         svga_on = true;
         fb_info.addr = sr(S_FB_START) + sr(S_FB_OFFSET); fb_info.pitch = sr(S_BPL);
     } else return false;
@@ -113,4 +125,5 @@ bool video_set_mode(int w, int h) {
 void video_update(int x, int y, int w, int h) {
     if (!svga_on || w <= 0 || h <= 0) return;
     fifo_put(1); fifo_put(x); fifo_put(y); fifo_put(w); fifo_put(h);   /* SVGA_CMD_UPDATE */
+    fifo_kick();
 }

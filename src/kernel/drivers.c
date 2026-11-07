@@ -6,10 +6,12 @@ static volatile uint32_t ticks;
 volatile uint32_t idle_ticks;
 volatile bool cpu_idle_flag;
 void (*timer_tick_hook)(uint32_t ticks);    /* runs in interrupt context every tick */
+void (*watchdog_hook)(regs_t *r, uint32_t ticks);
 static void timer_irq(regs_t *r) {
-    (void)r;
     ticks++;
     if (timer_tick_hook) timer_tick_hook(ticks);
+    if (watchdog_hook && !(ticks & 63)) watchdog_hook(r, ticks);
+    if (!(ticks & 15)) { extern void ps2_poll(void); ps2_poll(); }
     if (cpu_idle_flag) idle_ticks++;
     else { task_t *t = task_current(); if (t) t->cpu_ms++; }
 }
@@ -88,9 +90,7 @@ static void kq_push(key_event_t e) {
     if (n == kq_tail) return;
     kq[kq_head] = e; kq_head = n;
 }
-static void kb_irq(regs_t *r) {
-    (void)r;
-    uint8_t sc = inb(0x60);
+static void kb_byte(uint8_t sc) {
     if (sc == 0xE0) { kb_e0 = true; return; }
     bool rel = sc & 0x80;
     sc &= 0x7F;
@@ -142,6 +142,8 @@ static void kb_irq(regs_t *r) {
     e.mods = kb_mods;
     kq_push(e);
 }
+static void ps2_service(void);
+static void kb_irq(regs_t *r) { (void)r; ps2_service(); }
 void keyboard_init(void) {
     while (inb(0x64) & 1) inb(0x60);
     irq_install(1, kb_irq);
@@ -166,11 +168,11 @@ static void ps2_wait_read(void) { for (int i = 0; i < 100000 && !(inb(0x64) & 1)
 static void mouse_write(uint8_t v) { ps2_wait_write(); outb(0x64, 0xD4); ps2_wait_write(); outb(0x60, v); }
 static uint8_t mouse_read(void) { ps2_wait_read(); return inb(0x60); }
 
-static void mouse_irq(regs_t *r) {
-    (void)r;
-    uint8_t st = inb(0x64);
-    if (!(st & 0x20)) { return; }
-    uint8_t b = inb(0x60);
+static volatile bool ps2_ready;              /* both devices initialised */
+static uint32_t ms_last;
+static void mouse_byte(uint8_t b) {
+    if (ms_cycle && ticks - ms_last > 40) ms_cycle = 0;   /* a packet's bytes arrive together: drop a stale half */
+    ms_last = ticks;
     if (ms_cycle == 0 && !(b & 0x08)) return;   /* resync */
     ms_pkt[ms_cycle++] = b;
     if (ms_cycle < ms_pkt_size) return;
@@ -190,6 +192,21 @@ static void mouse_irq(regs_t *r) {
     if (ms_pkt_size == 4) { int8_t wz = (int8_t)(ms_pkt[3] << 4) >> 4; ms_wheel += wz; }
     ms_changed = true;
 }
+/* The keyboard controller has one output buffer for both devices; a byte left
+ * in it blocks every later byte and interrupt. So both interrupts (and a timer
+ * poll, in case an interrupt is ever lost) drain it, routing each byte by the
+ * "mouse data" status bit. */
+static void ps2_service(void) {
+    for (int i = 0; i < 32; i++) {
+        uint8_t st = inb(0x64);
+        if (!(st & 1)) break;
+        if ((st & 0x20) && !ps2_ready) break;   /* mouse_init is reading its replies */
+        uint8_t b = inb(0x60);
+        if (st & 0x20) mouse_byte(b); else kb_byte(b);
+    }
+}
+static void mouse_irq(regs_t *r) { (void)r; ps2_service(); }
+void ps2_poll(void) { if (ps2_ready) ps2_service(); }
 void mouse_set_bounds(int w, int h) { ms_w = w; ms_h = h; if (ms_x >= w) ms_x = w - 1; if (ms_y >= h) ms_y = h - 1; }
 void mouse_init(int w, int h) {
     ms_w = w; ms_h = h; ms_x = w / 2; ms_y = h / 2;
@@ -209,6 +226,7 @@ void mouse_init(int w, int h) {
     if (id == 3) ms_pkt_size = 4;
     mouse_write(0xF4); mouse_read();
     irq_install(12, mouse_irq);
+    ps2_ready = true;
     klog("PS/2 mouse initialised (id=%d, %s)", id, ms_pkt_size == 4 ? "wheel" : "3-button");
 }
 bool mouse_poll(mouse_state_t *st) {

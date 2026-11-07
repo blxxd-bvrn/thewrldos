@@ -91,7 +91,9 @@ static void schedule(void) {
     reap();
 }
 
+volatile uint32_t gui_heartbeat;             /* last time the main (GUI) task had the CPU */
 void task_yield(void) {
+    if (current == &task0) gui_heartbeat = timer_ticks();
     uint32_t f = irq_save();
     schedule();
     irq_restore(f);
