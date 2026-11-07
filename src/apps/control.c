@@ -465,16 +465,16 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     snprintf(vals[0], 96, "%s (%s)", br, v);
     snprintf(vals[1], 96, "%u MB", mm_phys_total() / (1024 * 1024));
     snprintf(vals[2], 96, "%u KB used of %u MB", mm_used() / 1024, mm_total() / (1024 * 1024));
-    snprintf(vals[3], 96, "32-bit operating system (i686 protected mode, 4 MiB paging)");
+    snprintf(vals[3], 96, OS_ARCH_DESC);
     uint32_t up = timer_ticks() / 1000; snprintf(vals[4], 96, "%u:%02u:%02u", up / 3600, (up / 60) % 60, up % 60);
     snprintf(vals[5], 96, "%d running (cooperative scheduler)", task_count());
     static const int order[8] = { 6, 7, 0, 1, 2, 3, 4, 5 };
     for (int k = 0; k < 8; k++) { int i = order[k]; draw_text(s, FONT_UI, ox + 40, y, lab[k], HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, ox + 170, y, s->w - ox - 200, vals[i], BLACK); y += 20; }
     y += 14;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Compatibility", HEX(0x1E3287)); hline(s, ox + 110, y + 8, s->w - ox - 150, HEX(0xD8E0EA)); y += 24;
-    snprintf(b, sizeof b, "Win32 PE32 (.exe): %d kernel32, %d msvcrt, %d user32, %d gdi32 functions", 0, 0, 0, 0);
+    snprintf(b, sizeof b, "Win32 " OS_EXE_DESC " (.exe): %d kernel32, %d msvcrt, %d user32, %d gdi32 functions", 0, 0, 0, 0);
     extern const int kernel32_count, msvcrt_count, user32_count, gdi32_count;
-    snprintf(b, sizeof b, "Win32 PE32 (.exe): %d kernel32 / %d msvcrt / %d user32 / %d gdi32 functions", kernel32_count, msvcrt_count, user32_count, gdi32_count);
+    snprintf(b, sizeof b, "Win32 " OS_EXE_DESC " (.exe): %d kernel32 / %d msvcrt / %d user32 / %d gdi32 functions", kernel32_count, msvcrt_count, user32_count, gdi32_count);
     draw_text(s, FONT_UI, ox + 40, y, b, BLACK); y += 18;
     draw_text(s, FONT_UI, ox + 40, y, "Shell scripts (.sh): built-in POSIX-style interpreter", BLACK); y += 18;
     draw_text(s, FONT_UI, ox + 40, y, "Apple disk images (.dmg): UDIF raw/zlib, FAT volumes, script .app bundles", BLACK); y += 26;
@@ -625,7 +625,7 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Associate a file type with a program", NULL);
     static const struct { const char *ext, *desc, *prog; int icon; } assoc[] = {
-        { ".exe", "Win32 application (PE32, i386)", "WRLD Win32 subsystem", ICON_EXE },
+        { ".exe", ARCH_BITS == 64 ? "Win32 application (PE32+, x64)" : "Win32 application (PE32, i386)", "WRLD Win32 subsystem", ICON_EXE },
         { ".sh", "Shell script", "WRLD shell (sh)", ICON_SCRIPT },
         { ".dmg", "Apple disk image (UDIF)", "Disk Image Mounter", ICON_DMG },
         { ".app", "macOS application bundle", "Bundle launcher (script executables)", ICON_APP_BUNDLE },

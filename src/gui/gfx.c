@@ -38,7 +38,7 @@ void canvas_reset_clip(canvas_t *c) { c->clip = R(0, 0, c->w, c->h); }
 rect_t canvas_push_clip(canvas_t *c, rect_t r) { rect_t old = c->clip; c->clip = rect_intersect(old, r); return old; }
 
 void gfx_init(void) {
-    fb = (uint32_t *)fb_info.addr;
+    fb = (uint32_t *)(uintptr_t)fb_info.addr;
     SCREEN_W = fb_info.width; SCREEN_H = fb_info.height;
     canvas_init(&screen, kmalloc(SCREEN_W * SCREEN_H * 4), SCREEN_W, SCREEN_H);
     memset32(screen.px, 0xFF000000, SCREEN_W * SCREEN_H);
@@ -49,7 +49,7 @@ void (*gfx_resized_hook)(void);
 bool gfx_set_resolution(int w, int h) {
     if (w == SCREEN_W && h == SCREEN_H) return true;
     if (!video_set_mode(w, h)) return false;
-    fb = (uint32_t *)fb_info.addr;
+    fb = (uint32_t *)(uintptr_t)fb_info.addr;
     kfree(screen.px);
     SCREEN_W = w; SCREEN_H = h;
     canvas_init(&screen, kmalloc(w * h * 4), w, h);

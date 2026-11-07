@@ -458,8 +458,8 @@ static void about_paint(window_t *w) {
     draw_text(c, FONT_UI, 86, 58, OS_EDITION, HEX(0xE0E8FF));
     hline(c, 0, 78, c->w, HEX(0xF09A3C));
     int y = 92;
-    const char *lines[] = { "Version " OS_VERSION " (Build " OS_BUILD ")", "32-bit x86 kernel: GDT/IDT, PIC, PIT, paging, heap, scheduler",
-        "Drivers: PS/2 keyboard & mouse, RTC, PCI, VBE framebuffer, PC speaker", "Win32 subsystem for PE32 .exe programs", "POSIX-style shell for .sh scripts",
+    const char *lines[] = { "Version " OS_VERSION " (Build " OS_BUILD ")", OS_KERNEL_DESC,
+        "Drivers: PS/2 keyboard & mouse, RTC, PCI, VBE framebuffer, PC speaker", "Win32 subsystem for " OS_EXE_DESC " .exe programs", "POSIX-style shell for .sh scripts",
         "UDIF .dmg disk images with FAT volumes and .app bundles", "", "Fonts: Liberation family (SIL Open Font License).", "Icons and wallpapers are original procedural artwork." };
     for (unsigned i = 0; i < ARRAY_LEN(lines); i++) { draw_text(c, FONT_UI, 20, y, lines[i], BLACK); y += 17; }
     char b[96]; snprintf(b, sizeof b, "Physical memory available to " OS_NAME ": %u KB", mm_phys_total() / 1024);

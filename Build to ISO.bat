@@ -1,6 +1,6 @@
 @echo off
 rem ==========================================================================
-rem  Build to ISO - builds wrldos.iso for THE WRLD OS with one double-click.
+rem  Build to ISO - builds wrldos.iso and wrldos64.iso for THE WRLD OS with one double-click.
 rem
 rem  The kernel has to be compiled with Linux tools, so this uses WSL (Windows
 rem  Subsystem for Linux). If WSL is not available but Docker Desktop is, it
@@ -49,11 +49,13 @@ goto :done
 :done
 echo.
 if not exist "wrldos.iso" goto :failed
-echo   Finished! Your ISO is here:
-echo   %~dp0wrldos.iso
+echo   Finished! Your ISOs are here:
+echo   %~dp0wrldos.iso     (32-bit edition, runs 32-bit .exe programs)
+echo   %~dp0wrldos64.iso   (64-bit edition, runs 64-bit .exe programs)
 echo.
-echo   Boot it in VirtualBox, VMware or QEMU - legacy BIOS boot, at least 256 MB RAM,
-echo   and an IDE hard disk if you want to install THE WRLD OS to it.
+echo   Boot one in VirtualBox, VMware or QEMU - legacy BIOS boot, at least 256 MB RAM,
+echo   and an IDE hard disk if you want to install THE WRLD OS to it. The 64-bit
+echo   edition needs a 64-bit VM (for VirtualBox: an "Other/Unknown (64-bit)" type).
 echo.
 pause
 exit /b 0

@@ -60,10 +60,10 @@ static void dma_setup(void) {
 static bool dma_xfer(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
     uint16_t bm = bmide + (d->bus ? 8 : 0), io = d->io;
     uint32_t *prd = prdt[d->bus];
-    prd[0] = (uint32_t)bounce; prd[1] = 0x80000000u | ((n * 512) & 0xFFFF);   /* 0 means 64 KiB */
+    prd[0] = (uint32_t)(uintptr_t)bounce; prd[1] = 0x80000000u | ((n * 512) & 0xFFFF);   /* 0 means 64 KiB */
     outb(bm, 0);                                       /* stop */
     outb(bm + 2, inb(bm + 2) | 0x06);                  /* clear error + interrupt */
-    outl(bm + 4, (uint32_t)prd);
+    outl(bm + 4, (uint32_t)(uintptr_t)prd);
     if (wait_ready_ms(d->ctl, false, 2000) < -1) return false;
     bool ext = d->lba48 && (lba + n > 0x0FFFFFFF);
     if (ext) {

@@ -5,3 +5,5 @@ serial.log
 __pycache__/
 disk.img
 *.iso
+build64/
+disk64.img

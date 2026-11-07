@@ -26,11 +26,11 @@ static rsdp_t *find_rsdp(void) {
     for (int r = 0; r < 2; r++) {
         if (!ranges[r][0] || ranges[r][0] >= 0x100000) continue;
         for (uint32_t a = ranges[r][0] & ~15u; a < ranges[r][1]; a += 16)
-            if (!memcmp((void *)a, "RSD PTR ", 8) && checksum((void *)a, 20)) return (rsdp_t *)a;
+            if (!memcmp((void *)(uintptr_t)a, "RSD PTR ", 8) && checksum((void *)(uintptr_t)a, 20)) return (rsdp_t *)(uintptr_t)a;
     }
     return NULL;
 }
-static bool table_ok(uint32_t a) { return a && a < 0xFFFF0000u && ((sdt_t *)a)->len >= sizeof(sdt_t) && ((sdt_t *)a)->len < 0x1000000; }
+static bool table_ok(uint32_t a) { return a && a < 0xFFFF0000u && ((sdt_t *)(uintptr_t)a)->len >= sizeof(sdt_t) && ((sdt_t *)(uintptr_t)a)->len < 0x1000000; }
 
 /* Find "_S5_" Name(Package{SLP_TYPa, SLP_TYPb, ...}) in AML */
 static bool parse_s5(const uint8_t *aml, uint32_t len) {
@@ -61,12 +61,12 @@ void acpi_init(void) {
     bool x = rsdp->rev >= 2 && rsdp->xsdt && rsdp->xsdt < 0xFFFFFFFFull;
     uint32_t root = x ? (uint32_t)rsdp->xsdt : rsdp->rsdt;
     if (!table_ok(root)) { klog("acpi: bad root table"); return; }
-    sdt_t *rt = (sdt_t *)root;
+    sdt_t *rt = (sdt_t *)(uintptr_t)root;
     int n = (rt->len - sizeof(sdt_t)) / (x ? 8 : 4);
     uint8_t *fadt = NULL;
     for (int i = 0; i < n; i++) {
         uint32_t a = x ? (uint32_t)((uint64_t *)(rt + 1))[i] : ((uint32_t *)(rt + 1))[i];
-        if (table_ok(a) && !memcmp(((sdt_t *)a)->sig, "FACP", 4)) { fadt = (uint8_t *)a; break; }
+        if (table_ok(a) && !memcmp(((sdt_t *)(uintptr_t)a)->sig, "FACP", 4)) { fadt = (uint8_t *)(uintptr_t)a; break; }
     }
     if (!fadt) { klog("acpi: no FADT"); return; }
     uint32_t flen = ((sdt_t *)fadt)->len;
@@ -80,8 +80,8 @@ void acpi_init(void) {
         memcpy(&reset_reg, fadt + 116, sizeof reset_reg); reset_val = fadt[128];
         have_reset = reset_reg.addr && (reset_reg.space == 0 || reset_reg.space == 1);
     }
-    if (table_ok(dsdt) && !memcmp(((sdt_t *)dsdt)->sig, "DSDT", 4))
-        have_s5 = parse_s5((uint8_t *)dsdt + sizeof(sdt_t), ((sdt_t *)dsdt)->len - sizeof(sdt_t));
+    if (table_ok(dsdt) && !memcmp(((sdt_t *)(uintptr_t)dsdt)->sig, "DSDT", 4))
+        have_s5 = parse_s5((uint8_t *)(uintptr_t)dsdt + sizeof(sdt_t), ((sdt_t *)(uintptr_t)dsdt)->len - sizeof(sdt_t));
     acpi_ok = pm1a_cnt != 0;
     klog("acpi: %s rev %d, PM1a_CNT=%x PM1b_CNT=%x SMI_CMD=%x, S5 %s (%d/%d), reset reg %s",
          acpi_oem, rsdp->rev, pm1a_cnt, pm1b_cnt, smi_cmd, have_s5 ? "found" : "missing", s5a, s5b, have_reset ? "yes" : "no");
@@ -121,7 +121,7 @@ bool acpi_poweroff(void) {
 void acpi_reset(void) {
     if (acpi_ok && have_reset) {
         if (reset_reg.space == 1) outb((uint16_t)reset_reg.addr, reset_val);
-        else *(volatile uint8_t *)(uint32_t)reset_reg.addr = reset_val;
+        else *(volatile uint8_t *)(uintptr_t)reset_reg.addr = reset_val;
         spin_ms(200);
     }
     /* PCI reset control register (most chipsets) */

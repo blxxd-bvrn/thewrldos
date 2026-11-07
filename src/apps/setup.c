@@ -386,7 +386,7 @@ static const char *license_text =
     "1. You may install THE WRLD OS on as many computers and virtual machines as you like.\n\n"
     "2. Setup will partition and format the disk you choose. Formatting deletes all data on that partition. "
     "Make sure the disk does not contain anything you want to keep.\n\n"
-    "3. THE WRLD OS runs 32-bit Win32 (PE32 .exe) console and GUI programs through its own Win32 subsystem, POSIX-style "
+    "3. THE WRLD OS runs " OS_EXE_DESC " Win32 (.exe) console and GUI programs through its own Win32 subsystem, POSIX-style "
     "shell scripts, and opens macOS UDIF disk images. Programs that need APIs it does not implement will report the missing function.\n\n"
     "4. Fonts: Liberation family, SIL Open Font License. Boot loader: GNU GRUB, GNU General Public License v3; "
     "its source code is available from the GNU project.\n\n"
@@ -778,7 +778,7 @@ void setup_oobe(void) {
         draw_text(c, FONT_XL, x, y, "Welcome to the WRLD.", WHITE); y += 50;
         static const char *pitch[] = {
             OS_NAME " brings the look of a classic desktop to a brand new, from-scratch system.",
-            "Run 32-bit Win32 .exe programs, shell scripts and open Mac disk images, side by side.",
+            "Run " OS_EXE_DESC " Win32 .exe programs, shell scripts and open Mac disk images, side by side.",
             "Make it yours: choose Luna Blue, Olive Green, Silver or Classic, then turn the hue dial to any colour you like.",
             "Everything you change is now saved to your hard disk." };
         for (unsigned i = 0; i < ARRAY_LEN(pitch); i++) y += draw_text_wrapped(c, FONT_LARGE, x, y, 600, pitch[i], HEX(0xE8F0FF), 6) + 18;

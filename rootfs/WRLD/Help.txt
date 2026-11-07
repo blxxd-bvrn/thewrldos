@@ -59,7 +59,10 @@ SOUND AND DISPLAY
   VirtualBox VBoxVGA/VMSVGA, VMware SVGA). Command Prompt: display 1280x800
 
 RUNNING PROGRAMS
-  .exe  32-bit Win32 PE programs (console and GUI). Each process gets its own
+  THE WRLD OS comes in two editions: the 32-bit one (wrldos.iso) runs 32-bit
+  (x86) programs, the 64-bit one (wrldos64.iso, "Home Edition x64") runs
+  64-bit (x64) programs; build those with x86_64-w64-mingw32-gcc.
+  .exe  Win32 PE programs (console and GUI). Each process gets its own
         address space; kernel32, msvcrt, user32, gdi32, advapi32 and shell32
         are implemented natively. Build your own with:
             i686-w64-mingw32-gcc -O2 prog.c -o prog.exe            (console)

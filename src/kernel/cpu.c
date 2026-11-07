@@ -2,7 +2,18 @@
 #include "kernel.h"
 #include "disk.h"
 
-/* ---------------- GDT ---------------- */
+/* ---------------- GDT / IDT ---------------- */
+#ifdef __x86_64__
+/* The boot stub's GDT (null, 64-bit code 0x08, data 0x10) stays loaded. The
+ * TEB of x64 Win32 programs is reached through GS, whose base is an MSR. */
+typedef struct PACKED { uint16_t limit; uint64_t base; } desc_ptr_t;
+extern void idt_flush(desc_ptr_t *p);
+static uint8_t default_teb[4096] __attribute__((aligned(16)));
+static inline void wrmsr(uint32_t msr, uint64_t v) { __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32))); }
+void gdt_init(void) { wrmsr(0xC0000101, (uintptr_t)default_teb); }
+void gdt_set_fs_base(uintptr_t base) { wrmsr(0xC0000101, base ? base : (uintptr_t)default_teb); }
+typedef struct PACKED { uint16_t off_lo, sel; uint8_t ist, flags; uint16_t off_mid; uint32_t off_hi, zero; } idt_entry_t;
+#else
 typedef struct PACKED { uint16_t limit_lo, base_lo; uint8_t base_mid, access, gran, base_hi; } gdt_entry_t;
 typedef struct PACKED { uint16_t limit; uint32_t base; } desc_ptr_t;
 static gdt_entry_t gdt[8];
@@ -31,7 +42,7 @@ void gdt_init(void) {
     gdt_ptr.base = (uint32_t)gdt;
     gdt_flush(&gdt_ptr);
 }
-void gdt_set_fs_base(uint32_t base) {
+void gdt_set_fs_base(uintptr_t base) {
     if (!base) base = (uint32_t)default_teb;
     gdt[5].base_lo = base & 0xFFFF;
     gdt[5].base_mid = (base >> 16) & 0xFF;
@@ -39,9 +50,10 @@ void gdt_set_fs_base(uint32_t base) {
     gdt[5].access = 0x92;
     fs_reload();
 }
+typedef struct PACKED { uint16_t off_lo, sel; uint8_t zero, flags; uint16_t off_hi; } idt_entry_t;
+#endif
 
 /* ---------------- IDT ---------------- */
-typedef struct PACKED { uint16_t off_lo, sel; uint8_t zero, flags; uint16_t off_hi; } idt_entry_t;
 static idt_entry_t idt[256];
 static desc_ptr_t idt_ptr;
 static irq_handler_t irq_handlers[16];
@@ -56,9 +68,15 @@ static void (*const isr_table[48])(void) = {
     isr16, isr17, isr18, isr19, isr20, isr21, isr22, isr23, isr24, isr25, isr26, isr27, isr28, isr29, isr30, isr31,
     isr32, isr33, isr34, isr35, isr36, isr37, isr38, isr39, isr40, isr41, isr42, isr43, isr44, isr45, isr46, isr47 };
 
-static void idt_set(int n, uint32_t off, uint8_t flags) {
-    idt[n].off_lo = off & 0xFFFF; idt[n].off_hi = off >> 16;
-    idt[n].sel = 0x08; idt[n].zero = 0; idt[n].flags = flags;
+static void idt_set(int n, uintptr_t off, uint8_t flags) {
+    memset(&idt[n], 0, sizeof idt[n]);
+    idt[n].off_lo = off & 0xFFFF;
+#ifdef __x86_64__
+    idt[n].off_mid = (off >> 16) & 0xFFFF; idt[n].off_hi = (uint32_t)(off >> 32);
+#else
+    idt[n].off_hi = off >> 16;
+#endif
+    idt[n].sel = 0x08; idt[n].flags = flags;
 }
 
 static void pic_remap(void) {
@@ -77,10 +95,10 @@ static void pic_unmask(int irq) {
 }
 
 void idt_init(void) {
-    for (int i = 0; i < 48; i++) idt_set(i, (uint32_t)isr_table[i], 0x8E);
-    idt_set(128, (uint32_t)isr128, 0xEE);
+    for (int i = 0; i < 48; i++) idt_set(i, (uintptr_t)isr_table[i], 0x8E);
+    idt_set(128, (uintptr_t)isr128, 0xEE);
     idt_ptr.limit = sizeof(idt) - 1;
-    idt_ptr.base = (uint32_t)idt;
+    idt_ptr.base = (uintptr_t)idt;
     pic_remap();
     idt_flush(&idt_ptr);
 }
@@ -109,11 +127,12 @@ void isr_handler(regs_t *r) {
         return;
     }
     if (r->int_no == 128) { r->eax = 0; return; }
-    uint32_t cr2; __asm__ volatile("mov %%cr2,%0" : "=r"(cr2));
+    uintptr_t cr2; __asm__ volatile("mov %%cr2,%0" : "=r"(cr2));
     task_t *t = task_current();
     char msg[200];
-    snprintf(msg, sizeof msg, "%s (0x%02x) at EIP=%08x, error=%x, CR2=%08x",
-             r->int_no < 32 ? exc_names[r->int_no] : "UNKNOWN", r->int_no, r->eip, r->err_code, cr2);
+    snprintf(msg, sizeof msg, "%s (0x%02x) at %s=%0*llx, error=%x, CR2=%0*llx",
+             r->int_no < 32 ? exc_names[r->int_no] : "UNKNOWN", (int)r->int_no, ARCH_BITS == 64 ? "RIP" : "EIP", ARCH_BITS / 4, (unsigned long long)r->eip,
+             (unsigned)r->err_code, ARCH_BITS / 4, (unsigned long long)cr2);
     klog("EXCEPTION in task %d (%s): %s", t ? t->pid : -1, t ? t->name : "?", msg);
     if (t && t->pid != 0) {
         /* A process faulted: terminate it, keep the system running. */
@@ -121,8 +140,9 @@ void isr_handler(regs_t *r) {
         t->exit_code = -1;
         task_exit(0xC0000005);
     }
-    panic("%s\nEAX=%08x EBX=%08x ECX=%08x EDX=%08x\nESI=%08x EDI=%08x EBP=%08x", msg,
-          r->eax, r->ebx, r->ecx, r->edx, r->esi, r->edi, r->ebp);
+    panic("%s\nAX=%llx BX=%llx CX=%llx DX=%llx\nSI=%llx DI=%llx BP=%llx", msg,
+          (unsigned long long)r->eax, (unsigned long long)r->ebx, (unsigned long long)r->ecx, (unsigned long long)r->edx,
+          (unsigned long long)r->esi, (unsigned long long)r->edi, (unsigned long long)r->ebp);
 }
 
 /* ---------------- serial + log ---------------- */

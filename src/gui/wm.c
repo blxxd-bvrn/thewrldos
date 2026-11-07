@@ -638,7 +638,7 @@ static volatile bool wd_reported;
 static uint32_t wd_eips[4]; static int wd_neips;
 void video_update(int x, int y, int w, int h);
 static void wd_banner(const char *a, const char *b) {
-    canvas_t c; c.px = (uint32_t *)fb_info.addr; c.w = fb_info.width; c.h = fb_info.height;
+    canvas_t c; c.px = (uint32_t *)(uintptr_t)fb_info.addr; c.w = fb_info.width; c.h = fb_info.height;
     c.stride = fb_info.pitch / 4; c.clip = R(0, 0, c.w, c.h);
     int bw = MIN(c.w, 760), bx = (c.w - bw) / 2;
     fill_rect(&c, bx, 0, bw, 50, HEX(0x9C1C1C));

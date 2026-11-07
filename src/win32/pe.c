@@ -1,5 +1,7 @@
-/* PE32 loader and Win32 process model: per-process page directory mapping the
- * image window (4-16 MiB), relocations, import binding, TLS, TEB/PEB. */
+/* PE loader and Win32 process model. The 32-bit edition loads PE32 (x86)
+ * programs into a per-process 4..16 MiB window; the 64-bit edition loads PE32+
+ * (x64) programs into a private 4-level address space at their preferred base.
+ * Relocations, import binding, TLS, TEB/PEB. */
 #include "w32.h"
 
 typedef struct PACKED { uint16_t e_magic; uint8_t pad[58]; uint32_t e_lfanew; } dos_hdr_t;
@@ -12,13 +14,26 @@ typedef struct PACKED {
 } opt_hdr_t;
 typedef struct PACKED { char Name[8]; uint32_t VirtualSize, VirtualAddress, SizeOfRawData, PointerToRawData, PointerToRelocations, PointerToLinenumbers; uint16_t NumberOfRelocations, NumberOfLinenumbers; uint32_t Characteristics; } sect_hdr_t;
 typedef struct PACKED { uint32_t OriginalFirstThunk, TimeDateStamp, ForwarderChain, Name, FirstThunk; } import_desc_t;
-typedef struct PACKED { uint32_t StartAddressOfRawData, EndAddressOfRawData, AddressOfIndex, AddressOfCallBacks, SizeOfZeroFill, Characteristics; } tls_dir_t;
+typedef struct PACKED {
+    uint16_t Magic; uint8_t MajorLinker, MinorLinker; uint32_t SizeOfCode, SizeOfInitializedData, SizeOfUninitializedData, AddressOfEntryPoint, BaseOfCode; uint64_t ImageBase; uint32_t SectionAlignment, FileAlignment;
+    uint16_t MajorOS, MinorOS, MajorImage, MinorImage, MajorSubsystem, MinorSubsystem; uint32_t Win32Version, SizeOfImage, SizeOfHeaders, CheckSum; uint16_t Subsystem, DllCharacteristics;
+    uint64_t SizeOfStackReserve, SizeOfStackCommit, SizeOfHeapReserve, SizeOfHeapCommit; uint32_t LoaderFlags, NumberOfRvaAndSizes; data_dir_t dir[16];
+} opt_hdr64_t;
+typedef struct PACKED { uint32_t StartAddressOfRawData, EndAddressOfRawData, AddressOfIndex, AddressOfCallBacks, SizeOfZeroFill, Characteristics; } tls_dir32_t;
+typedef struct PACKED { uint64_t StartAddressOfRawData, EndAddressOfRawData, AddressOfIndex, AddressOfCallBacks; uint32_t SizeOfZeroFill, Characteristics; } tls_dir64_t;
+/* the optional header fields we use, whichever format the file has */
+typedef struct { uint64_t image_base; uint32_t entry, size_image, size_headers, nrva; uint16_t subsystem; uint64_t stack_reserve; data_dir_t dir[16]; } pe_info_t;
 
 #define WIN_LO 0x00400000u
 #define WIN_HI 0x01000000u
 static w32_proc_t *procs[64];
-extern uint32_t call_pe_entry(void *fn, uint32_t unused);
-extern uint32_t call_tls_cb(void *fn, uint32_t a, uint32_t b, uint32_t c);
+#ifdef __x86_64__
+#define PE_MAGIC 0x20B
+#define PE_FMT "PE32+ (x64)"
+#else
+#define PE_MAGIC 0x10B
+#define PE_FMT "PE32 (x86)"
+#endif
 
 w32_proc_t *w32_cur(void) { task_t *t = task_current(); return t ? (w32_proc_t *)t->proc : NULL; }
 
@@ -99,41 +114,64 @@ static void __attribute__((used)) w32_unimplemented(unimpl_t *u) {
 static void *make_thunk(const char *dll, const char *name) {
     unimpl_t *u = kzalloc(sizeof *u);
     strlcpy(u->dll, dll, sizeof u->dll); strlcpy(u->name, name, sizeof u->name);
+#ifdef __x86_64__
+    uint8_t *t = kmalloc(32);
+    t[0] = 0x48; t[1] = 0xBF; *(uint64_t *)(t + 2) = (uintptr_t)u;                  /* mov rdi, u */
+    t[10] = 0x48; t[11] = 0xB8; *(uint64_t *)(t + 12) = (uintptr_t)w32_unimplemented; /* mov rax, fn */
+    t[20] = 0x48; t[21] = 0x83; t[22] = 0xE4; t[23] = 0xF0;                        /* and rsp, -16 */
+    t[24] = 0xFF; t[25] = 0xD0;                                                    /* call rax */
+    t[26] = 0xCC;
+#else
     uint8_t *t = kmalloc(16);
     t[0] = 0xB8; *(uint32_t *)(t + 1) = (uint32_t)u;          /* mov eax, u */
     t[5] = 0x50;                                               /* push eax */
     t[6] = 0xB9; *(uint32_t *)(t + 7) = (uint32_t)w32_unimplemented; /* mov ecx, fn */
     t[11] = 0xFF; t[12] = 0xD1;                                /* call ecx */
     t[13] = 0xCC;
+#endif
     return t;
 }
 
 /* ---------------- probing ---------------- */
-static bool parse_headers(const uint8_t *d, uint32_t n, file_hdr_t **fh, opt_hdr_t **oh, sect_hdr_t **sh, char *err, int ecap) {
+static bool parse_headers(const uint8_t *d, uint32_t n, file_hdr_t **fh, pe_info_t *pi, sect_hdr_t **sh, char *err, int ecap) {
     if (n < 64 || d[0] != 'M' || d[1] != 'Z') { snprintf(err, ecap, "Not a valid Win32 application (no MZ header)."); return false; }
     uint32_t lf = ((const dos_hdr_t *)d)->e_lfanew;
     if (lf + 24 > n || memcmp(d + lf, "PE\0\0", 4)) { snprintf(err, ecap, "This is an MS-DOS program; 16-bit DOS executables are not supported."); return false; }
     *fh = (file_hdr_t *)(d + lf + 4);
-    if ((*fh)->Machine == 0x8664) { snprintf(err, ecap, "This is a 64-bit (x64) program. " OS_NAME " has a 32-bit kernel and runs 32-bit (x86) Win32 programs. Rebuild it for i686 (e.g. i686-w64-mingw32-gcc)."); return false; }
-    if ((*fh)->Machine == 0xAA64) { snprintf(err, ecap, "This is an ARM64 program; only x86 programs are supported."); return false; }
-    if ((*fh)->Machine != 0x14C) { snprintf(err, ecap, "Unsupported machine type 0x%04x.", (*fh)->Machine); return false; }
-    *oh = (opt_hdr_t *)((uint8_t *)*fh + sizeof(file_hdr_t));
-    if ((*oh)->Magic != 0x10B) { snprintf(err, ecap, "Unsupported optional header (PE32+)."); return false; }
-    *sh = (sect_hdr_t *)((uint8_t *)*oh + (*fh)->SizeOfOptionalHeader);
+    uint16_t m = (*fh)->Machine;
+    if (m == 0xAA64) { snprintf(err, ecap, "This is an ARM64 program; only x86 and x64 programs are supported."); return false; }
+#ifdef __x86_64__
+    if (m == 0x14C) { snprintf(err, ecap, "This is a 32-bit (x86) program. This is the 64-bit edition of " OS_NAME ", which runs 64-bit (x64) programs; use the 32-bit edition for this one, or rebuild it with x86_64-w64-mingw32-gcc."); return false; }
+#else
+    if (m == 0x8664) { snprintf(err, ecap, "This is a 64-bit (x64) program. Run it on the 64-bit edition of " OS_NAME " (wrldos64.iso), or rebuild it for i686 (i686-w64-mingw32-gcc)."); return false; }
+#endif
+    if (m != W32_MACHINE) { snprintf(err, ecap, "Unsupported machine type 0x%04x.", m); return false; }
+    const uint8_t *oh = (const uint8_t *)*fh + sizeof(file_hdr_t);
+    if (lf + 24 + (*fh)->SizeOfOptionalHeader > n || *(const uint16_t *)oh != PE_MAGIC) { snprintf(err, ecap, "Unsupported optional header (expected " PE_FMT ")."); return false; }
+    memset(pi, 0, sizeof *pi);
+#ifdef __x86_64__
+    const opt_hdr64_t *o = (const opt_hdr64_t *)oh;
+#else
+    const opt_hdr_t *o = (const opt_hdr_t *)oh;
+#endif
+    pi->image_base = o->ImageBase; pi->entry = o->AddressOfEntryPoint; pi->size_image = o->SizeOfImage; pi->size_headers = o->SizeOfHeaders;
+    pi->subsystem = o->Subsystem; pi->stack_reserve = o->SizeOfStackReserve; pi->nrva = MIN(o->NumberOfRvaAndSizes, 16u);
+    memcpy(pi->dir, o->dir, sizeof(data_dir_t) * pi->nrva);
+    *sh = (sect_hdr_t *)(oh + (*fh)->SizeOfOptionalHeader);
     if ((*fh)->Characteristics & 0x2000) { snprintf(err, ecap, "This file is a DLL, not a program."); return false; }
-    if ((*oh)->dir[14].Size) { snprintf(err, ecap, "This is a .NET (CLR) assembly; the .NET runtime is not available."); return false; }
+    if (pi->nrva > 14 && pi->dir[14].Size) { snprintf(err, ecap, "This is a .NET (CLR) assembly; the .NET runtime is not available."); return false; }
     return true;
 }
 bool pe_probe(vnode_t *n, char *desc, int cap) {
-    file_hdr_t *fh; opt_hdr_t *oh; sect_hdr_t *sh; char err[200];
-    if (!n || n->dir || !parse_headers(n->data, n->size, &fh, &oh, &sh, err, sizeof err)) { if (desc) strlcpy(desc, err, cap); return false; }
-    if (desc) snprintf(desc, cap, "Win32 %s application, %d sections, image base 0x%08x", oh->Subsystem == 2 ? "GUI" : "console", fh->NumberOfSections, oh->ImageBase);
+    file_hdr_t *fh; pe_info_t pi; sect_hdr_t *sh; char err[300];
+    if (!n || n->dir || !parse_headers(n->data, n->size, &fh, &pi, &sh, err, sizeof err)) { if (desc) strlcpy(desc, err, cap); return false; }
+    if (desc) snprintf(desc, cap, "Win32 %s %s application, %d sections, image base 0x%llx", ARCH_NAME, pi.subsystem == 2 ? "GUI" : "console", fh->NumberOfSections, (unsigned long long)pi.image_base);
     return true;
 }
 bool pe_is_gui(vnode_t *n) {
-    file_hdr_t *fh; opt_hdr_t *oh; sect_hdr_t *sh; char err[200];
-    if (!parse_headers(n->data, n->size, &fh, &oh, &sh, err, sizeof err)) return false;
-    return oh->Subsystem == 2;
+    file_hdr_t *fh; pe_info_t pi; sect_hdr_t *sh; char err[300];
+    if (!parse_headers(n->data, n->size, &fh, &pi, &sh, err, sizeof err)) return false;
+    return pi.subsystem == 2;
 }
 
 /* ---------------- process lifetime ---------------- */
@@ -145,7 +183,11 @@ static void free_proc(w32_proc_t *p) {
     p->heap.next = NULL;
     for (int i = 0; i < 64; i++) if (procs[i] == p) procs[i] = NULL;
     kfree_aligned(p->frames);
+#ifdef __x86_64__
+    vm_space_free(p->space);
+#else
     paging_free_dir(p->pagedir);
+#endif
     kfree(p->teb); kfree(p->peb); kfree(p->tls_block); kfree(p->tls_array);
     if (p->argv) { for (int i = 0; i < p->argc; i++) kfree(p->argv[i]); kfree(p->argv); }
     kfree(p->envp); kfree(p->acmdln);
@@ -175,7 +217,7 @@ w32_proc_t *pe_find(int pid) { for (int i = 0; i < 64; i++) if (procs[i] && proc
 static void pe_main(void *arg) {
     w32_proc_t *p = arg;
     if (p->tls_callbacks) {
-        uint32_t *cb = (uint32_t *)p->tls_callbacks;
+        uintptr_t *cb = (uintptr_t *)p->tls_callbacks;
         for (int i = 0; i < 16 && cb[i]; i++) call_tls_cb((void *)cb[i], p->base, 1, 0);
     }
     uint32_t r = call_pe_entry((void *)(p->base + p->entry), 0);
@@ -202,20 +244,55 @@ static void build_args(w32_proc_t *p) {
     p->acmdln = strdup(p->cmdline);
 }
 
+/* TEB for a thread; the PEB is shared by the process */
+uint8_t *w32_new_teb(w32_proc_t *p, task_t *t) {
+    uint8_t *teb = kzalloc(4096);
+    uintptr_t top = (uintptr_t)t->stack + t->stack_size, bottom = (uintptr_t)t->stack;
+#ifdef __x86_64__
+    uint64_t *q = (uint64_t *)teb;                     /* reached through GS */
+    q[0x08 / 8] = top; q[0x10 / 8] = bottom;
+    q[0x30 / 8] = (uintptr_t)teb;                     /* self */
+    q[0x40 / 8] = p->pid; q[0x48 / 8] = t->pid;
+    q[0x58 / 8] = (uintptr_t)p->tls_array;
+    q[0x60 / 8] = (uintptr_t)p->peb;
+#else
+    uint32_t *q = (uint32_t *)teb;                     /* reached through FS */
+    q[0] = 0xFFFFFFFF;                                 /* SEH chain end */
+    q[1] = top; q[2] = bottom;
+    q[0x18 / 4] = (uint32_t)teb;                       /* self */
+    q[0x20 / 4] = p->pid; q[0x24 / 4] = t->pid;
+    q[0x2C / 4] = (uint32_t)p->tls_array;
+    q[0x30 / 4] = (uint32_t)p->peb;
+#endif
+    return teb;
+}
+
 int pe_spawn(const char *path, const char *args, console_t *con, char *err, int ecap) {
     vnode_t *n = vfs_resolve(path, NULL);
     if (!n || n->dir) { snprintf(err, ecap, "File not found: %s", path); return -1; }
-    file_hdr_t *fh; opt_hdr_t *oh; sect_hdr_t *sh;
-    if (!parse_headers(n->data, n->size, &fh, &oh, &sh, err, ecap)) return -1;
+    file_hdr_t *fh; pe_info_t pi; sect_hdr_t *sh;
+    if (!parse_headers(n->data, n->size, &fh, &pi, &sh, err, ecap)) return -1;
     const uint8_t *d = n->data;
-    uint32_t size = (oh->SizeOfImage + 0xFFF) & ~0xFFFu;
-    uint32_t base = oh->ImageBase;
-    bool has_reloc = oh->NumberOfRvaAndSizes > 5 && oh->dir[5].Size && !(fh->Characteristics & 1);
+    uint32_t size = (pi.size_image + 0xFFF) & ~0xFFFu;
+    uint64_t pref = pi.image_base, base = pref;
+    bool has_reloc = pi.nrva > 5 && pi.dir[5].Size && !(fh->Characteristics & 1);
+#ifdef __x86_64__
+    /* the preferred base works if it is 2 MiB aligned and either in the program
+     * window (4..16 MiB) or above the kernel's 4 GiB, inside the first 512 GiB */
+    bool in_window = base >= WIN_LO && base + size <= WIN_HI;
+    bool high_ok = base >= 0x100000000ull && base + size <= (1ull << 39);
+    if (!((in_window || high_ok) && !(base & 0x1FFFFF) && size <= 64u * 1024 * 1024)) {
+        if (!has_reloc) { snprintf(err, ecap, "Image base 0x%llx cannot be used here and the file has no relocations.", (unsigned long long)base); return -1; }
+        base = WIN_LO;
+    }
+    if (size > 64u * 1024 * 1024) { snprintf(err, ecap, "Program image too large (%u KB).", size / 1024); return -1; }
+#else
     if (base < WIN_LO || base + size > WIN_HI) {
-        if (!has_reloc) { snprintf(err, ecap, "Image base 0x%08x is outside the supported range and the file has no relocations.", base); return -1; }
+        if (!has_reloc) { snprintf(err, ecap, "Image base 0x%08x is outside the supported range and the file has no relocations.", (uint32_t)base); return -1; }
         base = WIN_LO;
     }
     if (size > WIN_HI - WIN_LO) { snprintf(err, ecap, "Program image too large (%u KB).", size / 1024); return -1; }
+#endif
     int slot = -1; for (int i = 0; i < 64; i++) if (!procs[i]) { slot = i; break; }
     if (slot < 0) { snprintf(err, ecap, "Too many Win32 processes."); return -1; }
 
@@ -224,21 +301,34 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
     vfs_path(n, p->path, sizeof p->path);
     snprintf(p->cmdline, sizeof p->cmdline, "\"%s\"%s%s", p->path, args && *args ? " " : "", args ? args : "");
     path_dirname(p->path, p->cwd, sizeof p->cwd);
-    p->gui = oh->Subsystem == 2;
+    p->gui = pi.subsystem == 2;
     p->con = con; p->in = con;
     p->fmode = 0x4000; /* _O_TEXT */
-    /* address space: map PDEs covering [WIN_LO, base+size) */
-    uint32_t pde_first = WIN_LO >> 22, pde_last = (base + size - 1) >> 22;
+    uint8_t *img;
+#ifdef __x86_64__
+    /* private address space: 2 MiB pages from base (rounded down) to the end of the image */
+    uint64_t vlo = base & ~0x1FFFFFull, vhi = (base + size + 0x1FFFFF) & ~0x1FFFFFull;
+    uint32_t npg = (vhi - vlo) >> 21;
+    p->frames = kmalloc_aligned(npg * 0x200000u, 0x200000);
+    p->space = p->frames ? vm_space_new() : 0;
+    if (!p->space) { kfree_aligned(p->frames); kfree(p); snprintf(err, ecap, "Not enough memory to load the program."); return -1; }
+    memset(p->frames, 0, npg * 0x200000u);
+    for (uint32_t i = 0; i < npg; i++) vm_map_2m(p->space, vlo + (uint64_t)i * 0x200000, (uintptr_t)p->frames + i * 0x200000u);
+    img = p->frames + (base - vlo);                    /* kernel-visible alias of the image */
+#else
+    uint32_t pde_first = WIN_LO >> 22, pde_last = (uint32_t)(base + size - 1) >> 22;
     uint32_t npde = pde_last - pde_first + 1;
     p->frames = kmalloc_aligned(npde * 0x400000, 0x400000);
     if (!p->frames) { kfree(p); snprintf(err, ecap, "Not enough memory to load the program."); return -1; }
     memset(p->frames, 0, npde * 0x400000);
     p->pagedir = paging_new_dir();
     for (uint32_t i = 0; i < npde; i++) p->pagedir[pde_first + i] = ((uint32_t)p->frames + i * 0x400000) | 0x83;
-    uint8_t *img = p->frames + (base - WIN_LO);      /* kernel-visible alias of the image */
-    p->base = base; p->size = size; p->entry = oh->AddressOfEntryPoint;
+    p->space = (uintptr_t)p->pagedir;
+    img = p->frames + (base - WIN_LO);
+#endif
+    p->base = base; p->size = size; p->entry = pi.entry;
     /* headers + sections */
-    memcpy(img, d, MIN(oh->SizeOfHeaders, n->size));
+    memcpy(img, d, MIN(pi.size_headers, n->size));
     for (int i = 0; i < fh->NumberOfSections; i++) {
         sect_hdr_t *s = &sh[i];
         if (s->VirtualAddress + MAX(s->VirtualSize, s->SizeOfRawData) > size) continue;
@@ -246,73 +336,91 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
         if (s->PointerToRawData + raw <= n->size) memcpy(img + s->VirtualAddress, d + s->PointerToRawData, raw);
     }
     /* relocations */
-    int32_t delta = (int32_t)(base - oh->ImageBase);
+    int64_t delta = (int64_t)(base - pref);
     if (delta && has_reloc) {
-        uint8_t *r = img + oh->dir[5].VirtualAddress, *re = r + oh->dir[5].Size;
+        uint8_t *r = img + pi.dir[5].VirtualAddress, *re = r + pi.dir[5].Size;
         while (r < re) {
             uint32_t page = ((uint32_t *)r)[0], bsz = ((uint32_t *)r)[1];
             if (!bsz) break;
             uint16_t *e = (uint16_t *)(r + 8);
             for (uint32_t k = 0; k < (bsz - 8) / 2; k++) {
                 int type = e[k] >> 12, off = e[k] & 0xFFF;
-                if (type == 3) *(uint32_t *)(img + page + off) += delta;
-                else if (type == 1) *(uint16_t *)(img + page + off) += (delta >> 16);
-                else if (type == 2) *(uint16_t *)(img + page + off) += (delta & 0xFFFF);
+                if (page + off + 8 > size) continue;
+                if (type == 10) *(uint64_t *)(img + page + off) += delta;          /* DIR64 */
+                else if (type == 3) *(uint32_t *)(img + page + off) += (uint32_t)delta;
+                else if (type == 1) *(uint16_t *)(img + page + off) += (uint16_t)(delta >> 16);
+                else if (type == 2) *(uint16_t *)(img + page + off) += (uint16_t)delta;
             }
             r += bsz;
         }
     }
-    /* imports */
+    /* imports (thunk entries are pointer-sized; bit 31 / 63 marks an ordinal) */
     int unresolved = 0;
-    if (oh->dir[1].Size) {
-        for (import_desc_t *id = (import_desc_t *)(img + oh->dir[1].VirtualAddress); id->Name; id++) {
+    const uintptr_t ord_flag = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
+    if (pi.nrva > 1 && pi.dir[1].Size) {
+        for (import_desc_t *id = (import_desc_t *)(img + pi.dir[1].VirtualAddress); id->Name; id++) {
             const char *dll = (const char *)(img + id->Name);
-            uint32_t *ilt = (uint32_t *)(img + (id->OriginalFirstThunk ? id->OriginalFirstThunk : id->FirstThunk));
-            uint32_t *iat = (uint32_t *)(img + id->FirstThunk);
+            uintptr_t *ilt = (uintptr_t *)(img + (id->OriginalFirstThunk ? id->OriginalFirstThunk : id->FirstThunk));
+            uintptr_t *iat = (uintptr_t *)(img + id->FirstThunk);
             const dll_t *dl = find_dll(dll);
             for (int k = 0; ilt[k]; k++) {
                 void *fn = NULL;
                 char name[64];
-                if (ilt[k] & 0x80000000u) snprintf(name, sizeof name, "Ordinal%u", ilt[k] & 0xFFFF);
-                else strlcpy(name, (const char *)(img + ilt[k] + 2), sizeof name);
+                if (ilt[k] & ord_flag) snprintf(name, sizeof name, "Ordinal%u", (uint32_t)(ilt[k] & 0xFFFF));
+                else strlcpy(name, (const char *)(img + (uint32_t)ilt[k] + 2), sizeof name);
                 if (dl) { for (int e = 0; e < *dl->count; e++) if (!strcmp(dl->tab[e].name, name)) { fn = dl->tab[e].fn; break; } }
+                if (!fn && dl && dl->tab == msvcrt_exports) {   /* C runtime variables imported as data (x64 CRT) */
+                    if (!strcmp(name, "_fmode")) fn = &p->fmode;
+                    else if (!strcmp(name, "_commode")) fn = &p->commode;
+                    else if (!strcmp(name, "_acmdln")) fn = &p->acmdln;
+                    else if (!strcmp(name, "__argc")) fn = &p->argc;
+                    else if (!strcmp(name, "__argv")) fn = &p->argv;
+                    else if (!strcmp(name, "_environ") || !strcmp(name, "__initenv")) fn = &p->envp;
+                }
                 if (!fn) { fn = make_thunk(dll, name); unresolved++; klog("w32: %s: unresolved import %s!%s", path_basename(p->path), dll, name); }
-                iat[k] = (uint32_t)fn;
+                iat[k] = (uintptr_t)fn;
             }
         }
     }
     /* TLS */
-    p->tls_array = kzalloc(64 * sizeof(uint32_t));
-    if (oh->dir[9].Size) {
-        tls_dir_t *td = (tls_dir_t *)(img + oh->dir[9].VirtualAddress);
-        uint32_t len = td->EndAddressOfRawData - td->StartAddressOfRawData;
+    p->tls_array = kzalloc(64 * sizeof(uintptr_t));
+    if (pi.nrva > 9 && pi.dir[9].Size) {
+#ifdef __x86_64__
+        tls_dir64_t *td = (tls_dir64_t *)(img + pi.dir[9].VirtualAddress);
+#else
+        tls_dir32_t *td = (tls_dir32_t *)(img + pi.dir[9].VirtualAddress);
+#endif
+        uint64_t start = td->StartAddressOfRawData, end = td->EndAddressOfRawData, idx = td->AddressOfIndex;
+        uint64_t sh_ = pref != base ? base - pref : 0;  /* the directory's VAs were relocated already */
+        (void)sh_;
+        uint32_t len = end > start && end - start < 0x1000000 ? (uint32_t)(end - start) : 0;
         p->tls_block = kzalloc(len + td->SizeOfZeroFill + 16);
-        if (td->StartAddressOfRawData >= base && td->EndAddressOfRawData <= base + size) memcpy(p->tls_block, img + (td->StartAddressOfRawData - base), len);
-        if (td->AddressOfIndex >= base && td->AddressOfIndex < base + size) *(uint32_t *)(img + (td->AddressOfIndex - base)) = 0;
-        p->tls_array[0] = (uint32_t)p->tls_block;
-        p->tls_callbacks = td->AddressOfCallBacks;
+        if (start >= base && end <= base + size) memcpy(p->tls_block, img + (start - base), len);
+        if (idx >= base && idx < base + size) *(uint32_t *)(img + (idx - base)) = 0;
+        p->tls_array[0] = (uintptr_t)p->tls_block;
+        p->tls_callbacks = (uintptr_t)td->AddressOfCallBacks;
     }
     build_args(p);
-    /* TEB / PEB */
-    p->teb = kzalloc(4096); p->peb = kzalloc(4096);
-    uint32_t *teb = (uint32_t *)p->teb;
-    teb[0] = 0xFFFFFFFF;                 /* SEH chain end */
-    teb[0x18 / 4] = (uint32_t)p->teb;     /* self */
-    teb[0x2C / 4] = (uint32_t)p->tls_array;
-    teb[0x30 / 4] = (uint32_t)p->peb;
-    ((uint32_t *)p->peb)[0x08 / 4] = base;
-    ((uint32_t *)p->peb)[0x18 / 4] = 0x00ABC000;   /* process heap pseudo handle */
+    /* PEB */
+    p->peb = kzalloc(4096);
+#ifdef __x86_64__
+    ((uint64_t *)p->peb)[0x10 / 8] = base;
+    ((uint64_t *)p->peb)[0x30 / 8] = 0x00ABC000;   /* process heap pseudo handle */
+#else
+    ((uint32_t *)p->peb)[0x08 / 4] = (uint32_t)base;
+    ((uint32_t *)p->peb)[0x18 / 4] = 0x00ABC000;
+#endif
     /* task */
     char tname[48]; strlcpy(tname, path_basename(p->path), sizeof tname);
-    uint32_t stack = MAX(oh->SizeOfStackReserve, 256 * 1024u);
-    if (stack > 2 * 1024 * 1024) stack = 2 * 1024 * 1024;
+    uint32_t stack = (uint32_t)MAX(MIN(pi.stack_reserve, 2ull * 1024 * 1024), 256ull * 1024);
     task_t *t = task_create(tname, pe_main, p, stack);
-    t->kind = 2; t->proc = p; t->cr3 = (uint32_t)p->pagedir; t->teb = (uint32_t)p->teb; t->console = con;
-    teb[1] = (uint32_t)t->stack + t->stack_size; teb[2] = (uint32_t)t->stack;
-    teb[0x20 / 4] = t->pid; teb[0x24 / 4] = t->pid;
-    p->pid = t->pid; p->task = t; p->threads = 1;
+    t->kind = 2; t->proc = p; t->cr3 = p->space; t->console = con;
+    p->pid = t->pid;
+    p->teb = w32_new_teb(p, t);
+    t->teb = (uintptr_t)p->teb;
+    p->task = t; p->threads = 1;
     procs[slot] = p;
-    klog("w32: loaded %s at 0x%08x (%u KB, %s, %d unresolved imports) as pid %d", p->path, base, size / 1024, p->gui ? "GUI" : "console", unresolved, t->pid);
+    klog("w32: loaded %s (%s) at 0x%llx (%u KB, %s, %d unresolved imports) as pid %d", p->path, ARCH_NAME, (unsigned long long)base, size / 1024, p->gui ? "GUI" : "console", unresolved, t->pid);
     return t->pid;
 }
 int pe_proc_list(int *pids, int max) { int n = 0; for (int i = 0; i < 64 && n < max; i++) if (procs[i]) pids[n++] = procs[i]->pid; return n; }

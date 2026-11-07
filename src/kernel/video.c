@@ -76,8 +76,8 @@ void video_init(void) {
             if (sr(S_ID) != 0x90000002) { klog("video: VMware SVGA II did not accept SVGA_ID_2"); continue; }
             lfb = sr(S_FB_START);
             vram = sr(S_VRAM);
-            fifo = (volatile uint32_t *)(pci_cfg_read(p->bus, p->dev, p->fn, 0x18) & ~0xFu);
-            paging_set_uncached((uint32_t)fifo);
+            fifo = (volatile uint32_t *)(uintptr_t)(pci_cfg_read(p->bus, p->dev, p->fn, 0x18) & ~0xFu);
+            paging_set_uncached((uint32_t)(uintptr_t)fifo);
             max_w = sr(S_MAX_W); max_h = sr(S_MAX_H);
             fifo_size = sr(S_MEM_SIZE);
             /* Nothing else is touched until a mode is set: while the adapter stays

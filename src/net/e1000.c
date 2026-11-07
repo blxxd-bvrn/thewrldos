@@ -57,7 +57,7 @@ static bool e1000_send(const void *frame, uint32_t len) {
     { uint32_t t0 = timer_ticks(); while (d->cmd && !(*(volatile uint8_t *)&d->status & 1) && timer_ticks() - t0 < 50) {} }   /* wait for this slot to be free */
     memcpy(txbuf + tx_cur * BUFSZ, frame, len);
     if (len < 60) { memset(txbuf + tx_cur * BUFSZ + len, 0, 60 - len); len = 60; }
-    d->addr = (uint32_t)(txbuf + tx_cur * BUFSZ);
+    d->addr = (uint32_t)(uintptr_t)(txbuf + tx_cur * BUFSZ);
     d->len = len; d->cso = 0; d->css = 0; d->special = 0;
     d->status = 0;
     d->cmd = 0x0B;                         /* EOP | IFCS | RS */
@@ -97,7 +97,7 @@ bool e1000_probe(nic_ops_t *ops) {
         pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x06);     /* memory space + bus master */
         uint32_t base = bar0 & ~0xFu;
         paging_set_uncached(base);
-        mmio = (volatile uint8_t *)base;
+        mmio = (volatile uint8_t *)(uintptr_t)base;
         eerd_new_layout = p->device >= 0x10B5 && p->device != 0x1075 && p->device != 0x1076 && p->device != 0x1077 && p->device != 0x1078 && p->device != 0x1079;
         /* reset, then link up */
         wr(REG_IMC, 0xFFFFFFFF);
@@ -120,14 +120,14 @@ bool e1000_probe(nic_ops_t *ops) {
         /* receive ring */
         rx = kmalloc_aligned(sizeof(rxd_t) * NRX, 128); memset(rx, 0, sizeof(rxd_t) * NRX);
         rxbuf = kmalloc_aligned(NRX * BUFSZ, 16);
-        for (int k = 0; k < NRX; k++) rx[k].addr = (uint32_t)(rxbuf + k * BUFSZ);
-        wr(REG_RDBAL, (uint32_t)rx); wr(REG_RDBAH, 0); wr(REG_RDLEN, sizeof(rxd_t) * NRX);
+        for (int k = 0; k < NRX; k++) rx[k].addr = (uint32_t)(uintptr_t)(rxbuf + k * BUFSZ);
+        wr(REG_RDBAL, (uint32_t)(uintptr_t)rx); wr(REG_RDBAH, 0); wr(REG_RDLEN, sizeof(rxd_t) * NRX);
         wr(REG_RDH, 0); wr(REG_RDT, NRX - 1); rx_cur = 0;
         wr(REG_RCTL, (1 << 1) | (1 << 15) | (1 << 26));        /* EN, BAM (broadcast), SECRC; 2048-byte buffers */
         /* transmit ring */
         tx = kmalloc_aligned(sizeof(txd_t) * NTX, 128); memset(tx, 0, sizeof(txd_t) * NTX);
         txbuf = kmalloc_aligned(NTX * BUFSZ, 16);
-        wr(REG_TDBAL, (uint32_t)tx); wr(REG_TDBAH, 0); wr(REG_TDLEN, sizeof(txd_t) * NTX);
+        wr(REG_TDBAL, (uint32_t)(uintptr_t)tx); wr(REG_TDBAH, 0); wr(REG_TDLEN, sizeof(txd_t) * NTX);
         wr(REG_TDH, 0); wr(REG_TDT, 0); tx_cur = 0;
         wr(REG_TCTL, (1 << 1) | (1 << 3) | (0x0F << 4) | (0x40 << 12));   /* EN, PSP, CT, COLD */
         wr(REG_TIPG, 0x0060200A);

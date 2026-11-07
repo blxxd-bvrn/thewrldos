@@ -1,12 +1,16 @@
 # THE WRLD OS
 
-An original 32-bit x86 operating system written from scratch in C and assembly (about 18,000
-lines, plus the BearSSL library for HTTPS and the QuickJS JavaScript engine). It has an XP-style "Luna" desktop and a
+An original x86 operating system written from scratch in C and assembly (about 20,000
+lines, plus the BearSSL library for HTTPS and the QuickJS JavaScript engine), in a **32-bit**
+and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
 **The WRLD Xplorer**.
 
 - Boots from a GRUB CD into a spinning-globe boot screen, a log-on screen and the desktop.
+- **Two editions from the same sources:** `wrldos.iso` (32-bit, i686) runs 32-bit Win32
+  programs; `wrldos64.iso` (64-bit, x86-64 long mode) runs 64-bit (x64) Win32 programs.
+  Everything else is the same.
 - Runs **live from the CD** or **installs to a hard disk** with an XP-style Setup, after which
   every file and setting is saved to the disk.
 - Visual styles **Luna (Blue), Olive Green, Silver, WRLD Classic, Aero** (translucent
@@ -59,14 +63,15 @@ Double-click **`Build to ISO.bat`** in the source folder. It:
 1. builds through **WSL** (Windows Subsystem for Linux), or through **Docker Desktop** if WSL
    is not set up;
 2. installs the Linux build tools on the first run (Ubuntu may ask for your Linux password);
-3. writes **`wrldos.iso`** next to the .bat file.
+3. writes **`wrldos.iso`** (32-bit edition) and **`wrldos64.iso`** (64-bit edition) next to
+   the .bat file.
 
 If neither WSL nor Docker is available, it explains why and offers to install WSL with Ubuntu.
 After that you restart Windows, open *Ubuntu* once to create a Linux user, and run the .bat
 again.
 
 > MSYS2, MinGW and Cygwin cannot build the kernel. Their `gcc` makes Windows PE files, not the
-> 32-bit ELF kernel that GRUB loads, and they have no BIOS GRUB tools. `make` stops with an
+> ELF kernel that GRUB loads, and they have no BIOS GRUB tools. `make` stops with an
 > explanation if you try. The .bat file uses WSL for exactly this reason.
 
 ### Linux (or a WSL terminal)
@@ -76,12 +81,19 @@ sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-common xorri
 ```
 
 ```bash
-make            # builds build/wrld.elf and wrldos.iso
+make            # the 32-bit edition: build/wrld.elf and wrldos.iso
+```
+
+```bash
+make ARCH=x86_64    # the 64-bit edition: build64/wrld.elf and wrldos64.iso (or "make both")
 ```
 
 ```bash
 make run        # boots the CD in QEMU: live session, nothing is saved
 ```
+
+`make ARCH=x86_64 run` (and `run-install`, `run-disk`) does the same with the 64-bit edition
+in `qemu-system-x86_64`; its hard disk image is `disk64.img`.
 
 Tested with Ubuntu 22.04 (gcc 11, binutils 2.38, GRUB 2.06) and 24.04 (gcc 13, binutils
 2.42). `make check-tools` lists any missing tool. Fedora's `grub2-*` tool names are detected
@@ -108,7 +120,9 @@ You can also choose the emulated hardware:
 
 ### In VirtualBox, VMware or on a real PC
 
-Boot `wrldos.iso` with **legacy BIOS** boot (not UEFI) and at least **256 MB RAM**. To install,
+Boot `wrldos.iso` (or `wrldos64.iso`, in a VM set up for a 64-bit guest, for example
+VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** boot (not UEFI) and at least
+**256 MB RAM**. To install,
 attach a hard disk on an **IDE** controller. SATA/AHCI, NVMe and USB disks are not supported.
 For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
 **SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
@@ -193,10 +207,23 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 
 ## What's inside
 
+### 32-bit and 64-bit (`src/arch/i686`, `src/arch/x86_64`)
+- One set of C sources builds both editions; only the boot stub, the interrupt and
+  context-switch assembly and the linker script are per architecture.
+- **x86-64:** GRUB loads the 64-bit ELF kernel through multiboot. A 32-bit stub checks for long
+  mode, identity-maps the first 4 GiB with 2 MiB pages, enables PAE, long mode, the FPU and SSE,
+  and calls the same `kmain`. Interrupt stubs save the SSE state (`FXSAVE`), so drivers and the
+  JavaScript engine can use SSE; the cooperative context switch keeps the callee-saved
+  registers.
+- Win32 programs get their own address space: on x64 a private PML4/PDPT, with the image
+  mapped at its preferred base (usually `0x140000000`) in 2 MiB pages, so no relocation is
+  needed.
+
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
   - Multiboot entry with a VBE framebuffer request.
-  - GDT with a per-thread FS segment for the Win32 TEB, IDT and remapped PIC.
+  - x86: GDT with a per-thread FS segment for the Win32 TEB; x64: the TEB through the GS base
+    MSR. IDT and remapped PIC.
   - Exception handling: a faulting program is closed with an error dialog; kernel faults show
     a stop screen.
 - **Memory:**
@@ -364,13 +391,20 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 
 ### Compatibility
 - **`.exe`: Win32 subsystem (`src/win32`)**
-  - PE32 loader: sections, base relocations, import binding, TLS callbacks, TEB/PEB.
+  - PE loader: PE32 (x86) in the 32-bit edition, PE32+ (x64) in the 64-bit edition, with
+    sections, base relocations (`HIGHLOW`, `DIR64`), import binding, TLS callbacks and the
+    TEB/PEB of each architecture.
+  - On x64 every exported function uses the Microsoft x64 calling convention (GCC's
+    `ms_abi`), variadic ones (`printf`, `wsprintfA`) the matching `va_list`; handles,
+    `WPARAM`/`LPARAM` and `*LongPtr` values are pointer-sized while `long` stays 32-bit (LLP64).
   - About 190 kernel32, 190 msvcrt, 160 user32 and 40 gdi32 functions, plus advapi32/shell32
     basics.
   - Console programs use the terminal for stdin/stdout.
   - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX
     controls, menus, MessageBox and GDI drawing.
-  - The samples are ordinary programs compiled with `i686-w64-mingw32-gcc` and run unmodified.
+  - The samples are ordinary programs compiled with `i686-w64-mingw32-gcc` (32-bit edition,
+    `rootfs/Samples`) and `x86_64-w64-mingw32-gcc` (64-bit edition, `rootfs64/Samples`) and run
+    unmodified.
   - A program that calls an unimplemented function is stopped with a message naming it.
 - **`.sh`: shell (`src/shell/sh.c`)**
   - Tokenizer and recursive-descent parser to an AST.
@@ -390,10 +424,11 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 
 | Target | |
 |---|---|
-| `make` | Kernel and `wrldos.iso`. |
+| `make` | Kernel and `wrldos.iso` (32-bit edition). |
+| `make ARCH=x86_64` | Kernel and `wrldos64.iso` (64-bit edition); `make both` builds both. |
 | `make run` / `run-install` / `run-disk` | See [Running and installing](#running-and-installing). |
 | `make check-tools` | Lists missing build tools. |
-| `make samples` | Rebuilds the Win32 samples (needs `gcc-mingw-w64-i686`). |
+| `make samples` | Rebuilds the Win32 samples (needs `gcc-mingw-w64-i686` and `gcc-mingw-w64-x86-64`). |
 | `make dmg` | Rebuilds `rootfs/Samples/Sample.dmg` (needs `python3`, `dosfstools`). |
 | `make assets` | Regenerates fonts, icons and the globe (needs Python with Pillow and NumPy, `fonts-liberation`). |
 | `make clean` | Removes build output. |
@@ -403,8 +438,10 @@ used to test every screen above, including a full install from a blank disk.
 
 ## Limits
 
-- **32-bit only.** 64-bit (x64) `.exe` files, .NET assemblies and 16-bit DOS programs are
-  detected and refused with an explanation. Win32 coverage is a subset. Programs that use
+- **One program architecture per edition.** The 32-bit edition runs x86 programs and the
+  64-bit edition runs x64 programs; each recognises the other kind and says which edition to
+  use. .NET assemblies and 16-bit DOS programs are refused with an explanation. C++ exceptions
+  in x64 programs (which need SEH unwinding) are not supported. Win32 coverage is a subset. Programs that use
   unimplemented APIs (COM, DirectX, dialog resources, networking, …) stop with a message naming
   the missing function.
 - **macOS cannot be emulated.** Native Mach-O programs inside a `.dmg` are identified but not
@@ -431,7 +468,7 @@ used to test every screen above, including a full install from a blank disk.
   - No USB, and sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.
-  - Single CPU.
+  - Single CPU. Both editions use memory below 4 GiB only (about 3.75 GB at most).
   - Cooperative (not preemptive) scheduling, and programs run in ring 0.
 - **Names and artwork:** "Luna", "Olive Green", "Silver", "Classic", "Aero" and "Plex" name the
   visual styles this project recreates. All artwork, icons, wallpapers and the globe logo are original.
@@ -439,7 +476,8 @@ used to test every screen above, including a full install from a blank disk.
 ## Project layout
 
 ```
-Build to ISO.bat   one-click ISO build on Windows (WSL or Docker)
+Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
+src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 (r/w),
                    FAT reader, inflate, DMG, persistence
 src/net            e1000 driver, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP, root certificates
@@ -455,6 +493,7 @@ third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against
 samples/           Win32 sample sources (hello.c, winhello.c)
 dmgroot/           contents of Sample.dmg
+rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)
 rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrldstyle;
                    the build adds boot/ (kernel and GRUB images)
 grub/grub.cfg      CD boot menu

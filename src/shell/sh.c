@@ -937,9 +937,9 @@ static int b_date(sh_t *s, int argc, char **argv, io_t *io) {
     return 0;
 }
 static int b_uname(sh_t *s, int argc, char **argv, io_t *io) {
-    if (argc > 1 && !strcmp(argv[1], "-a")) out_f(io, "WRLD %s %s.%s WRLD-Kernel i686 %s\n", computer_name, OS_VERSION, OS_BUILD, OS_NAME);
+    if (argc > 1 && !strcmp(argv[1], "-a")) out_f(io, "WRLD %s %s.%s WRLD-Kernel " OS_MACHINE " %s\n", computer_name, OS_VERSION, OS_BUILD, OS_NAME);
     else if (argc > 1 && !strcmp(argv[1], "-r")) out_f(io, "%s.%s\n", OS_VERSION, OS_BUILD);
-    else if (argc > 1 && !strcmp(argv[1], "-m")) out_s(io, "i686\n");
+    else if (argc > 1 && !strcmp(argv[1], "-m")) out_s(io, OS_MACHINE "\n");
     else out_s(io, "WRLD\n");
     return 0;
 }

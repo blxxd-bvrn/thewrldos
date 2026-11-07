@@ -39,17 +39,21 @@ fi
 say "Copying sources to $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 # keep build/ (object files) for fast rebuilds, replace everything else
-find "$BUILD_DIR" -mindepth 1 -maxdepth 1 ! -name build -exec rm -rf {} +
-( cd "$SRC" && tar --exclude=./build --exclude=./.git --exclude='*.iso' --exclude=./disk.img -cf - . ) | ( cd "$BUILD_DIR" && tar -xf - )
+find "$BUILD_DIR" -mindepth 1 -maxdepth 1 ! -name build ! -name build64 -exec rm -rf {} +
+( cd "$SRC" && tar --exclude=./build --exclude=./build64 --exclude=./.git --exclude='*.iso' --exclude=./disk.img --exclude=./disk64.img -cf - . ) | ( cd "$BUILD_DIR" && tar -xf - )
 
 # Windows checkouts may have CRLF line endings: convert text files back to LF
-find "$BUILD_DIR" -path "$BUILD_DIR/build" -prune -o -type f \( -name Makefile -o -name '*.c' -o -name '*.h' \
+find "$BUILD_DIR" \( -path "$BUILD_DIR/build" -o -path "$BUILD_DIR/build64" \) -prune -o -type f \( -name Makefile -o -name '*.c' -o -name '*.h' \
     -o -name '*.asm' -o -name '*.ld' -o -name '*.cfg' -o -name '*.sh' -o -name '*.py' -o -name '*.txt' \
     -o -name '*.plist' -o -name '*.lnk' -o -name '.profile' -o -path '*/MacOS/*' \) -print0 | xargs -0 -r sed -i 's/\r$//'
 
 # ---- 3. build -------------------------------------------------------------
-say "Building THE WRLD OS"
-make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)"
+say "Building THE WRLD OS (32-bit edition)"
+make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=i686
+say "Building THE WRLD OS (64-bit edition)"
+make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64
 
 cp "$BUILD_DIR/wrldos.iso" "$SRC/wrldos.iso"
-say "Done: $SRC/wrldos.iso ($(du -h "$SRC/wrldos.iso" | cut -f1))"
+cp "$BUILD_DIR/wrldos64.iso" "$SRC/wrldos64.iso"
+say "Done: $SRC/wrldos.iso ($(du -h "$SRC/wrldos.iso" | cut -f1), 32-bit)"
+say "      $SRC/wrldos64.iso ($(du -h "$SRC/wrldos64.iso" | cut -f1), 64-bit)"

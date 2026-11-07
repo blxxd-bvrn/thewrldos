@@ -69,7 +69,7 @@ static void on_task_end(task_t *t) {
 static void write_system_files(void) {
     rtc_time_t t; rtc_now(&t);
     char vbuf[512];
-    snprintf(vbuf, sizeof vbuf, "%s %s\r\nVersion %s (Build %s)\r\nKernel: 32-bit protected mode, 4 MiB paging, cooperative scheduler\r\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
+    snprintf(vbuf, sizeof vbuf, "%s %s\r\nVersion %s (Build %s)\r\nKernel: " OS_ARCH_DESC ", cooperative scheduler\r\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
     vfs_write_file("C:\\WRLD\\version.txt", vbuf, strlen(vbuf));
     const char *dlls[] = { "kernel32.dll", "user32.dll", "gdi32.dll", "msvcrt.dll", "advapi32.dll", "shell32.dll", "comctl32.dll", "ntdll.dll" };
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) {
@@ -96,7 +96,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     idt_init();
     panic_hook = text_panic;
     if (magic != 0x2BADB002) panic("Not booted by a Multiboot loader (magic %08x)", magic);
-    mb_info_full_t *mb = (mb_info_full_t *)mbaddr;
+    mb_info_full_t *mb = (mb_info_full_t *)(uintptr_t)mbaddr;
     mm_init(mbaddr);
     task_init();
     timer_init();

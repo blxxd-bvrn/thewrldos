@@ -1,7 +1,7 @@
 /* Cooperative multitasking kernel scheduler */
 #include "kernel.h"
 
-extern void switch_context(uint32_t *old_esp, uint32_t new_esp, uint32_t cr3);
+extern void switch_context(uintptr_t *old_esp, uintptr_t new_esp, uintptr_t cr3);
 static task_t task0;
 static task_t *current = &task0;
 static task_t *tasks = &task0;
@@ -17,7 +17,7 @@ void task_init(void) {
     task0.pid = 0;
     strcpy(task0.name, "System");
     task0.state = TASK_READY;
-    task0.cr3 = (uint32_t)paging_kernel_dir();
+    task0.cr3 = paging_kernel_root();
     task0.kind = 0;
 }
 task_t *task_current(void) { return current; }
@@ -39,22 +39,29 @@ task_t *task_create(const char *name, void (*entry)(void *), void *arg, uint32_t
     t->pid = next_pid++;
     strlcpy(t->name, name, sizeof t->name);
     t->entry = entry; t->arg = arg;
-    t->cr3 = (uint32_t)paging_kernel_dir();
+    t->cr3 = paging_kernel_root();
     t->started = timer_ticks();
     t->kind = 3;
-    uint32_t *sp = (uint32_t *)(t->stack + stack_size);
+    /* initial frame popped by switch_context (see src/arch/<arch>/isr.asm) */
+    uintptr_t *sp = (uintptr_t *)(((uintptr_t)t->stack + stack_size) & ~(uintptr_t)15);
+#ifdef __x86_64__
+    *--sp = 0;                          /* alignment: rsp % 16 == 8 at the trampoline's entry */
+    *--sp = (uintptr_t)task_trampoline; /* ret */
+    for (int i = 0; i < 6; i++) *--sp = 0;   /* rbp rbx r12 r13 r14 r15 */
+#else
     *--sp = 0;                          /* fake return for trampoline */
-    *--sp = (uint32_t)task_trampoline;  /* ret */
+    *--sp = (uintptr_t)task_trampoline; /* ret */
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; /* ebp ebx esi edi */
+#endif
     *--sp = 0x002;                      /* eflags (IF set in trampoline) */
-    t->esp = (uint32_t)sp;
+    t->esp = (uintptr_t)sp;
     t->state = TASK_READY;
     /* append */
     task_t *p = tasks; while (p->next) p = p->next; p->next = t;
     klog("task: created pid %d '%s'", t->pid, t->name);
     return t;
 }
-void task_set_cr3(task_t *t, uint32_t cr3) { t->cr3 = cr3; }
+void task_set_cr3(task_t *t, uintptr_t cr3) { t->cr3 = cr3; }
 
 static void reap(void) {
     while (zombies) {
@@ -129,7 +136,7 @@ void task_exit(int code) {
     if (current->state != TASK_READY) current = &task0;
     t->next = zombies; zombies = t;
     gdt_set_fs_base(current->teb);
-    uint32_t dummy;
+    uintptr_t dummy;
     current->state = current->state == TASK_SLEEPING ? TASK_READY : current->state;
     switch_context(&dummy, current->esp, current->cr3);
     for (;;) hlt();

@@ -4,7 +4,19 @@
 #include "lib.h"
 
 #define OS_NAME     "THE WRLD OS"
+#ifdef __x86_64__
+#define OS_EDITION  "Home Edition x64"
+#define OS_ARCH_DESC "64-bit operating system (x86-64 long mode, 4-level paging)"
+#define OS_KERNEL_DESC "64-bit x86-64 kernel: long mode, IDT, PIC, PIT, 4-level paging, heap, scheduler"
+#define OS_EXE_DESC "64-bit (x64)"
+#define OS_MACHINE "x86_64"
+#else
 #define OS_EDITION  "Home Edition"
+#define OS_ARCH_DESC "32-bit operating system (i686 protected mode, 4 MiB paging)"
+#define OS_KERNEL_DESC "32-bit x86 kernel: GDT/IDT, PIC, PIT, paging, heap, scheduler"
+#define OS_EXE_DESC "32-bit (x86)"
+#define OS_MACHINE "i686"
+#endif
 #define OS_VERSION  "1.0"
 #define OS_BUILD    "2600"
 extern char computer_name[32];
@@ -20,19 +32,33 @@ static inline void io_wait(void) { outb(0x80, 0); }
 static inline void cli(void) { __asm__ volatile("cli"); }
 static inline void sti(void) { __asm__ volatile("sti"); }
 static inline void hlt(void) { __asm__ volatile("hlt"); }
-static inline uint32_t irq_save(void) { uint32_t f; __asm__ volatile("pushf; pop %0; cli":"=r"(f)::"memory"); return f; }
-static inline void irq_restore(uint32_t f) { __asm__ volatile("push %0; popf"::"r"(f):"memory","cc"); }
+static inline uintptr_t irq_save(void) { uintptr_t f; __asm__ volatile("pushf; pop %0; cli":"=r"(f)::"memory"); return f; }
+static inline void irq_restore(uintptr_t f) { __asm__ volatile("push %0; popf"::"r"(f):"memory","cc"); }
 
 /* ---- interrupts ---- */
+#ifdef __x86_64__
+#define ARCH_NAME "x64"
+#define ARCH_BITS 64
+/* pushed by src/arch/x86_64/isr.asm; the e* names hold the full 64-bit registers */
+typedef struct regs {
+    uint64_t r15, r14, r13, r12, r11, r10, r9, r8;
+    uint64_t edi, esi, ebp, ebx, edx, ecx, eax;
+    uint64_t int_no, err_code;
+    uint64_t eip, cs, eflags, esp, ss;
+} regs_t;
+#else
+#define ARCH_NAME "x86"
+#define ARCH_BITS 32
 typedef struct regs {
     uint32_t gs, fs, es, ds;
     uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
     uint32_t int_no, err_code;
     uint32_t eip, cs, eflags;
 } regs_t;
+#endif
 typedef void (*irq_handler_t)(regs_t *r);
 void gdt_init(void);
-void gdt_set_fs_base(uint32_t base);
+void gdt_set_fs_base(uintptr_t base);    /* x86: FS segment base; x64: GS base (the TEB) */
 void idt_init(void);
 void irq_install(int irq, irq_handler_t h);
 
@@ -91,10 +117,17 @@ void kfree_aligned(void *p);
 uint32_t mm_total(void);
 uint32_t mm_used(void);
 uint32_t mm_phys_total(void);
+uintptr_t paging_kernel_root(void);                   /* CR3 of the kernel address space */
+#ifdef __x86_64__
+uintptr_t vm_space_new(void);                          /* a private address space sharing the kernel's 0..4 GiB */
+bool vm_map_2m(uintptr_t space, uint64_t va, uintptr_t pa);   /* map one 2 MiB page */
+void vm_space_free(uintptr_t space);
+#else
 uint32_t *paging_kernel_dir(void);
 uint32_t *paging_new_dir(void);
 void paging_free_dir(uint32_t *dir);
-void paging_set_uncached(uint32_t addr);
+#endif
+void paging_set_uncached(uintptr_t addr);
 
 /* ---- tasks (cooperative kernel scheduler) ---- */
 enum { TASK_READY, TASK_SLEEPING, TASK_BLOCKED, TASK_DEAD };
@@ -102,10 +135,10 @@ typedef struct task {
     int pid;
     char name[48];
     int state;
-    uint32_t esp;
+    uintptr_t esp;
     uint8_t *stack;
     uint32_t stack_size;
-    uint32_t cr3;
+    uintptr_t cr3;
     uint32_t wake_at;
     uint32_t cpu_ms;
     uint32_t started;
@@ -114,7 +147,7 @@ typedef struct task {
     void *arg;
     void *proc;                 /* PE process data if any */
     void *console;              /* attached console */
-    uint32_t teb;               /* FS base */
+    uintptr_t teb;              /* FS (x86) / GS (x64) base */
     int exit_code;
     int kind;                   /* 0 kernel, 1 shell, 2 win32, 3 app */
     struct task *next;
@@ -131,7 +164,7 @@ task_t *task_current(void);
 task_t *task_find(int pid);
 task_t *task_list(void);
 int task_count(void);
-void task_set_cr3(task_t *t, uint32_t cr3);
+void task_set_cr3(task_t *t, uintptr_t cr3);
 extern void (*task_kill_hook)(task_t *t);
 
 /* ---- misc hardware ---- */

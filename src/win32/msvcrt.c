@@ -2,7 +2,6 @@
 #include "w32.h"
 
 #define P w32_cur()
-#define CDECL __attribute__((cdecl))
 
 /* msvcrt FILE layout */
 typedef struct { char *ptr; int cnt; char *base; int flag; int file; int charbuf; int bufsiz; char *tmpfname; } FILE32;
@@ -14,6 +13,10 @@ void w32_crt_init(void) { for (int i = 0; i < 3; i++) iob[i].file = i; }
 
 static int *CDECL _errno(void) { return &P->errno_val; }
 static int *CDECL __p__fmode(void) { return (int *)&P->fmode; }
+/* used by the x64 runtime */
+static int CDECL ___mb_cur_max_func(void) { return 1; }
+static UINT CDECL ___lc_codepage_func(void) { return 0; }        /* "C" locale */
+static int CDECL __C_specific_handler(void *rec, void *frame, void *ctx, void *disp) { return 1; }   /* ExceptionContinueSearch */
 static int *CDECL __p__commode(void) { return (int *)&P->commode; }
 static int mb_cur_max = 1;
 static char **initenv_dummy;
@@ -112,9 +115,12 @@ static int CDECL isprint_(int c) { return c >= 32 && c < 127; }
 static int CDECL iscntrl_(int c) { return c < 32 || c == 127; }
 static int CDECL isgraph_(int c) { return c > 32 && c < 127; }
 static int CDECL atoi_(const char *s) { return atoi(s); }
-static long CDECL atol_(const char *s) { return strtol(s, NULL, 10); }
-static long CDECL strtol_(const char *s, char **e, int b) { return strtol(s, e, b); }
-static unsigned long CDECL strtoul_(const char *s, char **e, int b) { return strtoul(s, e, b); }
+/* Windows' long is 32 bits on x64 too (LLP64) */
+typedef int32_t wlong_t;
+typedef uint32_t wulong_t;
+static wlong_t CDECL atol_(const char *s) { return strtol(s, NULL, 10); }
+static wlong_t CDECL strtol_(const char *s, char **e, int b) { return strtol(s, e, b); }
+static wulong_t CDECL strtoul_(const char *s, char **e, int b) { return strtoul(s, e, b); }
 static int64_t CDECL _atoi64(const char *s) { int neg = 0; while (isspace(*s)) s++; if (*s == '-') { neg = 1; s++; } int64_t v = 0; while (isdigit(*s)) v = v * 10 + (*s++ - '0'); return neg ? -v : v; }
 static double CDECL strtod_(const char *s, char **end) {
     const char *p = s; while (isspace(*p)) p++;
@@ -128,7 +134,7 @@ static double CDECL strtod_(const char *s, char **end) {
 }
 static double CDECL atof_(const char *s) { return strtod_(s, NULL); }
 static int CDECL abs_(int x) { return x < 0 ? -x : x; }
-static long CDECL labs_(long x) { return x < 0 ? -x : x; }
+static wlong_t CDECL labs_(wlong_t x) { return x < 0 ? -x : x; }
 static uint32_t rnd_state = 1;
 static int CDECL rand_(void) { rnd_state = rnd_state * 214013 + 2531011; return (rnd_state >> 16) & 0x7FFF; }
 static void CDECL srand_(unsigned s) { rnd_state = s; }
@@ -214,7 +220,7 @@ static void fmt_double(char *out, int cap, double v, int prec, char conv, bool a
     *o = 0;
 #undef PUT
 }
-int w32_vformat(char *out, int cap, const char *fmt, va_list ap) {
+int w32_vformat(char *out, int cap, const char *fmt, w32_va_list ap) {
     int len = 0;
 #define OUT(c) do { if (len < cap - 1) out[len] = (c); len++; } while (0)
     for (; *fmt; fmt++) {
@@ -227,8 +233,8 @@ int w32_vformat(char *out, int cap, const char *fmt, va_list ap) {
         if (*fmt == '.') { fmt++; prec = 0; if (*fmt == '*') { prec = va_arg(ap, int); fmt++; } else while (isdigit(*fmt)) prec = prec * 10 + (*fmt++ - '0'); }
         int lng = 0; bool sh = false;
         for (;;) {
-            if (*fmt == 'l') { lng++; fmt++; } else if (*fmt == 'h') { sh = true; fmt++; } else if (*fmt == 'L' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') { if (*fmt == 'j') lng = 2; fmt++; }
-            else if (fmt[0] == 'I' && fmt[1] == '6' && fmt[2] == '4') { lng = 2; fmt += 3; } else if (fmt[0] == 'I' && fmt[1] == '3' && fmt[2] == '2') { fmt += 3; } else if (*fmt == 'I') { fmt++; } else break;
+            if (*fmt == 'l') { lng++; fmt++; } else if (*fmt == 'h') { sh = true; fmt++; } else if (*fmt == 'L' || *fmt == 'z' || *fmt == 'j' || *fmt == 't') { if (*fmt == 'j' || (*fmt != 'L' && sizeof(void *) == 8)) lng = 2; fmt++; }
+            else if (fmt[0] == 'I' && fmt[1] == '6' && fmt[2] == '4') { lng = 2; fmt += 3; } else if (fmt[0] == 'I' && fmt[1] == '3' && fmt[2] == '2') { fmt += 3; } else if (*fmt == 'I') { if (sizeof(void *) == 8) lng = 2; fmt++; } else break;
         }
         char tmp[400]; const char *s = tmp; int sl = 0; char sign = 0; const char *pfx = "";
         char c = *fmt;
@@ -255,7 +261,7 @@ int w32_vformat(char *out, int cap, const char *fmt, va_list ap) {
             for (int i = 0; i < n; i++) tmp[i] = d[n - 1 - i]; sl = n;
             break;
         }
-        case 'p': { uint32_t v = (uint32_t)va_arg(ap, void *); snprintf(tmp, sizeof tmp, "%08X", v); sl = 8; break; }
+        case 'p': { uintptr_t v = (uintptr_t)va_arg(ap, void *); sl = snprintf(tmp, sizeof tmp, "%0*llX", (int)sizeof(void *) * 2, (unsigned long long)v); break; }
         case 'c': tmp[0] = (char)va_arg(ap, int); sl = 1; break;
         case 'C': tmp[0] = (char)va_arg(ap, int); sl = 1; break;
         case 's': case 'S':
@@ -311,20 +317,20 @@ static int stream_getc(FILE32 *f) {
     if (!rf(x->h, &c, 1, &r, NULL) || !r) { x->eof = true; return -1; }
     return c;
 }
-static int CDECL vfprintf_(FILE32 *f, const char *fmt, va_list ap) {
+static int CDECL vfprintf_(FILE32 *f, const char *fmt, w32_va_list ap) {
     char buf[2048]; int n = w32_vformat(buf, sizeof buf, fmt, ap);
     stream_write(f, buf, MIN(n, (int)sizeof buf - 1));
     return n;
 }
-static int CDECL fprintf_(FILE32 *f, const char *fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfprintf_(f, fmt, ap); va_end(ap); return r; }
-static int CDECL vprintf_(const char *fmt, va_list ap) { return vfprintf_(F_STDOUT, fmt, ap); }
-static int CDECL printf_(const char *fmt, ...) { va_list ap; va_start(ap, fmt); int r = vfprintf_(F_STDOUT, fmt, ap); va_end(ap); return r; }
-static int CDECL vsprintf_(char *b, const char *fmt, va_list ap) { return w32_vformat(b, 0x7FFFFFFF, fmt, ap); }
-static int CDECL sprintf_(char *b, const char *fmt, ...) { va_list ap; va_start(ap, fmt); int r = w32_vformat(b, 0x7FFFFFFF, fmt, ap); va_end(ap); return r; }
-static int CDECL _vsnprintf(char *b, size_t n, const char *fmt, va_list ap) { int r = w32_vformat(b, n, fmt, ap); return r >= (int)n ? -1 : r; }
-static int CDECL _snprintf(char *b, size_t n, const char *fmt, ...) { va_list ap; va_start(ap, fmt); int r = _vsnprintf(b, n, fmt, ap); va_end(ap); return r; }
-static int CDECL vsnprintf_(char *b, size_t n, const char *fmt, va_list ap) { return w32_vformat(b, n, fmt, ap); }
-static int CDECL snprintf_(char *b, size_t n, const char *fmt, ...) { va_list ap; va_start(ap, fmt); int r = w32_vformat(b, n, fmt, ap); va_end(ap); return r; }
+static int CDECL fprintf_(FILE32 *f, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = vfprintf_(f, fmt, ap); w32_va_end(ap); return r; }
+static int CDECL vprintf_(const char *fmt, w32_va_list ap) { return vfprintf_(F_STDOUT, fmt, ap); }
+static int CDECL printf_(const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = vfprintf_(F_STDOUT, fmt, ap); w32_va_end(ap); return r; }
+static int CDECL vsprintf_(char *b, const char *fmt, w32_va_list ap) { return w32_vformat(b, 0x7FFFFFFF, fmt, ap); }
+static int CDECL sprintf_(char *b, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = w32_vformat(b, 0x7FFFFFFF, fmt, ap); w32_va_end(ap); return r; }
+static int CDECL _vsnprintf(char *b, size_t n, const char *fmt, w32_va_list ap) { int r = w32_vformat(b, n, fmt, ap); return r >= (int)n ? -1 : r; }
+static int CDECL _snprintf(char *b, size_t n, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = _vsnprintf(b, n, fmt, ap); w32_va_end(ap); return r; }
+static int CDECL vsnprintf_(char *b, size_t n, const char *fmt, w32_va_list ap) { return w32_vformat(b, n, fmt, ap); }
+static int CDECL snprintf_(char *b, size_t n, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = w32_vformat(b, n, fmt, ap); w32_va_end(ap); return r; }
 static int CDECL puts_(const char *s) { stream_write(F_STDOUT, s, strlen(s)); stream_write(F_STDOUT, "\n", 1); return 0; }
 static int CDECL fputs_(const char *s, FILE32 *f) { return stream_write(f, s, strlen(s)) < 0 ? -1 : 0; }
 static int CDECL fputc_(int c, FILE32 *f) { char ch = c; return stream_write(f, &ch, 1) < 0 ? -1 : (uint8_t)c; }
@@ -370,8 +376,8 @@ static FILE32 *CDECL fopen_(const char *name, const char *mode) {
     return &x->f;
 }
 static int CDECL fclose_(FILE32 *f) { if (IS_STD(f)) return 0; xfile_t *x = (xfile_t *)f; BOOL (WINAPI *ch)(HANDLE) = k32("CloseHandle"); ch(x->h); w32_free(P, x); return 0; }
-static int CDECL fseek_(FILE32 *f, long off, int wh) { if (IS_STD(f)) return -1; xfile_t *x = (xfile_t *)f; DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); x->eof = false; x->unget = -1; return sfp(x->h, off, NULL, wh) == 0xFFFFFFFF ? -1 : 0; }
-static long CDECL ftell_(FILE32 *f) { if (IS_STD(f)) return -1; xfile_t *x = (xfile_t *)f; DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); return sfp(x->h, 0, NULL, 1); }
+static int CDECL fseek_(FILE32 *f, wlong_t off, int wh) { if (IS_STD(f)) return -1; xfile_t *x = (xfile_t *)f; DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); x->eof = false; x->unget = -1; return sfp(x->h, off, NULL, wh) == 0xFFFFFFFF ? -1 : 0; }
+static wlong_t CDECL ftell_(FILE32 *f) { if (IS_STD(f)) return -1; xfile_t *x = (xfile_t *)f; DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); return sfp(x->h, 0, NULL, 1); }
 static void CDECL rewind_(FILE32 *f) { fseek_(f, 0, 0); }
 static int CDECL feof_(FILE32 *f) { return IS_STD(f) ? 0 : ((xfile_t *)f)->eof; }
 static int CDECL ferror_(FILE32 *f) { return IS_STD(f) ? 0 : ((xfile_t *)f)->err; }
@@ -393,7 +399,7 @@ static int CDECL _read(int fd, void *b, unsigned n) { if (fd == 0) return w32_st
 typedef struct { const char *s; FILE32 *f; int peek; } scan_src_t;
 static int sc_get(scan_src_t *src) { if (src->peek >= 0) { int c = src->peek; src->peek = -1; return c; } if (src->s) return *src->s ? (uint8_t)*src->s++ : -1; return stream_getc(src->f); }
 static void sc_unget(scan_src_t *src, int c) { if (c >= 0) src->peek = c; }
-static int vscan(scan_src_t *src, const char *fmt, va_list ap) {
+static int vscan(scan_src_t *src, const char *fmt, w32_va_list ap) {
     int assigned = 0, c = 0;
     for (; *fmt; fmt++) {
         if (isspace(*fmt)) { while ((c = sc_get(src)) >= 0 && isspace(c)) {} sc_unget(src, c); continue; }
@@ -448,17 +454,17 @@ static int vscan(scan_src_t *src, const char *fmt, va_list ap) {
     }
     return assigned;
 }
-int w32_vsscanf(const char *str, const char *fmt, va_list ap) { scan_src_t s = { str, NULL, -1 }; return vscan(&s, fmt, ap); }
-static int CDECL sscanf_(const char *str, const char *fmt, ...) { va_list ap; va_start(ap, fmt); int r = w32_vsscanf(str, fmt, ap); va_end(ap); return r; }
+int w32_vsscanf(const char *str, const char *fmt, w32_va_list ap) { scan_src_t s = { str, NULL, -1 }; return vscan(&s, fmt, ap); }
+static int CDECL sscanf_(const char *str, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = w32_vsscanf(str, fmt, ap); w32_va_end(ap); return r; }
 static int CDECL scanf_(const char *fmt, ...) {
-    va_list ap; va_start(ap, fmt);
+    w32_va_list ap; w32_va_start(ap, fmt);
     scan_src_t s = { NULL, F_STDIN, -1 };
     int r = vscan(&s, fmt, ap);
-    va_end(ap);
+    w32_va_end(ap);
     if (s.peek >= 0) ungetc_(s.peek, F_STDIN);
     return r;
 }
-static int CDECL fscanf_(FILE32 *f, const char *fmt, ...) { va_list ap; va_start(ap, fmt); scan_src_t s = { NULL, f, -1 }; int r = vscan(&s, fmt, ap); va_end(ap); if (s.peek >= 0) ungetc_(s.peek, f); return r; }
+static int CDECL fscanf_(FILE32 *f, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); scan_src_t s = { NULL, f, -1 }; int r = vscan(&s, fmt, ap); w32_va_end(ap); if (s.peek >= 0) ungetc_(s.peek, f); return r; }
 
 /* ---------------- math (x87) ---------------- */
 static double CDECL sqrt_(double x) { double r; __asm__("fsqrt" : "=t"(r) : "0"(x)); return r; }
@@ -528,6 +534,7 @@ const w32_export_t msvcrt_exports[] = {
     EA("islower", islower_), EA("isxdigit", isxdigit_), EA("ispunct", ispunct_), EA("isprint", isprint_), EA("iscntrl", iscntrl_), EA("isgraph", isgraph_),
     EA("atoi", atoi_), EA("atol", atol_), EA("strtol", strtol_), EA("strtoul", strtoul_), E(_atoi64), EA("strtod", strtod_), EA("atof", atof_), EA("abs", abs_), EA("labs", labs_),
     EA("rand", rand_), EA("srand", srand_), EA("qsort", qsort_), EA("bsearch", bsearch_), EA("getenv", getenv_), EA("system", system_),
+    E(___mb_cur_max_func), E(___lc_codepage_func), E(__C_specific_handler),
     EA("time", time_), E(_time32), E(_time64), EA("clock", clock_), EA("localtime", localtime_), E(_localtime64), EA("strftime", strftime_),
     EA("vfprintf", vfprintf_), EA("fprintf", fprintf_), EA("vprintf", vprintf_), EA("printf", printf_), EA("vsprintf", vsprintf_), EA("sprintf", sprintf_),
     E(_vsnprintf), E(_snprintf), EA("vsnprintf", vsnprintf_), EA("snprintf", snprintf_), EA("puts", puts_), EA("fputs", fputs_), EA("fputc", fputc_), EA("putc", fputc_),

@@ -237,9 +237,7 @@ static BOOL WINAPI SwitchToThread(void) { task_yield(); return 1; }
 typedef struct { void *fn; void *arg; w32_proc_t *p; } thr_start_t;
 static void thread_main(void *a) {
     thr_start_t *s = a; void *fn = s->fn; void *arg = s->arg; kfree(s);
-    extern uint32_t call_tls_cb(void *fn, uint32_t a, uint32_t b, uint32_t c);
-    uint32_t (WINAPI *f)(void *) = fn;
-    uint32_t r = f(arg);
+    uint32_t r = call_thread_proc(fn, arg);
     task_exit(r);
 }
 static HANDLE WINAPI CreateThread(void *sa, DWORD stack, void *fn, void *arg, DWORD flags, DWORD *tid) {
@@ -247,10 +245,8 @@ static HANDLE WINAPI CreateThread(void *sa, DWORD stack, void *fn, void *arg, DW
     thr_start_t *s = kmalloc(sizeof *s); s->fn = fn; s->arg = arg; s->p = p;
     task_t *t = task_create("thread", thread_main, s, MAX(stack, 128 * 1024u));
     snprintf(t->name, sizeof t->name, "%s:thread", path_basename(p->path));
-    t->kind = 2; t->proc = p; t->cr3 = (uint32_t)p->pagedir; t->console = p->con;
-    uint8_t *teb = kzalloc(4096); memcpy(teb, p->teb, 4096);
-    ((uint32_t *)teb)[0x18 / 4] = (uint32_t)teb; ((uint32_t *)teb)[1] = (uint32_t)t->stack + t->stack_size; ((uint32_t *)teb)[2] = (uint32_t)t->stack;
-    t->teb = (uint32_t)teb;
+    t->kind = 2; t->proc = p; t->cr3 = p->space; t->console = p->con;
+    t->teb = (uintptr_t)w32_new_teb(p, t);
     p->threads++;
     if (tid) *tid = t->pid;
     uint32_t h = halloc(H_THREAD); hget(h)->tid = t->pid;
@@ -303,10 +299,10 @@ static BOOL WINAPI CreateProcessA(const char *app, char *cmd, void *a, void *b, 
 static HANDLE WINAPI GetProcessHeap(void) { return HEAP_H; }
 static HANDLE WINAPI HeapCreate(DWORD o, DWORD i, DWORD m) { return HEAP_H; }
 static BOOL WINAPI HeapDestroy(HANDLE h) { return 1; }
-static void *WINAPI HeapAlloc(HANDLE h, DWORD flags, DWORD n) { void *p = w32_alloc(P, n); if (p && (flags & 8)) memset(p, 0, n); return p; }
+static void *WINAPI HeapAlloc(HANDLE h, DWORD flags, SIZE_T n) { void *p = w32_alloc(P, n); if (p && (flags & 8)) memset(p, 0, n); return p; }
 static void *WINAPI HeapReAlloc(HANDLE h, DWORD flags, void *ptr, DWORD n) { uint32_t old = w32_msize(ptr); void *p = w32_realloc(P, ptr, n); if (p && (flags & 8) && n > old) memset((uint8_t *)p + old, 0, n - old); return p; }
 static BOOL WINAPI HeapFree(HANDLE h, DWORD f, void *p) { w32_free(P, p); return 1; }
-static DWORD WINAPI HeapSize(HANDLE h, DWORD f, void *p) { return w32_msize(p); }
+static SIZE_T WINAPI HeapSize(HANDLE h, DWORD f, void *p) { return w32_msize(p); }
 static BOOL WINAPI HeapValidate(HANDLE h, DWORD f, void *p) { return 1; }
 static void *WINAPI GlobalAlloc(UINT f, DWORD n) { void *p = w32_alloc(P, n); if (p && (f & 0x40)) memset(p, 0, n); return p; }
 static void *WINAPI GlobalFree(void *p) { w32_free(P, p); return NULL; }
@@ -314,26 +310,26 @@ static void *WINAPI GlobalLock(void *p) { return p; }
 static BOOL WINAPI GlobalUnlock(void *p) { return 1; }
 static void *WINAPI LocalAlloc(UINT f, DWORD n) { return GlobalAlloc(f, n); }
 static void *WINAPI LocalFree(void *p) { w32_free(P, p); return NULL; }
-static void *WINAPI VirtualAlloc(void *addr, DWORD n, DWORD type, DWORD prot) {
+static void *WINAPI VirtualAlloc(void *addr, SIZE_T n, DWORD type, DWORD prot) {
     if (addr && !(type & 0x2000) && (type & 0x1000)) return addr;   /* commit of reserved region */
+    if (n > 0x7FF00000u) return NULL;
     void *p = w32_alloc(P, n + 4096);
     if (!p) return NULL;
-    uint8_t *a = (uint8_t *)(((uint32_t)p + 4095) & ~4095u);
+    uint8_t *a = (uint8_t *)(((uintptr_t)p + 4095) & ~(uintptr_t)4095);
     memset(a, 0, n);
-    ((uint32_t *)a)[-0] = ((uint32_t *)a)[0];
     return a;
 }
 static BOOL WINAPI VirtualFree(void *a, DWORD n, DWORD t) { return 1; }
-typedef struct { void *base, *alloc_base; DWORD alloc_prot, size, state, prot, type; } MBI;
-static DWORD WINAPI VirtualQuery(const void *addr, MBI *m, DWORD len) {
+typedef struct { void *base, *alloc_base; DWORD alloc_prot; SIZE_T size; DWORD state, prot, type; } MBI;   /* same layout as Windows on x86 and x64 */
+static SIZE_T WINAPI VirtualQuery(const void *addr, MBI *m, SIZE_T len) {
     memset(m, 0, sizeof *m);
-    uint32_t a = (uint32_t)addr & ~4095u;
+    uintptr_t a = (uintptr_t)addr & ~(uintptr_t)4095;
     m->base = (void *)a; m->alloc_base = (void *)P->base; m->alloc_prot = 0x40; m->size = 4096; m->state = 0x1000; m->prot = 0x40; m->type = 0x1000000;
     return sizeof *m;
 }
 static BOOL WINAPI VirtualProtect(void *a, DWORD n, DWORD np, DWORD *op) { if (op) *op = 0x40; return 1; }
 static BOOL WINAPI FlushInstructionCache(HANDLE h, const void *a, DWORD n) { return 1; }
-typedef struct { DWORD len, load; DWORD total_phys, avail_phys, total_page, avail_page, total_virt, avail_virt; } MEMORYSTATUS;
+typedef struct { DWORD len, load; SIZE_T total_phys, avail_phys, total_page, avail_page, total_virt, avail_virt; } MEMORYSTATUS;
 static void WINAPI GlobalMemoryStatus(MEMORYSTATUS *m) { m->len = sizeof *m; m->total_phys = mm_phys_total(); m->avail_phys = mm_total() - mm_used(); m->load = mm_used() * 100 / mm_total(); m->total_page = m->total_phys; m->avail_page = m->avail_phys; m->total_virt = 0x7FFE0000; m->avail_virt = m->avail_phys; }
 typedef struct { DWORD len, load; uint64_t total_phys, avail_phys, total_page, avail_page, total_virt, avail_virt, ext; } MEMORYSTATUSEX;
 static BOOL WINAPI GlobalMemoryStatusEx(MEMORYSTATUSEX *m) { m->load = mm_used() * 100 / mm_total(); m->total_phys = mm_phys_total(); m->avail_phys = mm_total() - mm_used(); m->total_page = m->total_phys; m->avail_page = m->avail_phys; m->total_virt = 0x7FFE0000; m->avail_virt = m->avail_phys; m->ext = 0; return 1; }
@@ -365,8 +361,9 @@ typedef struct { LONG bias; WCHAR sname[32]; SYSTEMTIME sdate; LONG sbias; WCHAR
 static DWORD WINAPI GetTimeZoneInformation(TZI *t) { memset(t, 0, sizeof *t); t->bias = -tz_offset_minutes; return 0; }
 
 /* ---------------- sync primitives (single CPU cooperative) ---------------- */
-static void WINAPI InitializeCriticalSection(void *cs) { memset(cs, 0, 24); }
-static BOOL WINAPI InitializeCriticalSectionAndSpinCount(void *cs, DWORD n) { memset(cs, 0, 24); return 1; }
+#define CS_SIZE (sizeof(void *) == 8 ? 40 : 24)       /* sizeof(CRITICAL_SECTION) */
+static void WINAPI InitializeCriticalSection(void *cs) { memset(cs, 0, CS_SIZE); }
+static BOOL WINAPI InitializeCriticalSectionAndSpinCount(void *cs, DWORD n) { memset(cs, 0, CS_SIZE); return 1; }
 static void WINAPI DeleteCriticalSection(void *cs) {}
 static void WINAPI EnterCriticalSection(void *cs) {}
 static void WINAPI LeaveCriticalSection(void *cs) {}
@@ -386,7 +383,7 @@ static void WINAPI InitializeSRWLock(void *l) { *(uint32_t *)l = 0; }
 static DWORD WINAPI TlsAlloc(void) { w32_proc_t *p = P; for (int i = 0; i < 64; i++) if (!(p->tls_used & (1ULL << i))) { p->tls_used |= 1ULL << i; p->tls_slots[i] = 0; return i; } return 0xFFFFFFFF; }
 static BOOL WINAPI TlsFree(DWORD i) { if (i < 64) P->tls_used &= ~(1ULL << i); return 1; }
 static void *WINAPI TlsGetValue(DWORD i) { set_err(0); return i < 64 ? (void *)P->tls_slots[i] : NULL; }
-static BOOL WINAPI TlsSetValue(DWORD i, void *v) { if (i >= 64) return 0; P->tls_slots[i] = (uint32_t)v; return 1; }
+static BOOL WINAPI TlsSetValue(DWORD i, void *v) { if (i >= 64) return 0; P->tls_slots[i] = (uintptr_t)v; return 1; }
 static DWORD WINAPI FlsAlloc(void *cb) { return TlsAlloc(); }
 static void *WINAPI FlsGetValue(DWORD i) { return TlsGetValue(i); }
 static BOOL WINAPI FlsSetValue(DWORD i, void *v) { return TlsSetValue(i, v); }
@@ -415,8 +412,9 @@ typedef struct { DWORD size, major, minor, build, platform; char csd[128]; } OSV
 static BOOL WINAPI GetVersionExA(OSVERSIONINFOA *v) { v->major = 5; v->minor = 1; v->build = 2600; v->platform = 2; strcpy(v->csd, "THE WRLD OS"); return 1; }
 static BOOL WINAPI GetComputerNameA(char *b, DWORD *n) { strlcpy(b, computer_name, *n); *n = strlen(b); return 1; }
 static BOOL WINAPI GetUserNameA(char *b, DWORD *n) { strlcpy(b, user_name, *n); *n = strlen(b) + 1; return 1; }
-typedef struct { WORD arch, r; DWORD page, minaddr, maxaddr, mask, ncpu, type, gran; WORD level, rev; } SYSTEM_INFO;
-static void WINAPI GetSystemInfo(SYSTEM_INFO *s) { memset(s, 0, sizeof *s); s->page = 4096; s->minaddr = 0x10000; s->maxaddr = 0x7FFEFFFF; s->mask = 1; s->ncpu = 1; s->type = 586; s->gran = 65536; s->level = 6; }
+typedef struct { WORD arch, r; DWORD page; void *minaddr, *maxaddr; uintptr_t mask; DWORD ncpu, type, gran; WORD level, rev; } SYSTEM_INFO;
+static void WINAPI GetSystemInfo(SYSTEM_INFO *s) { memset(s, 0, sizeof *s); s->page = 4096; s->minaddr = (void *)0x10000; s->maxaddr = (void *)(uintptr_t)(ARCH_BITS == 64 ? 0x7FFFFFFEFFFFull : 0x7FFEFFFF); s->mask = 1; s->ncpu = 1;
+    s->arch = ARCH_BITS == 64 ? 9 : 0; s->type = ARCH_BITS == 64 ? 8664 : 586; s->gran = 65536; s->level = 6; }
 static void WINAPI GetNativeSystemInfo(SYSTEM_INFO *s) { GetSystemInfo(s); }
 static UINT WINAPI GetACP(void) { return 1252; }
 static UINT WINAPI GetOEMCP(void) { return 437; }
@@ -482,7 +480,7 @@ static HMODULE WINAPI LoadLibraryW(const WCHAR *n) { return GetModuleHandleW(n);
 static HMODULE WINAPI LoadLibraryExA(const char *n, HANDLE f, DWORD fl) { return LoadLibraryA(n); }
 static BOOL WINAPI FreeLibrary(HMODULE h) { return 1; }
 static void *WINAPI GetProcAddress(HMODULE h, const char *name) {
-    if ((uint32_t)name < 0x10000) return NULL;
+    if ((uintptr_t)name < 0x10000) return NULL;
     void *fn = NULL;
     if (h >= KMOD(0) && h < KMOD(ARRAY_LEN(modnames))) {
         const char *dll = modnames[(h - KMOD(0)) / 0x10000];

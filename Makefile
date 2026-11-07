@@ -4,22 +4,37 @@ ifeq ($(origin CC),default)
 CC      := gcc
 endif
 NASM    ?= nasm
-CFLAGS  := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
-           -fno-asynchronous-unwind-tables -fno-builtin -mno-sse -mno-mmx -O2 -g0 \
+# ARCH=i686 (default): the 32-bit edition, wrldos.iso
+# ARCH=x86_64:         the 64-bit edition, wrldos64.iso (runs x64 Win32 programs)
+ARCH    ?= i686
+ifeq ($(ARCH),x86_64)
+ARCHFLAGS := -m64 -march=x86-64 -mno-red-zone -mcmodel=small
+NASMFMT := elf64
+BUILD   := build64
+ISO     := wrldos64.iso
+else ifeq ($(ARCH),i686)
+ARCHFLAGS := -m32 -march=i686 -mno-sse -mno-mmx
+NASMFMT := elf32
+BUILD   := build
+ISO     := wrldos.iso
+else
+$(error ARCH must be i686 or x86_64)
+endif
+CFLAGS  := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
+           -fno-asynchronous-unwind-tables -fno-builtin -O2 -g0 \
            -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers \
            -Wno-sign-compare -Wno-misleading-indentation -std=gnu11 -Isrc/include
-LDFLAGS := -m32 -nostdlib -no-pie -static -T linker.ld -Wl,--build-id=none -Wl,-z,noexecstack
+LDFLAGS := $(firstword $(ARCHFLAGS)) -nostdlib -no-pie -static -T src/arch/$(ARCH)/linker.ld -Wl,--build-id=none -Wl,-z,noexecstack
 # --no-warn-rwx-segments only exists in binutils 2.39+ (Ubuntu 22.04 ships 2.38)
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
-BUILD   := build
 CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c)
 # BearSSL (TLS), built freestanding for i686 without SSE/AES-NI
 BSSL    := third_party/bearssl
 BSSL_SRC := $(shell find $(BSSL)/src -name '*.c' 2>/dev/null)
 BSSL_OBJ := $(patsubst $(BSSL)/src/%.c,$(BUILD)/bearssl/%.o,$(BSSL_SRC))
-BSSL_CFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
-           -fno-builtin -mno-sse -mno-mmx -O2 -g0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -I$(BSSL)/src \
+BSSL_CFLAGS := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+           -fno-builtin -O2 -g0 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -I$(BSSL)/src \
            -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_RDRAND=0 -DBR_USE_URANDOM=0 -DBR_USE_UNIX_TIME=0 \
            -DBR_USE_WIN32_RAND=0 -DBR_USE_WIN32_TIME=0 -DBR_POWER8=0
 # QuickJS (JavaScript for The WRLD Xplorer and the "js" command), built against
@@ -28,16 +43,17 @@ QJS     := third_party/quickjs
 QSHIM   := third_party/quickjs-shim
 QJS_SRC := $(QJS)/quickjs.c $(QJS)/libregexp.c $(QJS)/libunicode.c $(QJS)/dtoa.c $(QSHIM)/libc.c $(QSHIM)/libm.c
 QJS_OBJ := $(patsubst %.c,$(BUILD)/qjs/%.o,$(notdir $(QJS_SRC))) $(patsubst src/js/%.c,$(BUILD)/qjs/js_%.o,$(wildcard src/js/*.c))
-QJS_CFLAGS := -m32 -march=i686 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
-           -fno-builtin -mno-sse -mno-mmx -O2 -g0 -nostdinc -isystem $(shell $(CC) -m32 -print-file-name=include) \
+QJS_CFLAGS := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+           -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
            -I$(QSHIM)/include -I$(QJS) -Isrc/js -D__DJGPP=1 -D__STDC_NO_ATOMICS__=1 -DNDEBUG -D_GNU_SOURCE -w
-ASRC    := $(wildcard src/kernel/*.asm)
+ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
 OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(BSSL_OBJ) $(QJS_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
-ISO     := wrldos.iso
 MINGW   := i686-w64-mingw32-gcc
 SAMPLES := $(wildcard samples/*.c)
 SAMPLE_EXES := $(patsubst samples/%.c,rootfs/Samples/%.exe,$(SAMPLES))
+MINGW64 := x86_64-w64-mingw32-gcc
+SAMPLE_EXES64 := $(patsubst samples/%.c,rootfs64/Samples/%.exe,$(SAMPLES))
 
 GRUBDIR ?= $(firstword $(wildcard /usr/lib/grub/i386-pc /usr/lib/grub2/i386-pc /usr/share/grub/i386-pc) /usr/lib/grub/i386-pc)
 GRUB_MKRESCUE ?= $(firstword $(shell command -v grub-mkrescue grub2-mkrescue 2>/dev/null) grub-mkrescue)
@@ -45,7 +61,7 @@ GRUB_MKIMAGE  ?= $(firstword $(shell command -v grub-mkimage grub2-mkimage 2>/de
 GRUB_MODS := biosdisk part_msdos fat multiboot normal configfile boot vbe vga video_bochs video_cirrus echo test
 SYS     := $(BUILD)/sys
 CORES   := $(foreach n,1 2 3 4,$(SYS)/boot/grub/core$(n).img)
-DISK    := disk.img
+DISK    := $(if $(filter x86_64,$(ARCH)),disk64.img,disk.img)
 DISK_MB := 512
 # Host sound output: PulseAudio/PipeWire when a server is running (desktop Linux, WSLg),
 # otherwise silent. Override with e.g. "make run AUDIO=alsa" or "AUDIO=sdl".
@@ -59,10 +75,11 @@ SOUND_DEV_ac97 := -device AC97,audiodev=snd0
 SOUND_DEV_es1370 := -device ES1370,audiodev=snd0
 SOUND_DEV_sb16 := -device sb16,audiodev=snd0
 SOUND_DEV_ich9 := -device ich9-intel-hda -device hda-output,audiodev=snd0
-QEMU    := qemu-system-i386 -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
+QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
+QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all iso run run-headless run-install run-disk disk clean samples dmg assets check-tools FORCE
+.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
@@ -82,7 +99,12 @@ endif
 
 all: $(ISO)
 
-$(BUILD)/%.o: src/%.c $(wildcard src/include/*.h)
+# both editions
+both:
+	$(MAKE) ARCH=i686
+	$(MAKE) ARCH=x86_64
+
+$(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -107,24 +129,31 @@ $(BUILD)/qjs/js_%.o: src/js/%.c $(wildcard src/js/*.h) $(QJS)/quickjs.h $(QSHIM)
 
 $(BUILD)/kernel/jsprelude.o: src/kernel/jsprelude.asm src/js/prelude.js
 	@mkdir -p $(dir $@)
-	$(NASM) -f elf32 $< -o $@
+	$(NASM) -f $(NASMFMT) $< -o $@
 
 $(BUILD)/kernel/assets.o: src/kernel/assets.asm assets/fonts.bin assets/icons.bin assets/globe.bin
 	@mkdir -p $(dir $@)
-	$(NASM) -f elf32 $< -o $@
+	$(NASM) -f $(NASMFMT) $< -o $@
 
 $(BUILD)/%.o: src/%.asm
 	@mkdir -p $(dir $@)
-	$(NASM) -f elf32 $< -o $@
+	$(NASM) -f $(NASMFMT) $< -o $@
 
-$(KERNEL): $(OBJS) linker.ld
+$(KERNEL): $(OBJS) src/arch/$(ARCH)/linker.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS)
 
 assets:
 	python3 tools/gen_assets.py
 
-# Win32 sample programs (needs mingw-w64). Prebuilt copies are committed.
-samples: $(SAMPLE_EXES)
+# Win32 sample programs (needs mingw-w64). Prebuilt copies are committed:
+# rootfs/Samples (x86, 32-bit edition) and rootfs64/Samples (x64, 64-bit edition).
+samples: $(SAMPLE_EXES) $(SAMPLE_EXES64)
+rootfs64/Samples/winhello.exe: samples/winhello.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -mwindows -o $@ $< -lgdi32
+rootfs64/Samples/%.exe: samples/%.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -o $@ $<
 rootfs/Samples/winhello.exe: samples/winhello.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -lgdi32
 rootfs/Samples/%.exe: samples/%.c
@@ -149,7 +178,7 @@ $(SYS)/boot/wrld.elf: $(KERNEL)
 # initrd = rootfs/ plus the boot files Setup copies to the disk
 $(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(CORES) FORCE
 	@mkdir -p $(BUILD)
-	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot
+	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .)
 
 $(ISO): $(KERNEL) $(BUILD)/initrd.tar grub/grub.cfg
 	@mkdir -p $(BUILD)/iso/boot/grub
@@ -185,6 +214,6 @@ check-tools:
 	@if [ -f $(GRUBDIR)/boot.img ]; then echo "  ok       GRUB BIOS files ($(GRUBDIR))"; else echo "  MISSING  GRUB BIOS files (grub-pc-bin)"; fi
 
 clean:
-	rm -rf $(BUILD) $(ISO)
+	rm -rf build build64 wrldos.iso wrldos64.iso
 
 FORCE:

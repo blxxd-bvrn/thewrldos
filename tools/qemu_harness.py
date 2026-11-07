@@ -5,12 +5,13 @@ import json, os, socket, subprocess, sys, time, tempfile
 from PIL import Image
 
 class Harness:
-    def __init__(self, iso, mem=256, outdir=".", hda=None, boot="d", extra=None, vga="std"):
+    def __init__(self, iso, mem=256, outdir=".", hda=None, boot="d", extra=None, vga="std", qemu=None):
         self.dir = tempfile.mkdtemp()
         self.sock = os.path.join(self.dir, "qmp.sock")
         self.serial = os.path.join(outdir, "serial.log")
         self.outdir = outdir
-        args = ["qemu-system-i386", "-m", str(mem), "-vga", vga, "-display", "none", "-serial", "file:" + self.serial,
+        if qemu is None: qemu = "qemu-system-x86_64" if iso and "64" in os.path.basename(iso) else "qemu-system-i386"
+        args = [qemu, "-m", str(mem), "-vga", vga, "-display", "none", "-serial", "file:" + self.serial,
                 "-qmp", "unix:%s,server,nowait" % self.sock, "-boot", boot]
         if iso: args += ["-cdrom", iso]
         if hda: args += ["-drive", "file=%s,format=raw,if=ide,index=0" % hda]
