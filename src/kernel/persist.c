@@ -173,6 +173,8 @@ void settings_load(void) {
     mouse_speed = geti("mouse_speed", mouse_speed);
     clock_24h = geti("clock24", clock_24h);
     show_seconds = geti("seconds", show_seconds);
+    const char *rs = settings_get("resolution");
+    if (rs && video_can_set_mode()) { int rw = atoi(rs); const char *xx = strchr(rs, 'x'); int rh = xx ? atoi(xx + 1) : 0; if (rw && rh) gfx_set_resolution(rw, rh); }
     const char *th = settings_get("theme");
     if (!boot_safe_mode && th) {
         int id = isdigit(th[0]) ? atoi(th) : style_find(th);    /* numbers: older wrld.ini */
@@ -186,6 +188,7 @@ static void capture(void) {
     settings_set("user", user_name); settings_set("computer", computer_name);
     settings_set("picture", picture_name(user_picture));
     settings_set("theme", style_file(theme_id));
+    if (video_can_set_mode()) { snprintf(b, sizeof b, "%dx%d", SCREEN_W, SCREEN_H); settings_set("resolution", b); }
     snprintf(b, sizeof b, "%d", theme_hue); settings_set("hue", b);
     snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);
     snprintf(b, sizeof b, "%d", tz_offset_minutes); settings_set("tz", b);

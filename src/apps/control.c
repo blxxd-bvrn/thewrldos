@@ -46,7 +46,7 @@ typedef struct {
     int scroll;
     char search[64];
     /* applet state */
-    int hue, theme; int wall; int style_page; uint32_t style_gen;
+    int hue, theme; int wall; int style_page; uint32_t style_gen; int res_sel;
     char uname[32];
     int dbl, speed; bool swap; uint32_t dbl_test_t; bool dbl_open;
     int tz; char keytest[64];
@@ -68,7 +68,7 @@ static void cp_go(cp_t *c, const char *page, bool push) {
     const applet_t *a = find_applet(page);
     wm_set_title(c->win, a ? a->name : !strncmp(page, "cat:", 4) ? cats[atoi(page + 4)].name : c->view ? "All Control Panel Items" : "Control Panel");
     c->win->icon = a ? a->icon : ICON_CONTROL_PANEL;
-    c->hue = theme_hue; c->theme = theme_id; c->wall = wallpaper_id;
+    c->hue = theme_hue; c->theme = theme_id; c->wall = wallpaper_id; c->res_sel = 0;
     strlcpy(c->uname, user_name, sizeof c->uname);
     c->dbl = wm_dblclick_ms; c->speed = mouse_speed; c->swap = mouse_swap_buttons;
     c->tz = tz_offset_minutes; c->anim = wm_animations;
@@ -314,23 +314,70 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         }
     }
 }
+static const struct { int w, h; } modes[] = { { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 800 }, { 1280, 960 }, { 1280, 1024 }, { 1360, 768 },
+    { 1366, 768 }, { 1440, 900 }, { 1600, 900 }, { 1600, 1200 }, { 1680, 1050 }, { 1920, 1080 }, { 1920, 1200 }, { 2560, 1440 } };
+static int res_prev_w, res_prev_h, res_countdown;
+static window_t *res_box;
+static void res_revert(void) {
+    if (res_prev_w) gfx_set_resolution(res_prev_w, res_prev_h);
+    res_prev_w = 0;
+}
+static void res_answer(void *ctx, int r) {
+    if (!res_prev_w) return;                 /* already reverted by the timer */
+    if (r != IDYES) res_revert();
+    res_prev_w = 0; res_box = NULL;
+}
+static void res_tick(window_t *w) {
+    if (!res_box || !wm_alive(res_box)) { w->timer = NULL; return; }
+    if (--res_countdown <= 0) { wm_destroy(res_box); res_box = NULL; res_revert(); w->timer = NULL; return; }
+    char t[64]; snprintf(t, sizeof t, "Display Settings (%d)", res_countdown);
+    wm_set_title(res_box, t);
+}
 static void page_display(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Change the appearance of your display", NULL);
-    draw_icon(s, ICON_CP_DISPLAY, 48, ox + 30, oy + 70);
-    char b[128];
-    int y = oy + 70;
-    snprintf(b, sizeof b, "Resolution:   %d x %d pixels", SCREEN_W, SCREEN_H); draw_text(s, FONT_UI, ox + 100, y, b, BLACK); y += 22;
-    snprintf(b, sizeof b, "Colour depth:   %u-bit true colour", fb_info.bpp); draw_text(s, FONT_UI, ox + 100, y, b, BLACK); y += 22;
-    snprintf(b, sizeof b, "Framebuffer:   0x%08x (pitch %u bytes)", fb_info.addr, fb_info.pitch); draw_text(s, FONT_UI, ox + 100, y, b, BLACK); y += 22;
-    pci_dev_t d[32]; int n = pci_scan(d, 32);
-    for (int i = 0; i < n; i++) if (d[i].cls == 3) { snprintf(b, sizeof b, "Adapter:   %s display controller (%04x:%04x)", pci_vendor_name(d[i].vendor), d[i].vendor, d[i].device); draw_text(s, FONT_UI, ox + 100, y, b, BLACK); y += 22; break; }
-    y += 10;
-    draw_text_wrapped(s, FONT_UI, ox + 100, y, s->w - ox - 140, "The resolution is set by the boot loader through the Multiboot video request (1024 x 768 x 32). Resolution switching at runtime is not supported.", W7_TEXT, 2);
-    y += 56;
-    ui_checkbox(w, ox + 100, y, "Animate windows when minimizing and maximizing", &wm_animations);
+    /* monitor preview */
+    int mx = ox + 30, my = oy + 64;
+    fill_round_rect(s, mx, my, 150, 104, 6, HEX(0x30343C)); fill_rect(s, mx + 8, my + 8, 134, 84, HEX(0x3A6EA5));
+    fill_rect(s, mx + 60, my + 104, 30, 10, HEX(0x50545C)); fill_round_rect(s, mx + 40, my + 112, 70, 8, 3, HEX(0x40444C));
+    char b[160];
+    snprintf(b, sizeof b, "%d x %d", SCREEN_W, SCREEN_H); draw_text_centered(s, FONT_UI_BOLD, R(mx + 8, my + 8, 134, 84), b, WHITE);
+    int x = ox + 210, y = oy + 64;
+    draw_text(s, FONT_UI, x, y, "Display adapter:", HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, x + 110, y, s->w - x - 130, video_driver_name(), BLACK); y += 22;
+    int avail[ARRAY_LEN(modes)], na = 0, cur = 0;
+    for (unsigned i = 0; i < ARRAY_LEN(modes); i++) if (video_mode_ok(modes[i].w, modes[i].h)) { if (modes[i].w == SCREEN_W && modes[i].h == SCREEN_H) cur = na; avail[na++] = i; }
+    if (!c->res_sel && na) c->res_sel = cur + 1;          /* slider position + 1 (0 = not yet set) */
+    if (video_can_set_mode() && na > 1) {
+        draw_text(s, FONT_UI, x, y + 4, "Screen resolution:", HEX(0x505050));
+        int sw = MAX(120, MIN(300, s->w - x - 140));
+        draw_text(s, FONT_SMALL, x + 110, y + 26, "Less", HEX(0x606060)); draw_text(s, FONT_SMALL, x + 110 + sw - 24, y + 26, "More", HEX(0x606060));
+        int pos = c->res_sel - 1;
+        if (ui_slider(w, R(x + 110, y, sw, 24), &pos, 0, na - 1)) c->res_sel = pos + 1;
+        int m = avail[CLAMP(c->res_sel - 1, 0, na - 1)];
+        snprintf(b, sizeof b, "%d by %d pixels", modes[m].w, modes[m].h);
+        draw_text_centered(s, FONT_UI_BOLD, R(x + 110, y + 40, sw, 16), b, BLACK);
+        y += 66;
+        bool changed = modes[m].w != SCREEN_W || modes[m].h != SCREEN_H;
+        if (ui_button_ex(w, R(x + 110, y, 90, 24), "Apply", changed, false) && changed) {
+            int pw = SCREEN_W, ph = SCREEN_H;
+            if (gfx_set_resolution(modes[m].w, modes[m].h)) {
+                res_prev_w = pw; res_prev_h = ph; res_countdown = 15;
+                res_box = msgbox("Display Settings (15)", "Your screen resolution has changed. Do you want to keep these settings?\n\nIf you do nothing, the previous settings come back in 15 seconds.",
+                                 MBI_QUESTION, MBX_YESNO, res_answer, NULL);
+                wm_set_timer(w, 1000, res_tick);
+            } else msgbox("Display Settings", "The display adapter could not switch to that resolution.", MBI_ERROR, MBX_OK, NULL, NULL);
+        }
+        y += 36;
+    } else {
+        draw_text_wrapped(s, FONT_UI, x, y, s->w - x - 30, "This display adapter is driven through the boot framebuffer, so the resolution is fixed. "
+            "Supported adapters for changing it: QEMU/Bochs standard VGA, VirtualBox VBoxVGA and VMSVGA, VMware SVGA II.", W7_TEXT, 2);
+        y += 60;
+    }
+    snprintf(b, sizeof b, "Colour depth: %u-bit true colour", fb_info.bpp);
+    draw_text(s, FONT_UI, x, y, b, W7_TEXT); y += 30;
+    ui_checkbox(w, x, y, "Animate windows when minimizing and maximizing", &wm_animations);
     y += 28;
-    if (ui_link(w, ox + 100, y, FONT_UI, "Personalize visual style and colours", W7_LINK)) cp_go(c, "personalization", true);
+    if (ui_link(w, x, y, FONT_UI, "Personalize visual style and colours", W7_LINK)) cp_go(c, "personalization", true);
 }
 static void page_taskbar(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;

@@ -22,6 +22,8 @@ typedef struct canvas {
 
 extern canvas_t screen;
 extern int SCREEN_W, SCREEN_H;
+bool gfx_set_resolution(int w, int h);   /* runtime mode change (display driver) */
+extern void (*gfx_resized_hook)(void);
 
 static inline rect_t R(int x, int y, int w, int h) { rect_t r = { x, y, w, h }; return r; }
 static inline bool pt_in(rect_t r, int x, int y) { return x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h; }

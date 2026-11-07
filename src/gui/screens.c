@@ -164,6 +164,7 @@ void shell_power_action(void *restart) { final_screen(restart ? "Restarting..." 
 static int dialog_loop(const char *title, int kind) {
     /* kind 0: turn off (3 options), 1: log off (2 options). Returns option index or -1 */
     static canvas_t *saved;
+    if (saved && (saved->w != SCREEN_W || saved->h != SCREEN_H)) { canvas_free(saved); saved = NULL; }
     if (!saved) saved = canvas_new(SCREEN_W, SCREEN_H);
     memcpy(saved->px, screen.px, SCREEN_W * SCREEN_H * 4);
     for (int k = 0; k < 6; k++) { memcpy(screen.px, saved->px, SCREEN_W * SCREEN_H * 4); for (int i = 0; i <= k; i++) {} desaturate_screen(); }

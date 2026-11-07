@@ -44,6 +44,20 @@ void gfx_init(void) {
     memset32(screen.px, 0xFF000000, SCREEN_W * SCREEN_H);
 }
 
+/* change the screen resolution: switch the adapter, then resize the back buffer */
+void (*gfx_resized_hook)(void);
+bool gfx_set_resolution(int w, int h) {
+    if (w == SCREEN_W && h == SCREEN_H) return true;
+    if (!video_set_mode(w, h)) return false;
+    fb = (uint32_t *)fb_info.addr;
+    kfree(screen.px);
+    SCREEN_W = w; SCREEN_H = h;
+    canvas_init(&screen, kmalloc(w * h * 4), w, h);
+    memset32(screen.px, 0xFF000000, w * h);
+    if (gfx_resized_hook) gfx_resized_hook();
+    return true;
+}
+
 /* ---------------- colour ---------------- */
 uint32_t mix(uint32_t a, uint32_t b, int t) {
     int r = C_R(a) + ((C_R(b) - C_R(a)) * t) / 255;
@@ -457,6 +471,7 @@ static void fb_copy_rect(int x, int y, int w, int h) {
     rect_t r = rect_intersect(R(x, y, w, h), R(0, 0, SCREEN_W, SCREEN_H));
     uint32_t pitch = fb_info.pitch / 4;
     for (int j = 0; j < r.h; j++) memcpy(fb + (r.y + j) * pitch + r.x, screen.px + (r.y + j) * SCREEN_W + r.x, r.w * 4);
+    video_update(r.x, r.y, r.w, r.h);
 }
 static void fb_draw_cursor(int kind, int mx, int my) {
     const cursor_t *cu = &cursors[kind];
@@ -471,6 +486,8 @@ static void fb_draw_cursor(int kind, int mx, int my) {
             if (kind == CURSOR_IBEAM || kind == CURSOR_CROSS) col = (screen.px[y * SCREEN_W + x] ^ 0xFFFFFF) & 0xFFFFFF;
             fb[y * pitch + x] = col;
         }
+    rect_t r = rect_intersect(R(ox, oy, cu->w, cu->h), R(0, 0, SCREEN_W, SCREEN_H));
+    video_update(r.x, r.y, r.w, r.h);
 }
 void gfx_present(int kind, int mx, int my) {
     fb_copy_rect(0, 0, SCREEN_W, SCREEN_H);

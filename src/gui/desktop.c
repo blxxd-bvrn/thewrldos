@@ -129,6 +129,7 @@ void wallpaper_render(canvas_t *c, int id) {
 }
 void shell_wallpaper_changed(void) {
     static int last_id = -1; static uint32_t last_col; static int last_h;
+    if (wallpaper && (wallpaper->w != SCREEN_W || wallpaper->h != SCREEN_H)) { canvas_free(wallpaper); wallpaper = NULL; last_id = -1; }
     if (!wallpaper) wallpaper = canvas_new(SCREEN_W, SCREEN_H);
     if (last_id == wallpaper_id && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color) && last_h == SCREEN_H) return;
     wallpaper_render(wallpaper, wallpaper_id);

@@ -1047,6 +1047,22 @@ static int b_sha256sum(sh_t *s, int argc, char **argv, io_t *io) {
     }
     return 0;
 }
+static int b_display(sh_t *s, int argc, char **argv, io_t *io) {
+    if (argc < 2) {
+        out_f(io, "Adapter:    %s\nResolution: %d x %d, 32-bit colour\n", video_driver_name(), SCREEN_W, SCREEN_H);
+        if (!video_can_set_mode()) { out_s(io, "This adapter cannot change resolution.\n"); return 0; }
+        static const int mw[] = { 1024, 1152, 1280, 1280, 1280, 1280, 1366, 1440, 1600, 1600, 1680, 1920, 1920, 2560 }, mh[] = { 768, 864, 720, 800, 960, 1024, 768, 900, 900, 1200, 1050, 1080, 1200, 1440 };
+        out_s(io, "Available:  ");
+        for (unsigned i = 0; i < ARRAY_LEN(mw); i++) if (video_mode_ok(mw[i], mh[i])) out_f(io, "%dx%d ", mw[i], mh[i]);
+        out_s(io, "\nusage: display WIDTHxHEIGHT\n");
+        return 0;
+    }
+    int w = atoi(argv[1]); const char *x = strchr(argv[1], 'x'); int h = x ? atoi(x + 1) : 0;
+    if (!w || !h) { err_f(io, "display: use WIDTHxHEIGHT, e.g. display 1280x800\n"); return 1; }
+    if (!gfx_set_resolution(w, h)) { err_f(io, "display: %dx%d is not supported by %s\n", w, h, video_driver_name()); return 1; }
+    out_f(io, "Resolution set to %d x %d\n", SCREEN_W, SCREEN_H);
+    return 0;
+}
 static int b_hostname(sh_t *s, int argc, char **argv, io_t *io) { out_f(io, "%s\n", computer_name); return 0; }
 static int b_ps(sh_t *s, int argc, char **argv, io_t *io) {
     static const char *kinds[] = { "kernel", "shell", "win32", "app" };
@@ -1332,7 +1348,7 @@ static const builtin_t builtins[] = {
     { "date", b_date, "show date (+FORMAT)" }, { "uname", b_uname, "system name (-a)" }, { "ver", b_ver, "OS version" },
     { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew)" }, { "ifconfig", b_ipconfig, NULL },
     { "ping", b_ping, "send ICMP echo requests" }, { "nslookup", b_nslookup, "look up a host name" },
-    { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
+    { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "display", b_display, "show or change the screen resolution" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
     { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "sync", b_sync, "write changes to the system disk now" }, { "mem", b_free, NULL },
     { "uptime", b_uptime, NULL }, { "dmesg", b_dmesg, "kernel log" }, { "export", b_export, "set variables" }, { "set", b_env, NULL },
     { "unset", b_unset, NULL }, { "env", b_env, "list variables" }, { "read", b_read, "read a line into variables" },

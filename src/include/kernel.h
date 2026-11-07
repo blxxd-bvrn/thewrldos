@@ -70,6 +70,7 @@ typedef struct { int key; char ch; bool pressed; int mods; } key_event_t;
 void keyboard_init(void);
 bool keyboard_poll(key_event_t *ev);
 void mouse_init(int w, int h);
+void mouse_set_bounds(int w, int h);
 typedef struct { int x, y; int buttons; int wheel; } mouse_state_t;
 bool mouse_poll(mouse_state_t *st);   /* returns true if changed */
 extern int mouse_speed;               /* 1..10 */
@@ -148,6 +149,13 @@ void system_reboot(void);
 /* ---- boot info ---- */
 typedef struct { uint32_t addr; uint32_t pitch, width, height, bpp; } fb_info_t;
 extern fb_info_t fb_info;
+/* display drivers (video.c) */
+void video_init(void);
+const char *video_driver_name(void);
+bool video_can_set_mode(void);
+bool video_mode_ok(int w, int h);
+bool video_set_mode(int w, int h);
+void video_update(int x, int y, int w, int h);
 extern uint8_t *initrd_data;
 extern uint32_t initrd_size;
 extern bool boot_safe_mode;

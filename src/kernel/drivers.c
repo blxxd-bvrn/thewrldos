@@ -188,6 +188,7 @@ static void mouse_irq(regs_t *r) {
     if (ms_pkt_size == 4) { int8_t wz = (int8_t)(ms_pkt[3] << 4) >> 4; ms_wheel += wz; }
     ms_changed = true;
 }
+void mouse_set_bounds(int w, int h) { ms_w = w; ms_h = h; if (ms_x >= w) ms_x = w - 1; if (ms_y >= h) ms_y = h - 1; }
 void mouse_init(int w, int h) {
     ms_w = w; ms_h = h; ms_x = w / 2; ms_y = h / 2;
     ps2_wait_write(); outb(0x64, 0xA8);

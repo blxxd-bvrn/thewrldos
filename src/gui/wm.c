@@ -608,7 +608,26 @@ static void handle_key(key_event_t *e) {
 }
 
 /* ---------------- main loop ---------------- */
-void wm_init(void) { styles_load(); theme_apply(boot_safe_mode ? THEME_CLASSIC : THEME_LUNA_BLUE, 0); }
+static void screen_resized(void) {
+    rect_t wa = wm_work_area();
+    for (int i = 0; i < nwin; i++) {
+        window_t *w = wins[i];
+        if (w->state == WS_MAXIMIZED) { w->state = WS_NORMAL; wm_maximize(w, true); continue; }
+        if (w->x + 60 > wa.w) w->x = MAX(0, wa.w - w->w);
+        if (w->y + 30 > wa.h) w->y = MAX(0, wa.h - w->h);
+        if (w->w > wa.w) w->w = wa.w;
+        if (w->h > wa.h) w->h = wa.h;
+        sync_surface(w);
+    }
+    if (wm_mouse_x >= SCREEN_W) wm_mouse_x = SCREEN_W - 1;
+    if (wm_mouse_y >= SCREEN_H) wm_mouse_y = SCREEN_H - 1;
+    mouse_set_bounds(SCREEN_W, SCREEN_H);
+    shell_wallpaper_changed();
+    desktop_refresh();
+    wm_redraw_all();
+}
+void wm_init(void) {
+    gfx_resized_hook = screen_resized; styles_load(); theme_apply(boot_safe_mode ? THEME_CLASSIC : THEME_LUNA_BLUE, 0); }
 void wm_run(void) {
     mouse_state_t ms;
     uint32_t last_tick = 0;
