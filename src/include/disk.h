@@ -61,7 +61,7 @@ void settings_load(void);
 void settings_save(void);
 const char *settings_get(const char *key);
 void settings_set(const char *key, const char *val);
-#define SETTINGS_FILE "C:\\Windows\\wrld.ini"
+#define SETTINGS_FILE "C:\\WRLD\\wrld.ini"
 
 /* ---- setup ---- */
 extern bool boot_setup_mode;        /* "setup" on the kernel command line */

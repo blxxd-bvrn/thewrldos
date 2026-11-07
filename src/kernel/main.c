@@ -70,11 +70,11 @@ static void write_system_files(void) {
     rtc_time_t t; rtc_now(&t);
     char vbuf[512];
     snprintf(vbuf, sizeof vbuf, "%s %s\r\nVersion %s (Build %s)\r\nKernel: 32-bit protected mode, 4 MiB paging, cooperative scheduler\r\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
-    vfs_write_file("C:\\Windows\\version.txt", vbuf, strlen(vbuf));
+    vfs_write_file("C:\\WRLD\\version.txt", vbuf, strlen(vbuf));
     const char *dlls[] = { "kernel32.dll", "user32.dll", "gdi32.dll", "msvcrt.dll", "advapi32.dll", "shell32.dll", "comctl32.dll", "ntdll.dll" };
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) {
         char p[128], body[128];
-        snprintf(p, sizeof p, "C:\\Windows\\System32\\%s", dlls[i]);
+        snprintf(p, sizeof p, "C:\\WRLD\\System32\\%s", dlls[i]);
         snprintf(body, sizeof body, "Built-in %s: implemented natively by the WRLD Win32 subsystem.\r\n", dlls[i]);
         vnode_t *n = vfs_write_file(p, body, strlen(body)); if (n) n->readonly = true;
     }

@@ -278,7 +278,7 @@ static void dns_input(uint32_t src, uint16_t sport, const uint8_t *m, uint32_t l
 }
 static bool hosts_lookup(const char *name, uint32_t *ip) {
     uint32_t len;
-    char *t = (char *)vfs_read_file("C:\\Windows\\hosts", &len);
+    char *t = (char *)vfs_read_file("C:\\WRLD\\hosts", &len);
     if (!t) return false;
     bool found = false;
     for (char *line = strtok(t, "\r\n"); line && !found; line = strtok(NULL, "\r\n")) {

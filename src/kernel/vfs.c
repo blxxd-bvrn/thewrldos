@@ -30,7 +30,7 @@ void vfs_init(void) {
     drives['C' - 'A']->drive = 'C';
     strcpy(drive_labels['C' - 'A'], "Local Disk");
     drive_kinds['C' - 'A'] = 1;
-    vfs_mkdir_p("C:\\Windows\\System32");
+    vfs_mkdir_p("C:\\WRLD\\System32");
     vfs_mkdir_p("C:\\Program Files");
     vfs_mkdir_p(USER_DESKTOP);
     vfs_mkdir_p(USER_DOCS);

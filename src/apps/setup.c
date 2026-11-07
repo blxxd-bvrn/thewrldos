@@ -330,7 +330,7 @@ static bool do_install(int disk, int slot, int mode /* 0 quick, 1 full, 2 keep *
     rtc_time_t t; rtc_now(&t);
     char ini[256];
     snprintf(ini, sizeof ini, "; THE WRLD OS settings\r\n[WRLD]\r\nsetup=oobe\r\ninstalled=%04d-%02d-%02d %02d:%02d\r\nserial=%08X\r\n", t.year, t.month, t.day, t.hour, t.minute, serial);
-    fat32_write(v, "Windows\\wrld.ini", ini, strlen(ini), false);
+    fat32_write(v, "WRLD\\wrld.ini", ini, strlen(ini), false);
     fat32_sync(v);
     fat32_unmount(v);
     /* boot loader: core image in the gap after the MBR, boot code in the MBR */
@@ -386,7 +386,7 @@ static const char *license_text =
     "1. You may install THE WRLD OS on as many computers and virtual machines as you like.\n\n"
     "2. Setup will partition and format the disk you choose. Formatting deletes all data on that partition. "
     "Make sure the disk does not contain anything you want to keep.\n\n"
-    "3. THE WRLD OS runs 32-bit Windows (PE32) console and GUI programs through its own Win32 subsystem, POSIX-style "
+    "3. THE WRLD OS runs 32-bit Win32 (PE32 .exe) console and GUI programs through its own Win32 subsystem, POSIX-style "
     "shell scripts, and opens macOS UDIF disk images. Programs that need APIs it does not implement will report the missing function.\n\n"
     "4. Fonts: Liberation family, SIL Open Font License. Boot loader: GNU GRUB, GNU General Public License v3; "
     "its source code is available from the GNU project.\n\n"
@@ -778,7 +778,7 @@ void setup_oobe(void) {
         draw_text(c, FONT_XL, x, y, "Welcome to the WRLD.", WHITE); y += 50;
         static const char *pitch[] = {
             OS_NAME " brings the look of a classic desktop to a brand new, from-scratch system.",
-            "Run 32-bit Windows programs, shell scripts and open Mac disk images, side by side.",
+            "Run 32-bit Win32 .exe programs, shell scripts and open Mac disk images, side by side.",
             "Make it yours: choose Luna Blue, Olive Green, Silver or Classic, then turn the hue dial to any colour you like.",
             "Everything you change is now saved to your hard disk." };
         for (unsigned i = 0; i < ARRAY_LEN(pitch); i++) y += draw_text_wrapped(c, FONT_LARGE, x, y, 600, pitch[i], HEX(0xE8F0FF), 6) + 18;

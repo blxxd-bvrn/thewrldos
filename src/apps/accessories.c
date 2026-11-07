@@ -133,7 +133,7 @@ static void tm_paint(window_t *w) {
         int y = body.y + 266;
         snprintf(b, sizeof b, "Physical memory: %u MB", mm_phys_total() / (1024 * 1024)); draw_text(c, FONT_UI, body.x + 14, y, b, BLACK);
         snprintf(b, sizeof b, "Kernel heap: %u / %u KB", mm_used() / 1024, mm_total() / 1024); draw_text(c, FONT_UI, body.x + 14, y + 18, b, BLACK);
-        uint32_t up = timer_ticks() / 1000; snprintf(b, sizeof b, "Up time: %u:%02u:%02u   Tasks: %d   Windows: %d", up / 3600, (up / 60) % 60, up % 60, task_count(), wm_window_count());
+        uint32_t up = timer_ticks() / 1000; snprintf(b, sizeof b, "Up time: %u:%02u:%02u   Tasks: %d   Open windows: %d", up / 3600, (up / 60) % 60, up % 60, task_count(), wm_window_count());
         draw_text(c, FONT_UI, body.x + 260, y, b, BLACK);
     }
     char st[96]; snprintf(st, sizeof st, "Processes: %d     CPU Usage: %d%%     Heap: %u MB / %u MB", task_count(), t->cpu_now, mm_used() >> 20, mm_total() >> 20);

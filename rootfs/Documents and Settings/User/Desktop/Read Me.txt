@@ -10,7 +10,7 @@ shell. Things to try:
     switch between Luna (Blue), Olive Green, Silver and Classic, and drag
     the colour hue slider to recolour the whole interface.
   * Control Panel "View by" lets you switch between Category, Large icons
-    and Small icons, like Windows 7.
+    and Small icons.
   * Command Prompt: type "help". Try:  ls -l C:/Samples | grep exe
   * Task Manager (Ctrl+Shift+Esc) shows tasks, CPU and memory graphs.
 

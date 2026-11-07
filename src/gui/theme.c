@@ -55,7 +55,7 @@ static const struct { const char *name; uint16_t off; char kind; bool shift; } f
 typedef struct { char file[64], name[48], desc[160], wallpaper[24]; theme_t base; } style_t;
 static style_t styles[24];
 static int nstyles;
-static const char *builtin_files[THEME_BUILTIN] = { "Luna Blue", "Olive Green", "Silver", "Windows Classic", "Aero", "Plex" };
+static const char *builtin_files[THEME_BUILTIN] = { "Luna Blue", "Olive Green", "Silver", "WRLD Classic", "Aero", "Plex" };
 
 static uint32_t parse_color(const char *v) {
     while (*v == ' ') v++;
@@ -152,6 +152,7 @@ int style_find(const char *n) {
     if (!n || !*n) return -1;
     char f[160]; strlcpy(f, path_basename(n), sizeof f);
     char *dot = strrchr(f, '.'); if (dot && !strcasecmp(dot, ".wrldstyle")) *dot = 0;
+    if (!strcasecmp(f, "Windows Classic")) strlcpy(f, "WRLD Classic", sizeof f);   /* old name */
     int cnt = style_count();
     for (int i = 0; i < cnt; i++) if (!strcasecmp(styles[i].file, f) || !strcasecmp(styles[i].name, f)) return i;
     for (int i = 0; i < cnt; i++) if (!strncasecmp(styles[i].file, f, strlen(f)) || !strncasecmp(styles[i].name, f, strlen(f))) return i;
@@ -281,7 +282,7 @@ static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, b
 }
 
 static int corner_in(int j, int rad) { if (j >= rad) return 0; int dy = rad - j, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rad * rad) dx++; return rad - dx; }
-/* Windows 7-style glass frame */
+/* glass frame (Aero style) */
 static void aero_frame(canvas_t *c, rect_t r, const char *title, int icon, bool active, bool maxed) {
     int x = r.x, y = r.y, w = r.w, h = r.h, th = T.title_h, b = T.border, rad = maxed ? 0 : 7;
     uint32_t tint = active ? T.glass : T.iglass;

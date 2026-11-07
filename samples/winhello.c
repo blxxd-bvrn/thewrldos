@@ -84,7 +84,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = "WrldHello";
     if (!RegisterClassA(&wc)) return 1;
-    HWND hwnd = CreateWindowExA(0, "WrldHello", "Hello Windows (winhello.exe)", WS_OVERLAPPEDWINDOW,
+    HWND hwnd = CreateWindowExA(0, "WrldHello", "Hello Win32 (winhello.exe)", WS_OVERLAPPEDWINDOW,
                                 CW_USEDEFAULT, CW_USEDEFAULT, 380, 290, NULL, NULL, hInst, NULL);
     ShowWindow(hwnd, show);
     UpdateWindow(hwnd);

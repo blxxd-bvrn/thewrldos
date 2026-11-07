@@ -1,4 +1,4 @@
-/* Control Panel (Windows 7 style): Category / Large icons / Small icons views, breadcrumbs, applets */
+/* Control Panel (category style): Category / Large icons / Small icons views, breadcrumbs, applets */
 #include "kernel.h"
 #include "gfx.h"
 #include "theme.h"
@@ -500,7 +500,7 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     if (netif.present && ui_button(w, R(ox + 40, y, 150, 26), "Renew address (DHCP)")) dhcp_renew();
     if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open The WRLD Xplorer", W7_LINK)) browser_open(NULL);
     y += 40;
-    snprintf(b, sizeof b, "Secure websites are checked against %d trusted root certificates (add your own in C:\\Windows\\Certificates).", tls_trust_anchor_count());
+    snprintf(b, sizeof b, "Secure websites are checked against %d trusted root certificates (add your own in C:\\WRLD\\Certificates).", tls_trust_anchor_count());
     draw_text_wrapped(s, FONT_UI, ox + 30, y, s->w - ox - 60, netif.present ? b : "No supported network adapter was found. THE WRLD OS supports Intel PRO/1000 (e1000) adapters, the default in QEMU, VirtualBox and VMware.", W7_TEXT, 2);
 }
 static void page_mouse(window_t *w, cp_t *c, int ox, int oy) {

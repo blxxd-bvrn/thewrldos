@@ -441,7 +441,7 @@ static DWORD WINAPI GetEnvironmentVariableA(const char *n, char *b, DWORD sz) {
     const char *v = NULL;
     if (!strcasecmp(n, "OS")) v = "THE_WRLD_OS"; else if (!strcasecmp(n, "USERPROFILE") || !strcasecmp(n, "HOME")) v = USER_HOME;
     else if (!strcasecmp(n, "TEMP") || !strcasecmp(n, "TMP")) v = "C:\\tmp"; else if (!strcasecmp(n, "USERNAME")) v = user_name;
-    else if (!strcasecmp(n, "SystemRoot") || !strcasecmp(n, "windir")) v = "C:\\Windows"; else if (!strcasecmp(n, "PATH")) v = "C:\\Windows\\System32;C:\\Windows";
+    else if (!strcasecmp(n, "SystemRoot") || !strcasecmp(n, "windir")) v = "C:\\WRLD"; else if (!strcasecmp(n, "PATH")) v = "C:\\WRLD\\System32;C:\\WRLD";
     if (!v) { set_err(203); return 0; }
     DWORD l = strlen(v); if (b && sz > l) strcpy(b, v); return sz > l ? l : l + 1;
 }
@@ -460,8 +460,8 @@ static int WINAPI lstrcmpA(const char *a, const char *b) { int r = strcmp(a, b);
 static int WINAPI lstrcmpiA(const char *a, const char *b) { int r = strcasecmp(a, b); return r < 0 ? -1 : r > 0; }
 static DWORD WINAPI GetLogicalDrives(void) { DWORD m = 0; for (char l = 'A'; l <= 'Z'; l++) if (vfs_drive_kind(l)) m |= 1 << (l - 'A'); return m; }
 static UINT WINAPI GetDriveTypeA(const char *r) { return r && vfs_drive_kind(r[0]) == 2 ? 5 : 3; }
-static UINT WINAPI GetWindowsDirectoryA(char *b, UINT n) { strlcpy(b, "C:\\Windows", n); return 10; }
-static UINT WINAPI GetSystemDirectoryA(char *b, UINT n) { strlcpy(b, "C:\\Windows\\System32", n); return 19; }
+static UINT WINAPI GetWindowsDirectoryA(char *b, UINT n) { strlcpy(b, "C:\\WRLD", n); return 10; }
+static UINT WINAPI GetSystemDirectoryA(char *b, UINT n) { strlcpy(b, "C:\\WRLD\\System32", n); return 19; }
 static BOOL WINAPI GetDiskFreeSpaceExA(const char *d, uint64_t *a, uint64_t *t, uint64_t *f) { if (a) *a = mm_total() - mm_used(); if (t) *t = mm_total(); if (f) *f = mm_total() - mm_used(); return 1; }
 
 /* ---------------- modules ---------------- */

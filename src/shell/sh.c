@@ -1308,7 +1308,7 @@ static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
         out_s(io, "\nusage: theme STYLE [HUE 0-359]   e.g. theme aero, theme plex 200, theme \"Luna Blue\"\n");
         return 0;
     }
-    static const struct { const char *alias, *file; } aliases[] = { { "blue", "Luna Blue" }, { "luna", "Luna Blue" }, { "olive", "Olive Green" }, { "classic", "Windows Classic" } };
+    static const struct { const char *alias, *file; } aliases[] = { { "blue", "Luna Blue" }, { "luna", "Luna Blue" }, { "olive", "Olive Green" }, { "classic", "WRLD Classic" } };
     const char *want = argv[1];
     for (unsigned i = 0; i < ARRAY_LEN(aliases); i++) if (!strcasecmp(want, aliases[i].alias)) want = aliases[i].file;
     styles_load();
@@ -1674,9 +1674,9 @@ static sh_t *sh_new(console_t *con, const char *cwd) {
     if (d && d->dir) vfs_path(d, s->cwd, sizeof s->cwd); else strcpy(s->cwd, USER_HOME);
     var_set(s, "HOME", USER_HOME);
     var_set(s, "USER", user_name);
-    var_set(s, "SHELL", "C:\\Windows\\System32\\sh.exe");
+    var_set(s, "SHELL", "C:\\WRLD\\System32\\sh.exe");
     var_set(s, "OS", OS_NAME);
-    var_set(s, "PATH", ".;C:\\Windows\\System32;C:\\Windows;C:\\Samples;C:\\Program Files");
+    var_set(s, "PATH", ".;C:\\WRLD\\System32;C:\\WRLD;C:\\Samples;C:\\Program Files");
     var_set(s, "PS1", "");
     var_set(s, "PWD", s->cwd);
     return s;

@@ -2,7 +2,7 @@
 ; name (and change Name=) to create your own style. Colours are #RRGGBB or "none".
 
 [Style]
-Name=Windows Classic
+Name=WRLD Classic
 Renderer=classic
 Description=The classic 3D look. Also used in safe mode.
 

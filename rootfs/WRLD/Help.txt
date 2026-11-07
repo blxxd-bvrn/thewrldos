@@ -2,7 +2,7 @@ THE WRLD OS Help and Support
 ==========================
 
 GETTING AROUND
-  Start menu ........ click "start" or press the Windows key / Ctrl+Esc
+  Start menu ........ click "start" or press the WRLD key (the key with the flag logo) / Ctrl+Esc
   Switch windows .... Alt+Tab, or click a taskbar button
   Close a window .... Alt+F4 or the red X button
   Task Manager ...... Ctrl+Shift+Esc or Ctrl+Alt+Del
@@ -10,11 +10,11 @@ GETTING AROUND
 
 VISUAL STYLES
   Control Panel > Appearance and Personalization > Personalization
-  - Luna (Blue), Olive Green, Silver, Windows Classic, Aero (Windows 7-style
+  - Luna (Blue), Olive Green, Silver, WRLD Classic, Aero (translucent
     blurred glass) and Plex (Longhorn-style glossy blue)
   - Colour hue slider (0-359 degrees) recolours any style
   - Desktop backgrounds: Meadow, Azure, Sunset, Aurora, Dunes or a solid colour
-  Every style is a text file in C:\Windows\Resources\Themes (*.wrldstyle).
+  Every style is a text file in C:\WRLD\Resources\Themes (*.wrldstyle).
   "Create a style..." in Personalization makes your own from the current one;
   double-click a .wrldstyle file to install and apply it.
   From the Command Prompt:  theme list   /   theme aero   /   theme olive 40
@@ -26,8 +26,8 @@ THE INTERNET
   text-heavy sites work best (try the links on its home page).
   Command Prompt: ipconfig (/renew), ping HOST, nslookup NAME,
                   wget URL [-O FILE], curl URL, sha256sum FILE
-  Extra trusted certificates (.crt/.pem) go in C:\Windows\Certificates.
-  Host name overrides go in C:\Windows\hosts ("10.0.0.5  myserver").
+  Extra trusted certificates (.crt/.pem) go in C:\WRLD\Certificates.
+  Host name overrides go in C:\WRLD\hosts ("10.0.0.5  myserver").
   Supported network card: Intel PRO/1000 (e1000), the default in QEMU,
   VirtualBox and VMware.
 
@@ -37,12 +37,12 @@ INSTALLING TO A HARD DISK
   lets you create/delete partitions, formats FAT32, copies the system and
   installs the GRUB boot loader, then restarts. The first boot from the disk
   asks for your name, computer name, time zone and visual style. Settings are
-  saved in C:\Windows\wrld.ini; files are written back to the disk within a
+  saved in C:\WRLD\wrld.ini; files are written back to the disk within a
   couple of seconds and when you shut down. Needs an IDE/ATA disk.
 
 SOUND AND DISPLAY
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
-  shutdown sounds (C:\Windows\Media). Supported sound cards: Intel High
+  shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High
   Definition Audio and AC'97. Command Prompt: volume 60, play FILE.wav
   Control Panel > Appearance > Display: screen resolution (QEMU/Bochs VGA,
   VirtualBox VBoxVGA/VMSVGA, VMware SVGA). Command Prompt: display 1280x800

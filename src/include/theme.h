@@ -2,11 +2,11 @@
 #define THEME_H
 #include "gfx.h"
 
-/* Visual styles are .wrldstyle files in C:\Windows\Resources\Themes. The built-in
+/* Visual styles are .wrldstyle files in C:\WRLD\Resources\Themes. The built-in
  * ones always come first, in this order; files added by the user follow. */
 enum { THEME_LUNA_BLUE, THEME_OLIVE, THEME_SILVER, THEME_CLASSIC, THEME_AERO, THEME_PLEX, THEME_BUILTIN };
 #define THEME_COUNT style_count()
-#define STYLE_DIR "C:\\Windows\\Resources\\Themes"
+#define STYLE_DIR "C:\\WRLD\\Resources\\Themes"
 enum { RENDER_LUNA, RENDER_CLASSIC, RENDER_AERO, RENDER_PLEX };
 void styles_load(void);                 /* (re)scan STYLE_DIR */
 int style_count(void);

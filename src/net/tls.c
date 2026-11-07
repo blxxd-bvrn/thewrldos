@@ -1,7 +1,7 @@
 /* HTTPS: TLS 1.0-1.2 client on top of our TCP, using BearSSL.
  * Server certificates are validated against the Mozilla root store compiled
  * into the kernel (trust_anchors.c) plus any certificates the user puts in
- * C:\Windows\Certificates (*.crt, *.cer, *.pem). */
+ * C:\WRLD\Certificates (*.crt, *.cer, *.pem). */
 #include "kernel.h"
 #include "net.h"
 #include "fs.h"
@@ -9,7 +9,7 @@
 
 extern const br_x509_trust_anchor builtin_tas[];
 extern const unsigned builtin_tas_num;
-#define USER_CERT_DIR "C:\\Windows\\Certificates"
+#define USER_CERT_DIR "C:\\WRLD\\Certificates"
 
 struct tls_conn {
     tcb_t *t;

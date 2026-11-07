@@ -33,7 +33,7 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "control")) control_open(arg);
     else if (!strcasecmp(name, "snake")) snake_open();
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
-    else if (!strcasecmp(name, "help")) notepad_open("C:\\Windows\\Help.txt");
+    else if (!strcasecmp(name, "help")) notepad_open("C:\\WRLD\\Help.txt");
     else if (!strcasecmp(name, "run")) shell_show_run();
     else if (!strcasecmp(name, "setup")) { extern void setup_launch_from_desktop(void); setup_launch_from_desktop(); }
     else msgbox("Error", "Unknown application.", MBI_ERROR, MBX_OK, NULL, NULL);
@@ -167,7 +167,7 @@ bool shell_execute(const char *cmdline, const char *cwd) {
     vnode_t *n = vfs_resolve(s, cwd);
     if (!n) {
         /* search PATH-like locations */
-        const char *dirs[] = { "C:\\Windows\\System32", "C:\\Windows", "C:\\Samples", "C:\\Program Files" };
+        const char *dirs[] = { "C:\\WRLD\\System32", "C:\\WRLD", "C:\\Samples", "C:\\Program Files" };
         char p[300];
         for (unsigned i = 0; i < ARRAY_LEN(dirs) && !n; i++) {
             snprintf(p, sizeof p, "%s\\%s", dirs[i], s); n = vfs_resolve(p, NULL);

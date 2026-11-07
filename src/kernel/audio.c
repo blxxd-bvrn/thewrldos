@@ -3,7 +3,7 @@
  * buffers is kept filled ~170 ms ahead of the hardware from the timer
  * interrupt, so a busy desktop (or a slow VM) cannot starve it.
  *   - Intel HDA: QEMU (intel-hda), VirtualBox (default), VMware, real PCs
- *   - AC'97 (Intel ICH): QEMU (AC97), VirtualBox (Windows XP-type VMs) */
+ *   - AC'97 (Intel ICH): QEMU (AC97), VirtualBox (older guest OS types) */
 #include "kernel.h"
 #include "audio.h"
 

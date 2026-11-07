@@ -4,7 +4,7 @@
 [Style]
 Name=Aero
 Renderer=aero
-Description=Translucent blurred glass in the style of Windows 7.
+Description=Translucent blurred glass with a soft reflection.
 Wallpaper=Azure
 
 [Metrics]

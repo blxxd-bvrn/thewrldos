@@ -2,7 +2,7 @@
  * FAT32 system partition is loaded into the C: drive, and every change to C:
  * is written back: directories, deletes and renames immediately, file
  * contents by a background write-back task (and on shutdown/restart).
- * Also keeps the user's settings in C:\Windows\wrld.ini. */
+ * Also keeps the user's settings in C:\WRLD\wrld.ini. */
 #include "kernel.h"
 #include "disk.h"
 #include "gfx.h"
@@ -111,6 +111,23 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
             if (!v) continue;
             if ((serial && fat32_serial(v) == serial) || (!serial && fat32_exists(v, "boot\\wrld.elf"))) {
                 system_volume = v; system_disk_index = d; system_part_index = i;
+                /* systems installed before the system folder was renamed */
+                if (fat32_exists(v, "Windows") && !fat32_exists(v, "WRLD")) {
+                    bool ok = fat32_rename(v, "Windows", "WRLD");
+                    const char *oldst = "WRLD\\Resources\\Themes\\Windows Classic.wrldstyle";
+                    uint32_t sl; uint8_t *st = ok ? fat32_read(v, oldst, &sl) : NULL;
+                    if (st) {                                 /* rename the style and its Name= line */
+                        char *nb = kmalloc(sl + 16); uint32_t o = 0;
+                        for (uint32_t k = 0; k < sl; k++) {
+                            if (k + 20 <= sl && !memcmp(st + k, "Name=Windows Classic", 20)) { memcpy(nb + o, "Name=WRLD Classic", 17); o += 17; k += 19; }
+                            else nb[o++] = st[k];
+                        }
+                        if (fat32_write(v, "WRLD\\Resources\\Themes\\WRLD Classic.wrldstyle", nb, o, false)) fat32_delete(v, oldst);
+                        kfree(nb); kfree(st);
+                    }
+                    fat32_sync(v);
+                    klog("persist: renamed C:\\Windows to C:\\WRLD (%s)", ok ? "ok" : "failed");
+                }
                 int files = fat32_load_tree(v, vfs_root('C'));
                 klog("persist: system disk %d partition %d, %d files loaded", d, i + 1, files);
                 return files >= 0;
@@ -123,7 +140,7 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
     return false;
 }
 
-/* ---------------- settings (C:\Windows\wrld.ini) ---------------- */
+/* ---------------- settings (C:\WRLD\wrld.ini) ---------------- */
 typedef struct { char k[24]; char v[64]; } kv_t;
 static kv_t kv[40];
 static int nkv;

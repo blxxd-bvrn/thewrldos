@@ -496,7 +496,7 @@ static const sm_item_t all_programs[] = {
     { NULL },
     { "Samples (EXE / DMG / SH)", NULL, ICON_FOLDER, "explorer:C:\\Samples" },
     { "Hello Console (hello.exe)", NULL, ICON_EXE, "open:C:\\Samples\\hello.exe" },
-    { "Hello Windows (winhello.exe)", NULL, ICON_EXE, "open:C:\\Samples\\winhello.exe" },
+    { "Hello Win32 (winhello.exe)", NULL, ICON_EXE, "open:C:\\Samples\\winhello.exe" },
     { "Shell demo (demo.sh)", NULL, ICON_SCRIPT, "open:C:\\Samples\\demo.sh" },
     { "Mount Sample.dmg", NULL, ICON_DMG, "open:C:\\Samples\\Sample.dmg" },
     { NULL },
@@ -535,8 +535,13 @@ static rect_t sm_item_rect(int id) {
     }
     if (id == 300) return R(m.x + 2, m.y + m.h - SM_FOOT - 36, 188, 30);
     if (T.renderer == RENDER_PLEX && (id == 400 || id == 401)) return R(m.x + m.w - (id == 400 ? 76 : 42), m.y + m.h - SM_FOOT + 7, 30, 30);
-    if (id == 400) return R(m.x + m.w - 200, m.y + m.h - SM_FOOT + 8, 86, 28);
-    if (id == 401) return R(m.x + m.w - 110, m.y + m.h - SM_FOOT + 8, 106, 28);
+    if (id == 400 || id == 401) {             /* sized from their labels, right-aligned */
+        int w1 = MIN(36 + text_width(FONT_UI, "Turn Off Computer"), m.w / 2 - 8);
+        int w0 = MIN(36 + text_width(FONT_UI, "Log Off"), m.w - w1 - 20);
+        int x1 = m.x + m.w - 6 - w1;
+        if (id == 401) return R(x1, m.y + m.h - SM_FOOT + 8, w1, 28);
+        return R(x1 - 6 - w0, m.y + m.h - SM_FOOT + 8, w0, 28);
+    }
     return R(0, 0, 0, 0);
 }
 /* classic menu entries */
@@ -553,14 +558,20 @@ static rect_t cl_item_rect(int i) {
     for (int k = 0; k < i; k++) y += classic_items[k].label ? 31 : 8;
     return R(m.x + 24, y, m.w - 27, classic_items[i].label ? 31 : 8);
 }
+static int ap_width(void) {
+    int w = 200;
+    for (int i = 0; i < AP_N; i++) if (all_programs[i].label) w = MAX(w, 28 + text_width(FONT_UI, all_programs[i].label) + 16);
+    return MIN(w, 420);
+}
 static rect_t ap_rect(void) {
     int h = 0; for (int i = 0; i < AP_N; i++) h += all_programs[i].label ? 24 : 7;
     h += 6;
+    int aw = ap_width();
     rect_t m = sm_rect();
-    if (T.classic) { rect_t r = cl_item_rect(0); int y = r.y; if (y + h > tb_y()) y = MAX(0, tb_y() - h); return R(m.x + m.w - 2, y, 230, h); }
+    if (T.classic) { rect_t r = cl_item_rect(0); int y = r.y; if (y + h > tb_y()) y = MAX(0, tb_y() - h); return R(m.x + m.w - 2, y, aw, h); }
     rect_t a = sm_item_rect(300);
     int y = MAX(0, a.y + a.h - h);
-    return R(a.x + a.w + 6, y, 240, h);
+    return R(a.x + a.w + 6, y, aw, h);
 }
 static rect_t ap_item_rect(int i) {
     rect_t r = ap_rect(); int y = r.y + 3;
@@ -579,7 +590,7 @@ static void paint_allprog(canvas_t *c) {
         bool hot = ap_hot == i;
         if (hot) fill_rect(c, ir.x, ir.y, ir.w, ir.h, T.hot);
         draw_icon(c, all_programs[i].icon, 16, ir.x + 6, ir.y + 4);
-        draw_text(c, FONT_UI, ir.x + 28, ir.y + 5, all_programs[i].label, hot ? WHITE : BLACK);
+        draw_text_ellipsis(c, FONT_UI, ir.x + 28, ir.y + 5, ir.w - 32, all_programs[i].label, hot ? WHITE : BLACK);
     }
 }
 static void paint_rotated_text(canvas_t *c, int x, int ybottom, const char *s, int font, uint32_t col) {
@@ -607,7 +618,7 @@ static void paint_startmenu(canvas_t *c) {
             if (hot) fill_rect(c, r.x, r.y, r.w, r.h, T.hot);
             draw_icon(c, classic_items[i].icon, 24, r.x + 4, r.y + 4);
             char lbl[64]; if (i == 7) snprintf(lbl, sizeof lbl, "Log Off %s...", user_name); else strlcpy(lbl, classic_items[i].label, sizeof lbl);
-            draw_text(c, FONT_UI, r.x + 36, r.y + (r.h - 14) / 2, lbl, hot ? WHITE : BLACK);
+            draw_text_ellipsis(c, FONT_UI, r.x + 36, r.y + (r.h - 14) / 2, r.w - 36 - (i == 0 ? 16 : 4), lbl, hot ? WHITE : BLACK);
             if (i == 0) draw_arrow(c, r.x + r.w - 10, r.y + r.h / 2, 3, hot ? WHITE : BLACK);
         }
         if (allprog_open) paint_allprog(c);
@@ -633,8 +644,8 @@ static void paint_startmenu(canvas_t *c) {
     fill_round_rect(c, px - 3, py - 3, 54, 54, 5, mix(WHITE, T.sm_head_top, 60));
     fill_round_rect(c, px - 2, py - 2, 52, 52, 4, WHITE);
     draw_icon(c, user_picture, 48, px, py);
-    draw_text(c, FONT_LARGE_BOLD, m.x + 69, m.y + 20, user_name, darken(T.sm_head_bot, 80));
-    draw_text(c, FONT_LARGE_BOLD, m.x + 68, m.y + 19, user_name, T.sm_head_text);
+    draw_text_ellipsis(c, FONT_LARGE_BOLD, m.x + 69, m.y + 20, m.w - 80, user_name, darken(T.sm_head_bot, 80));
+    draw_text_ellipsis(c, FONT_LARGE_BOLD, m.x + 68, m.y + 19, m.w - 80, user_name, T.sm_head_text);
     /* accent line */
     if (!aero) {
         gradient_h(c, m.x + 1, m.y + SM_HEAD, m.w / 2, 2, T.sm_head_bot, T.sm_accent);
@@ -664,9 +675,9 @@ static void paint_startmenu(canvas_t *c) {
         if (hot) fill_rect(c, r.x, r.y, r.w, r.h, T.hot);
         draw_icon(c, it->icon, 32, r.x + 5, r.y + (r.h - 32) / 2);
         if (it->sub) {
-            draw_text(c, FONT_UI_BOLD, r.x + 43, r.y + 6, it->label, hot ? WHITE : T.sm_left_text);
-            draw_text(c, FONT_UI, r.x + 43, r.y + 21, it->sub, hot ? WHITE : mix(T.sm_left_text, T.sm_left, 110));
-        } else draw_text(c, FONT_UI, r.x + 43, r.y + (r.h - 14) / 2, it->label, hot ? WHITE : T.sm_left_text);
+            draw_text_ellipsis(c, FONT_UI_BOLD, r.x + 43, r.y + 6, r.w - 47, it->label, hot ? WHITE : T.sm_left_text);
+            draw_text_ellipsis(c, FONT_UI, r.x + 43, r.y + 21, r.w - 47, it->sub, hot ? WHITE : mix(T.sm_left_text, T.sm_left, 110));
+        } else draw_text_ellipsis(c, FONT_UI, r.x + 43, r.y + (r.h - 14) / 2, r.w - 47, it->label, hot ? WHITE : T.sm_left_text);
     }
     /* all programs */
     {
@@ -686,7 +697,7 @@ static void paint_startmenu(canvas_t *c) {
         bool hot = sm_hot == 100 + i;
         if (hot) fill_rect(c, r.x, r.y, r.w, r.h, T.hot);
         draw_icon(c, it->icon, 24, r.x + 5, r.y + 1);
-        draw_text(c, it->bold ? FONT_UI_BOLD : FONT_UI, r.x + 35, r.y + 6, it->label, hot ? WHITE : T.sm_right_text);
+        draw_text_ellipsis(c, it->bold ? FONT_UI_BOLD : FONT_UI, r.x + 35, r.y + 6, r.w - 39, it->label, hot ? WHITE : T.sm_right_text);
     }
     /* footer */
     int fy = m.y + m.h - SM_FOOT;
@@ -709,7 +720,7 @@ static void paint_startmenu(canvas_t *c) {
         rect_t r = sm_item_rect(400 + k);
         if (sm_hot == 400 + k) { blend_rect(c, r.x, r.y, r.w, r.h, WHITE, 50); draw_rect(c, r.x, r.y, r.w, r.h, lighten(T.sm_foot_top, 100)); }
         draw_icon(c, fi[k], 24, r.x + 2, r.y + 2);
-        draw_text(c, FONT_UI, r.x + 29, r.y + 7, fl[k], T.sm_foot_text);
+        draw_text_ellipsis(c, FONT_UI, r.x + 29, r.y + 7, r.w - 32, fl[k], T.sm_foot_text);
     }
     if (allprog_open) paint_allprog(c);
 }

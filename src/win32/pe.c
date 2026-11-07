@@ -197,7 +197,7 @@ static void build_args(w32_proc_t *p) {
         p->argv[p->argc] = NULL;
     }
     p->envp = kzalloc(4 * sizeof(char *));
-    static char env0[] = "OS=THE_WRLD_OS", env1[] = "USERPROFILE=" USER_HOME, env2[] = "PATH=C:\\Windows\\System32;C:\\Windows";
+    static char env0[] = "OS=THE_WRLD_OS", env1[] = "USERPROFILE=" USER_HOME, env2[] = "PATH=C:\\WRLD\\System32;C:\\WRLD";
     p->envp[0] = env0; p->envp[1] = env1; p->envp[2] = env2;
     p->acmdln = strdup(p->cmdline);
 }
