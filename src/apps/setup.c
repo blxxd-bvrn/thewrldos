@@ -118,11 +118,11 @@ enum { IT_DISK, IT_PART, IT_FREE };
 typedef struct { int kind, disk, slot; uint32_t lba, sectors; uint8_t type; char letter; int free_mb; bool fat; int fskind; char fslabel[16]; } item_t;   /* fat: has a usable file system (FAT32 or NTFS) */
 static item_t items[40];
 static int nitems;
-static part_t ptab[4][4];
-static bool has_mbr[4];
+static part_t ptab[BLK_MAX][4];
+static bool has_mbr[BLK_MAX];
 static void disk_desc(int d, char *b, int n) {
     blkdev_t *dv = blk_get(d);
-    snprintf(b, n, "%u MB Disk %d at Id %d on bus %d on atapi [MBR]", dv->sectors / 2048, d, dv->slave, dv->bus);
+    snprintf(b, n, "%u MB Disk %d at Id %d on bus %d on %s [MBR]", dv->sectors / 2048, d, dv->id, dv->busno, dv->driver);
 }
 static void part_desc(item_t *it, char *b, int n) {
     if (it->kind == IT_FREE) { snprintf(b, n, "    Unpartitioned space          %8u MB", it->sectors / 2048); return; }
@@ -137,7 +137,7 @@ static void part_desc(item_t *it, char *b, int n) {
 static void build_items(void) {
     nitems = 0;
     char letter = 'C';
-    for (int d = 0; d < blk_count() && d < 4; d++) {
+    for (int d = 0; d < blk_count() && d < BLK_MAX; d++) {
         blkdev_t *dv = blk_get(d);
         items[nitems++] = (item_t){ .kind = IT_DISK, .disk = d };
         has_mbr[d] = mbr_read(dv, ptab[d]);
@@ -461,14 +461,34 @@ void setup_text_mode(bool from_desktop) {
             bullet(4, 12, "To delete the selected partition, press D.", TS_FG);
             int bx = X(2), by = Y(15) - 6, bw = SCREEN_W - 2 * bx, bh = Y(33) - by;
             ts_box(bx, by, bw, bh, TS_FG, false);
-            int row = 16;
-            for (int i = 0; i < nitems && row < 32; i++, row++) {
-                char b[128];
-                if (items[i].kind == IT_DISK) { if (i) row++; disk_desc(items[i].disk, b, sizeof b); tx(4, row, b, TS_FG); row++; continue; }
-                part_desc(&items[i], b, sizeof b);
-                if (i == sel) { fill_rect(&screen, X(5), Y(row) - 1, bw - 3 * 4 * cw, LH, TS_FG); tx(6, row, b, TS_BG); }
-                else tx(6, row, b, TS_FG);
+            /* virtual rows (a blank line before each disk after the first), scrolled to keep the selection visible */
+            static int vrow[BLK_MAX * 10], top;
+            int vr = 0;
+            for (int i = 0; i < nitems; i++) {
+                if (items[i].kind == IT_DISK) { if (i) vr++; vrow[i] = vr; vr += 2; }
+                else vrow[i] = vr++;
             }
+            const int vis = 16;
+            if (sel >= 0) {
+                int want = vrow[sel];
+                for (int i = sel - 1; i >= 0; i--) if (items[i].kind == IT_DISK) { if (vrow[sel] - vrow[i] < vis) want = vrow[i]; break; }
+                if (want < top) top = want;
+                if (vrow[sel] >= top + vis) top = vrow[sel] - vis + 1;
+            }
+            if (top > 0 && vr - top < vis) top = MAX(0, vr - vis);
+            int row = 16;
+            for (int i = 0; i < nitems; i++) {
+                char b[128];
+                int r = 16 + vrow[i] - top;
+                if (r < 16 || r >= 16 + vis) continue;
+                row = r + 1;
+                if (items[i].kind == IT_DISK) { disk_desc(items[i].disk, b, sizeof b); tx(4, r, b, TS_FG); continue; }
+                part_desc(&items[i], b, sizeof b);
+                if (i == sel) { fill_rect(&screen, X(5), Y(r) - 1, bw - 3 * 4 * cw, LH, TS_FG); tx(6, r, b, TS_BG); }
+                else tx(6, r, b, TS_FG);
+            }
+            if (top > 0) tx((SCREEN_W - 48) / cw - 4, 16, "^", TS_FG);
+            if (vr - top > vis) tx((SCREEN_W - 48) / cw - 4, 15 + vis, "v", TS_FG);
             if (sel < 0) tx(6, row + 1, "(no usable space on the disks)", TS_FG);
             ts_present();
             int k = ts_key();
@@ -481,6 +501,12 @@ void setup_text_mode(bool from_desktop) {
                 item_t it = items[sel];
                 int slot = it.slot;
                 bool fresh = false;
+                if (blk_get(it.disk)->bsize != 512) {
+                    message_screen("This disk uses 4 KB sectors (Advanced Format 4Kn). A computer cannot start from such a disk with a BIOS, so " OS_NAME
+                                   " cannot be installed on it.\n\n"
+                                   "Select a partition on another disk, or set up the virtual disk with 512-byte sectors.\n\nPress ENTER to continue.", "ENTER=Continue");
+                    break;
+                }
                 if (it.kind == IT_FREE) {
                     slot = free_slot(it.disk);
                     if (slot < 0) { message_screen("The partition table on this disk is full. Delete a partition first.\n\nPress ENTER to continue.", "ENTER=Continue"); break; }
@@ -550,7 +576,7 @@ void setup_launch_from_desktop(void) {
         msgbox("Setup", m, MBI_INFO, MBX_OK, NULL, NULL);
         return;
     }
-    ata_init();
+    storage_init();
     if (!blk_count()) {
         msgbox("Setup", "Setup did not find a hard disk in this computer.\n\nIn QEMU, start the CD with a disk attached: make run-install", MBI_WARNING, MBX_OK, NULL, NULL);
         return;

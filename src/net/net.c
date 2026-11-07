@@ -281,13 +281,23 @@ static bool hosts_lookup(const char *name, uint32_t *ip) {
     char *t = (char *)vfs_read_file("C:\\WRLD\\hosts", &len);
     if (!t) return false;
     bool found = false;
-    for (char *line = strtok(t, "\r\n"); line && !found; line = strtok(NULL, "\r\n")) {
+    /* no strtok: the name loop inside would clobber the line loop's position */
+    for (char *line = t, *next; line && *line && !found; line = next) {
+        next = line; while (*next && *next != '\r' && *next != '\n') next++;
+        if (*next) { *next++ = 0; while (*next == '\r' || *next == '\n') next++; } else next = NULL;
         while (*line == ' ' || *line == '\t') line++;
-        if (*line == '#') continue;
+        if (*line == '#' || !*line) continue;
         char a[32]; int k = 0;
         while (*line && *line != ' ' && *line != '\t' && k < 31) a[k++] = *line++;
         a[k] = 0;
-        for (char *n = strtok(line, " \t"); n; n = strtok(NULL, " \t")) if (!strcasecmp(n, name) && str_to_ip(a, ip)) { found = true; break; }
+        while (*line && !found) {
+            while (*line == ' ' || *line == '\t') line++;
+            char *n = line;
+            while (*line && *line != ' ' && *line != '\t' && *line != '#') line++;
+            int nl = line - n;
+            if (*line == '#') *line = 0;
+            if (nl && (int)strlen(name) == nl && !strncasecmp(n, name, nl) && str_to_ip(a, ip)) found = true;
+        }
     }
     kfree(t);
     return found;

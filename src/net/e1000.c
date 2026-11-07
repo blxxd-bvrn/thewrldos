@@ -83,8 +83,7 @@ static const uint16_t ids[] = { 0x100E, 0x100F, 0x1004, 0x1008, 0x1009, 0x100C, 
     0x10B5, 0x10D3, 0x10F6, 0x10EA, 0x10EF, 0x1502, 0x1503, 0x153A, 0x153B, 0x15A0, 0x15A1, 0x15A2, 0x15A3, 0x15B7, 0x15B8, 0x156F, 0x1570 };
 
 bool e1000_probe(nic_ops_t *ops) {
-    pci_dev_t devs[48];
-    int n = pci_scan(devs, 48);
+    pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
         if (devs[i].vendor != 0x8086) continue;
         bool ok = false;

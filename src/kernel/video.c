@@ -50,8 +50,7 @@ static char name[64] = "Standard VESA display (boot framebuffer)";
 static uint32_t lfb, vram = 0, max_w = 0, max_h = 0;
 
 void video_init(void) {
-    pci_dev_t devs[48];
-    int n = pci_scan(devs, 48);
+    pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n && drv == DRV_NONE; i++) {
         pci_dev_t *p = &devs[i];
         if ((p->vendor == 0x1234 && p->device == 0x1111) || (p->vendor == 0x80EE && p->device == 0xBEEF)) {

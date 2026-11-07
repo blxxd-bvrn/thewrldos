@@ -1359,7 +1359,20 @@ static int b_shutdown(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static int b_xargs(sh_t *s, int argc, char **argv, io_t *io);
 static int b_lsblk(sh_t *s, int argc, char **argv, io_t *io) {
-    pci_dev_t d[32]; int n = pci_scan(d, 32);
+    if (!blk_count()) { out_s(io, "No hard disks.\n"); return 0; }
+    for (int i = 0; i < blk_count(); i++) {
+        blkdev_t *d = blk_get(i);
+        char b[128]; blk_describe(d, b, sizeof b);
+        out_f(io, "Disk %d  %s\n", i, b);
+        part_t p[4];
+        if (!mbr_read(d, p)) { out_s(io, "        (no partition table)\n"); continue; }
+        for (int k = 0; k < 4; k++)
+            if (p[k].type) out_f(io, "        Partition %d  %-12s %8u MB%s\n", k + 1, part_type_name(p[k].type), p[k].sectors / 2048, p[k].boot ? "  active" : "");
+    }
+    return 0;
+}
+static int b_lspci(sh_t *s, int argc, char **argv, io_t *io) {
+    pci_dev_t *d; int n = pci_list(&d);
     out_s(io, "BUS:DEV.FN  VENDOR:DEVICE  CLASS\n");
     for (int i = 0; i < n; i++) out_f(io, "%02x:%02x.%x     %04x:%04x      %s (%s)\n", d[i].bus, d[i].dev, d[i].fn, d[i].vendor, d[i].device, pci_class_name(d[i].cls, d[i].sub), pci_vendor_name(d[i].vendor));
     return 0;
@@ -1407,7 +1420,7 @@ static const builtin_t builtins[] = {
     { "tree", b_tree, "directory tree" }, { "find", b_find, "find files (-name PAT)" }, { "hexdump", b_hexdump, "hex dump a file" }, { "xxd", b_hexdump, NULL },
     { "mount", b_mount, "mount a .dmg / list drives" }, { "hdiutil", b_hdiutil, "disk image utility" }, { "open", b_open, "open with default app" }, { "start", b_open, NULL },
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
-    { "lspci", b_lsblk, "list PCI devices" }, { "return", b_return, NULL }, { "break", b_break, NULL }, { "continue", b_continue, NULL },
+    { "lspci", b_lspci, "list PCI devices" }, { "lsblk", b_lsblk, "list disks and partitions" }, { "return", b_return, NULL }, { "break", b_break, NULL }, { "continue", b_continue, NULL },
     { "shift", b_shift, NULL }, { "cpuinfo", b_cpuinfo, NULL }, { "xargs", b_xargs, "build commands from input" },
 };
 static const builtin_t *find_builtin(const char *name) { for (unsigned i = 0; i < ARRAY_LEN(builtins); i++) if (!strcmp(builtins[i].name, name)) return &builtins[i]; return NULL; }

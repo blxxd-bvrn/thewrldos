@@ -465,7 +465,7 @@ static void refill(void) {
 static void audio_tick(uint32_t t) { if ((t & 3) == 0) refill(); }
 
 void audio_init(void) {
-    pci_dev_t devs[48]; int n = pci_scan(devs, 48);
+    pci_dev_t *devs; int n = pci_list(&devs);
     ring = kmalloc_aligned(NBUF * BUFBYTES, 128);
     memset(ring, 0, NBUF * BUFBYTES);
     for (int i = 0; i < n && !dev; i++) if (devs[i].cls == 0x04 && devs[i].sub == 0x03 && hda_init(&devs[i])) dev = DEV_HDA;

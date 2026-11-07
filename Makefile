@@ -108,7 +108,7 @@ $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/net/%.o: src/net/%.c $(wildcard src/include/*.h)
+$(BUILD)/net/%.o: src/net/%.c $(wildcard src/include/*.h src/net/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -I$(BSSL)/inc -c $< -o $@
 

@@ -219,23 +219,51 @@ void pci_cfg_write(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v
     outl(0xCFC, v);
 }
 bool cpu_has_rdrand(void) { uint32_t a, b, c, d; cpuid(1, &a, &b, &c, &d); return (c >> 30) & 1; }
-int pci_scan(pci_dev_t *out, int max) {
-    int n = 0;
-    for (int bus = 0; bus < 8; bus++)
-        for (int dev = 0; dev < 32; dev++)
-            for (int fn = 0; fn < 8; fn++) {
-                uint32_t id = pci_read(bus, dev, fn, 0);
-                if ((id & 0xFFFF) == 0xFFFF) { if (fn == 0) break; continue; }
-                uint32_t cl = pci_read(bus, dev, fn, 8);
-                if (n < max) {
-                    out[n].bus = bus; out[n].dev = dev; out[n].fn = fn;
-                    out[n].vendor = id & 0xFFFF; out[n].device = id >> 16;
-                    out[n].cls = cl >> 24; out[n].sub = (cl >> 16) & 0xFF; out[n].prog = (cl >> 8) & 0xFF;
+/* every bus is scanned: VMware puts NVMe, SAS and network adapters behind
+ * PCIe root ports on buses 2..0x40 */
+static pci_dev_t pci_cache[256];
+static int pci_ncache = -1;
+int pci_list(pci_dev_t **out) {
+    if (pci_ncache < 0) {
+        int n = 0;
+        for (int bus = 0; bus < 256; bus++)
+            for (int dev = 0; dev < 32; dev++)
+                for (int fn = 0; fn < 8; fn++) {
+                    uint32_t id = pci_read(bus, dev, fn, 0);
+                    if ((id & 0xFFFF) == 0xFFFF) { if (fn == 0) break; continue; }
+                    uint32_t cl = pci_read(bus, dev, fn, 8);
+                    if (n < (int)ARRAY_LEN(pci_cache)) {
+                        pci_dev_t *o = &pci_cache[n++];
+                        o->bus = bus; o->dev = dev; o->fn = fn;
+                        o->vendor = id & 0xFFFF; o->device = id >> 16;
+                        o->cls = cl >> 24; o->sub = (cl >> 16) & 0xFF; o->prog = (cl >> 8) & 0xFF;
+                    }
+                    if (fn == 0 && !((pci_read(bus, dev, 0, 0x0C) >> 16) & 0x80)) break;
                 }
-                n++;
-                if (fn == 0 && !((pci_read(bus, dev, 0, 0x0C) >> 16) & 0x80)) break;
-            }
-    return n < max ? n : max;
+        pci_ncache = n;
+    }
+    *out = pci_cache;
+    return pci_ncache;
+}
+int pci_scan(pci_dev_t *out, int max) {
+    pci_dev_t *all; int n = pci_list(&all);
+    if (n > max) n = max;
+    memcpy(out, all, n * sizeof *out);
+    return n;
+}
+/* a BAR's address (memory or I/O); 64-bit memory BARs above 4 GiB are refused */
+uintptr_t pci_bar(const pci_dev_t *p, int i, bool *is_io) {
+    uint32_t v = pci_cfg_read(p->bus, p->dev, p->fn, 0x10 + i * 4);
+    if (is_io) *is_io = v & 1;
+    if (v & 1) return v & ~3u;
+    if (((v >> 1) & 3) == 2 && i < 5 && pci_cfg_read(p->bus, p->dev, p->fn, 0x14 + i * 4)) return 0;
+    return v & ~0xFu;
+}
+void pci_enable(const pci_dev_t *p, bool io, bool mem) {
+    uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04) & 0xFFFF;
+    cmd |= 0x04 | (io ? 1 : 0) | (mem ? 2 : 0);          /* bus master */
+    cmd |= 0x400;                                        /* legacy INTx off: drivers poll */
+    pci_cfg_write(p->bus, p->dev, p->fn, 0x04, cmd);
 }
 const char *pci_class_name(uint8_t c, uint8_t s) {
     switch (c) {

@@ -134,7 +134,7 @@ static bool http_once(const char *method, const char *url, const char *ctype, co
     if (!c.t) return false;
     if (https) {
         if (cb) cb(ctx, "Establishing a secure connection...", 0, 0);
-        c.tls = tls_open(c.t, host, r->error, sizeof r->error);
+        c.tls = tls_open(c.t, host, ip, port, r->error, sizeof r->error);
         if (!c.tls) return false;                         /* tls_open closed the TCP connection */
         r->secure = true;
         strlcpy(r->tls_info, tls_cipher_name(c.tls), sizeof r->tls_info);

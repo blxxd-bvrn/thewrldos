@@ -64,7 +64,7 @@ int tcp_count(void);
 
 /* ---- TLS (BearSSL) ---- */
 typedef struct tls_conn tls_conn_t;
-tls_conn_t *tls_open(tcb_t *t, const char *host, char *err, int errcap);
+tls_conn_t *tls_open(tcb_t *t, const char *host, uint32_t ip, uint16_t port, char *err, int errcap);   /* TLS 1.3, else 1.2 (may reconnect) */
 int tls_write(tls_conn_t *c, const void *data, uint32_t len);       /* -1 on error */
 int tls_read(tls_conn_t *c, void *buf, uint32_t max);                /* >0, 0 closed, -1 error */
 void tls_close(tls_conn_t *c);                                       /* also closes the TCP connection */

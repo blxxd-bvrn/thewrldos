@@ -1,4 +1,4 @@
-/* ATA/IDE hard disk driver (PIO, polled, LBA28 + LBA48) and MBR partition tables */
+/* ATA/IDE hard disk driver (bus-master DMA or PIO, polled, LBA28 + LBA48) */
 #include "kernel.h"
 #include "disk.h"
 
@@ -15,8 +15,6 @@
 #define ST_DF 0x20
 #define ST_BSY 0x80
 
-static blkdev_t disks[4];
-static int ndisks;
 
 static inline void insw(uint16_t port, void *buf, uint32_t n) { __asm__ volatile("cld; rep insw" : "+D"(buf), "+c"(n) : "d"(port) : "memory"); }
 static inline void outsw(uint16_t port, const void *buf, uint32_t n) { __asm__ volatile("cld; rep outsw" : "+S"(buf), "+c"(n) : "d"(port)); }
@@ -43,7 +41,7 @@ static uint16_t bmide;                    /* bus master base (primary; secondary
 static uint32_t *prdt[2];
 static uint8_t *bounce;                   /* 64 KiB, never crosses a 64 KiB boundary */
 static void dma_setup(void) {
-    pci_dev_t devs[48]; int n = pci_scan(devs, 48);
+    pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
         if (devs[i].cls != 0x01 || devs[i].sub != 0x01) continue;
         uint32_t bar4 = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x20);
@@ -91,6 +89,10 @@ static bool dma_xfer(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
     return true;
 }
 
+static bool ata_read(blkdev_t *d, uint64_t blk, uint32_t count, void *buf);
+static bool ata_write(blkdev_t *d, uint64_t blk, uint32_t count, const void *buf);
+static const blkops_t ata_ops = { ata_read, ata_write, NULL };
+
 static void identify(int bus, int slave) {
     uint16_t io = bus ? 0x170 : 0x1F0, ctl = bus ? 0x376 : 0x3F6;
     if (inb(io + 7) == 0xFF) return;                  /* floating bus */
@@ -107,9 +109,9 @@ static void identify(int bus, int slave) {
     if (st & ST_ERR || !(st & ST_DRQ)) return;
     uint16_t id[256];
     insw(io, id, 256);
-    blkdev_t *d = &disks[ndisks];
-    memset(d, 0, sizeof *d);
-    d->index = ndisks; d->bus = bus; d->slave = slave; d->io = io; d->ctl = ctl;
+    blkdev_t *d = blk_register();
+    if (!d) return;
+    d->bus = bus; d->slave = slave; d->io = io; d->ctl = ctl;
     d->lba48 = (id[83] & (1 << 10)) != 0;
     d->dma = (id[49] & (1 << 8)) != 0;
     uint32_t s28 = id[60] | ((uint32_t)id[61] << 16);
@@ -119,19 +121,15 @@ static void identify(int bus, int slave) {
     for (int i = 0; i < 20; i++) { d->model[i * 2] = id[27 + i] >> 8; d->model[i * 2 + 1] = id[27 + i] & 0xFF; }
     d->model[40] = 0;
     for (int i = 39; i >= 0 && d->model[i] == ' '; i--) d->model[i] = 0;
-    if (!d->sectors) return;
-    klog("ata: disk %d (%s %s) \"%s\" %u MB%s", ndisks, bus ? "secondary" : "primary", slave ? "slave" : "master",
-         d->model, d->sectors / 2048, d->lba48 ? " LBA48" : "");
-    ndisks++;
+    if (!d->sectors) { kfree(d); return; }
+    d->ops = &ata_ops; d->kind = "IDE"; d->driver = "atapi";
+    d->busno = bus; d->id = slave; d->max_blocks = 128;
+    blk_commit(d);
 }
-void ata_init(void) {
-    ndisks = 0;
+void ata_probe(void) {
     if (!bmide) dma_setup();
-    for (int b = 0; b < 2; b++) for (int s = 0; s < 2; s++) if (ndisks < 4) identify(b, s);
-    if (!ndisks) klog("ata: no hard disks found");
+    for (int b = 0; b < 2; b++) for (int s = 0; s < 2; s++) identify(b, s);
 }
-int blk_count(void) { return ndisks; }
-blkdev_t *blk_get(int i) { return i >= 0 && i < ndisks ? &disks[i] : NULL; }
 
 static bool setup_cmd(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
     uint16_t io = d->io;
@@ -153,8 +151,8 @@ static bool setup_cmd(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
     }
     return true;
 }
-bool blk_read(blkdev_t *d, uint32_t lba, uint32_t count, void *buf) {
-    if (!d || lba + count > d->sectors || lba + count < lba) return false;
+static bool ata_read(blkdev_t *d, uint64_t blk, uint32_t count, void *buf) {
+    uint32_t lba = (uint32_t)blk;
     uint8_t *p = buf;
     if (bmide && d->dma) {
         while (count) {
@@ -177,8 +175,8 @@ bool blk_read(blkdev_t *d, uint32_t lba, uint32_t count, void *buf) {
     }
     return true;
 }
-bool blk_write(blkdev_t *d, uint32_t lba, uint32_t count, const void *buf) {
-    if (!d || lba + count > d->sectors || lba + count < lba) return false;
+static bool ata_write(blkdev_t *d, uint64_t blk, uint32_t count, const void *buf) {
+    uint32_t lba = (uint32_t)blk;
     const uint8_t *p = buf;
     if (bmide && d->dma) {
         while (count) {
@@ -208,62 +206,4 @@ bool blk_write(blkdev_t *d, uint32_t lba, uint32_t count, const void *buf) {
         lba += n; count -= n;
     }
     return true;
-}
-bool blk_zero(blkdev_t *d, uint32_t lba, uint32_t count) {
-    static uint8_t *z;
-    if (!z) z = kzalloc(128 * 512);
-    while (count) {
-        uint32_t n = MIN(count, 128u);
-        if (!blk_write(d, lba, n, z)) return false;
-        lba += n; count -= n;
-    }
-    return true;
-}
-
-/* ---------------- MBR ---------------- */
-int mbr_read(blkdev_t *d, part_t parts[4]) {
-    uint8_t s[512];
-    memset(parts, 0, sizeof(part_t) * 4);
-    if (!blk_read(d, 0, 1, s)) return 0;
-    if (s[510] != 0x55 || s[511] != 0xAA) return 0;
-    for (int i = 0; i < 4; i++) {
-        const uint8_t *e = s + 446 + i * 16;
-        parts[i].boot = e[0]; parts[i].type = e[4];
-        memcpy(&parts[i].lba, e + 8, 4); memcpy(&parts[i].sectors, e + 12, 4);
-        if (!parts[i].type || !parts[i].sectors) memset(&parts[i], 0, sizeof(part_t));
-    }
-    return 1;
-}
-static void lba_to_chs(uint32_t lba, uint8_t *out) {
-    uint32_t c = lba / (255 * 63), h = (lba / 63) % 255, s = lba % 63 + 1;
-    if (c > 1023) { out[0] = 0xFE; out[1] = 0xFF; out[2] = 0xFF; return; }
-    out[0] = h; out[1] = (s & 0x3F) | ((c >> 2) & 0xC0); out[2] = c & 0xFF;
-}
-bool mbr_write(blkdev_t *d, const part_t parts[4], const uint8_t *bootcode) {
-    uint8_t s[512];
-    if (!blk_read(d, 0, 1, s) || s[510] != 0x55 || s[511] != 0xAA) {
-        memset(s, 0, 512);
-        uint32_t sig = rand_next(); memcpy(s + 440, &sig, 4);
-    }
-    if (bootcode) memcpy(s, bootcode, 440);
-    if (!*(uint32_t *)(s + 440)) { uint32_t sig = rand_next() | 1; memcpy(s + 440, &sig, 4); }
-    s[444] = s[445] = 0;
-    for (int i = 0; i < 4; i++) {
-        uint8_t *e = s + 446 + i * 16;
-        memset(e, 0, 16);
-        if (!parts[i].type) continue;
-        e[0] = parts[i].boot ? 0x80 : 0; e[4] = parts[i].type;
-        lba_to_chs(parts[i].lba, e + 1); lba_to_chs(parts[i].lba + parts[i].sectors - 1, e + 5);
-        memcpy(e + 8, &parts[i].lba, 4); memcpy(e + 12, &parts[i].sectors, 4);
-    }
-    s[510] = 0x55; s[511] = 0xAA;
-    return blk_write(d, 0, 1, s);
-}
-const char *part_type_name(uint8_t t) {
-    switch (t) {
-    case 0x01: return "FAT12"; case 0x04: case 0x06: case 0x0E: return "FAT16"; case 0x0B: case 0x0C: return "FAT32";
-    case 0x07: return "NTFS/exFAT"; case 0x05: case 0x0F: return "Extended"; case 0x82: return "Linux swap"; case 0x83: return "Linux";
-    case 0xEE: return "GPT protective"; case 0xEF: return "EFI System"; case 0xA5: return "FreeBSD"; case 0xAF: return "HFS+";
-    default: return "Unknown";
-    }
 }

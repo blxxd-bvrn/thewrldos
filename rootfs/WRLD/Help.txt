@@ -23,7 +23,8 @@ VISUAL STYLES
 
 THE INTERNET
   The WRLD Xplorer (Start menu > Internet, or the globe on the Quick Launch
-  bar) opens web pages over HTTP and HTTPS. It shows HTML, simple CSS,
+  bar) opens web pages over HTTP and HTTPS (TLS 1.3, or TLS 1.2 for older
+  servers). It shows HTML, simple CSS,
   tables, forms and PNG/GIF/JPEG/BMP pictures, and runs JavaScript (QuickJS)
   with a DOM, events, timers, localStorage and fetch/XMLHttpRequest.
   Big web apps may still not work; text-heavy sites work best.
@@ -48,7 +49,9 @@ INSTALLING TO A HARD DISK
   installs the GRUB boot loader, then restarts. The first boot from the disk
   asks for your name, computer name, time zone and visual style. Settings are
   saved in C:\WRLD\wrld.ini; files are written back to the disk within a
-  couple of seconds and when you shut down. Needs an IDE/ATA disk.
+  couple of seconds and when you shut down. Works with IDE, SATA (AHCI),
+  NVMe, SCSI (LSI Logic, LSI Logic SAS, VMware Paravirtual, virtio-scsi) and
+  virtio disks.
 
 SOUND AND DISPLAY
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /

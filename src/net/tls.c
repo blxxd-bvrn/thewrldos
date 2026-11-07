@@ -1,4 +1,5 @@
-/* HTTPS: TLS 1.0-1.2 client on top of our TCP, using BearSSL.
+/* HTTPS on top of our TCP: TLS 1.3 (tls13.c) first, and BearSSL's TLS 1.0-1.2
+ * for servers that do not speak TLS 1.3.
  * Server certificates are validated against the Mozilla root store compiled
  * into the kernel (trust_anchors.c) plus any certificates the user puts in
  * C:\WRLD\Certificates (*.crt, *.cer, *.pem). */
@@ -6,6 +7,7 @@
 #include "net.h"
 #include "fs.h"
 #include "bearssl.h"
+#include "tls13.h"
 
 extern const br_x509_trust_anchor builtin_tas[];
 extern const unsigned builtin_tas_num;
@@ -13,6 +15,7 @@ extern const unsigned builtin_tas_num;
 
 struct tls_conn {
     tcb_t *t;
+    tls13_t *t13;                   /* TLS 1.3, or NULL when BearSSL (TLS 1.2) is used */
     br_ssl_client_context sc;
     br_x509_minimal_context xc;
     br_sslio_context io;
@@ -44,6 +47,17 @@ static void gather_seed(unsigned char out[32]) {
     br_sha256_context c = pool;
     br_sha256_out(&c, out);
     pool_mix(out, 32);                             /* never hand out the same seed twice */
+}
+
+/* random bytes for TLS 1.3 key shares and hello randoms */
+void tls_random(void *out, size_t len) {
+    static br_hmac_drbg_context drbg;
+    static bool seeded;
+    unsigned char seed[32]; gather_seed(seed);
+    if (!seeded) { br_hmac_drbg_init(&drbg, &br_sha256_vtable, seed, sizeof seed); seeded = true; }
+    else br_hmac_drbg_update(&drbg, seed, sizeof seed);
+    memset(seed, 0, sizeof seed);
+    br_hmac_drbg_generate(&drbg, out, len);
 }
 
 /* ---------------- trust anchors ---------------- */
@@ -142,7 +156,7 @@ static uint32_t days_since_0ad(int y, int m, int d) {
     unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     return (uint32_t)(era * 146097 + (int)doe - 719468) + 719528;
 }
-static const char *err_text(int e) {
+const char *tls_x509_error_text(int e) {
     switch (e) {
     case BR_ERR_X509_NOT_TRUSTED: return "The website's security certificate is not issued by a trusted certificate authority.";
     case BR_ERR_X509_EXPIRED: return "The website's security certificate has expired or is not yet valid (check the computer's date and time).";
@@ -152,7 +166,7 @@ static const char *err_text(int e) {
     case BR_ERR_X509_WEAK_PUBLIC_KEY: return "The website's certificate uses a key that is too weak.";
     case BR_ERR_X509_UNSUPPORTED: case BR_ERR_X509_WRONG_KEY_TYPE: return "The website's certificate uses an unsupported algorithm.";
     case BR_ERR_X509_TIME_UNKNOWN: return "The current date is unknown, so the certificate cannot be checked.";
-    case BR_ERR_UNSUPPORTED_VERSION: case BR_ERR_BAD_VERSION: return "The website requires a TLS version this browser does not support (TLS 1.3 only).";
+    case BR_ERR_UNSUPPORTED_VERSION: case BR_ERR_BAD_VERSION: return "The website requires a TLS version this browser does not support.";
     case BR_ERR_BAD_CIPHER_SUITE: return "The website and this browser have no encryption method in common.";
     case BR_ERR_IO: return "The connection was closed or timed out during the secure handshake.";
     case BR_ERR_NO_RANDOM: return "No random seed was available for encryption.";
@@ -163,36 +177,78 @@ static const char *err_text(int e) {
 }
 static void set_err(tls_conn_t *c) {
     int e = br_ssl_engine_last_error(&c->sc.eng);
-    const char *t = err_text(e);
+    const char *t = tls_x509_error_text(e);
     if (t) strlcpy(c->err, t, sizeof c->err); else snprintf(c->err, sizeof c->err, "Secure connection failed (TLS error %d).", e);
 }
-tls_conn_t *tls_open(tcb_t *t, const char *host, char *err, int errcap) {
-    load_trust_anchors();
-    tls_conn_t *c = kzalloc(sizeof *c);
-    c->t = t;
+/* servers (host:port) recently seen without TLS 1.3: go straight to TLS 1.2 */
+static char no13[16][72];
+static int no13_next;
+static int find_no13(const char *key) { for (int i = 0; i < 16; i++) if (!strcmp(no13[i], key)) return i; return -1; }
+
+static bool bear_open(tls_conn_t *c, const char *host, uint32_t days, uint32_t secs) {
     br_ssl_client_init_full(&c->sc, &c->xc, tas, ntas);
-    rtc_time_t now; rtc_read(&now);
-    br_x509_minimal_set_time(&c->xc, days_since_0ad(now.year, now.month, now.day), now.hour * 3600 + now.minute * 60 + now.second);
+    br_x509_minimal_set_time(&c->xc, days, secs);
     br_ssl_engine_set_buffer(&c->sc.eng, c->buf, sizeof c->buf, 1);
     unsigned char seed[32]; gather_seed(seed);
     br_ssl_engine_inject_entropy(&c->sc.eng, seed, sizeof seed);
     memset(seed, 0, sizeof seed);
-    if (!br_ssl_client_reset(&c->sc, host, 0)) { set_err(c); strlcpy(err, c->err, errcap); tls_close(c); return NULL; }
+    if (!br_ssl_client_reset(&c->sc, host, 0)) { set_err(c); return false; }
     br_sslio_init(&c->io, &c->sc.eng, sock_read, c, sock_write, c);
     br_sslio_flush(&c->io);                         /* runs the handshake */
-    if (br_ssl_engine_current_state(&c->sc.eng) == BR_SSL_CLOSED) {
-        set_err(c); strlcpy(err, c->err, errcap);
-        klog("tls: handshake with %s failed: %s", host, c->err);
-        tls_close(c);
-        return NULL;
+    if (br_ssl_engine_current_state(&c->sc.eng) == BR_SSL_CLOSED) { set_err(c); return false; }
+    return true;
+}
+
+tls_conn_t *tls_open(tcb_t *t, const char *host, uint32_t ip, uint16_t port, char *err, int errcap) {
+    load_trust_anchors();
+    tls_conn_t *c = kzalloc(sizeof *c);
+    c->t = t;
+    rtc_time_t now; rtc_read(&now);
+    uint32_t days = days_since_0ad(now.year, now.month, now.day), secs = now.hour * 3600 + now.minute * 60 + now.second;
+    char key[72]; snprintf(key, sizeof key, "%.63s:%u", host, port);
+    int cached = find_no13(key);
+    for (int pass = 0; pass < 2; pass++) {
+        if (cached < 0) {
+            int fallback = 0;
+            c->t13 = tls13_connect(c->t, host, tas, ntas, days, secs, c->err, sizeof c->err, &fallback);
+            if (c->t13) { klog("tls: %s: %s", host, tls13_info(c->t13)); return c; }
+            if (!fallback) {
+                klog("tls: TLS 1.3 handshake with %s failed: %s", host, c->err);
+                strlcpy(err, c->err, errcap); tls_close(c); return NULL;
+            }
+            /* the server does not speak TLS 1.3: reconnect and use TLS 1.2 */
+            klog("tls: %s does not support TLS 1.3, using TLS 1.2", key);
+            strlcpy(no13[no13_next], key, sizeof no13[0]); no13_next = (no13_next + 1) % 16;
+            tcp_close(c->t);
+            c->err[0] = 0;
+            c->t = tcp_connect(ip, port, 15000, err, errcap);
+            if (!c->t) { kfree(c); return NULL; }
+        }
+        if (bear_open(c, host, days, secs)) {
+            klog("tls: %s: %s", host, tls_cipher_name(c));
+            return c;
+        }
+        if (cached < 0) break;
+        /* remembered as TLS 1.2-only, but that failed: maybe the server was upgraded */
+        klog("tls: TLS 1.2 with %s failed (%s), trying TLS 1.3", key, c->err);
+        no13[cached][0] = 0; cached = -1;
+        tcp_close(c->t);
+        memset(&c->sc, 0, sizeof c->sc); c->err[0] = 0;
+        c->t = tcp_connect(ip, port, 15000, err, errcap);
+        if (!c->t) { kfree(c); return NULL; }
     }
-    return c;
+    strlcpy(err, c->err, errcap);
+    klog("tls: handshake with %s failed: %s", host, c->err);
+    tls_close(c);
+    return NULL;
 }
 int tls_write(tls_conn_t *c, const void *data, uint32_t len) {
+    if (c->t13) { int n = tls13_write(c->t13, data, len); if (n < 0) strlcpy(c->err, tls13_error(c->t13), sizeof c->err); return n; }
     if (br_sslio_write_all(&c->io, data, len) < 0 || br_sslio_flush(&c->io) < 0) { set_err(c); return -1; }
     return len;
 }
 int tls_read(tls_conn_t *c, void *buf, uint32_t max) {
+    if (c->t13) { int n = tls13_read(c->t13, buf, max); if (n < 0) strlcpy(c->err, tls13_error(c->t13), sizeof c->err); return n; }
     int n = br_sslio_read(&c->io, buf, max);
     if (n > 0) return n;
     int e = br_ssl_engine_last_error(&c->sc.eng);
@@ -202,6 +258,7 @@ int tls_read(tls_conn_t *c, void *buf, uint32_t max) {
 }
 void tls_close(tls_conn_t *c) {
     if (!c) return;
+    if (c->t13) tls13_free(c->t13);
     if (c->t) tcp_close(c->t);
     memset(c, 0, sizeof *c);
     kfree(c);
@@ -209,6 +266,7 @@ void tls_close(tls_conn_t *c) {
 const char *tls_error_text(tls_conn_t *c) { return c->err; }
 const char *tls_cipher_name(tls_conn_t *c) {
     static char b[80];
+    if (c->t13) return tls13_info(c->t13);
     br_ssl_session_parameters p;
     br_ssl_engine_get_session_parameters(&c->sc.eng, &p);
     const char *v = p.version == BR_TLS12 ? "TLS 1.2" : p.version == BR_TLS11 ? "TLS 1.1" : "TLS 1.0";

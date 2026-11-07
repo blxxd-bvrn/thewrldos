@@ -136,7 +136,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     boot_screen_progress("Starting sound...", 22);
     audio_init();
     boot_screen_progress("Detecting hard disks...", 25);
-    ata_init();
+    storage_init();
     boot_screen_progress("Mounting file systems...", 35);
     vfs_init();
     vol_load_progress = boot_load_progress;

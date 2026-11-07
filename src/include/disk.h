@@ -3,23 +3,62 @@
 #include "kernel.h"
 #include "fs.h"
 
-/* ---- block devices (ATA/IDE, PIO) ---- */
+/* ---- block devices ----
+ * Every disk controller driver (IDE, AHCI/SATA, NVMe, SCSI host adapters,
+ * virtio) registers its disks here; everything above (MBR, FAT32, NTFS,
+ * Setup, persistence) only uses blk_read / blk_write in 512-byte sectors. */
+typedef struct blkdev blkdev_t;
 typedef struct {
+    /* n <= max_blocks native blocks; buf is any kernel memory */
+    bool (*read)(blkdev_t *d, uint64_t blk, uint32_t n, void *buf);
+    bool (*write)(blkdev_t *d, uint64_t blk, uint32_t n, const void *buf);
+    bool (*flush)(blkdev_t *d);
+} blkops_t;
+struct blkdev {
     int index;                 /* Disk 0, 1, ... */
-    int bus, slave;            /* 0 primary / 1 secondary, 0 master / 1 slave */
-    uint16_t io, ctl;
-    bool lba48;
-    bool dma;                  /* bus-master IDE DMA available */
-    uint32_t sectors;          /* 512-byte sectors */
+    const blkops_t *ops;
+    uint32_t sectors;          /* 512-byte sectors (clamped to 2 TiB) */
+    uint32_t bsize;            /* native block size (512 or 4096) */
+    uint32_t max_blocks;       /* largest single request, in native blocks */
     char model[41];
-} blkdev_t;
-
-void ata_init(void);
+    const char *kind;          /* "IDE", "SATA", "NVMe", "SCSI", "virtio" */
+    const char *driver;        /* the Windows driver name Setup shows: atapi, storahci, ... */
+    int busno, id, lun;        /* for "Disk 0 at Id 0 on bus 0 on atapi" */
+    void *priv;                /* the driver's own state */
+    /* IDE (ata.c) */
+    int bus, slave; uint16_t io, ctl; bool lba48, dma;
+};
+#define BLK_MAX 16
+void storage_init(void);                    /* probe every controller (once; again re-probes) */
+blkdev_t *blk_register(void);               /* drivers: a zeroed slot, or NULL when full */
+void blk_commit(blkdev_t *d);               /* drivers: the disk is ready */
 int blk_count(void);
 blkdev_t *blk_get(int i);
 bool blk_read(blkdev_t *d, uint32_t lba, uint32_t count, void *buf);
 bool blk_write(blkdev_t *d, uint32_t lba, uint32_t count, const void *buf);
 bool blk_zero(blkdev_t *d, uint32_t lba, uint32_t count);
+void blk_describe(blkdev_t *d, char *buf, int cap);   /* "IDE disk 0:1 \"QEMU HARDDISK\" 8192 MB" */
+/* drivers (each probes PCI and calls blk_register for every disk it finds) */
+void ata_probe(void);
+void ahci_probe(void);
+void nvme_probe(void);
+void virtio_probe(void);
+void mpt_probe(void);
+void pvscsi_probe(void);
+/* SCSI disks behind any host adapter (scsi.c) */
+typedef struct scsi_host scsi_host_t;
+struct scsi_host {
+    /* returns the SCSI status (0 good, 2 check condition) or -1 for a transport
+     * error / no device; dir: 0 none, 1 from the device, 2 to the device */
+    int (*exec)(scsi_host_t *h, int target, int lun, const uint8_t *cdb, int cdblen, void *buf, uint32_t len, int dir);
+    const char *driver;
+    int busno, max_target, max_lun;
+    uint32_t max_xfer;         /* bytes per command */
+    void *priv;
+};
+void scsi_scan(scsi_host_t *h);
+/* DMA helpers: memory the devices can reach (identity-mapped, below 4 GiB) */
+static inline uint64_t dma_addr(const void *p) { return (uint64_t)(uintptr_t)p; }
 
 /* ---- MBR partition tables ---- */
 typedef struct { uint8_t type, boot; uint32_t lba, sectors; } part_t;

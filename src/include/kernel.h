@@ -172,6 +172,9 @@ extern void (*task_kill_hook)(task_t *t);
 void cpu_get_info(char *vendor, char *brand);
 typedef struct { uint8_t bus, dev, fn; uint16_t vendor, device; uint8_t cls, sub, prog; } pci_dev_t;
 int pci_scan(pci_dev_t *out, int max);
+int pci_list(pci_dev_t **out);            /* all devices (cached) */
+uintptr_t pci_bar(const pci_dev_t *p, int i, bool *is_io);
+void pci_enable(const pci_dev_t *p, bool io, bool mem);   /* + bus mastering, INTx off */
 uint32_t pci_cfg_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
 void pci_cfg_write(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v);
 bool cpu_has_rdrand(void);
