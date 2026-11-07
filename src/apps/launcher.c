@@ -3,6 +3,7 @@
 #include "wm.h"
 #include "apps.h"
 #include "theme.h"
+#include "audio.h"
 
 const app_info_t app_table[] = {
     { "xplorer", "The WRLD Xplorer", "Browse the web", ICON_BROWSER },
@@ -52,6 +53,7 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
     if (!strcasecmp(e, "wrldstyle")) return ICON_CP_APPEARANCE;
+    if (!strcasecmp(e, "wav")) return ICON_CP_SOUND;
     if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) return ICON_IMAGE_FILE;
     if (!strcasecmp(e, "html") || !strcasecmp(e, "htm") || !strcasecmp(e, "url")) return ICON_BROWSER;
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
@@ -75,6 +77,7 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "html") || !strcasecmp(e, "htm")) return "HTML Document";
     if (!strcasecmp(e, "url")) return "Internet Shortcut";
     if (!strcasecmp(e, "wrldstyle")) return "Visual Style";
+    if (!strcasecmp(e, "wav")) return "Wave Sound";
     if (!strcasecmp(e, "plist")) return "Property List";
     if (!strcasecmp(e, "c")) return "C Source File";
     return "File";
@@ -107,6 +110,10 @@ bool shell_open(const char *path, const char *cwd) {
         char l = dmg_mount(n, msg, sizeof msg);
         if (!l) err_box("Disk Image", msg);
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
+    } else if (!strcasecmp(e, "wav")) {
+        char err[96];
+        if (!audio_play_file(full, err, sizeof err)) err_box("Sound", !audio_present() ? "There is no sound device to play this sound on." : err);
+        else { char m[200]; snprintf(m, sizeof m, "Playing %s", n->name); notify_balloon("Sound", m); }
     } else if (!strcasecmp(e, "wrldstyle")) {
         /* apply the visual style, then show it in Personalization */
         char dir[512]; path_dirname(full, dir, sizeof dir);

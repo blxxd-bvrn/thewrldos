@@ -40,6 +40,13 @@ INSTALLING TO A HARD DISK
   saved in C:\Windows\wrld.ini; files are written back to the disk within a
   couple of seconds and when you shut down. Needs an IDE/ATA disk.
 
+SOUND AND DISPLAY
+  Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
+  shutdown sounds (C:\Windows\Media). Supported sound cards: Intel High
+  Definition Audio and AC'97. Command Prompt: volume 60, play FILE.wav
+  Control Panel > Appearance > Display: screen resolution (QEMU/Bochs VGA,
+  VirtualBox VBoxVGA/VMSVGA, VMware SVGA). Command Prompt: display 1280x800
+
 RUNNING PROGRAMS
   .exe  32-bit Win32 PE programs (console and GUI). Each process gets its own
         address space; kernel32, msvcrt, user32, gdi32, advapi32 and shell32

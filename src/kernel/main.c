@@ -7,6 +7,7 @@
 #include "apps.h"
 #include "disk.h"
 #include "net.h"
+#include "audio.h"
 
 typedef struct PACKED {
     uint32_t flags, mem_lower, mem_upper, boot_device, cmdline, mods_count, mods_addr;
@@ -117,6 +118,8 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     for (int i = 0; i < nd; i++) klog("pci %02x:%02x.%x %04x:%04x %s", devs[i].bus, devs[i].dev, devs[i].fn, devs[i].vendor, devs[i].device, pci_class_name(devs[i].cls, devs[i].sub));
     boot_screen_progress("Starting network...", 20);
     net_init();
+    boot_screen_progress("Starting sound...", 22);
+    audio_init();
     boot_screen_progress("Detecting hard disks...", 25);
     ata_init();
     boot_screen_progress("Mounting file systems...", 35);
@@ -144,6 +147,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     if (setup_oobe_pending()) setup_oobe();
     welcome_screen();
     wm_redraw_all();
+    if (system_sounds) { char err[64]; audio_play_file(SOUND_STARTUP, err, sizeof err); }
     if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
     wm_run();

@@ -97,7 +97,12 @@ void task_yield(void) {
     irq_restore(f);
 }
 void task_sleep(uint32_t ms) {
-    if (current == &task0) { sleep_ms(ms); return; }
+    if (current == &task0) {
+        /* the main (GUI) task is never descheduled: let the other tasks run while it waits */
+        uint32_t end = timer_ticks() + ms;
+        while ((int32_t)(end - timer_ticks()) > 0) { task_yield(); hlt(); }
+        return;
+    }
     uint32_t f = irq_save();
     current->wake_at = timer_ticks() + ms;
     current->state = TASK_SLEEPING;

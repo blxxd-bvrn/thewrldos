@@ -15,6 +15,10 @@ lines, plus the BearSSL library for HTTPS). It has an XP-style "Luna" desktop an
 - **Networking:** an Intel PRO/1000 driver, a TCP/IP stack with DHCP and DNS, and HTTPS with
   certificate checking.
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
+- **Sound:** Intel HD Audio and AC'97 drivers. A startup sound plays when you log on and a
+  shutdown sound plays before the computer turns off.
+- **Graphics:** drivers for the Bochs/QEMU, VirtualBox and VMware display adapters, so the
+  resolution can be changed at runtime (1024×768 up to 1920×1200 or more).
 
 ![Boot screen](docs/screenshots/boot.png)
 
@@ -26,6 +30,7 @@ lines, plus the BearSSL library for HTTPS). It has an XP-style "Luna" desktop an
 | ![Win32 GUI program](docs/screenshots/win32-exe.png) | ![Win32 console program](docs/screenshots/console-exe.png) |
 | ![Shell script](docs/screenshots/shell-script.png) | ![Mounted .dmg disk image](docs/screenshots/dmg-mounted.png) |
 | ![Aero](docs/screenshots/aero.png) | ![Plex](docs/screenshots/plex.png) |
+| ![Sound settings](docs/screenshots/sound.png) | ![Running at 1280x800](docs/screenshots/resolution-1280x800.png) |
 
 ### The WRLD Xplorer
 
@@ -88,16 +93,23 @@ automatically. On WSL, clone the repository inside the Linux file system (for ex
 
 | Command | What it does |
 |---|---|
-| `make run` | Live session from the CD. Nothing is saved. Networking uses QEMU's built-in NAT. |
+| `make run` | Live session from the CD. Nothing is saved. Networking uses QEMU's built-in NAT, and sound goes to PulseAudio/PipeWire when it's running (also under WSLg). |
 | `make run-install` | CD plus a blank 512 MB `disk.img`. Choose **Install THE WRLD OS**. |
 | `make run-disk` | Boots the installed `disk.img` on its own, with no CD. |
 | `make disk` | Creates the blank `disk.img` (size: `make disk DISK_MB=1024`). |
+
+You can also choose the emulated hardware:
+
+- `make run SOUND=ac97` uses an AC'97 sound card instead of HD Audio.
+- `make run VGA=vmware` uses the VMware SVGA II display adapter.
+- `make run AUDIO=alsa` (or `sdl`, or `none`) picks QEMU's host sound output.
 
 ### In VirtualBox, VMware or on a real PC
 
 Boot `wrldos.iso` with **legacy BIOS** boot (not UEFI) and at least **256 MB RAM**. To install,
 attach a hard disk on an **IDE** controller. SATA/AHCI, NVMe and USB disks are not supported.
-For networking, use an **Intel PRO/1000** adapter. That's the default in VirtualBox ("Intel
+For sound, choose **Intel HD Audio** or **ICH AC97**. Graphics work with **VBoxVGA**, **VMSVGA** or
+VMware's SVGA, and those can change resolution. For networking, use an **Intel PRO/1000** adapter. That's the default in VirtualBox ("Intel
 PRO/1000 MT Desktop", NAT) and in QEMU, and usually in VMware (e1000).
 
 ### The CD boot menu
@@ -156,6 +168,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `open C:/Samples/Sample.dmg` mounts the disk image;
   - `hdiutil info` shows mounted images;
   - `sync` writes pending changes to the disk now (installed systems);
+  - `display` lists screen resolutions, and `display 1280x800` switches to one;
+  - `volume 60`, `volume mute`; `play "C:/Windows/Media/WRLD Startup.wav"`;
   - `hostname`, `ps`, `free`, `shutdown -r`;
   - `help` lists all commands.
 - **Keyboard**:
@@ -179,6 +193,18 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   accounting).
 - **Devices:**
   - PIT timer (1 kHz), CMOS RTC, PS/2 keyboard and wheel mouse.
+  - **Display (`video.c`):**
+    - Bochs/BGA "DISPI" driver for QEMU's standard VGA, Bochs and VirtualBox VBoxVGA.
+    - VMware SVGA II driver (command FIFO) for VMware and VirtualBox VMSVGA.
+    - Resolution changes at runtime from Control Panel > Display, with an XP-style "keep these
+      settings?" countdown, and are saved in `wrld.ini`.
+  - **Sound (`audio.c`):**
+    - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
+      DAC to the speaker or headphone pins.
+    - **AC'97:** bus-master DMA.
+    - Output is always 48 kHz, 16-bit stereo, fed by a ring of DMA buffers.
+    - A 4-voice mixer with volume and mute, and a WAV loader for 8/16/24-bit PCM at any sample
+      rate and channel count.
   - PCI enumeration, CPUID, PC speaker.
   - ACPI power management: reads the FADT and the DSDT's `\_S5_` soft-off value, so power-off
     works on any ACPI machine; restart uses the ACPI reset register, then port 0xCF9, then the
@@ -349,8 +375,10 @@ used to test every screen above, including a full install from a blank disk.
   - Text is limited to Latin-1; other scripts are replaced with `?`.
   - Interactive web apps won't work. Text-heavy sites work well.
 - **Hardware and design:**
-  - No USB or sound card (only the PC speaker).
-  - Fixed 1024×768 resolution, single CPU.
+  - No USB, and sound is playback only (no recording).
+  - Resolution can only be changed on the display adapters listed above; otherwise it stays at
+    GRUB's 1024×768. The minimum is 1024×768.
+  - Single CPU.
   - Cooperative (not preemptive) scheduling, and programs run in ring 0.
 - **Names and artwork:** "Luna", "Olive Green", "Silver", "Classic", "Aero" and "Plex" name the
   visual styles this project recreates. All artwork, icons, wallpapers and the globe logo are original.

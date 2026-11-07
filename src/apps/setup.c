@@ -368,14 +368,14 @@ static void finished_screen(void) {
     ts_begin("", NULL);
     tx(2, 3, "Restarting your computer...", TS_FG);
     ts_present();
-    sleep_ms(300);
+    task_sleep(300);
     system_reboot();
 }
 
 static void quit_setup(void) {
     if (from_desk) return;
     ts_begin("", NULL); tx(2, 3, "Setup was not completed. Restarting your computer...", TS_FG); ts_present();
-    sleep_ms(800);
+    task_sleep(800);
     system_reboot();
 }
 
@@ -402,7 +402,7 @@ void setup_text_mode(bool from_desktop) {
         static const char *load[] = { "Setup is loading files (Kernel Debugger DLL)...", "Setup is loading files (ATA/IDE Disk Driver)...",
             "Setup is loading files (FAT32 File System)...", "Setup is loading files (GRUB Boot Loader)...", "Setup is loading files (Win32 Subsystem)...",
             "Setup is loading files (Luna Visual Styles)...", "Setup is starting " OS_NAME "..." };
-        for (unsigned i = 0; i < ARRAY_LEN(load); i++) { ts_begin(load[i], NULL); ts_present(); sleep_ms(230); }
+        for (unsigned i = 0; i < ARRAY_LEN(load); i++) { ts_begin(load[i], NULL); ts_present(); task_sleep(230); }
     }
     /* welcome */
     for (;;) {
@@ -784,7 +784,7 @@ void setup_oobe(void) {
         for (unsigned i = 0; i < ARRAY_LEN(pitch); i++) y += draw_text_wrapped(c, FONT_LARGE, x, y, 600, pitch[i], HEX(0xE8F0FF), 6) + 18;
         draw_text(c, FONT_UI, 22, SCREEN_H - 120, tasks[t], WHITE);
         gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y);
-        sleep_ms(25);
+        task_sleep(25);
     }
     if (ow.surf) { canvas_free(ow.surf); ow.surf = NULL; }
     if (obg) { canvas_free(obg); obg = NULL; }

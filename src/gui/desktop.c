@@ -805,7 +805,8 @@ bool shell_mouse(int type, int x, int y, int btn) {
         } else if (h >= 0 && h < 1000) {
             window_t *list[32]; int n = task_btns(list, 32);
             if (h < n) { window_t *w = list[h]; if (w == wm_active && w->state != WS_MINIMIZED) wm_minimize(w); else wm_focus(w); }
-        } else if (h == 3000) {
+        } else if (h == 3000 && x < SCREEN_W - tray_w() + 28) control_open("sound");    /* speaker icon */
+        else if (h == 3000) {
             rtc_time_t t; rtc_now(&t);
             static const char *days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
             static const char *mons[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };

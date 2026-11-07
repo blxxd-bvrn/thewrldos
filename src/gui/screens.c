@@ -5,6 +5,7 @@
 #include "wm.h"
 #include "apps.h"
 #include "disk.h"
+#include "audio.h"
 
 /* ---------------- boot screen ---------------- */
 static int boot_frame;
@@ -46,10 +47,10 @@ void boot_screen_begin(void) { boot_frame = 0; boot_draw(0); }
 void boot_screen_progress(const char *msg, int pct) {
     strlcpy(boot_msg, msg, sizeof boot_msg);
     uint32_t until = timer_ticks() + (boot_verbose ? 60 : 260);
-    while ((int32_t)(timer_ticks() - until) < 0) { boot_frame++; boot_draw(pct); sleep_ms(16); }
+    while ((int32_t)(timer_ticks() - until) < 0) { boot_frame++; boot_draw(pct); task_sleep(16); }
 }
 void boot_screen_end(void) {
-    for (int i = 0; i < 16; i++) { blend_rect(&screen, 0, 0, SCREEN_W, SCREEN_H, BLACK, 60); gfx_present(CURSOR_BUSY, -100, -100); sleep_ms(15); }
+    for (int i = 0; i < 16; i++) { blend_rect(&screen, 0, 0, SCREEN_W, SCREEN_H, BLACK, 60); gfx_present(CURSOR_BUSY, -100, -100); task_sleep(15); }
 }
 
 /* ---------------- welcome screen ---------------- */
@@ -123,7 +124,7 @@ void welcome_screen(void) {
         if (login) break;
         task_yield(); hlt();
     }
-    for (int f = 0; f < 50; f++) { welcome_draw(0, true, f); gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y); sleep_ms(16); }
+    for (int f = 0; f < 50; f++) { welcome_draw(0, true, f); gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y); task_sleep(16); }
     speaker_beep(0, 0);
 }
 
@@ -142,8 +143,11 @@ static void final_screen(const char *msg, bool reboot) {
     draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
     draw_text(c, FONT_LARGE, SCREEN_W / 2 - 104, SCREEN_H / 2, msg, WHITE);
     gfx_present(CURSOR_BUSY, -100, -100);
+    uint32_t t = timer_ticks() + 1500;
+    char err[64];
+    if (system_sounds) { audio_stop_all(); audio_play_file(SOUND_SHUTDOWN, err, sizeof err); }
     if (system_volume) {
-        uint32_t t0 = timer_ticks() + 600; while ((int32_t)(timer_ticks() - t0) < 0) hlt();
+        task_sleep(600);
         welcome_bg(c);
         draw_globe(c, SCREEN_W / 2 - 210, SCREEN_H / 2 - 92, 96, -36);
         draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
@@ -151,7 +155,8 @@ static void final_screen(const char *msg, bool reboot) {
         gfx_present(CURSOR_BUSY, -100, -100);
         persist_flush();
     }
-    uint32_t t = timer_ticks() + 1500; while ((int32_t)(timer_ticks() - t) < 0) hlt();
+    audio_wait(10000);                                   /* let the shutdown sound finish */
+    while ((int32_t)(timer_ticks() - t) < 0) task_sleep(10);
     if (reboot) system_reboot();
     system_poweroff();
     /* poweroff unsupported: classic message */
@@ -227,7 +232,7 @@ void shell_show_shutdown(void) {
     if (r == 0) {   /* stand by: blank the screen until input */
         gfx_clear(&screen, BLACK); gfx_present(CURSOR_ARROW, -100, -100);
         mouse_state_t ms; key_event_t ke;
-        sleep_ms(300); while (keyboard_poll(&ke)) {} mouse_poll(&ms);
+        task_sleep(300); while (keyboard_poll(&ke)) {} mouse_poll(&ms);
         for (;;) { if (keyboard_poll(&ke) || mouse_poll(&ms)) break; hlt(); }
         wm_redraw_all();
     } else if (r == 1) final_screen("Shutting down...", false);

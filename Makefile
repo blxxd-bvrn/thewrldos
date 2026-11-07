@@ -38,7 +38,17 @@ SYS     := $(BUILD)/sys
 CORES   := $(foreach n,1 2 3 4,$(SYS)/boot/grub/core$(n).img)
 DISK    := disk.img
 DISK_MB := 512
-QEMU    := qemu-system-i386 -m 256 -vga std -serial stdio -nic user,model=e1000
+# Host sound output: PulseAudio/PipeWire when a server is running (desktop Linux, WSLg),
+# otherwise silent. Override with e.g. "make run AUDIO=alsa" or "AUDIO=sdl".
+AUDIO   ?= $(shell if command -v pactl >/dev/null 2>&1 && pactl info >/dev/null 2>&1; then echo pa; \
+             elif [ -n "$$PULSE_SERVER" ] || [ -S "$${XDG_RUNTIME_DIR:-/nonexistent}/pulse/native" ]; then echo pa; else echo none; fi)
+# Emulated hardware: SOUND=hda (Intel HD Audio) or ac97; VGA=std (Bochs/BGA) or vmware (SVGA II)
+SOUND   ?= hda
+VGA     ?= std
+SOUND_DEV_hda  := -device intel-hda -device hda-output,audiodev=snd0
+SOUND_DEV_ac97 := -device AC97,audiodev=snd0
+QEMU    := qemu-system-i386 -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
+           -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
 .PHONY: all iso run run-headless run-install run-disk disk clean samples dmg assets check-tools FORCE
 
@@ -123,7 +133,7 @@ $(ISO): $(KERNEL) $(BUILD)/initrd.tar grub/grub.cfg
 
 # live session from the CD (nothing is saved)
 run: $(ISO)
-	$(QEMU) -cdrom $(ISO) -audiodev none,id=snd0 -machine pcspk-audiodev=snd0
+	$(QEMU) -cdrom $(ISO)
 
 run-headless: $(ISO)
 	$(QEMU) -cdrom $(ISO) -display none
@@ -136,11 +146,11 @@ $(DISK):
 # CD + hard disk: choose "Install THE WRLD OS" in the boot menu (or use the
 # desktop icon). Once installed, the CD menu boots the hard disk by default.
 run-install: $(ISO) $(DISK)
-	$(QEMU) -cdrom $(ISO) -drive file=$(DISK),format=raw,if=ide,index=0 -boot d -audiodev none,id=snd0 -machine pcspk-audiodev=snd0
+	$(QEMU) -cdrom $(ISO) -drive file=$(DISK),format=raw,if=ide,index=0 -boot d
 
 # boot the installed system from the hard disk alone
 run-disk: $(DISK)
-	$(QEMU) -drive file=$(DISK),format=raw,if=ide,index=0 -boot c -audiodev none,id=snd0 -machine pcspk-audiodev=snd0
+	$(QEMU) -drive file=$(DISK),format=raw,if=ide,index=0 -boot c
 
 check-tools:
 	@for t in $(NASM) $(CC) $(GRUB_MKRESCUE) $(GRUB_MKIMAGE) xorriso qemu-system-i386; do \

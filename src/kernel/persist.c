@@ -8,6 +8,7 @@
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
+#include "audio.h"
 
 fatvol_t *system_volume;
 int system_disk_index = -1, system_part_index = -1;
@@ -173,6 +174,8 @@ void settings_load(void) {
     mouse_speed = geti("mouse_speed", mouse_speed);
     clock_24h = geti("clock24", clock_24h);
     show_seconds = geti("seconds", show_seconds);
+    audio_volume = CLAMP(geti("volume", audio_volume), 0, 100);
+    system_sounds = geti("sounds", system_sounds);
     const char *rs = settings_get("resolution");
     if (rs && video_can_set_mode()) { int rw = atoi(rs); const char *xx = strchr(rs, 'x'); int rh = xx ? atoi(xx + 1) : 0; if (rw && rh) gfx_set_resolution(rw, rh); }
     const char *th = settings_get("theme");
@@ -195,6 +198,8 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", mouse_speed); settings_set("mouse_speed", b);
     snprintf(b, sizeof b, "%d", clock_24h); settings_set("clock24", b);
     snprintf(b, sizeof b, "%d", show_seconds); settings_set("seconds", b);
+    snprintf(b, sizeof b, "%d", audio_volume); settings_set("volume", b);
+    snprintf(b, sizeof b, "%d", system_sounds); settings_set("sounds", b);
 }
 void settings_save(void) {
     capture();

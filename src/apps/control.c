@@ -6,6 +6,7 @@
 #include "apps.h"
 #include "disk.h"
 #include "net.h"
+#include "audio.h"
 
 typedef struct { const char *id, *name, *desc; int icon; int cat; } applet_t;
 enum { CAT_SYSTEM, CAT_NETWORK, CAT_HARDWARE, CAT_PROGRAMS, CAT_USERS, CAT_APPEARANCE, CAT_CLOCK, CAT_EASE, CAT_N };
@@ -532,14 +533,40 @@ static void page_keyboard(window_t *w, cp_t *c, int ox, int oy) {
 }
 static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Sound", "THE WRLD OS drives the PC speaker through PIT channel 2. Click a tone to test it.");
-    static const struct { const char *n; int f; } tones[] = { { "Default Beep", 880 }, { "Asterisk", 1200 }, { "Critical Stop", 330 }, { "Notify", 660 } };
-    for (int i = 0; i < 4; i++) {
-        draw_icon(s, ICON_CP_SOUND, 32, ox + 30, oy + 80 + i * 44);
-        draw_text(s, FONT_UI, ox + 72, oy + 90 + i * 44, tones[i].n, BLACK);
-        if (ui_button(w, R(ox + 220, oy + 84 + i * 44, 80, 24), "Test")) speaker_beep(tones[i].f, 150);
+    heading(s, ox + 20, oy + 16, "Sound", "Change the volume, and choose the sounds " OS_NAME " plays when it starts and shuts down.");
+    int y = oy + 64; char b[160];
+    draw_icon(s, ICON_CP_SOUND, 48, ox + 30, y);
+    draw_text(s, FONT_UI, ox + 96, y + 2, "Playback device:", HEX(0x505050));
+    draw_text_ellipsis(s, FONT_UI_BOLD, ox + 210, y + 2, s->w - ox - 230, audio_device_name(), BLACK);
+    if (!audio_present()) {
+        draw_text_wrapped(s, FONT_UI, ox + 96, y + 22, s->w - ox - 120, "No supported sound card was found. " OS_NAME " supports Intel High Definition Audio and AC'97 "
+            "(QEMU: -device intel-hda -device hda-output, or -device AC97; VirtualBox: 'Intel HD Audio' or 'ICH AC97').", W7_TEXT, 2);
+        y += 80;
+    } else {
+        y += 26;
+        draw_text(s, FONT_UI, ox + 96, y + 4, "Volume:", HEX(0x505050));
+        int vol = audio_volume;
+        if (ui_slider(w, R(ox + 210, y, 220, 24), &vol, 0, 100)) audio_volume = vol;
+        snprintf(b, sizeof b, "%d%%", audio_volume); draw_text(s, FONT_UI, ox + 440, y + 4, b, BLACK);
+        y += 30;
+        ui_checkbox(w, ox + 210, y, "Mute", &audio_muted);
+        y += 40;
+        draw_text(s, FONT_UI_BOLD, ox + 20, y, "System sounds", HEX(0x1E3287)); hline(s, ox + 125, y + 8, s->w - ox - 155, HEX(0xD8E0EA)); y += 26;
+        ui_checkbox(w, ox + 40, y, "Play the startup and shutdown sounds", &system_sounds); y += 30;
+        static const struct { const char *label, *file; } snd[] = { { "Startup", SOUND_STARTUP }, { "Shutdown", SOUND_SHUTDOWN } };
+        for (int i = 0; i < 2; i++) {
+            draw_icon(s, ICON_CP_SOUND, 16, ox + 40, y + 4);
+            draw_text(s, FONT_UI, ox + 62, y + 5, snd[i].label, BLACK);
+            draw_text_ellipsis(s, FONT_UI, ox + 140, y + 5, s->w - ox - 260, path_basename(snd[i].file), W7_TEXT);
+            if (ui_button(w, R(s->w - 110, y, 80, 24), "Test")) { char err[64]; audio_stop_all(); if (!audio_play_file(snd[i].file, err, sizeof err)) msgbox("Sound", err, MBI_ERROR, MBX_OK, NULL, NULL); }
+            y += 30;
+        }
+        if (ui_button(w, R(s->w - 110, y, 80, 24), "Stop")) audio_stop_all();
+        y += 40;
     }
-    if (ui_button(w, R(ox + 30, oy + 270, 160, 26), "Play a little tune")) { static const int notes[] = { 523, 659, 784, 1047 }; for (int i = 0; i < 4; i++) speaker_beep(notes[i], 120); }
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "PC speaker", HEX(0x1E3287)); hline(s, ox + 105, y + 8, s->w - ox - 135, HEX(0xD8E0EA)); y += 26;
+    static const struct { const char *n; int f; } tones[] = { { "Beep", 880 }, { "Asterisk", 1200 }, { "Critical Stop", 330 } };
+    for (int i = 0; i < 3; i++) if (ui_button(w, R(ox + 40 + i * 110, y, 100, 24), tones[i].n)) speaker_beep(tones[i].f, 150);
 }
 static void page_programs(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
