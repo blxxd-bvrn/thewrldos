@@ -335,6 +335,7 @@ static window_t *window_at(int sx, int sy) {
 /* ---------------- painting ---------------- */
 static void run_paint(window_t *w) {
     if (!w->paint) { w->dirty = false; return; }
+    sync_surface(w);              /* e.g. a menu bar was attached after the window was created */
     canvas_reset_clip(w->surf);
     ui_begin(w);
     w->paint(w);

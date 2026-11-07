@@ -48,4 +48,12 @@ void doc_free(doc_t *d);
 const char *node_attr(node_t *n, const char *name);
 bool parse_color(const char *s, uint32_t *out);
 int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out);   /* returns length */
+
+/* ad blocker (adblock.c) */
+extern bool adblock_enabled;
+bool adblock_blocks(const char *url, const char *page_url);     /* refuse this sub-resource? */
+bool adblock_hides(const char *cls, const char *id);            /* hide this element? */
+bool adblock_page_allowed(const char *page_url);                /* site on the allow list */
+void adblock_reload(void);
+#define ADBLOCK_LIST "C:\\WRLD\\adblock.txt"
 #endif

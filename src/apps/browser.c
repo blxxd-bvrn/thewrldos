@@ -2,7 +2,7 @@
  * Pages load on a worker task (DNS, TCP, TLS, HTTP), are parsed by html.c and
  * laid out here into a display list (text runs, boxes, images, form
  * controls). Images load after the text and the page is laid out again.
- * There is no JavaScript engine. */
+ * Ads and trackers are filtered by adblock.c. */
 #include "kernel.h"
 #include "gfx.h"
 #include "theme.h"
@@ -17,6 +17,9 @@
 #define ADDR_H 28
 #define STATUS_H 22
 #define SB_W 16
+
+enum { BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_FAV0 = 100 };
+static void br_menu(window_t *w, int id);
 
 /* ---------------- page model ---------------- */
 enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE };
@@ -39,6 +42,7 @@ typedef struct page {
     int height, lay_width;
     uint32_t bg, fg, linkc;
     bool worker_running, orphan;
+    bool ads_ok; int blocked;                 /* ad blocker: site allowed / items removed */
 } page_t;
 
 typedef struct {
@@ -494,6 +498,10 @@ static void collect(page_t *p, node_t *n, int form) {
     for (; n; n = n->next) {
         if (n->type) continue;
         int f = form;
+        if (!p->ads_ok && adblock_hides(node_attr(n, "class"), node_attr(n, "id"))) {
+            n->css.set |= ST_DISPLAY; n->css.display = 0; p->blocked++;
+            continue;
+        }
         if (!strcmp(n->tag, "form")) {
             p->forms = krealloc(p->forms, sizeof(form_t) * (p->nforms + 1));
             form_t *fm = &p->forms[p->nforms];
@@ -508,6 +516,7 @@ static void collect(page_t *p, node_t *n, int form) {
                 p->imgs = krealloc(p->imgs, sizeof(pimg_t) * (p->nimgs + 1));
                 pimg_t *im = &p->imgs[p->nimgs]; memset(im, 0, sizeof *im);
                 char abs[1024]; url_resolve(p->doc->base[0] ? p->doc->base : p->url, src, abs, sizeof abs);
+                if (!p->ads_ok && adblock_blocks(abs, NULL)) { n->css.set |= ST_DISPLAY; n->css.display = 0; p->blocked++; continue; }
                 im->url = arena_strdup(&p->doc->arena, abs, -1);
                 const char *alt = node_attr(n, "alt"); im->alt = alt ? (char *)alt : NULL;
                 n->aux = ++p->nimgs;
@@ -552,6 +561,7 @@ static page_t *page_from_html(const char *url, const char *html, uint32_t len, c
     p->bg = p->doc->bgcolor ? p->doc->bgcolor : WHITE;
     p->fg = p->doc->text ? p->doc->text : BLACK;
     p->linkc = p->doc->link ? p->doc->link : HEX(0x0000EE);
+    p->ads_ok = adblock_page_allowed(url);
     collect(p, p->doc->root->first, -1);
     p->source = kmalloc(len + 1); memcpy(p->source, html, len); p->source[len] = 0; p->srclen = len;
     return p;
@@ -783,6 +793,7 @@ static void nav_worker(void *arg) {
     if (complete && b->gen == j->gen && !b->closed) {
         char s[160];
         if (p->secure) snprintf(s, sizeof s, "Done - secure connection (%s)", p->tls); else strcpy(s, "Done");
+        if (p->blocked) { char a[48]; snprintf(a, sizeof a, " - %d ad%s blocked", p->blocked, p->blocked == 1 ? "" : "s"); strlcat(s, a, sizeof s); }
         set_status(b, s);
         b->loading = false;
         /* <meta http-equiv="refresh"> to another page */
@@ -1008,8 +1019,18 @@ static void br_paint(window_t *w) {
     hline(c, 0, sy, c->w, darken(T.face, 40));
     const char *st = b->hover_link >= 0 && b->page && b->hover_link < b->page->nlinks ? b->page->links[b->hover_link] : b->status;
     draw_icon(c, b->loading ? ICON_BROWSER : ICON_INFO, 16, 4, sy + 3);
-    draw_text_ellipsis(c, FONT_UI, 24, sy + 4, c->w - 200, st, BLACK);
+    draw_text_ellipsis(c, FONT_UI, 24, sy + 4, c->w - 330, st, BLACK);
     vline(c, c->w - 170, sy + 3, STATUS_H - 6, darken(T.face, 40));
+    {   /* ad blocker indicator */
+        char ab[24]; uint32_t col = adblock_enabled ? HEX(0x1E8A3C) : HEX(0x909090);
+        if (!adblock_enabled) strcpy(ab, "Ads: off"); else if (b->page && b->page->ads_ok) strcpy(ab, "Ads: allowed");
+        else snprintf(ab, sizeof ab, "Ads: %d blocked", b->page ? b->page->blocked : 0);
+        int aw = text_width(FONT_UI, ab) + 22, ax = c->w - 176 - aw;
+        fill_round_rect(c, ax, sy + 4, 14, 14, 3, col); draw_text(c, FONT_SMALL, ax + 4, sy + 5, "A", WHITE);
+        draw_text(c, FONT_UI, ax + 18, sy + 4, ab, BLACK);
+        vline(c, ax - 6, sy + 3, STATUS_H - 6, darken(T.face, 40));
+        if (ui_click_area(w, R(ax, sy, aw, STATUS_H))) br_menu(w, BM_ADBLOCK);
+    }
     if (b->page && b->page->secure) draw_icon(c, ICON_LOCK, 16, c->w - 162, sy + 3);
     draw_icon(c, ICON_CP_NETWORK, 16, c->w - 130, sy + 3);
     draw_text(c, FONT_UI, c->w - 110, sy + 4, netif.configured ? "Internet" : "Offline", BLACK);
@@ -1115,13 +1136,13 @@ static void br_key(window_t *w, key_event_t *e) {
 }
 static void br_tick(window_t *w) { browser_t *b = w->data; if (b->loading || b->focus_ctrl >= 0) w->dirty = true; }
 static void br_destroy(window_t *w) { browser_t *b = w->data; b->closed = true; b->gen++; b->w = NULL; browser_release(b); }
-enum { BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_FAV0 = 100 };
-static const menu_t br_menus[] = {
+static menu_t br_menus[] = {
     { "File", { { "New Window", BM_NEW, 0 }, { "Open Location...", BM_OPEN, 0 }, { "Save Page As...", BM_SAVE, 0 }, { "-", 0, 0 }, { "Close", BM_CLOSE, 0 }, { NULL } } },
     { "View", { { "Stop", BM_STOP, 0 }, { "Refresh", BM_REFRESH, 0 }, { "-", 0, 0 }, { "Page Source", BM_SOURCE, 0 }, { NULL } } },
     { "Go", { { "Back", BM_BACK, 0 }, { "Forward", BM_FWD, 0 }, { "Home Page", BM_HOME, 0 }, { NULL } } },
     { "Favorites", { { "Wikipedia", BM_FAV0, 0 }, { "Hacker News", BM_FAV0 + 1, 0 }, { "CNN Lite", BM_FAV0 + 2, 0 }, { "NPR text edition", BM_FAV0 + 3, 0 },
                      { "68k.news", BM_FAV0 + 4, 0 }, { "FrogFind", BM_FAV0 + 5, 0 }, { NULL } } },
+    { "Tools", { { "Block Ads", BM_ADBLOCK, MI_CHECKED }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { NULL } } },
     { "Help", { { "About The WRLD Xplorer", BM_ABOUT, 0 }, { NULL } } },
 };
 static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
@@ -1140,6 +1161,26 @@ static void br_menu(window_t *w, int id) {
         }
         break;
     case BM_CLOSE: wm_close(w); break;
+    case BM_ADBLOCK:
+        adblock_enabled = !adblock_enabled;
+        br_menus[4].items[0].flags = adblock_enabled ? MI_CHECKED : 0;
+        browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
+        break;
+    case BM_ADALLOW: {
+        if (!b->page) break;
+        char sch[8], host[256], path[8]; uint16_t port;
+        if (!url_parse(b->page->url, sch, host, sizeof host, &port, path, sizeof path)) break;
+        adblock_page_allowed(b->page->url);                  /* creates the list file if needed */
+        uint32_t len; char *old = (char *)vfs_read_file(ADBLOCK_LIST, &len);
+        char line[300]; snprintf(line, sizeof line, "@@%s\r\n", host);
+        char *nw = kmalloc(len + strlen(line) + 1); if (old) memcpy(nw, old, len); else len = 0;
+        memcpy(nw + len, line, strlen(line));
+        vfs_write_file(ADBLOCK_LIST, nw, len + strlen(line)); kfree(nw); kfree(old);
+        adblock_reload();
+        browser_navigate_ext(b, b->page->url, NULL, false);
+        break;
+    }
+    case BM_ADLIST: adblock_page_allowed("http://x/"); notepad_open(ADBLOCK_LIST); break;
     case BM_STOP: stop_loading(b); break;
     case BM_REFRESH: browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false); break;
     case BM_BACK: go_back(b); break;
@@ -1148,7 +1189,7 @@ static void br_menu(window_t *w, int id) {
     case BM_ABOUT: {
         char m[600];
         snprintf(m, sizeof m, "The WRLD Xplorer 1.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
-                 "Secure connections use BearSSL (TLS 1.2) with %d trusted root certificates.\nThere is no JavaScript engine.", tls_trust_anchor_count());
+                 "Secure connections use BearSSL (TLS 1.2) with %d trusted root certificates.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_trust_anchor_count());
         msgbox("About The WRLD Xplorer", m, MBI_INFO, MBX_OK, NULL, NULL);
         break;
     }
