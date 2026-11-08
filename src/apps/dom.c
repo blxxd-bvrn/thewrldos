@@ -115,175 +115,20 @@ int dom_attr_count(void *n) { return ND(n)->type ? 0 : ND(n)->nattr; }
 char *dom_attr_name(void *n, int i) { return i >= 0 && i < ND(n)->nattr ? to_utf8(ND(n)->attr[i * 2], -1) : NULL; }
 
 /* ---------------- selectors ---------------- */
-/* compound: tag? (#id | .class | [attr op "v"] | :pseudo(arg))*  ; combinators ' ' '>' '+' '~' */
-static bool has_class_l1(node_t *n, const char *cls, int len) {
-    const char *c = node_attr(n, "class");
-    while (c && *c) {
-        while (*c == ' ' || *c == '\t' || *c == '\n') c++;
-        const char *e = c; while (*e && *e != ' ' && *e != '\t' && *e != '\n') e++;
-        if (e - c == len && !strncmp(c, cls, len)) return true;
-        c = e;
-    }
-    return false;
-}
-static int elem_index(node_t *n, int from_end, bool same_type) {
-    int i = 0;
-    if (!n->parent) return 1;
-    if (!from_end) { for (node_t *c = n->parent->first; c; c = c->next) { if (c->type || (same_type && strcmp(c->tag, n->tag))) continue; i++; if (c == n) return i; } }
-    else { bool after = false; for (node_t *c = n->parent->first; c; c = c->next) { if (c == n) after = true; if (!after || c->type || (same_type && strcmp(c->tag, n->tag))) continue; i++; } return i; }
-    return i;
-}
-static bool nth_match(int idx, const char *a, int alen) {
-    char arg[24]; int k = 0;
-    for (int i = 0; i < alen && k < 23; i++) if (a[i] != ' ') arg[k++] = tolower(a[i]);
-    arg[k] = 0;
-    if (!strcmp(arg, "odd")) return idx % 2 == 1;
-    if (!strcmp(arg, "even")) return idx % 2 == 0;
-    char *nx = strchr(arg, 'n');
-    if (!nx) return idx == atoi(arg);
-    int A = nx == arg ? 1 : (nx == arg + 1 && arg[0] == '-') ? -1 : (nx == arg + 1 && arg[0] == '+') ? 1 : atoi(arg);
-    int B = nx[1] ? atoi(nx + 1) : 0;
-    if (A == 0) return idx == B;
-    return (idx - B) % A == 0 && (idx - B) / A >= 0;
-}
-static bool match_list(node_t *n, const char *sel, int len);
-static bool match_compound(node_t *n, const char *s, int len) {
-    if (n->type || !strcmp(n->tag, "#doc")) return false;
-    const char *e = s + len;
-    if (s < e && (isalpha(*s) || *s == '*')) {
-        const char *t = s; while (s < e && (isalnum(*s) || *s == '-' || *s == '_' || *s == '*')) s++;
-        if (!(s - t == 1 && *t == '*') && (strncasecmp(n->tag, t, s - t) || n->tag[s - t])) return false;
-    }
-    while (s < e) {
-        char k = *s++;
-        if (k == '#' || k == '.') {
-            const char *t = s; while (s < e && (isalnum(*s) || *s == '-' || *s == '_' || (uint8_t)*s >= 0x80 || *s == '\\')) s++;
-            if (k == '#') { const char *id = node_attr(n, "id"); if (!id || (int)strlen(id) != s - t || strncmp(id, t, s - t)) return false; }
-            else if (!has_class_l1(n, t, s - t)) return false;
-        } else if (k == '[') {
-            const char *an = s; while (s < e && *s != ']' && *s != '=' && *s != '~' && *s != '^' && *s != '$' && *s != '*' && *s != '|') s++;
-            char name[40]; int nl = MIN((int)(s - an), 39); for (int i = 0; i < nl; i++) name[i] = tolower(an[i]);
-            while (nl > 0 && name[nl - 1] == ' ') nl--;
-            name[nl] = 0;
-            char op = 0;
-            if (s < e && *s != ']' && *s != '=') op = *s++;
-            if (s < e && *s == '=') { s++; if (!op) op = '='; }
-            char val[256]; int vl = 0;
-            if (op) {
-                while (s < e && *s == ' ') s++;
-                char q = (s < e && (*s == '"' || *s == '\'')) ? *s++ : 0;
-                while (s < e && (q ? *s != q : (*s != ']' && *s != ' ')) && vl < 255) val[vl++] = *s++;
-                if (q && s < e) s++;
-            }
-            val[vl] = 0;
-            while (s < e && *s != ']') s++;
-            if (s < e) s++;
-            const char *v = node_attr(n, name);
-            if (!v) return false;
-            int L = strlen(v);
-            switch (op) {
-            case 0: break;
-            case '=': if (strcmp(v, val)) return false; break;
-            case '^': if (strncmp(v, val, vl)) return false; break;
-            case '$': if (L < vl || strcmp(v + L - vl, val)) return false; break;
-            case '*': if (!strstr(v, val)) return false; break;
-            case '~': { node_t tmp = *n; char *cv[2] = { "class", (char *)v }; tmp.attr = cv; tmp.nattr = 1; if (!has_class_l1(&tmp, val, vl)) return false; break; }
-            case '|': if (strncmp(v, val, vl) || (v[vl] && v[vl] != '-')) return false; break;
-            }
-        } else if (k == ':') {
-            if (s < e && *s == ':') s++;
-            const char *pn = s; while (s < e && (isalnum(*s) || *s == '-')) s++;
-            int pl = s - pn;
-            const char *arg = NULL; int al = 0;
-            if (s < e && *s == '(') {
-                int depth = 1; arg = ++s;
-                while (s < e && depth) { if (*s == '(') depth++; else if (*s == ')') depth--; if (depth) s++; }
-                al = s - arg; if (s < e) s++;
-            }
-            #define PIS(x) (pl == (int)strlen(x) && !strncasecmp(pn, x, pl))
-            if (PIS("first-child")) { if (elem_index(n, 0, false) != 1) return false; }
-            else if (PIS("last-child")) { if (elem_index(n, 1, false) != 1) return false; }
-            else if (PIS("only-child")) { if (elem_index(n, 0, false) != 1 || elem_index(n, 1, false) != 1) return false; }
-            else if (PIS("first-of-type")) { if (elem_index(n, 0, true) != 1) return false; }
-            else if (PIS("last-of-type")) { if (elem_index(n, 1, true) != 1) return false; }
-            else if (PIS("nth-child")) { if (!arg || !nth_match(elem_index(n, 0, false), arg, al)) return false; }
-            else if (PIS("nth-last-child")) { if (!arg || !nth_match(elem_index(n, 1, false), arg, al)) return false; }
-            else if (PIS("nth-of-type")) { if (!arg || !nth_match(elem_index(n, 0, true), arg, al)) return false; }
-            else if (PIS("not")) { if (arg && match_list(n, arg, al)) return false; }
-            else if (PIS("is") || PIS("where") || PIS("matches")) { if (!arg || !match_list(n, arg, al)) return false; }
-            else if (PIS("checked")) { if (!node_attr(n, "checked") && !node_attr(n, "selected")) return false; }
-            else if (PIS("disabled")) { if (!node_attr(n, "disabled")) return false; }
-            else if (PIS("enabled")) { if (node_attr(n, "disabled")) return false; }
-            else if (PIS("empty")) { if (n->first) return false; }
-            else if (PIS("root")) { if (n->parent && strcmp(n->parent->tag, "#doc")) return false; }
-            else if (PIS("link") || PIS("any-link")) { if (strcmp(n->tag, "a") || !node_attr(n, "href")) return false; }
-            else if (PIS("hover") || PIS("active") || PIS("focus") || PIS("visited") || PIS("focus-within") || PIS("focus-visible")) return false;
-            /* other pseudo-classes and pseudo-elements: ignored */
-            #undef PIS
-        } else if (k == ' ') continue;
-        else return false;
-    }
-    return true;
-}
-/* one complex selector (no commas) */
-static bool match_complex(node_t *n, const char *s, int len) {
-    while (len > 0 && s[len - 1] == ' ') len--;
-    while (len > 0 && *s == ' ') { s++; len--; }
-    if (len <= 0) return false;
-    /* find the last combinator outside brackets/parentheses */
-    int depth = 0, cut = -1; char comb = 0;
-    for (int i = 0; i < len; i++) {
-        char c = s[i];
-        if (c == '[' || c == '(') depth++;
-        else if (c == ']' || c == ')') depth--;
-        else if (!depth && (c == '>' || c == '+' || c == '~')) { cut = i; comb = c; }
-        else if (!depth && c == ' ') {
-            int j = i; while (j < len && s[j] == ' ') j++;
-            if (j < len && s[j] != '>' && s[j] != '+' && s[j] != '~' && i > 0 && s[i - 1] != '>' && s[i - 1] != '+' && s[i - 1] != '~') { cut = i; comb = ' '; }
-            i = j - 1;
-        }
-    }
-    if (cut < 0) return match_compound(n, s, len);
-    const char *last = s + cut + 1; int ll = len - cut - 1;
-    while (ll > 0 && *last == ' ') { last++; ll--; }
-    if (!match_compound(n, last, ll)) return false;
-    int pl = cut;
-    switch (comb) {
-    case '>': return n->parent && match_complex(n->parent, s, pl);
-    case ' ': for (node_t *a = n->parent; a; a = a->parent) if (match_complex(a, s, pl)) return true; return false;
-    case '+': { node_t *pv = dom_prev(n); while (pv && pv->type) pv = dom_prev(pv); return pv && match_complex(pv, s, pl); }
-    case '~': for (node_t *pv = dom_prev(n); pv; pv = dom_prev(pv)) if (!pv->type && match_complex(pv, s, pl)) return true; return false;
-    }
-    return false;
-}
-static bool match_list(node_t *n, const char *sel, int len) {
-    int depth = 0, start = 0;
-    for (int i = 0; i <= len; i++) {
-        char c = i < len ? sel[i] : ',';
-        if (c == '(' || c == '[') depth++;
-        else if (c == ')' || c == ']') depth--;
-        else if (c == ',' && !depth) { if (match_complex(n, sel + start, i - start)) return true; start = i + 1; }
-    }
-    return false;
-}
+/* Selectors are parsed by Lexbor and matched on this tree by html.c (the same
+ * matcher the style sheets use). sel is UTF-8. */
 int dom_matches(void *n, const char *sel) {
     if (ND(n)->type) return 0;
-    char *l1 = kmalloc(strlen(sel) * 3 + 1);
-    int l = latin1_from_utf8((const uint8_t *)sel, strlen(sel), l1);
-    bool r = match_list(ND(n), l1, l);
-    kfree(l1);
-    return r;
+    return html_matches(ND(n), sel) > 0;
 }
 int dom_query(void *page, void *root, const char *sel, void **out, int max, int first_only) {
     node_t *r = root ? ND(root) : PG->doc->root;
-    char *l1 = kmalloc(strlen(sel) * 3 + 1);
-    int l = latin1_from_utf8((const uint8_t *)sel, strlen(sel), l1);
+    if (!html_selector_valid(sel)) return 0;
     int cnt = 0;
     for (node_t *n = r->first; n && cnt < max; n = walk_next(n, r)) {
         if (n->type) continue;
-        if (match_list(n, l1, l)) { out[cnt++] = n; if (first_only) break; }
+        if (html_matches(n, sel) > 0) { out[cnt++] = n; if (first_only) break; }
     }
-    kfree(l1);
     return cnt;
 }
 
@@ -399,7 +244,9 @@ static node_t *copy_tree(page_t *p, node_t *src) {
     return n;
 }
 static int insert_fragment(page_t *p, node_t *parent, node_t *before, const char *html, bool run_scripts) {
-    doc_t *d = html_parse(html, strlen(html), "utf-8", p->url);
+    /* <style> blocks in the fragment add their rules to the page's document */
+    int nrules = p->doc->nrules;
+    doc_t *d = html_parse_fragment(p->doc, parent->tag, html, p->url);
     int cnt = 0;
     for (node_t *c = d->root->first; c; c = c->next) {
         node_t *k = copy_tree(p, c);
@@ -410,15 +257,8 @@ static int insert_fragment(page_t *p, node_t *parent, node_t *before, const char
         if (!k->type) { html_restyle(p->doc, k); mark_scripts(p, k); }
         cnt++;
     }
-    /* <style> blocks in the fragment add rules to the page */
-    if (d->nrules) {
-        int total = p->doc->nrules + d->nrules, cap = (total + 63) / 64 * 64;
-        css_rule_t *nr = arena_alloc(&p->doc->arena, sizeof(css_rule_t) * cap);
-        if (p->doc->nrules) memcpy(nr, p->doc->rules, sizeof(css_rule_t) * p->doc->nrules);
-        memcpy(nr + p->doc->nrules, d->rules, sizeof(css_rule_t) * d->nrules);
-        p->doc->rules = nr; p->doc->nrules = total;
-    }
     doc_free(d);
+    if (p->doc->nrules != nrules) html_restyle_all(p->doc);
     p->tree_dirty = true;
     return cnt;
 }

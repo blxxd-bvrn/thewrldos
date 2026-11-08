@@ -1,7 +1,7 @@
 # THE WRLD OS
 
 An original x86 operating system written from scratch in C and assembly (about 20,000
-lines, plus the Mbed TLS library for HTTPS and the QuickJS JavaScript engine), in a **32-bit**
+lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine and the Lexbor HTML parser), in a **32-bit**
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
@@ -324,6 +324,13 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
 
 ### XplorerLite (`src/apps/browser.c`, `html.c`, `imgdec.c`)
+- **Parsing:** Lexbor 3.0's HTML5 parser (`third_party/lexbor`, glue in `src/lexbor/lexglue.c`)
+  builds the tree, so misnested tags, tables and entities come out as in other browsers;
+  `innerHTML` parses fragments in the context of their element.
+- **CSS:** full selectors (combinators, attribute selectors, `:not()`, `:is()`, `:nth-child()`
+  and the other structural pseudo-classes), parsed by Lexbor and matched on XplorerLite's tree,
+  with the cascade by specificity and source order; simple `@media` queries are answered for an
+  880-pixel-wide window. `querySelector()` uses the same matcher.
 - **HTML:** a forgiving parser with entities. UTF-8 and Windows-1252 are converted to Latin-1;
   other characters are replaced with close ASCII equivalents.
 - **CSS:** simple selectors (tag, `.class`, `#id`) and `style` attributes, for colour,

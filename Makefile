@@ -54,8 +54,16 @@ QJS_OBJ := $(patsubst %.c,$(BUILD)/qjs/%.o,$(notdir $(QJS_SRC))) $(patsubst src/
 QJS_CFLAGS := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
            -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
            -I$(QSHIM)/include -I$(QJS) -Isrc/js -D__DJGPP=1 -D__STDC_NO_ATOMICS__=1 -DNDEBUG -D_GNU_SOURCE -w
+# Lexbor 3.0 (HTML5 parser and CSS selector parser for XplorerLite), built against
+# the same C library shim; src/lexbor/*.c is the glue and sees only plain C types
+LXB     := third_party/lexbor
+LXB_SRC := $(shell find $(LXB)/source -name '*.c')
+LXB_OBJ := $(patsubst $(LXB)/source/%.c,$(BUILD)/lexbor/%.o,$(LXB_SRC)) $(patsubst src/lexbor/%.c,$(BUILD)/lexglue/%.o,$(wildcard src/lexbor/*.c))
+LXB_CFLAGS = $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
+           -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
+           -I$(QSHIM)/include -I$(LXB)/source -DLEXBOR_STATIC -DNDEBUG
 ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
-OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ)
+OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 MINGW   := i686-w64-mingw32-gcc
 SAMPLES := $(wildcard samples/*.c)
@@ -116,6 +124,12 @@ $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD)/lexbor/%.o: $(LXB)/source/%.c $(QSHIM)/include/qjs_libc.h
+	@mkdir -p $(dir $@)
+	@$(CC) $(LXB_CFLAGS) -w -c $< -o $@
+$(BUILD)/lexglue/%.o: src/lexbor/%.c src/include/lexglue.h
+	@mkdir -p $(dir $@)
+	$(CC) $(LXB_CFLAGS) -iquote src/include -Wall -Wextra -Wno-unused-parameter -c $< -o $@
 $(BUILD)/mbedtls/%.o: $(MBED)/%.c $(MBED_HDRS)
 	@mkdir -p $(dir $@)
 	@echo "  CC (mbedtls) $<"

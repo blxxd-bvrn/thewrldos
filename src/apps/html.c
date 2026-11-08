@@ -1,9 +1,12 @@
-/* XplorerLite: HTML tokenizer and forgiving tree builder, character set
- * conversion (UTF-8 / Windows-1252 -> Latin-1 with ASCII fallbacks) and a
- * small CSS subset (simple selectors; colour, background, display, alignment,
- * bold/italic/underline, size). */
+/* XplorerLite: documents. Lexbor's HTML5 parser builds the tree (see
+ * lexglue.h); text is kept as Latin-1 (UTF-8 / Windows-1252 converted, with
+ * ASCII fallbacks). CSS: full selectors (parsed by Lexbor, matched here on
+ * XplorerLite's tree) with the cascade by specificity and source order, simple
+ * @media queries, and the small set of properties the layout uses (colour,
+ * background, display, alignment, bold/italic/underline, size). */
 #include "browser.h"
 #include "fs.h"
+#include "lexglue.h"
 
 /* ---------------- arena ---------------- */
 void *arena_alloc(arena_t *a, uint32_t n) {
@@ -65,56 +68,6 @@ int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out) {
         else { cp = c >= 0x80 && c < 0xA0 ? (cp1252[c - 0x80] ? cp1252[c - 0x80] : '?') : c; len = 1; }   /* stray byte: treat as Windows-1252 */
         o += put_cp(out + o, cp);
         i += len;
-    }
-    out[o] = 0;
-    return o;
-}
-static int latin1_from_1252(const uint8_t *s, uint32_t n, char *out) {
-    int o = 0;
-    for (uint32_t i = 0; i < n; i++) { uint8_t c = s[i]; o += put_cp(out + o, c >= 0x80 && c < 0xA0 ? (cp1252[c - 0x80] ? cp1252[c - 0x80] : '?') : c); }
-    out[o] = 0;
-    return o;
-}
-
-/* ---------------- entities ---------------- */
-static const struct { const char *n; uint16_t cp; } ents[] = {
-    { "amp", '&' }, { "lt", '<' }, { "gt", '>' }, { "quot", '"' }, { "apos", '\'' }, { "nbsp", 0xA0 }, { "copy", 0xA9 }, { "reg", 0xAE },
-    { "trade", 0x2122 }, { "mdash", 0x2014 }, { "ndash", 0x2013 }, { "hellip", 0x2026 }, { "laquo", 0xAB }, { "raquo", 0xBB },
-    { "middot", 0xB7 }, { "bull", 0x2022 }, { "lsquo", 0x2018 }, { "rsquo", 0x2019 }, { "ldquo", 0x201C }, { "rdquo", 0x201D },
-    { "sbquo", 0x201A }, { "bdquo", 0x201E }, { "deg", 0xB0 }, { "plusmn", 0xB1 }, { "times", 0xD7 }, { "divide", 0xF7 }, { "euro", 0x20AC },
-    { "pound", 0xA3 }, { "yen", 0xA5 }, { "cent", 0xA2 }, { "sect", 0xA7 }, { "para", 0xB6 }, { "frac12", 0xBD }, { "frac14", 0xBC }, { "frac34", 0xBE },
-    { "eacute", 0xE9 }, { "egrave", 0xE8 }, { "ecirc", 0xEA }, { "euml", 0xEB }, { "aacute", 0xE1 }, { "agrave", 0xE0 }, { "acirc", 0xE2 }, { "auml", 0xE4 },
-    { "aring", 0xE5 }, { "atilde", 0xE3 }, { "aelig", 0xE6 }, { "ccedil", 0xE7 }, { "iacute", 0xED }, { "igrave", 0xEC }, { "icirc", 0xEE }, { "iuml", 0xEF },
-    { "oacute", 0xF3 }, { "ograve", 0xF2 }, { "ocirc", 0xF4 }, { "ouml", 0xF6 }, { "otilde", 0xF5 }, { "oslash", 0xF8 }, { "uacute", 0xFA }, { "ugrave", 0xF9 },
-    { "ucirc", 0xFB }, { "uuml", 0xFC }, { "ntilde", 0xF1 }, { "szlig", 0xDF }, { "yacute", 0xFD }, { "yuml", 0xFF }, { "Eacute", 0xC9 }, { "Agrave", 0xC0 },
-    { "Aacute", 0xC1 }, { "Auml", 0xC4 }, { "Aring", 0xC5 }, { "AElig", 0xC6 }, { "Ccedil", 0xC7 }, { "Ouml", 0xD6 }, { "Oslash", 0xD8 }, { "Uuml", 0xDC },
-    { "Ntilde", 0xD1 }, { "iexcl", 0xA1 }, { "iquest", 0xBF }, { "shy", 0 }, { "zwj", 0x200D }, { "zwnj", 0x200C }, { "thinsp", 0x2009 }, { "ensp", 0x2002 },
-    { "emsp", 0x2003 }, { "larr", 0x2190 }, { "rarr", 0x2192 }, { "uarr", 0x2191 }, { "darr", 0x2193 }, { "micro", 0xB5 }, { "ordm", 0xBA }, { "ordf", 0xAA },
-    { "sup2", 0xB2 }, { "sup3", 0xB3 }, { "sup1", 0xB9 }, { "acute", 0xB4 }, { "cedil", 0xB8 }, { "macr", 0xAF }, { "uml", 0xA8 }, { "not", 0xAC }, { "brvbar", 0xA6 },
-    { "curren", 0xA4 }, { "prime", 0x2032 }, { "Prime", 0x2033 }, { "minus", 0x2212 }, { "le", 0x2264 }, { "ge", 0x2265 }, { "ne", 0x2260 }, { "lsaquo", 0x2039 }, { "rsaquo", 0x203A },
-};
-/* decodes entities in [s, s+n) into out (Latin-1); returns length */
-static int decode_entities(const char *s, int n, char *out) {
-    int o = 0;
-    for (int i = 0; i < n;) {
-        if (s[i] != '&') { out[o++] = s[i++]; continue; }
-        int j = i + 1; uint32_t cp = 0; bool ok = false;
-        if (j < n && s[j] == '#') {
-            j++;
-            bool hex = j < n && (s[j] == 'x' || s[j] == 'X'); if (hex) j++;
-            int st = j;
-            while (j < n && (hex ? isxdigit(s[j]) : isdigit(s[j])) && j - st < 8) { int c = tolower(s[j]); cp = cp * (hex ? 16 : 10) + (c <= '9' ? c - '0' : c - 'a' + 10); j++; }
-            ok = j > st;
-            if (ok && cp >= 0x80 && cp < 0xA0) cp = cp1252[cp - 0x80] ? cp1252[cp - 0x80] : '?';
-        } else {
-            int st = j;
-            while (j < n && isalnum(s[j]) && j - st < 10) j++;
-            for (unsigned k = 0; k < ARRAY_LEN(ents); k++) if ((int)strlen(ents[k].n) == j - st && !memcmp(ents[k].n, s + st, j - st)) { cp = ents[k].cp; ok = true; break; }
-        }
-        if (!ok) { out[o++] = s[i++]; continue; }
-        if (j < n && s[j] == ';') j++;
-        if (cp) o += put_cp(out + o, cp);
-        i = j;
     }
     out[o] = 0;
     return o;
@@ -184,41 +137,6 @@ static void css_decls(const char *s, int n, css_t *c) {
         }
     }
 }
-static void parse_stylesheet(doc_t *d, const char *s, int n) {
-    for (int i = 0; i < n;) {
-        while (i < n && (s[i] == ' ' || s[i] == '\n' || s[i] == '\r' || s[i] == '\t')) i++;
-        if (i + 1 < n && s[i] == '/' && s[i + 1] == '*') { const char *e = strstr(s + i + 2, "*/"); if (!e || e >= s + n) break; i = e - s + 2; continue; }
-        if (i >= n) break;
-        int sel = i;
-        while (i < n && s[i] != '{') i++;
-        if (i >= n) break;
-        int sel_end = i, depth = 1, body = ++i;
-        if (s[sel] == '@') {            /* @media etc.: skip the whole block */
-            while (i < n && depth) { if (s[i] == '{') depth++; else if (s[i] == '}') depth--; i++; }
-            continue;
-        }
-        while (i < n && s[i] != '}') i++;
-        int body_end = i++;
-        css_t c = { 0 };
-        css_decls(s + body, body_end - body, &c);
-        if (!c.set) continue;
-        /* only simple selectors (tag, .class, #id, tag.class) - descendant/pseudo selectors are skipped */
-        char sl[512]; int l = MIN(sel_end - sel, 511); memcpy(sl, s + sel, l); sl[l] = 0;
-        for (char *one = strtok(sl, ","); one; one = strtok(NULL, ",")) {
-            while (*one == ' ' || *one == '\n' || *one == '\t' || *one == '\r') one++;
-            for (char *e = one + strlen(one) - 1; e >= one && (*e == ' ' || *e == '\n' || *e == '\t' || *e == '\r'); e--) *e = 0;
-            if (!*one || strpbrk(one, " >+~:[*()") || strlen(one) >= 48) continue;
-            if (d->nrules % 64 == 0) {
-                css_rule_t *nr = arena_alloc(&d->arena, sizeof(css_rule_t) * (d->nrules + 64));
-                if (d->nrules) memcpy(nr, d->rules, sizeof(css_rule_t) * d->nrules);
-                d->rules = nr;
-            }
-            strlcpy(d->rules[d->nrules].sel, one, 48);
-            d->rules[d->nrules].css = c;
-            d->nrules++;
-        }
-    }
-}
 static void css_merge(css_t *dst, const css_t *src) {
     if (src->set & ST_COLOR) dst->color = src->color;
     if (src->set & ST_BG) dst->bg = src->bg;
@@ -230,48 +148,7 @@ static void css_merge(css_t *dst, const css_t *src) {
     if (src->set & ST_SIZE) dst->size = src->size;
     dst->set |= src->set;
 }
-static bool has_class(node_t *n, const char *cls, int len) {
-    const char *c = node_attr(n, "class");
-    while (c && *c) {
-        while (*c == ' ') c++;
-        const char *e = c; while (*e && *e != ' ') e++;
-        if (e - c == len && !strncasecmp(c, cls, len)) return true;
-        c = e;
-    }
-    return false;
-}
-static bool sel_match(node_t *n, const char *sel) {
-    const char *dot = strchr(sel, '.'), *hash = strchr(sel, '#');
-    const char *tagend = dot ? dot : hash ? hash : sel + strlen(sel);
-    if (tagend > sel && (strncasecmp(n->tag, sel, tagend - sel) || n->tag[tagend - sel])) return false;
-    if (dot) { const char *e = dot + 1; while (*e && *e != '.' && *e != '#') e++; if (!has_class(n, dot + 1, e - dot - 1)) return false; }
-    if (hash) { const char *id = node_attr(n, "id"); if (!id || strcasecmp(id, hash + 1)) return false; }
-    return tagend > sel || dot || hash;
-}
-static void apply_css(doc_t *d, node_t *n) {
-    for (; n; n = n->next) {
-        if (n->type) continue;
-        css_t c = { 0 };
-        for (int pass = 0; pass < 3; pass++)        /* tag rules, then class rules, then id rules */
-            for (int i = 0; i < d->nrules; i++) {
-                const char *s = d->rules[i].sel;
-                int kind = strchr(s, '#') ? 2 : strchr(s, '.') ? 1 : 0;
-                if (kind == pass && sel_match(n, s)) css_merge(&c, &d->rules[i].css);
-            }
-        const char *st = node_attr(n, "style");
-        if (st) { css_t in = { 0 }; css_decls(st, strlen(st), &in); css_merge(&c, &in); }
-        if (node_attr(n, "hidden")) { c.set |= ST_DISPLAY; c.display = 0; }
-        n->css = c;
-        apply_css(d, n->first);
-    }
-}
-
-/* ---------------- tree building ---------------- */
-static const char *strcasestr_simple(const char *h, const char *n) {
-    int l = strlen(n);
-    for (; *h; h++) if (!strncasecmp(h, n, l)) return h;
-    return NULL;
-}
+/* ---------------- tree building (Lexbor's HTML5 parser) ---------------- */
 const char *node_attr(node_t *n, const char *name) {
     for (int i = 0; i < n->nattr; i++) if (!strcmp(n->attr[i * 2], name)) return n->attr[i * 2 + 1];
     return NULL;
@@ -281,37 +158,377 @@ static bool is_void(const char *t) {
     for (unsigned i = 0; i < ARRAY_LEN(v); i++) if (!strcmp(t, v[i])) return true;
     return false;
 }
-static bool closes_p(const char *t) {
-    static const char *v[] = { "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "dl", "table", "pre", "blockquote", "hr", "form",
-        "section", "article", "header", "footer", "nav", "aside", "main", "figure", "address", "fieldset", "center", "li", "dd", "dt", "details" };
-    for (unsigned i = 0; i < ARRAY_LEN(v); i++) if (!strcmp(t, v[i])) return true;
-    return false;
-}
-typedef struct { doc_t *d; node_t *stack[256]; int sp; } builder_t;
-static node_t *cur(builder_t *b) { return b->stack[b->sp - 1]; }
-static void append(builder_t *b, node_t *n) { node_t *p = cur(b); n->parent = p; if (p->last) p->last->next = n; else p->first = n; p->last = n; }
-static bool in_scope(builder_t *b, const char *tag, const char *stop1, const char *stop2) {
-    for (int i = b->sp - 1; i > 0; i--) {
-        if (!strcmp(b->stack[i]->tag, tag)) return true;
-        if ((stop1 && !strcmp(b->stack[i]->tag, stop1)) || (stop2 && !strcmp(b->stack[i]->tag, stop2)) || !strcmp(b->stack[i]->tag, "table")) return false;
+/* Windows-1252 / Latin-1 bytes to UTF-8, for Lexbor */
+static uint32_t utf8_from_1252(const uint8_t *s, uint32_t n, char *out) {
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t cp = s[i];
+        if (cp >= 0x80 && cp < 0xA0) cp = cp1252[cp - 0x80] ? cp1252[cp - 0x80] : '?';
+        if (cp < 0x80) out[o++] = cp;
+        else if (cp < 0x800) { out[o++] = 0xC0 | (cp >> 6); out[o++] = 0x80 | (cp & 0x3F); }
+        else { out[o++] = 0xE0 | (cp >> 12); out[o++] = 0x80 | ((cp >> 6) & 0x3F); out[o++] = 0x80 | (cp & 0x3F); }
     }
-    return false;
+    out[o] = 0;
+    return o;
 }
-static void pop_to(builder_t *b, const char *tag) { while (b->sp > 1) { bool m = !strcmp(cur(b)->tag, tag); b->sp--; if (m) break; } }
-static void add_text(builder_t *b, const char *s, int n) {
-    if (n <= 0) return;
-    node_t *last = cur(b)->last;
-    char *t = arena_alloc(&b->d->arena, n * 4 + 1);
-    int l = decode_entities(s, n, t);
-    if (last && last->type == 1) {             /* merge adjacent text */
-        int ol = strlen(last->text);
-        char *m = arena_alloc(&b->d->arena, ol + l + 1); memcpy(m, last->text, ol); memcpy(m + ol, t, l + 1); last->text = m;
+static char *l1dup(arena_t *a, const char *u, unsigned n) {
+    char *t = arena_alloc(a, n * 4 + 1);           /* transliterations can be longer than the UTF-8 */
+    latin1_from_utf8((const uint8_t *)u, n, t);
+    return t;
+}
+
+static bool media_ok(const char *q, int n);
+static const char *strcasestr_l(const char *h, const char *n) {
+    int l = strlen(n);
+    for (; *h; h++) if (!strncasecmp(h, n, l)) return h;
+    return NULL;
+}
+#define MAX_DEPTH 512
+enum { FR_NODE, FR_PASS, FR_TITLE, FR_STYLE, FR_SKIP };
+typedef struct { node_t *n; uint8_t kind; } frame_t;
+typedef struct {
+    doc_t *d;
+    doc_t *cssdoc;                                 /* where <style> rules go (the page, for fragments) */
+    const char *url;
+    frame_t st[MAX_DEPTH]; int sp, overflow;
+    char *buf; uint32_t blen, bcap;               /* text of <title> / <style> being collected */
+    bool in_body;
+} builder_t;
+static void parse_stylesheet(doc_t *d, const char *s, int n, int sheet);
+static node_t *top_node(builder_t *b) { return b->st[b->sp - 1].n; }
+static void append(node_t *p, node_t *n) { n->parent = p; if (p->last) p->last->next = n; else p->first = n; p->last = n; }
+static void push(builder_t *b, node_t *n, int kind) {
+    if (b->sp >= MAX_DEPTH) { b->overflow++; return; }    /* deeper levels are flattened into the last one */
+    b->st[b->sp].n = n; b->st[b->sp].kind = kind; b->sp++;
+}
+static void collect_text(builder_t *b, const char *s, unsigned n) {
+    if (b->blen + n + 1 > b->bcap) { b->bcap = (b->blen + n + 1) * 2; b->buf = krealloc(b->buf, b->bcap); }
+    memcpy(b->buf + b->blen, s, n); b->blen += n; b->buf[b->blen] = 0;
+}
+static char **copy_attrs(doc_t *d, const lxg_attr_t *a, int na) {
+    char **v = arena_alloc(&d->arena, sizeof(char *) * (na * 2 + 2));
+    for (int i = 0; i < na; i++) {
+        char *nm = arena_alloc(&d->arena, a[i].name_len + 1);
+        for (unsigned k = 0; k < a[i].name_len; k++) nm[k] = tolower(a[i].name[k]);
+        v[i * 2] = nm;
+        v[i * 2 + 1] = l1dup(&d->arena, a[i].value, a[i].value_len);
+    }
+    return v;
+}
+static void sink_start(void *ctx, const char *name, unsigned nl, const lxg_attr_t *a, int na) {
+    builder_t *b = ctx; doc_t *d = b->d;
+    char tag[12]; unsigned k = 0;
+    for (; k < nl && k < 11; k++) tag[k] = tolower(name[k]);
+    tag[k] = 0;
+    int kind = b->sp ? b->st[b->sp - 1].kind : FR_NODE;
+    if (kind == FR_SKIP || kind == FR_TITLE || kind == FR_STYLE) { push(b, NULL, FR_SKIP); return; }
+    if (!strcmp(tag, "html") || !strcmp(tag, "head")) { push(b, top_node(b), FR_PASS); return; }
+    if (!strcmp(tag, "body")) {
+        b->in_body = true;
+        node_t *r = d->root;                       /* the root stands in for <body>: keep its attributes for selectors */
+        r->attr = copy_attrs(d, a, na); r->nattr = na;
+        for (int i = 0; i < na; i++) {
+            const char *nm = r->attr[i * 2], *v = r->attr[i * 2 + 1];
+            if (!strcmp(nm, "bgcolor")) parse_color(v, &d->bgcolor);
+            else if (!strcmp(nm, "text")) parse_color(v, &d->text);
+            else if (!strcmp(nm, "link")) parse_color(v, &d->link);
+            else if (!strcmp(nm, "vlink")) parse_color(v, &d->vlink);
+        }
+        push(b, r, FR_PASS);
         return;
     }
-    node_t *nd = arena_alloc(&b->d->arena, sizeof *nd);
-    nd->type = 1; nd->text = t;
-    append(b, nd);
+    if (!strcmp(tag, "title") && !b->in_body && !d->title[0]) { b->blen = 0; push(b, NULL, FR_TITLE); return; }
+    if (!strcmp(tag, "style")) {
+        for (int i = 0; i < na; i++) if (a[i].name_len == 5 && !memcmp(a[i].name, "media", 5) && !media_ok(a[i].value, a[i].value_len)) { push(b, NULL, FR_SKIP); return; }
+        b->blen = 0; push(b, NULL, FR_STYLE); return;
+    }
+    if (!strcmp(tag, "base")) {
+        for (int i = 0; i < na; i++) if (a[i].name_len == 4 && !memcmp(a[i].name, "href", 4)) {
+            extern bool url_resolve(const char *, const char *, char *, int);
+            char *h = l1dup(&d->arena, a[i].value, a[i].value_len);
+            url_resolve(b->url, h, d->base, sizeof d->base);
+        }
+        push(b, NULL, FR_SKIP); return;
+    }
+    node_t *n = arena_alloc(&d->arena, sizeof *n);
+    strcpy(n->tag, tag);
+    n->attr = copy_attrs(d, a, na); n->nattr = na;
+    if (!strcmp(tag, "meta")) {
+        const char *he = node_attr(n, "http-equiv"), *ct = node_attr(n, "content");
+        if (he && ct && !strcasecmp(he, "refresh")) {
+            d->refresh_s = atoi(ct);
+            const char *u = ct; while (*u && strncasecmp(u, "url=", 4)) u++;
+            if (*u) { u += 4; while (*u == ' ' || *u == '\'' || *u == '"') u++; strlcpy(d->refresh, u, sizeof d->refresh); char *q = strpbrk(d->refresh, "'\""); if (q) *q = 0; }
+        }
+        push(b, NULL, FR_SKIP); return;
+    }
+    if (!strcmp(tag, "link")) {                    /* stylesheets are fetched by the browser later; their order counts */
+        const char *rel = node_attr(n, "rel"), *href = node_attr(n, "href"), *media = node_attr(n, "media");
+        if (rel && href && *href && strcasestr_l(rel, "stylesheet") && !strcasestr_l(rel, "alternate") && (!media || media_ok(media, strlen(media))) && d->nlinks < MAX_LINKED_SHEETS) {
+            d->links[d->nlinks].href = arena_strdup(&d->arena, href, -1);
+            d->links[d->nlinks].sheet = ++d->nsheets;
+            d->nlinks++;
+        }
+        push(b, NULL, FR_SKIP); return;
+    }
+    append(top_node(b), n);
+    push(b, n, FR_NODE);
 }
+static void sink_end(void *ctx) {
+    builder_t *b = ctx;
+    if (b->overflow) { b->overflow--; return; }
+    if (b->sp <= 1) return;
+    frame_t f = b->st[--b->sp];
+    if (f.kind == FR_TITLE) {
+        char *t = l1dup(&b->d->arena, b->buf ? b->buf : "", b->blen);
+        for (char *q = t; *q; q++) if (*q == '\n' || *q == '\t' || *q == '\r') *q = ' ';
+        while (*t == ' ') t++;
+        strlcpy(b->d->title, t, sizeof b->d->title);
+        for (int l = strlen(b->d->title); l > 0 && b->d->title[l - 1] == ' '; l--) b->d->title[l - 1] = 0;
+    } else if (f.kind == FR_STYLE && b->blen) parse_stylesheet(b->cssdoc, b->buf, b->blen, ++b->cssdoc->nsheets);
+}
+static void sink_text(void *ctx, const char *s, unsigned n) {
+    builder_t *b = ctx;
+    int kind = b->st[b->sp - 1].kind;
+    if (kind == FR_TITLE || kind == FR_STYLE) { collect_text(b, s, n); return; }
+    if (kind == FR_SKIP) return;
+    node_t *p = top_node(b);
+    node_t *t = arena_alloc(&b->d->arena, sizeof *t);
+    t->type = 1;
+    t->text = l1dup(&b->d->arena, s, n);
+    append(p, t);
+}
+
+/* ---------------- CSS cascade ---------------- */
+/* every complex selector of every rule, bucketed by the key of its right-most
+ * compound selector so an element only tries the rules that could match it */
+#define VIEW_W 880                                 /* the width @media queries are answered for */
+static uint32_t khash(int kind, const char *k, unsigned l) {
+    uint32_t h = 2166136261u ^ kind;
+    for (unsigned i = 0; i < l; i++) h = (h ^ (uint8_t)tolower(k[i])) * 16777619u;
+    return h;
+}
+static css_bucket_t *bucket_get(doc_t *d, int kind, const char *key, unsigned kl, bool create) {
+    uint32_t h = khash(kind, key, kl);
+    for (css_bucket_t *b = d->buckets[h % CSS_BUCKETS]; b; b = b->next)
+        if (b->hash == h && b->kind == kind && strlen(b->key) == kl && !strncasecmp(b->key, key, kl)) return b;
+    if (!create) return NULL;
+    css_bucket_t *b = arena_alloc(&d->arena, sizeof *b);
+    b->hash = h; b->kind = kind; b->key = arena_strdup(&d->arena, key, kl);
+    b->next = d->buckets[h % CSS_BUCKETS]; d->buckets[h % CSS_BUCKETS] = b;
+    return b;
+}
+typedef struct { doc_t *d; css_t css; uint32_t order; } addctx_t;
+static void add_rule(void *ctx, void *sel, unsigned spec, int kind, const char *key, unsigned kl) {
+    addctx_t *a = ctx; doc_t *d = a->d;
+    if (d->nrules == d->caprules) { d->caprules = d->caprules ? d->caprules * 2 : 256; d->rules = krealloc(d->rules, sizeof(css_rule_t) * d->caprules); }
+    int idx = d->nrules++;
+    d->rules[idx].sel = sel; d->rules[idx].spec = spec; d->rules[idx].order = a->order; d->rules[idx].css = a->css;
+    css_bucket_t *b = bucket_get(d, kind, kind == LXG_KEY_ANY ? "*" : key, kind == LXG_KEY_ANY ? 1 : kl, true);
+    if (b->n == b->cap) { b->cap = b->cap ? b->cap * 2 : 8; b->idx = krealloc(b->idx, sizeof(int) * b->cap); }
+    b->idx[b->n++] = idx;
+}
+/* @media: media types and the simple width/feature queries sites use */
+static int css_length(const char *v) {
+    int whole = atoi(v), tenth = 0;
+    const char *dot = strchr(v, '.'); if (dot && isdigit(dot[1])) tenth = dot[1] - '0';
+    const char *u = v; while (*u && (isdigit(*u) || *u == '.' || *u == '-' || *u == ' ')) u++;
+    if (!strncmp(u, "em", 2) || !strncmp(u, "rem", 3)) return (whole * 10 + tenth) * 16 / 10;
+    return whole;
+}
+static bool media_feature(const char *f, int n) {
+    char buf[96]; n = MIN(n, 95); memcpy(buf, f, n); buf[n] = 0;
+    for (char *p = buf; *p; p++) *p = tolower(*p);
+    char *colon = strchr(buf, ':');
+    const char *name = buf; while (*name == ' ') name++;
+    if (!colon) {
+        char *op = strpbrk(buf, "<>=");           /* (width >= 600px) */
+        if (op && !strncmp(name, "width", 5)) {
+            bool ge = op[0] == '>', eqq = op[1] == '=' || op[0] == '=';
+            int v = css_length(op + (op[1] == '=' ? 2 : 1));
+            return op[0] == '=' ? VIEW_W == v : ge ? (eqq ? VIEW_W >= v : VIEW_W > v) : (eqq ? VIEW_W <= v : VIEW_W < v);
+        }
+        return !strncmp(name, "color", 5) || !strncmp(name, "hover", 5) || !strncmp(name, "pointer", 7) || !strncmp(name, "grid", 4) ? true : false;
+    }
+    *colon = 0;
+    char *e = colon - 1; while (e >= buf && *e == ' ') *e-- = 0;
+    const char *v = colon + 1; while (*v == ' ') v++;
+    if (!strcmp(name, "min-width")) return VIEW_W >= css_length(v);
+    if (!strcmp(name, "max-width")) return VIEW_W <= css_length(v);
+    if (!strcmp(name, "min-height")) return 600 >= css_length(v);
+    if (!strcmp(name, "max-height")) return 600 <= css_length(v);
+    if (!strcmp(name, "orientation")) return !strncmp(v, "landscape", 9);
+    if (!strcmp(name, "prefers-color-scheme")) return !strncmp(v, "light", 5);
+    if (!strcmp(name, "prefers-reduced-motion")) return !strncmp(v, "reduce", 6);
+    if (!strcmp(name, "hover") || !strcmp(name, "any-hover")) return !strncmp(v, "hover", 5);
+    if (!strcmp(name, "pointer") || !strcmp(name, "any-pointer")) return !strncmp(v, "fine", 4);
+    return false;
+}
+static bool media_ok(const char *q, int n) {
+    if (n <= 0) return true;
+    int start = 0;
+    for (int i = 0; i <= n; i++) {
+        if (i < n && q[i] != ',') continue;
+        /* one query: [only|not] type [and (feature)]... */
+        const char *s = q + start, *e = q + i; start = i + 1;
+        while (s < e && isspace(*s)) s++;
+        bool neg = false, ok = true;
+        if (e - s >= 4 && !strncasecmp(s, "not ", 4)) { neg = true; s += 4; }
+        else if (e - s >= 5 && !strncasecmp(s, "only ", 5)) s += 5;
+        while (s < e) {
+            while (s < e && isspace(*s)) s++;
+            if (s >= e) break;
+            if (*s == '(') {
+                const char *c = s + 1; int depth = 1;
+                while (c < e && depth) { if (*c == '(') depth++; else if (*c == ')') depth--; if (depth) c++; }
+                if (!media_feature(s + 1, c - s - 1)) ok = false;
+                s = c < e ? c + 1 : e;
+            } else {
+                const char *w = s; while (s < e && !isspace(*s) && *s != '(') s++;
+                int wl = s - w;
+                if (wl == 3 && !strncasecmp(w, "and", 3)) continue;
+                if ((wl == 6 && !strncasecmp(w, "screen", 6)) || (wl == 3 && !strncasecmp(w, "all", 3))) continue;
+                ok = false;                           /* print, speech, or something unknown */
+            }
+        }
+        if (ok != neg) return true;
+    }
+    return false;
+}
+/* skip a comment or string starting at s[i]; returns the index after it */
+static int css_skip(const char *s, int n, int i) {
+    if (s[i] == '/' && i + 1 < n && s[i + 1] == '*') { i += 2; while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) i++; return MIN(i + 2, n); }
+    if (s[i] == '"' || s[i] == '\'') { char q = s[i++]; while (i < n && s[i] != q) { if (s[i] == '\\') i++; i++; } return MIN(i + 1, n); }
+    return i + 1;
+}
+/* the end of the block opened just before i (index of its '}'), or n */
+static int css_block_end(const char *s, int n, int i) {
+    int depth = 1;
+    while (i < n) {
+        char c = s[i];
+        if (c == '{') depth++;
+        else if (c == '}' && !--depth) return i;
+        i = (c == '/' || c == '"' || c == '\'') ? css_skip(s, n, i) : i + 1;
+    }
+    return n;
+}
+static void parse_rules(doc_t *d, const char *s, int n, int sheet, int *rule_no, int level) {
+    int i = 0;
+    while (i < n) {
+        while (i < n && (isspace(s[i]) || s[i] == ';')) i++;
+        if (i >= n) break;
+        if (s[i] == '/' && i + 1 < n && s[i + 1] == '*') { i = css_skip(s, n, i); continue; }
+        if (s[i] == '}') { i++; continue; }
+        int pre = i;
+        while (i < n && s[i] != '{' && !(s[pre] == '@' && s[i] == ';')) i = (s[i] == '/' || s[i] == '"' || s[i] == '\'') ? css_skip(s, n, i) : i + 1;
+        if (i >= n) break;
+        if (s[i] == ';') { i++; continue; }              /* @import, @charset, @namespace, @layer a, b; */
+        int pre_end = i, body = ++i, body_end = css_block_end(s, n, i);
+        i = body_end + 1;
+        if (s[pre] == '@') {
+            const char *kw = s + pre + 1; int kl = 0; while (pre + 1 + kl < pre_end && (isalnum(kw[kl]) || kw[kl] == '-')) kl++;
+            bool nest = false;
+            if (kl == 5 && !strncasecmp(kw, "media", 5)) nest = media_ok(kw + 5, pre_end - (pre + 6));
+            else if ((kl == 8 && !strncasecmp(kw, "supports", 8)) || (kl == 5 && !strncasecmp(kw, "layer", 5)) || (kl == 8 && !strncasecmp(kw, "document", 8))) nest = true;
+            if (nest && level < 8) parse_rules(d, s + body, body_end - body, sheet, rule_no, level + 1);
+            continue;                                    /* @font-face, @keyframes, @page... */
+        }
+        css_t c = { 0 };
+        css_decls(s + body, body_end - body, &c);
+        if (!c.set) continue;
+        int pl = pre_end - pre; while (pl > 0 && isspace(s[pre + pl - 1])) pl--;
+        addctx_t a = { d, c, ((uint32_t)sheet << 20) | (uint32_t)MIN(*rule_no, 0xFFFFF) };
+        (*rule_no)++;
+        if (!d->selpool) d->selpool = lxg_pool_new();
+        lxg_selectors(d->selpool, s + pre, pl, add_rule, &a);
+    }
+}
+static void parse_stylesheet(doc_t *d, const char *s, int n, int sheet) {
+    int rule_no = 0;
+    parse_rules(d, s, n, sheet, &rule_no, 0);
+}
+void html_add_stylesheet(doc_t *d, const char *css, uint32_t len, int sheet) { parse_stylesheet(d, css, len, sheet); }
+
+/* the matcher's view of the tree: the root stands in for <body> */
+static void *tr_parent(void *n) { node_t *p = ((node_t *)n)->parent; return p; }
+static void *tr_prev(void *n) {
+    node_t *x = n, *p = x->parent; if (!p) return NULL;
+    node_t *last = NULL;
+    for (node_t *c = p->first; c && c != x; c = c->next) if (!c->type) last = c;
+    return last;
+}
+static void *tr_next(void *n) { for (node_t *c = ((node_t *)n)->next; c; c = c->next) if (!c->type) return c; return NULL; }
+static const char *tr_tag(void *n) { node_t *x = n; return x->parent ? x->tag : "body"; }
+static const char *tr_attr(void *n, const char *name) { return node_attr(n, name); }
+static int tr_empty(void *n) { for (node_t *c = ((node_t *)n)->first; c; c = c->next) if (!c->type || (c->text && c->text[0])) return 0; return 1; }
+static int tr_isroot(void *n) { return ((node_t *)n)->parent == NULL; }
+static const lxg_tree_t tree_ops = { tr_parent, tr_prev, tr_next, tr_tag, tr_attr, tr_empty, tr_isroot };
+
+typedef struct { uint32_t spec, order; int idx; } hit_t;
+static void try_bucket(doc_t *d, css_bucket_t *b, node_t *n, hit_t **hits, int *nh, int *cap) {
+    if (!b) return;
+    for (int i = 0; i < b->n; i++) {
+        css_rule_t *r = &d->rules[b->idx[i]];
+        if (!lxg_match(r->sel, n, &tree_ops)) continue;
+        if (*nh == *cap) { *cap = *cap ? *cap * 2 : 32; *hits = krealloc(*hits, sizeof(hit_t) * *cap); }
+        (*hits)[(*nh)++] = (hit_t){ r->spec, r->order, b->idx[i] };
+    }
+}
+static css_t sheet_style(doc_t *d, node_t *n) {
+    css_t c = { 0 };
+    if (!d->nrules) return c;
+    static hit_t *hits; static int cap;
+    int nh = 0;
+    const char *id = node_attr(n, "id");
+    if (id && *id) try_bucket(d, bucket_get(d, LXG_KEY_ID, id, strlen(id), false), n, &hits, &nh, &cap);
+    const char *cl = node_attr(n, "class");
+    while (cl && *cl) {
+        while (*cl && isspace(*cl)) cl++;
+        const char *e = cl; while (*e && !isspace(*e)) e++;
+        if (e > cl) {
+            bool dup = false;                         /* class="a a": try a bucket only once */
+            for (const char *p = node_attr(n, "class"); p < cl; p++) if (!strncmp(p, cl, e - cl) && (p == node_attr(n, "class") || isspace(p[-1])) && isspace(p[e - cl])) dup = true;
+            if (!dup) try_bucket(d, bucket_get(d, LXG_KEY_CLASS, cl, e - cl, false), n, &hits, &nh, &cap);
+        }
+        cl = e;
+    }
+    const char *tag = tr_tag(n);
+    try_bucket(d, bucket_get(d, LXG_KEY_TAG, tag, strlen(tag), false), n, &hits, &nh, &cap);
+    try_bucket(d, bucket_get(d, LXG_KEY_ANY, "*", 1, false), n, &hits, &nh, &cap);
+    /* cascade: lower specificity first, then source order */
+    for (int i = 1; i < nh; i++) {
+        hit_t h = hits[i]; int j = i - 1;
+        while (j >= 0 && (hits[j].spec > h.spec || (hits[j].spec == h.spec && hits[j].order > h.order))) { hits[j + 1] = hits[j]; j--; }
+        hits[j + 1] = h;
+    }
+    for (int i = 0; i < nh; i++) css_merge(&c, &d->rules[hits[i].idx].css);
+    return c;
+}
+static void style_node(doc_t *d, node_t *n) {
+    css_t c = sheet_style(d, n);
+    const char *st = node_attr(n, "style");
+    if (st) { css_t in = { 0 }; css_decls(st, strlen(st), &in); css_merge(&c, &in); }
+    if (node_attr(n, "hidden")) { c.set |= ST_DISPLAY; c.display = 0; }
+    n->css = c;
+}
+static void apply_css(doc_t *d, node_t *n) {
+    /* iterative pre-order walk over n and its following siblings' subtrees */
+    node_t *stop = n ? n->parent : NULL;
+    while (n) {
+        if (!n->type) style_node(d, n);
+        if (!n->type && n->first) { n = n->first; continue; }
+        while (n && !n->next) { n = n->parent; if (n == stop) return; }
+        if (n) n = n->next;
+    }
+}
+static void style_root(doc_t *d) {
+    css_t c = sheet_style(d, d->root);
+    const char *st = node_attr(d->root, "style");
+    if (st) { css_t in = { 0 }; css_decls(st, strlen(st), &in); css_merge(&c, &in); }
+    if (c.set & ST_BG) d->bgcolor = c.bg;
+    if (c.set & ST_COLOR) d->text = c.color;
+}
+
 doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char *url) {
     doc_t *d = kzalloc(sizeof *d);
     strlcpy(d->base, url ? url : "", sizeof d->base);
@@ -324,142 +541,82 @@ doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char
         if (m) { if (*m == '"' || *m == '\'') m++; int k = 0; while (k < 31 && (isalnum(m[k]) || m[k] == '-' || m[k] == '_')) { cs[k] = m[k]; k++; } cs[k] = 0; }
     }
     if (cs[0] && (!strncasecmp(cs, "iso-8859", 8) || !strncasecmp(cs, "windows-125", 11) || !strcasecmp(cs, "latin1") || !strcasecmp(cs, "us-ascii"))) utf8 = false;
-    char *text = kmalloc(len * 3 + 1);
-    uint32_t tl = utf8 ? latin1_from_utf8((const uint8_t *)src, len, text) : latin1_from_1252((const uint8_t *)src, len, text);
-    builder_t *b = kzalloc(sizeof *b);
-    b->d = d;
+    char *conv = NULL;
+    if (!utf8) { conv = kmalloc(len * 3 + 1); len = utf8_from_1252((const uint8_t *)src, len, conv); src = conv; }
     d->root = arena_alloc(&d->arena, sizeof(node_t)); strcpy(d->root->tag, "#doc");
-    b->stack[0] = d->root; b->sp = 1;
-    const char *s = text, *e = text + tl;
-    while (s < e) {
-        if (*s != '<') {
-            const char *t = s; while (t < e && *t != '<') t++;
-            add_text(b, s, t - s); s = t; continue;
-        }
-        if (s + 4 <= e && !strncmp(s, "<!--", 4)) { const char *c = strstr(s + 4, "-->"); s = c ? c + 3 : e; continue; }
-        if (s + 1 < e && (s[1] == '!' || s[1] == '?')) { const char *c = memchr(s, '>', e - s); s = c ? c + 1 : e; continue; }
-        bool end = s + 1 < e && s[1] == '/';
-        const char *p = s + (end ? 2 : 1);
-        if (p >= e || !isalpha(*p)) { add_text(b, s, 1); s++; continue; }
-        char tag[12]; int k = 0;
-        while (p < e && (isalnum(*p) || *p == '-' || *p == ':') ) { if (k < 11) tag[k++] = tolower(*p); p++; }
-        tag[k] = 0;
-        /* attributes */
-        char *names[32], *vals[32]; int na = 0;
-        while (p < e && *p != '>') {
-            while (p < e && (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r' || *p == '/')) p++;
-            if (p >= e || *p == '>') break;
-            const char *an = p; while (p < e && *p != '=' && *p != '>' && *p != ' ' && *p != '\n' && *p != '\t' && *p != '/') p++;
-            int anl = p - an;
-            while (p < e && (*p == ' ' || *p == '\n')) p++;
-            const char *av = ""; int avl = 0;
-            if (p < e && *p == '=') {
-                p++; while (p < e && (*p == ' ' || *p == '\n')) p++;
-                if (p < e && (*p == '"' || *p == '\'')) { char q = *p++; av = p; while (p < e && *p != q) p++; avl = p - av; if (p < e) p++; }
-                else { av = p; while (p < e && *p != '>' && *p != ' ' && *p != '\n' && *p != '\t') p++; avl = p - av; }
-            }
-            if (!end && na < 32 && anl > 0 && anl < 40) {
-                char *nm = arena_alloc(&d->arena, anl + 1); for (int i = 0; i < anl; i++) nm[i] = tolower(an[i]);
-                char *vv = arena_alloc(&d->arena, avl * 4 + 1); decode_entities(av, avl, vv);
-                names[na] = nm; vals[na] = vv; na++;
-            }
-        }
-        s = p < e ? p + 1 : e;
-        if (end) {
-            if (!strcmp(tag, "p") && !in_scope(b, "p", NULL, NULL)) continue;
-            for (int i = b->sp - 1; i > 0; i--) if (!strcmp(b->stack[i]->tag, tag)) { b->sp = i; break; }
-            continue;
-        }
-        /* raw text elements */
-        if (!strcmp(tag, "script") || !strcmp(tag, "style") || !strcmp(tag, "title") || !strcmp(tag, "textarea")) {
-            char close[16]; snprintf(close, sizeof close, "</%s", tag);
-            const char *c = s; while (c < e && strncasecmp(c, close, strlen(close))) c++;
-            if (!strcmp(tag, "style")) parse_stylesheet(d, s, c - s);
-            else if (!strcmp(tag, "script")) {         /* kept for the JavaScript engine; never laid out */
-                node_t *n = arena_alloc(&d->arena, sizeof *n); strcpy(n->tag, tag);
-                n->attr = arena_alloc(&d->arena, sizeof(char *) * (na * 2 + 2)); n->nattr = na;
-                for (int i = 0; i < na; i++) { n->attr[i * 2] = names[i]; n->attr[i * 2 + 1] = vals[i]; }
-                append(b, n);
-                if (c > s) {
-                    node_t *t = arena_alloc(&d->arena, sizeof *t); t->type = 1;
-                    t->text = arena_strdup(&d->arena, s, c - s);
-                    t->parent = n; n->first = n->last = t;
-                }
-            }
-            else if (!strcmp(tag, "title")) { char *t = arena_alloc(&d->arena, (c - s) * 4 + 1); decode_entities(s, c - s, t); for (char *q = t; *q; q++) if (*q == '\n' || *q == '\t') *q = ' '; char *tt = t; while (*tt == ' ') tt++; strlcpy(d->title, tt, sizeof d->title); }
-            else if (!strcmp(tag, "textarea")) {
-                node_t *n = arena_alloc(&d->arena, sizeof *n); strcpy(n->tag, tag);
-                n->attr = arena_alloc(&d->arena, sizeof(char *) * (na * 2 + 2)); n->nattr = na;
-                for (int i = 0; i < na; i++) { n->attr[i * 2] = names[i]; n->attr[i * 2 + 1] = vals[i]; }
-                append(b, n);
-                node_t *t = arena_alloc(&d->arena, sizeof *t); t->type = 1; t->text = arena_alloc(&d->arena, (c - s) * 4 + 1); decode_entities(s, c - s, t->text);
-                t->parent = n; n->first = n->last = t;
-            }
-            const char *gt = c < e ? memchr(c, '>', e - c) : NULL;
-            s = gt ? gt + 1 : e;
-            continue;
-        }
-        if (!strcmp(tag, "html") || !strcmp(tag, "head")) continue;
-        if (!strcmp(tag, "body")) {
-            for (int i = 0; i < na; i++) {
-                if (!strcmp(names[i], "bgcolor")) parse_color(vals[i], &d->bgcolor);
-                else if (!strcmp(names[i], "text")) parse_color(vals[i], &d->text);
-                else if (!strcmp(names[i], "link")) parse_color(vals[i], &d->link);
-                else if (!strcmp(names[i], "vlink")) parse_color(vals[i], &d->vlink);
-                else if (!strcmp(names[i], "style")) { css_t c = { 0 }; css_decls(vals[i], strlen(vals[i]), &c); if (c.set & ST_BG) d->bgcolor = c.bg; if (c.set & ST_COLOR) d->text = c.color; }
-            }
-            continue;
-        }
-        if (!strcmp(tag, "base")) { for (int i = 0; i < na; i++) if (!strcmp(names[i], "href")) { extern bool url_resolve(const char *, const char *, char *, int); url_resolve(url, vals[i], d->base, sizeof d->base); } continue; }
-        if (!strcmp(tag, "meta")) {
-            const char *he = NULL, *ct = NULL;
-            for (int i = 0; i < na; i++) { if (!strcmp(names[i], "http-equiv")) he = vals[i]; if (!strcmp(names[i], "content")) ct = vals[i]; }
-            if (he && ct && !strcasecmp(he, "refresh")) {
-                d->refresh_s = atoi(ct);
-                const char *u = strcasestr_simple(ct, "url=");
-                if (u) { u += 4; while (*u == ' ' || *u == '\'' || *u == '"') u++; strlcpy(d->refresh, u, sizeof d->refresh); char *q = strpbrk(d->refresh, "'\""); if (q) *q = 0; }
-            }
-            continue;
-        }
-        if (!strcmp(tag, "link")) continue;
-        /* implicit end tags */
-        if (closes_p(tag) && in_scope(b, "p", NULL, NULL)) pop_to(b, "p");
-        if (!strcmp(tag, "li") && in_scope(b, "li", "ul", "ol")) pop_to(b, "li");
-        if ((!strcmp(tag, "dt") || !strcmp(tag, "dd")) && (in_scope(b, "dd", "dl", NULL) || in_scope(b, "dt", "dl", NULL))) { while (b->sp > 1 && strcmp(cur(b)->tag, "dt") && strcmp(cur(b)->tag, "dd")) b->sp--; if (b->sp > 1) b->sp--; }
-        if (!strcmp(tag, "option") && !strcmp(cur(b)->tag, "option")) b->sp--;
-        if (!strcmp(tag, "tr") || !strcmp(tag, "tbody") || !strcmp(tag, "thead") || !strcmp(tag, "tfoot")) {
-            /* close the open row (and, for a new section, the open section) inside the current table */
-            bool section = strcmp(tag, "tr") != 0;
-            for (int i = b->sp - 1; i > 0; i--) {
-                const char *t = b->stack[i]->tag;
-                if (!strcmp(t, "table")) break;
-                if (!strcmp(t, "tr") || (section && (!strcmp(t, "tbody") || !strcmp(t, "thead") || !strcmp(t, "tfoot")))) b->sp = i;
-            }
-        }
-        if (!strcmp(tag, "td") || !strcmp(tag, "th")) {
-            for (int i = b->sp - 1; i > 0; i--) {
-                const char *t = b->stack[i]->tag;
-                if (!strcmp(t, "td") || !strcmp(t, "th")) { b->sp = i; break; }
-                if (!strcmp(t, "tr") || !strcmp(t, "table")) break;
-            }
-        }
-        node_t *n = arena_alloc(&d->arena, sizeof *n);
-        strcpy(n->tag, tag);
-        n->attr = arena_alloc(&d->arena, sizeof(char *) * (na * 2 + 2)); n->nattr = na;
-        for (int i = 0; i < na; i++) { n->attr[i * 2] = names[i]; n->attr[i * 2 + 1] = vals[i]; }
-        append(b, n);
-        if (!is_void(tag) && b->sp < 255) b->stack[b->sp++] = n;
-    }
-    kfree(b); kfree(text);
+    builder_t *b = kzalloc(sizeof *b);
+    b->d = d; b->cssdoc = d; b->url = url ? url : "";
+    b->st[0].n = d->root; b->st[0].kind = FR_NODE; b->sp = 1;
+    lxg_sink_t sink = { b, sink_start, sink_end, sink_text };
+    if (lxg_parse_html(src, len, &sink) != 0) klog("xplorerlite: the HTML parser failed on %s", url ? url : "a page");
+    kfree(b->buf); kfree(b); kfree(conv);
+    style_root(d);
     apply_css(d, d->root->first);
+    return d;
+}
+/* innerHTML: nodes go into a temporary document (copied by the caller), while
+ * <style> rules are added to the page's own document */
+doc_t *html_parse_fragment(doc_t *page, const char *context_tag, const char *utf8, const char *url) {
+    doc_t *d = kzalloc(sizeof *d);
+    strlcpy(d->base, url ? url : "", sizeof d->base);
+    d->root = arena_alloc(&d->arena, sizeof(node_t)); strcpy(d->root->tag, "#doc");
+    builder_t *b = kzalloc(sizeof *b);
+    b->d = d; b->cssdoc = page ? page : d; b->url = url ? url : ""; b->in_body = true;
+    b->st[0].n = d->root; b->st[0].kind = FR_NODE; b->sp = 1;
+    lxg_sink_t sink = { b, sink_start, sink_end, sink_text };
+    lxg_parse_fragment(!strcmp(context_tag, "#doc") ? "body" : context_tag, utf8, strlen(utf8), &sink);
+    kfree(b->buf); kfree(b);
     return d;
 }
 void html_restyle(doc_t *d, node_t *n) {
     if (!n || n->type) return;
+    if (!n->parent) { style_root(d); n = n->first; if (!n) return; apply_css(d, n); return; }
     node_t *nx = n->next; n->next = NULL;
     apply_css(d, n);
     n->next = nx;
 }
+void html_restyle_all(doc_t *d) { style_root(d); apply_css(d, d->root->first); }
+
+/* querySelector() and matches(): selectors parsed once and kept */
+#define SEL_CACHE 64
+static struct { char *text; void **sels; int n; } selcache[SEL_CACHE];
+static void *selcache_pool; static int selcache_next;
+typedef struct { void **v; int n, cap; } sellist_t;
+static void collect_sel(void *ctx, void *sel, unsigned spec, int kind, const char *key, unsigned kl) {
+    sellist_t *l = ctx;
+    if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 4; l->v = krealloc(l->v, sizeof(void *) * l->cap); }
+    l->v[l->n++] = sel;
+}
+static int selcache_get(const char *sel, void ***out) {
+    for (int i = 0; i < SEL_CACHE; i++) if (selcache[i].text && !strcmp(selcache[i].text, sel)) { *out = selcache[i].sels; return selcache[i].n; }
+    if (!selcache_pool || selcache_next >= SEL_CACHE) {         /* full: start again with a fresh pool */
+        for (int i = 0; i < SEL_CACHE; i++) { kfree(selcache[i].text); kfree(selcache[i].sels); selcache[i].text = NULL; selcache[i].sels = NULL; selcache[i].n = 0; }
+        lxg_pool_free(selcache_pool); selcache_pool = lxg_pool_new(); selcache_next = 0;
+    }
+    sellist_t l = { 0 };
+    int r = lxg_selectors(selcache_pool, sel, strlen(sel), collect_sel, &l);
+    int slot = selcache_next++;
+    selcache[slot].text = kmalloc(strlen(sel) + 1); strcpy(selcache[slot].text, sel);
+    selcache[slot].sels = l.v; selcache[slot].n = r < 0 ? -1 : l.n;
+    *out = l.v;
+    return selcache[slot].n;
+}
+int html_matches(node_t *n, const char *sel_utf8) {
+    if (n->type) return 0;
+    void **v; int k = selcache_get(sel_utf8, &v);
+    if (k < 0) return -1;
+    for (int i = 0; i < k; i++) if (lxg_match(v[i], n, &tree_ops)) return 1;
+    return 0;
+}
+int html_selector_valid(const char *sel_utf8) { void **v; return selcache_get(sel_utf8, &v) >= 0; }
+const char *html_parser_version(void) { return lxg_version(); }
+
 void css_parse_decls(const char *s, int n, css_t *out) { css_decls(s, n, out); }
 bool html_is_void(const char *t) { return is_void(t); }
-void doc_free(doc_t *d) { if (!d) return; arena_free(&d->arena); kfree(d); }
+void doc_free(doc_t *d) {
+    if (!d) return;
+    for (int i = 0; i < CSS_BUCKETS; i++) for (css_bucket_t *b = d->buckets[i]; b; b = b->next) kfree(b->idx);
+    kfree(d->rules);
+    lxg_pool_free(d->selpool);
+    arena_free(&d->arena); kfree(d);
+}

@@ -1,0 +1,14 @@
+Lexbor 3.0.0 for THE WRLD OS (XplorerLite's HTML5 parser and CSS selector parser)
+
+Source: Ubuntu's copy of the upstream release archive
+  http://archive.ubuntu.com/ubuntu/pool/universe/l/lexbor/lexbor_3.0.0.orig.tar.gz
+  SHA-256 6c10e42eff581a7996ac91764a394f2375f1dae8a583634169343725e29fa770
+  (matches lexbor_3.0.0-1.dsc)
+
+Included, unmodified: source/lexbor/{core,dom,html,tag,ns,css} and the POSIX
+port's core/memory.c (malloc/realloc/calloc/free come from the C library shim
+in third_party/quickjs-shim). Left out: encoding, unicode, url, punycode,
+selectors (XplorerLite matches selectors on its own tree, src/lexbor/lexglue.c),
+style, engine, tests, examples, benchmarks.
+
+License: Apache License 2.0 (LICENSE, NOTICE).
