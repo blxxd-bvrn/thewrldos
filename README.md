@@ -296,6 +296,24 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   system partition (installed). `persist.c` writes changes back to the disk and keeps the
   settings file.
 
+### Linux programs (`src/linux`, 64-bit edition)
+The first step towards running WPE WebKit as The WRLD Xplorer: unmodified x86-64 Linux
+programs run in ring 3 and call the kernel with Linux's system call numbers.
+- **Address space:** programs live above 512 GiB, so the kernel's identity map of the low
+  4 GiB stays untouched; pages are allocated on first touch (`uvm.c`, `pmm.c`).
+- **Loading:** position-independent executables (the default on current distributions) and
+  the dynamic loader they name, with a Linux start-up stack (argv, environment, auxv) (`proc.c`).
+- **Files:** `/` is `C:\Linux`, `/mnt/c` is `C:\`, `/lib`, `/bin` and so on follow the merged
+  `/usr` layout, and `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/tty` and `/proc/self/exe`
+  are built in (`fs.c`).
+- **System calls:** files, directories, mmap/brk/mprotect, time, thread-local storage, futexes,
+  identity and limits (`syscall.c`); kernel code stays cooperative, and a program running in
+  ring 3 is preempted by the timer.
+- Type the program's path in the Command Prompt, for example
+  `C:/Linux/usr/local/bin/hello`. The 64-bit ISO carries test programs from `samples/linux` and the
+  glibc they need (copied from the build machine).
+- Not yet: threads (`clone`), `fork`/`execve`, pipes and sockets, signal delivery.
+
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
   - Intel PRO/1000 8254x, 8257x (VMware's e1000e is an 82574L), ICH8-10/PCH and I217/I218/I219 (`e1000.c`).

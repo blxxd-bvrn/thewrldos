@@ -1522,7 +1522,13 @@ static int run_external(sh_t *s, int argc, char **argv, io_t *io) {
     if (!strcasecmp(ext, "dmg")) { char *a[2] = { "mount", path }; return b_mount(s, 2, a, io); }
     char desc[128];
     if (macho_probe(n->data, n->size, desc, sizeof desc)) { err_f(io, "%s: cannot execute: %s (native macOS binaries are not supported)\n", argv[0], desc); return 126; }
-    if (n->size >= 4 && !memcmp(n->data, "\x7F" "ELF", 4)) { err_f(io, "%s: cannot execute: Linux ELF binary\n", argv[0]); return 126; }
+    if (n->size >= 4 && !memcmp(n->data, "\x7F" "ELF", 4)) {           /* a Linux program (64-bit edition) */
+        extern int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in, console_t *out, char *err, int ecap);
+        char err[256];
+        int pid = lx_spawn(path, argc, argv, NULL, io->in, io->out, err, sizeof err);
+        if (pid < 0) { err_f(io, "%s: %s\n", argv[0], err); return 126; }
+        return wait_pid(s, pid);
+    }
     gui_launch("::open", path);
     return 0;
 }

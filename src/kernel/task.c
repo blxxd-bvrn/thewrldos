@@ -63,9 +63,24 @@ task_t *task_create(const char *name, void (*entry)(void *), void *arg, uint32_t
 }
 void task_set_cr3(task_t *t, uintptr_t cr3) { t->cr3 = cr3; }
 
+#ifdef __x86_64__
+extern void arch_set_kernel_stack(uintptr_t top);
+extern void arch_set_user_fs(uint64_t base);
+extern void lx_task_switched(task_t *t);
+extern void lx_task_reaped(task_t *t);
+static void arch_switch_to(task_t *t) {
+    if (t->stack) arch_set_kernel_stack(((uintptr_t)t->stack + t->stack_size) & ~(uintptr_t)15);
+    if (t->lx) lx_task_switched(t);
+}
+#else
+static void arch_switch_to(task_t *t) { (void)t; }
+#endif
 static void reap(void) {
     while (zombies) {
         task_t *z = zombies; zombies = z->next;
+#ifdef __x86_64__
+        if (z->lx) lx_task_reaped(z);
+#endif
         kfree(z->stack);
         kfree(z);
     }
@@ -94,6 +109,7 @@ static void schedule(void) {
     task_t *prev = current;
     current = t;
     gdt_set_fs_base(t->teb);
+    arch_switch_to(t);
     switch_context(&prev->esp, t->esp, t->cr3);
     reap();
 }
@@ -136,6 +152,7 @@ void task_exit(int code) {
     if (current->state != TASK_READY) current = &task0;
     t->next = zombies; zombies = t;
     gdt_set_fs_base(current->teb);
+    arch_switch_to(current);
     uintptr_t dummy;
     current->state = current->state == TASK_SLEEPING ? TASK_READY : current->state;
     switch_context(&dummy, current->esp, current->cr3);

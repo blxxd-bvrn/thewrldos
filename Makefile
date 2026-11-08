@@ -28,7 +28,7 @@ LDFLAGS := $(firstword $(ARCHFLAGS)) -nostdlib -no-pie -static -T src/arch/$(ARC
 # --no-warn-rwx-segments only exists in binutils 2.39+ (Ubuntu 22.04 ships 2.38)
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
-CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c)
+CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c src/linux/*.c)
 # Mbed TLS 4.1 (TLS 1.3/1.2 for XplorerLite, wget and curl): the TLS library and
 # TF-PSA-Crypto, built freestanding against the same C library shim as QuickJS,
 # configured by third_party/mbedtls-config. src/tls/*.c is the glue.
@@ -197,10 +197,28 @@ $(SYS)/boot/wrld.elf: $(KERNEL)
 	@mkdir -p $(dir $@)
 	cp $< $@
 
+# Linux userland for the 64-bit edition (C:\Linux): the test programs in
+# samples/linux, built PIE with the host's gcc, and the glibc they need
+# (the dynamic loader and libc.so.6, copied from the build machine).
+LXROOT  := $(BUILD)/linuxroot
+LXBINS  := $(patsubst samples/linux/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux/*.c))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux/%.c
+	@mkdir -p $(dir $@)
+	gcc -O2 -Wall -o $@ $< -lpthread
+	gcc -O2 -Wall -static-pie -o $@-static $< -lpthread
+$(LXROOT)/.stamp: $(LXBINS)
+	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
+	cp -L /lib/x86_64-linux-gnu/libc.so.6 $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/
+	cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+	printf 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n' > $(LXROOT)/Linux/etc/passwd
+	printf 'root:x:0:\nuser:x:1000:\n' > $(LXROOT)/Linux/etc/group
+	printf 'wrld\n' > $(LXROOT)/Linux/etc/hostname
+	@touch $@
+
 # initrd = rootfs/ plus the boot files Setup copies to the disk
-$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(CORES) FORCE
+$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
 	@mkdir -p $(BUILD)
-	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .)
+	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .) $(if $(filter x86_64,$(ARCH)),-C $(CURDIR)/$(LXROOT) Linux)
 
 $(ISO): $(KERNEL) $(BUILD)/initrd.tar grub/grub.cfg
 	@mkdir -p $(BUILD)/iso/boot/grub

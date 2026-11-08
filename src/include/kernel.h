@@ -151,7 +151,8 @@ typedef struct task {
     void *console;              /* attached console */
     uintptr_t teb;              /* FS (x86) / GS (x64) base */
     int exit_code;
-    int kind;                   /* 0 kernel, 1 shell, 2 win32, 3 app */
+    int kind;                   /* 0 kernel, 1 shell, 2 win32, 3 app, 4 linux */
+    void *lx;                   /* Linux thread (src/linux) if any */
     struct task *next;
 } task_t;
 void task_init(void);

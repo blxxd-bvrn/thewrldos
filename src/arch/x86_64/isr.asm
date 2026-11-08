@@ -56,6 +56,7 @@ ISR_NOERR 128
 ; Handlers are C compiled with SSE, so the interrupted code's SSE/x87 state is
 ; saved around them (FXSAVE needs a 16-byte aligned 512-byte area).
 extern isr_handler
+extern lx_return_check
 isr_common:
     push rax
     push rcx
@@ -79,6 +80,11 @@ isr_common:
     fxsave [rsp]
     mov rdi, rbp
     call isr_handler
+    test qword [rbp + 18*8], 3          ; interrupted ring 3 (a Linux program)?
+    jz .to_kernel
+    mov rdi, rbp
+    call lx_return_check                ; may preempt it or end it
+.to_kernel:
     fxrstor [rsp]
     mov rsp, rbp
     pop r15

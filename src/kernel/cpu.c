@@ -10,7 +10,43 @@ typedef struct PACKED { uint16_t limit; uint64_t base; } desc_ptr_t;
 extern void idt_flush(desc_ptr_t *p);
 static uint8_t default_teb[4096] __attribute__((aligned(16)));
 static inline void wrmsr(uint32_t msr, uint64_t v) { __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32))); }
-void gdt_init(void) { wrmsr(0xC0000101, (uintptr_t)default_teb); }
+/* GDT: kernel code/data, then the user segments in the order SYSRET expects
+ * (32-bit code 0x18, data 0x20, 64-bit code 0x28) and the TSS at 0x30, whose
+ * RSP0 is the kernel stack used when a Linux program in ring 3 is interrupted. */
+typedef struct PACKED { uint32_t r0; uint64_t rsp0, rsp1, rsp2; uint64_t r1; uint64_t ist[7]; uint64_t r2; uint16_t r3, iomap; } tss64_t;
+static tss64_t tss;
+static uint64_t gdt64[8] __attribute__((aligned(16)));
+extern void gdt_load64(desc_ptr_t *p, uint16_t tss_sel);
+extern void syscall_entry(void);
+uint64_t lx_kstack_top, lx_user_rsp_tmp;
+static inline uint64_t rdmsr(uint32_t msr) { uint32_t lo, hi; __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr)); return ((uint64_t)hi << 32) | lo; }
+void gdt_init(void) {
+    wrmsr(0xC0000101, (uintptr_t)default_teb);
+    gdt64[0] = 0;
+    gdt64[1] = 0x00AF9A000000FFFFull;      /* 0x08 kernel code */
+    gdt64[2] = 0x00CF92000000FFFFull;      /* 0x10 kernel data */
+    gdt64[3] = 0x00CFFA000000FFFFull;      /* 0x18 user 32-bit code (unused) */
+    gdt64[4] = 0x00CFF2000000FFFFull;      /* 0x20 user data */
+    gdt64[5] = 0x00AFFA000000FFFFull;      /* 0x28 user 64-bit code */
+    uint64_t b = (uintptr_t)&tss, lim = sizeof tss - 1;
+    tss.iomap = sizeof tss;
+    gdt64[6] = (lim & 0xFFFF) | ((b & 0xFFFFFF) << 16) | (0x89ull << 40) | (((lim >> 16) & 0xF) << 48) | (((b >> 24) & 0xFF) << 56);
+    gdt64[7] = b >> 32;
+    static desc_ptr_t gp;
+    gp.limit = sizeof gdt64 - 1; gp.base = (uintptr_t)gdt64;
+    gdt_load64(&gp, 0x30);
+    /* SYSCALL/SYSRET, and no-execute pages */
+    uint32_t a, bb, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(bb), "=c"(c), "=d"(d) : "a"(0x80000001));
+    uint64_t efer = rdmsr(0xC0000080) | 1;                 /* SCE */
+    if (d & (1u << 20)) efer |= 1u << 11;                  /* NXE */
+    wrmsr(0xC0000080, efer);
+    wrmsr(0xC0000081, (0x18ull << 48) | (0x08ull << 32));  /* STAR */
+    wrmsr(0xC0000082, (uintptr_t)syscall_entry);           /* LSTAR */
+    wrmsr(0xC0000084, 0x47700);                            /* FMASK: IF, DF, TF, AC, NT, IOPL */
+}
+void arch_set_kernel_stack(uintptr_t top) { tss.rsp0 = top; lx_kstack_top = top; }
+void arch_set_user_fs(uint64_t base) { wrmsr(0xC0000100, base); }
 void gdt_set_fs_base(uintptr_t base) { wrmsr(0xC0000101, base ? base : (uintptr_t)default_teb); }
 typedef struct PACKED { uint16_t off_lo, sel; uint8_t ist, flags; uint16_t off_mid; uint32_t off_hi, zero; } idt_entry_t;
 #else
@@ -128,6 +164,9 @@ void isr_handler(regs_t *r) {
     }
     if (r->int_no == 128) { r->eax = 0; return; }
     uintptr_t cr2; __asm__ volatile("mov %%cr2,%0" : "=r"(cr2));
+#ifdef __x86_64__
+    { extern bool lx_exception(regs_t *r, uintptr_t cr2); if (lx_exception(r, cr2)) return; }
+#endif
     task_t *t = task_current();
     char msg[200];
     snprintf(msg, sizeof msg, "%s (0x%02x) at %s=%0*llx, error=%x, CR2=%0*llx",
