@@ -1,4 +1,4 @@
-/* The WRLD Xplorer - internal interfaces shared by html.c and browser.c */
+/* XplorerLite - internal interfaces shared by html.c and browser.c */
 #ifndef BROWSER_H
 #define BROWSER_H
 #include "kernel.h"

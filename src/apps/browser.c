@@ -1,4 +1,4 @@
-/* The WRLD Xplorer - web browser.
+/* XplorerLite - web browser.
  * Pages load on a worker task (DNS, TCP, TLS, HTTP), are parsed by html.c and
  * laid out here into a display list (text runs, boxes, images, form
  * controls). Images load after the text and the page is laid out again.
@@ -619,7 +619,7 @@ uint64_t page_memory(page_t *p) {
 /* ---------------- built-in pages ---------------- */
 static const char *home_html =
     "<html><head><title>Home</title></head><body bgcolor=\"#F2F6FC\">"
-    "<center><img src=\"wrld://logo\" width=\"96\" height=\"96\"><h1>The WRLD Xplorer</h1>"
+    "<center><img src=\"wrld://logo\" width=\"96\" height=\"96\"><h1>XplorerLite</h1>"
     "<form action=\"https://html.duckduckgo.com/html/\" method=\"get\"><input name=\"q\" size=\"46\"> <input type=\"submit\" value=\"Search the web\"></form>"
     "<p><small>Search results by DuckDuckGo. Type an address in the Address bar to visit a website.</small></p></center>"
     "<table width=\"100%\" cellpadding=\"10\"><tr><td valign=\"top\" width=\"50%\">"
@@ -637,8 +637,8 @@ static const char *home_html =
     "<li><a href=\"file:///C:/Samples/Welcome.html\">Welcome page</a> - what the browser can show</li>"
     "<li><a href=\"file:///C:/Samples/JavaScript%20demo.html\">JavaScript demo</a> - scripts, events and timers</li>"
     "<li><a href=\"file:///C:/\">Browse drive C:</a></li></ul>"
-    "<h3>About</h3><p>The WRLD Xplorer understands HTML, simple CSS, tables, forms, links and PNG, GIF, JPEG and BMP images, "
-    "over HTTP and HTTPS (TLS 1.2, certificates checked against the Mozilla root store).</p>"
+    "<h3>About</h3><p>XplorerLite understands HTML, simple CSS, tables, forms, links and PNG, GIF, JPEG and BMP images, "
+    "over HTTP and HTTPS (TLS 1.3 and 1.2, certificates checked against the Mozilla root store).</p>"
     "<p>Scripts run on the <b>QuickJS</b> JavaScript engine with a built-in DOM, events and timers. Large web apps may still not work; "
     "text-heavy sites work best. Ads and trackers are blocked (Tools menu).</p>"
     "</td></tr></table></body></html>";
@@ -692,7 +692,7 @@ static void install_page(browser_t *b, page_t *p, job_t *j) {
             strlcpy(b->hist[b->nhist], p->url, sizeof b->hist[0]); b->hpos = b->nhist++;
         }
     }
-    char t[200]; snprintf(t, sizeof t, "%s - The WRLD Xplorer", p->title[0] ? p->title : p->url);
+    char t[200]; snprintf(t, sizeof t, "%s - XplorerLite", p->title[0] ? p->title : p->url);
     if (!b->closed) wm_set_title(b->w, t);
     if (old) { if (old->worker_running) old->orphan = true; else page_free(old); }
 }
@@ -828,7 +828,7 @@ static void page_sync(browser_t *b, job_t *j, page_t *p) {
     if (b->gen != j->gen || b->closed) return;
     if (p->scripts_pending) run_scripts(b, j, p);
     if (p->title_dirty && b->page == p && !b->closed) {
-        char t[200]; snprintf(t, sizeof t, "%s - The WRLD Xplorer", p->title[0] ? p->title : p->url);
+        char t[200]; snprintf(t, sizeof t, "%s - XplorerLite", p->title[0] ? p->title : p->url);
         wm_set_title(b->w, t);
         p->title_dirty = false;
     }
@@ -1006,7 +1006,7 @@ static int mem_ask(page_t *p) {           /* 1 = stop the page */
     char m[700];
     snprintf(m, sizeof m, "%s is using %u MB of memory, more than %u MB.\n\nPages that use this much memory can make " OS_NAME " slow or unresponsive.\n\nDo you want to let this page continue?\n(Yes = continue, No = stop the page)",
              p->title[0] ? p->title : p->url, (uint32_t)(used >> 20), (uint32_t)(p->mem_limit >> 20));
-    msgbox("The WRLD Xplorer - High memory use", m, MBI_WARNING, MBX_YESNO, mem_reply_cb, p);
+    msgbox("XplorerLite - High memory use", m, MBI_WARNING, MBX_YESNO, mem_reply_cb, p);
     while (!mem_reply && alive(p)) task_sleep(50);
     int r = mem_reply;
     mem_asker = NULL;
@@ -1491,7 +1491,7 @@ static menu_t br_menus[] = {
                      { "68k.news", BM_FAV0 + 4, 0 }, { "FrogFind", BM_FAV0 + 5, 0 }, { NULL } } },
     { "Tools", { { "Block Ads", BM_ADBLOCK, MI_CHECKED }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { "-", 0, 0 },
                  { "Enable JavaScript", BM_JS, MI_CHECKED }, { "Script Messages...", BM_CONSOLE, 0 }, { NULL } } },
-    { "Help", { { "About The WRLD Xplorer", BM_ABOUT, 0 }, { NULL } } },
+    { "Help", { { "About XplorerLite", BM_ABOUT, 0 }, { NULL } } },
 };
 static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
 static void br_menu(window_t *w, int id) {
@@ -1551,9 +1551,9 @@ static void br_menu(window_t *w, int id) {
     case BM_HOME: browser_navigate_ext(b, HOME_URL, NULL, true); break;
     case BM_ABOUT: {
         char m[600];
-        snprintf(m, sizeof m, "The WRLD Xplorer 1.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
+        snprintf(m, sizeof m, "XplorerLite 1.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
                  "Secure connections (TLS 1.3 and 1.2) use %s with %d trusted root certificates.\nJavaScript runs on QuickJS-ng %s with a built-in DOM.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_library_version(), tls_trust_anchor_count(), js_engine_version());
-        msgbox("About The WRLD Xplorer", m, MBI_INFO, MBX_OK, NULL, NULL);
+        msgbox("About XplorerLite", m, MBI_INFO, MBX_OK, NULL, NULL);
         break;
     }
     default: if (id >= BM_FAV0 && id < BM_FAV0 + (int)ARRAY_LEN(favs)) browser_navigate_ext(b, favs[id - BM_FAV0], NULL, true);
@@ -1562,7 +1562,7 @@ static void br_menu(window_t *w, int id) {
 void browser_open(const char *url) {
     browser_t *b = kzalloc(sizeof *b);
     b->refs = 1; b->hover_link = -1; b->focus_ctrl = -1; b->hpos = -1;
-    window_t *w = wm_create("The WRLD Xplorer", -1, -1, 900, 640, WF_RESIZABLE);
+    window_t *w = wm_create("XplorerLite", -1, -1, 900, 640, WF_RESIZABLE);
     b->w = w;
     w->data = b; w->paint = br_paint; w->mouse = br_mouse; w->key = br_key; w->destroy = br_destroy; w->menu_cmd = br_menu;
     w->menus = (menu_t *)br_menus; w->nmenus = ARRAY_LEN(br_menus);

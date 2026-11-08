@@ -1,4 +1,4 @@
-/* The WRLD Xplorer: the document tree as seen from JavaScript (jsapi.h dom_*).
+/* XplorerLite: the document tree as seen from JavaScript (jsapi.h dom_*).
  * Nodes live in the page's arena and are never freed before the page, so a
  * node pointer stays valid for the page's lifetime. Strings to and from the
  * engine are UTF-8; the tree itself stores Latin-1. */

@@ -128,6 +128,17 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
                     vol_sync(v);
                     klog("persist: renamed C:\\Windows to C:\\WRLD (%s)", ok ? "ok" : "failed");
                 }
+                /* systems installed before the browser became XplorerLite */
+                {
+                    const char *ol = "Documents and Settings\\User\\Desktop\\The WRLD Xplorer.lnk";
+                    const char *nl = "Documents and Settings\\User\\Desktop\\XplorerLite.lnk";
+                    uint32_t ln = 0; uint8_t *lk = vol_exists(v, ol) ? vol_read(v, ol, &ln) : NULL;
+                    if (lk) {
+                        if (vol_exists(v, nl) || vol_write(v, nl, lk, ln, false)) vol_delete(v, ol);
+                        kfree(lk); vol_sync(v);
+                        klog("persist: desktop shortcut renamed to XplorerLite");
+                    }
+                }
                 int files = vol_load_tree(v, vfs_root('C'));
                 klog("persist: system disk %d partition %d, %d files loaded", d, i + 1, files);
                 return files >= 0;

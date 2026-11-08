@@ -5,7 +5,7 @@ lines, plus the Mbed TLS library for HTTPS and the QuickJS JavaScript engine), i
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
-**The WRLD Xplorer**.
+**XplorerLite**.
 
 - Boots from a GRUB CD into a spinning-globe boot screen, a log-on screen and the desktop.
 - **Two editions from the same sources:** `wrldos.iso` (32-bit, i686) runs 32-bit Win32
@@ -38,7 +38,7 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 | ![Aero](docs/screenshots/aero.png) | ![Plex](docs/screenshots/plex.png) |
 | ![Sound settings](docs/screenshots/sound.png) | ![Running at 1280x800](docs/screenshots/resolution-1280x800.png) |
 
-### The WRLD Xplorer
+### XplorerLite
 
 | | |
 |---|---|
@@ -184,7 +184,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `winhello.exe`, a Win32 GUI program;
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
-- **The WRLD Xplorer** (Start menu > Internet, or the globe on Quick Launch):
+- **XplorerLite** (Start menu > Internet, or the globe on Quick Launch):
   - It runs **JavaScript** (QuickJS) and has a built-in **ad blocker**. Try
     `C:\Samples\JavaScript demo.html` (linked from the home page).
   - The home page links to sites that work well, such as Wikipedia, Hacker News, CNN Lite and
@@ -323,7 +323,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - Mbed TLS's random generator is seeded from RDRAND and timing jitter, conditioned with SHA-256.
 - **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
 
-### The WRLD Xplorer (`src/apps/browser.c`, `html.c`, `imgdec.c`)
+### XplorerLite (`src/apps/browser.c`, `html.c`, `imgdec.c`)
 - **HTML:** a forgiving parser with entities. UTF-8 and Windows-1252 are converted to Latin-1;
   other characters are replaced with close ASCII equivalents.
 - **CSS:** simple selectors (tag, `.class`, `#id`) and `style` attributes, for colour,
@@ -428,7 +428,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     Network, Mouse, Keyboard, Sound, Programs and Features, Default Programs, User Accounts,
     Fonts, Ease of Access.
 - **Task Manager:** applications, processes, CPU/memory graphs.
-- **The WRLD Xplorer** web browser (see above).
+- **XplorerLite** web browser (see above).
 - **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
   Properties, Run, About, Setup.
 

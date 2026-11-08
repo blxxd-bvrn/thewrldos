@@ -1,4 +1,4 @@
-; The WRLD Xplorer's JavaScript environment (src/js/prelude.js), embedded as a string
+; XplorerLite's JavaScript environment (src/js/prelude.js), embedded as a string
 section .rodata
 global js_prelude, js_prelude_end
 js_prelude:

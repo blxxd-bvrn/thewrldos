@@ -29,7 +29,7 @@ LDFLAGS := $(firstword $(ARCHFLAGS)) -nostdlib -no-pie -static -T src/arch/$(ARC
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
 CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c)
-# Mbed TLS 4.1 (TLS 1.3/1.2 for The WRLD Xplorer, wget and curl): the TLS library and
+# Mbed TLS 4.1 (TLS 1.3/1.2 for XplorerLite, wget and curl): the TLS library and
 # TF-PSA-Crypto, built freestanding against the same C library shim as QuickJS,
 # configured by third_party/mbedtls-config. src/tls/*.c is the glue.
 MBED    := third_party/mbedtls
@@ -45,7 +45,7 @@ MBED_CFLAGS = $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector
            -DMBEDTLS_CONFIG_FILE='"wrld_mbedtls_config.h"' -DTF_PSA_CRYPTO_CONFIG_FILE='"wrld_crypto_config.h"' -DNDEBUG \
            -U__unix__ -U__unix -Uunix -U__linux__ -U__linux -Ulinux -U__gnu_linux__
 MBED_HDRS = $(wildcard third_party/mbedtls-config/*.h) $(QSHIM)/include/qjs_libc.h
-# QuickJS (JavaScript for The WRLD Xplorer and the "js" command), built against
+# QuickJS (JavaScript for XplorerLite and the "js" command), built against
 # a small C library shim; src/js/*.c is the glue and sees only the shim headers
 QJS     := third_party/quickjs
 QSHIM   := third_party/quickjs-shim

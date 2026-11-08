@@ -1,4 +1,4 @@
-/* The WRLD Xplorer: HTML tokenizer and forgiving tree builder, character set
+/* XplorerLite: HTML tokenizer and forgiving tree builder, character set
  * conversion (UTF-8 / Windows-1252 -> Latin-1 with ASCII fallbacks) and a
  * small CSS subset (simple selectors; colour, background, display, alignment,
  * bold/italic/underline, size). */
