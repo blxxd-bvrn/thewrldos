@@ -331,6 +331,7 @@ int64_t lx_syscall(regs_t *r) {
         }
         return -ESRCH;
     }
+    case 56: { extern int64_t lx_clone(regs_t *r, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t); return lx_clone(r, a0, a1, a2, a3, a4); }   /* clone */
     case 60: lx_thread_exit((int)a0 & 0xFF); return 0;                /* exit */
     case 231: lx_exit_group(p, (int)a0 & 0xFF); return 0;             /* exit_group */
     case 334: case 435: case 425: case 426: case 427: return -ENOSYS; /* rseq, clone3, io_uring */

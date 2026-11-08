@@ -102,6 +102,32 @@ static task_t *thread_new(lxproc_t *p, const char *name, const regs_t *regs, uin
     return t;
 }
 
+/* clone() for threads: same address space, files and signal handlers */
+#define CLONE_VM 0x100
+#define CLONE_THREAD 0x10000
+#define CLONE_SETTLS 0x80000
+#define CLONE_PARENT_SETTID 0x100000
+#define CLONE_CHILD_CLEARTID 0x200000
+#define CLONE_CHILD_SETTID 0x1000000
+int64_t lx_clone(regs_t *r, uint64_t flags, uint64_t stack, uint64_t ptid, uint64_t ctid, uint64_t tls) {
+    task_t *self = task_current();
+    lxthread_t *th = LX(self);
+    lxproc_t *p = th->proc;
+    if (!(flags & CLONE_VM) || !(flags & CLONE_THREAD)) return -ENOSYS;      /* new processes: phase 2 */
+    regs_t nr = *r;
+    nr.eax = 0;                                                             /* the child sees 0 */
+    if (stack) nr.esp = stack;
+    char name[48]; snprintf(name, sizeof name, "%s:thread", self->name);
+    char *colon = strstr(self->name, ":thread"); if (colon) strlcpy(name, self->name, sizeof name);
+    task_t *t = thread_new(p, name, &nr, (flags & CLONE_SETTLS) ? tls : th->fsbase);
+    lxthread_t *ct = LX(t);
+    ct->sigmask = th->sigmask;
+    if (flags & CLONE_CHILD_CLEARTID) ct->clear_child_tid = ctid;
+    if ((flags & CLONE_PARENT_SETTID) && uvm_check(p->vm, ptid, 4, true)) *(volatile int32_t *)(uintptr_t)ptid = ct->tid;
+    if ((flags & CLONE_CHILD_SETTID) && uvm_check(p->vm, ctid, 4, true)) *(volatile int32_t *)(uintptr_t)ctid = ct->tid;
+    return ct->tid;
+}
+
 int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in_con, console_t *con, char *err, int ecap) {
     vnode_t *n = vfs_resolve(wrld_path, NULL);
     if (!n || n->dir) { snprintf(err, ecap, "File not found: %s", wrld_path); return -1; }
@@ -198,9 +224,10 @@ void lx_task_switched(task_t *t) { extern void arch_set_user_fs(uint64_t); arch_
 void lx_task_reaped(task_t *t) {
     lxthread_t *th = LX(t);
     lxproc_t *p = th->proc;
+    bool killed = !th->exited;
     t->lx = NULL;
     kfree(th);
-    if (!p->exiting) {                                       /* killed from outside (Ctrl+C): the whole process goes */
+    if (killed && !p->exiting) {                                       /* killed from outside (Ctrl+C): the whole process goes */
         p->exiting = true; p->exit_code = 130;
         for (task_t *o = task_list(); o;) { task_t *nx = o->next; if (o->lx && LX(o)->proc == p) task_kill(o->pid); o = nx; }
     }
@@ -215,6 +242,7 @@ void lx_thread_exit(int code) {
         extern void lx_futex_wake(lxproc_t *p, uint64_t addr, int n);
         lx_futex_wake(th->proc, th->clear_child_tid, 1);
     }
+    th->exited = true;
     /* run on the kernel's own address space from here: the process may be freed */
     __asm__ volatile("mov %0, %%cr3" :: "r"(paging_kernel_root()) : "memory");
     t->cr3 = paging_kernel_root();

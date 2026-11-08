@@ -312,7 +312,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - Type the program's path in the Command Prompt, for example
   `C:/Linux/usr/local/bin/hello`. The 64-bit ISO carries test programs from `samples/linux` and the
   glibc they need (copied from the build machine).
-- Not yet: threads (`clone`), `fork`/`execve`, pipes and sockets, signal delivery.
+- Threads: `clone()` with the flags glibc's `pthread_create` uses (new TLS, child TID cleared
+  and woken on exit), so mutexes, condition variables and `pthread_join` work.
+- Not yet: `fork`/`execve`, pipes and sockets, signal delivery.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):

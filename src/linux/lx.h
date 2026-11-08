@@ -96,6 +96,7 @@ typedef struct lxthread {
     uint64_t robust_list;
     uint64_t sigmask;
     uint32_t slice_start;                      /* for preemption */
+    bool exited;                               /* left through exit/exit_group, not killed */
     regs_t start_regs;                         /* first entry into ring 3 */
 } lxthread_t;
 
