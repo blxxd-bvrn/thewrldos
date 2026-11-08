@@ -314,7 +314,18 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   glibc they need (copied from the build machine).
 - Threads: `clone()` with the flags glibc's `pthread_create` uses (new TLS, child TID cleared
   and woken on exit), so mutexes, condition variables and `pthread_join` work.
-- Not yet: `fork`/`execve`, pipes and sockets, signal delivery.
+- **Processes:** `fork`, `vfork` and `execve` (a new image and start-up stack in the same pid),
+  and `wait4` with `WNOHANG`, so a shell can start a program, wait for it and collect its exit
+  status. `getppid` reports the real parent.
+- **Pipes:** `pipe` and `pipe2` over a 64 KiB ring buffer, with `O_NONBLOCK` and EOF when the
+  last writer closes.
+- **Sockets (`ipc.c`):** `AF_UNIX` stream, datagram and seqpacket sockets, `socketpair`,
+  `bind`/`connect`/`listen`/`accept`, `sendmsg`/`recvmsg` with `SCM_RIGHTS` descriptor passing.
+  There are no network socket families yet.
+- **Event loop:** `epoll_create1`/`epoll_ctl`/`epoll_wait`, `eventfd` and `timerfd`, so a
+  program can wait on several descriptors at once.
+- Not yet: signal delivery, IPv4/IPv6 sockets, and a real `vfork` (it does not suspend
+  the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
@@ -540,6 +551,10 @@ used to test every screen above, including a full install from a blank disk.
   - Unsupported images: WebP, SVG and progressive JPEG (the alt text is shown instead).
   - Text is limited to Latin-1; other scripts are replaced with `?`.
   - Text-heavy sites work best.
+- **Linux programs:**
+  - `fork` copies the whole address space (there is no copy-on-write), and `MAP_SHARED` mappings
+    are copied too, so two processes stop sharing them. `vfork` behaves like `fork`.
+  - Pipes hold at most 64 KiB, and sockets are `AF_UNIX` only: no IPv4/IPv6 sockets yet.
 - **Hardware and design:**
   - No USB, and sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at

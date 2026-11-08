@@ -8,6 +8,10 @@ static uvm_t *VM(void) { return lx_current()->proc->vm; }
 static bool uin(void *dst, uint64_t src, uint64_t n) { if (!uvm_check(VM(), src, n, false)) return false; memcpy(dst, (void *)(uintptr_t)src, n); return true; }
 static bool uout(uint64_t dst, const void *src, uint64_t n) { if (!uvm_check(VM(), dst, n, true)) return false; memcpy((void *)(uintptr_t)dst, src, n); return true; }
 
+/* signal handlers are remembered per process; execve drops them all */
+static uint8_t sig_acts[64][32];
+void lx_sig_reset(void) { memset(sig_acts, 0, sizeof sig_acts); }
+
 /* ---------------- time ---------------- */
 static int64_t boot_epoch = -1; static uint32_t boot_tick;
 static int64_t epoch_ms(void) {
@@ -175,6 +179,8 @@ int64_t lx_syscall(regs_t *r) {
     bool handled;
     int64_t fr = lx_sys_file(t, nr, r, &handled);
     if (handled) return fr;
+    int64_t ir = lx_sys_ipc(t, nr, r, &handled);
+    if (handled) return ir;
     switch (nr) {
     case 9: return sys_mmap(p, a0, a1, a2, a3, (int64_t)a4, a5);
     case 10: return uvm_protect(p->vm, a0, a1, prot_of(a2));
@@ -193,10 +199,9 @@ int64_t lx_syscall(regs_t *r) {
         return 0;
     case 26: case 27: case 149: case 150: case 151: case 152: return 0;   /* msync, mincore, mlock... */
     case 13: {                                                        /* rt_sigaction: remembered, not delivered yet */
-        static uint8_t acts[64][32];
         if (a0 < 1 || a0 > 64) return -EINVAL;
-        if (a2 && !uout(a2, acts[a0 - 1], 32)) return -EFAULT;
-        if (a1 && !uin(acts[a0 - 1], a1, 32)) return -EFAULT;
+        if (a2 && !uout(a2, sig_acts[a0 - 1], 32)) return -EFAULT;
+        if (a1 && !uin(sig_acts[a0 - 1], a1, 32)) return -EFAULT;
         return 0;
     }
     case 14: {                                                        /* rt_sigprocmask */
@@ -269,7 +274,7 @@ int64_t lx_syscall(regs_t *r) {
     case 201: { int64_t s = epoch_ms() / 1000; if (a0) uout(a0, &s, 8); return s; }               /* time */
     case 39: return p->pid;
     case 186: return t->tid;
-    case 110: return 1;                                               /* getppid */
+    case 110: return p->ppid;                                         /* getppid */
     case 102: case 104: case 107: case 108: return 1000;              /* getuid, getgid, geteuid, getegid */
     case 118: case 120: { uint32_t id = 1000; uint64_t outs[3] = { a0, a1, a2 }; for (int i = 0; i < 3; i++) if (!uout(outs[i], &id, 4)) return -EFAULT; return 0; }   /* getres[ug]id */
     case 105: case 106: case 113: case 114: case 117: case 119: return 0;                         /* set*id */
@@ -327,11 +332,15 @@ int64_t lx_syscall(regs_t *r) {
                 "Floating point exception", "Killed", "User defined signal 1", "Segmentation fault", "User defined signal 2", "Broken pipe", "Alarm clock", "Terminated" };
             if (sig == 17 || sig == 28 || sig == 23 || sig == 18) return 0;          /* SIGCHLD, SIGWINCH, SIGURG, SIGCONT: ignored by default */
             if (p->con && sig < 16 && names[sig]) { char m[64]; snprintf(m, sizeof m, "%s\n", names[sig]); p->con->write(p->con, m, strlen(m)); }
+            p->term_sig = sig;
             lx_exit_group(p, 128 + sig);
         }
         return -ESRCH;
     }
     case 56: { extern int64_t lx_clone(regs_t *r, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t); return lx_clone(r, a0, a1, a2, a3, a4); }   /* clone */
+    case 57: case 58: return lx_fork(r);                              /* fork, vfork (vfork does not suspend the parent) */
+    case 59: return lx_execve(r, a0, a1, a2);                         /* execve */
+    case 61: return lx_wait4(p, (int)a0, a1, (int)a2, a3);            /* wait4 */
     case 60: lx_thread_exit((int)a0 & 0xFF); return 0;                /* exit */
     case 231: lx_exit_group(p, (int)a0 & 0xFF); return 0;             /* exit_group */
     case 334: case 435: case 425: case 426: case 427: return -ENOSYS; /* rseq, clone3, io_uring */

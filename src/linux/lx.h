@@ -49,9 +49,11 @@ typedef struct uvm {
     uint32_t pages;                            /* resident pages */
 } uvm_t;
 uvm_t *uvm_new(void);
+uvm_t *uvm_clone(uvm_t *src);                  /* copy every mapping and resident page */
 void uvm_free(uvm_t *vm);
 uintptr_t uvm_cr3(uvm_t *vm);
 vma_t *uvm_find(uvm_t *vm, uint64_t addr);
+uint64_t *uvm_pte(uvm_t *vm, uint64_t va, bool create);
 /* map [start, start+len): fixed placement replaces what was there */
 int64_t uvm_map(uvm_t *vm, uint64_t hint, uint64_t len, int prot, int flags, bool fixed,
                 const uint8_t *fdata, uint64_t fsize, uint64_t foff, vnode_t *fnode);
@@ -62,13 +64,15 @@ bool uvm_check(uvm_t *vm, uint64_t addr, uint64_t len, bool write);   /* covered
 uint64_t uvm_find_free(uvm_t *vm, uint64_t len, uint64_t below);
 
 /* ---- files ---- */
-enum { FD_FILE = 1, FD_DIR, FD_CONSOLE, FD_NULL, FD_ZERO, FD_RANDOM };
+enum { FD_FILE = 1, FD_DIR, FD_CONSOLE, FD_NULL, FD_ZERO, FD_RANDOM,
+       FD_PIPE, FD_SOCKET, FD_EPOLL, FD_EVENTFD, FD_TIMERFD };
 typedef struct lxfile {
     int type, refs;
     int oflags;
     vnode_t *node;
     uint64_t pos;
     console_t *con;
+    void *obj;                                 /* src/linux/ipc.c state for pipes, sockets, ... */
     char path[256];                            /* Linux path it was opened as */
     char line[512]; int line_len, line_pos;    /* console input not yet read */
 } lxfile_t;
@@ -77,6 +81,7 @@ typedef struct lxfile {
 /* ---- processes and threads ---- */
 typedef struct lxproc {
     int pid;                                   /* = pid of the main thread's task */
+    int ppid;                                  /* pid of the parent process, 0 for the shell's children */
     uvm_t *vm;
     lxfile_t *fds[LX_MAXFD];
     int fdflags[LX_MAXFD];                     /* FD_CLOEXEC */
@@ -85,6 +90,7 @@ typedef struct lxproc {
     console_t *con;
     int threads;
     int exit_code;
+    int term_sig;                              /* signal that killed the process, 0 for a normal exit */
     bool exiting;
     uint32_t umask;
 } lxproc_t;
@@ -117,9 +123,21 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled);
 
 /* processes */
 int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in, console_t *out, char *err, int ecap);
+int64_t lx_fork(regs_t *r);
+int64_t lx_execve(regs_t *r, uint64_t upath, uint64_t uargv, uint64_t uenvp);
+int64_t lx_wait4(lxproc_t *p, int pid, uint64_t ustatus, int options, uint64_t urusage);
+void lx_sig_reset(void);                       /* execve drops every handler */
 void lx_exit_group(lxproc_t *p, int code);
 void lx_thread_exit(int code);
 bool lx_is_elf(const uint8_t *d, uint32_t n);
+
+/* pipes, sockets, epoll, eventfd and timerfd (src/linux/ipc.c) */
+int64_t lx_sys_ipc(lxthread_t *t, int nr, regs_t *r, bool *handled);
+int64_t lx_ipc_read(lxfile_t *f, void *dst, uint64_t n, bool nonblock);
+int64_t lx_ipc_write(lxfile_t *f, const void *src, uint64_t n, bool nonblock);
+void lx_ipc_release(lxfile_t *f);
+bool lx_ipc_ready(lxfile_t *f, uint32_t want);
+void lx_ipc_wake_all(void);                    /* a peer changed state: nothing to do but let sleeps expire */
 
 /* glue in the arch code */
 void enter_user(regs_t *r);                    /* never returns */
@@ -161,6 +179,20 @@ void lx_return_check(regs_t *r);               /* called before every return to 
 #define ENOTEMPTY 39
 #define ELOOP 40
 #define ENODATA 61
+#define EOVERFLOW 75
+#define ENOTSOCK 88
+#define EDESTADDRREQ 89
+#define EMSGSIZE 90
+#define EPROTOTYPE 91
+#define EPROTONOSUPPORT 93
 #define EOPNOTSUPP 95
+#define EAFNOSUPPORT 97
+#define EADDRINUSE 98
+#define ECONNRESET 104
+#define ENOBUFS 105
+#define EISCONN 106
+#define ENOTCONN 107
 #define ETIMEDOUT 110
+#define ECONNREFUSED 111
+#define EINPROGRESS 115
 #endif

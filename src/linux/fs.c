@@ -109,7 +109,7 @@ int lx_fd_alloc(lxproc_t *p, lxfile_t *f, int min) {
     return -EMFILE;
 }
 lxfile_t *lx_fd_get(lxproc_t *p, int fd) { return fd >= 0 && fd < LX_MAXFD ? p->fds[fd] : NULL; }
-void lx_file_put(lxfile_t *f) { if (f && --f->refs <= 0) kfree(f); }
+void lx_file_put(lxfile_t *f) { if (f && --f->refs <= 0) { lx_ipc_release(f); kfree(f); } }
 static lxfile_t *file_new(int type) { lxfile_t *f = kzalloc(sizeof *f); f->type = type; f->refs = 1; return f; }
 
 /* ---------------- stat ---------------- */
@@ -190,6 +190,8 @@ static int64_t file_read(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, int
     case FD_NULL: return 0;
     case FD_ZERO: memset(dst, 0, n); return n;
     case FD_RANDOM: { static uint64_t s = 0x9E3779B97F4A7C15ull; for (uint64_t i = 0; i < n; i++) { s ^= rdtsc(); s ^= s << 13; s ^= s >> 7; s ^= s << 17; dst[i] = (uint8_t)s; } return n; }
+    case FD_PIPE: case FD_SOCKET: case FD_EVENTFD: case FD_TIMERFD:
+        return lx_ipc_read(f, dst, n, (f->oflags & O_NONBLOCK) != 0);
     case FD_CONSOLE: {
         if (!f->con) return 0;
         if (f->line_pos >= f->line_len) {
@@ -218,6 +220,8 @@ static int64_t file_write(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, in
     const uint8_t *src = (const uint8_t *)(uintptr_t)buf;
     switch (f->type) {
     case FD_NULL: case FD_ZERO: case FD_RANDOM: return n;
+    case FD_PIPE: case FD_SOCKET: case FD_EVENTFD: case FD_TIMERFD:
+        return lx_ipc_write(f, src, n, (f->oflags & O_NONBLOCK) != 0);
     case FD_CONSOLE: if (f->con && n) f->con->write(f->con, (const char *)src, n); return n;
     case FD_DIR: return -EISDIR;
     case FD_FILE: {
@@ -306,7 +310,7 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
     }
     case 8: {                                                                                               /* lseek */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
-        if (f->type == FD_CONSOLE) return -ESPIPE;
+        if (f->type == FD_CONSOLE || f->type >= FD_PIPE) return -ESPIPE;
         int64_t base = a2 == 0 ? 0 : a2 == 1 ? (int64_t)f->pos : a2 == 2 ? (f->node ? (int64_t)f->node->size : 0) : -1;
         if (base < 0) return -EINVAL;
         int64_t np = base + (int64_t)a1;

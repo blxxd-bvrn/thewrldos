@@ -128,25 +128,23 @@ int64_t lx_clone(regs_t *r, uint64_t flags, uint64_t stack, uint64_t ptid, uint6
     return ct->tid;
 }
 
-int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in_con, console_t *con, char *err, int ecap) {
-    vnode_t *n = vfs_resolve(wrld_path, NULL);
-    if (!n || n->dir) { snprintf(err, ecap, "File not found: %s", wrld_path); return -1; }
-    lxproc_t *p = proc_new();
-    if (!p) { snprintf(err, ecap, "Not enough memory to start the program."); return -1; }
-    p->con = con;
+/* Load a program and its loader into `vm`, then build the Linux start-up stack.
+ * Used both by the shell (a new process) and by execve (an old one). */
+static bool build_image(lxproc_t *p, vnode_t *n, uvm_t *vm, int argc, char **argv, char **envp,
+                        regs_t *out, char *err, int ecap) {
     loaded_t exe, in;
-    if (!load_elf(p->vm, n, EXE_BASE, &exe, err, ecap)) goto fail;
+    if (!load_elf(vm, n, EXE_BASE, &exe, err, ecap)) return false;
     uint64_t entry = exe.entry, interp_base = 0;
     if (exe.interp[0]) {
         char ip[512];
         lx_path(p, -100, exe.interp, ip, sizeof ip);
         vnode_t *in_n = vfs_resolve(ip, NULL);
-        if (!in_n || in_n->dir) { snprintf(err, ecap, "%s needs %s (the Linux dynamic loader), which is not installed.", n->name, exe.interp); goto fail; }
-        if (!load_elf(p->vm, in_n, INTERP_BASE, &in, err, ecap)) goto fail;
+        if (!in_n || in_n->dir) { snprintf(err, ecap, "%s needs %s (the Linux dynamic loader), which is not installed.", n->name, exe.interp); return false; }
+        if (!load_elf(vm, in_n, INTERP_BASE, &in, err, ecap)) return false;
         entry = in.entry; interp_base = in.base;
     }
     /* program break just past the executable */
-    p->vm->brk_start = p->vm->brk = PALIGN(exe.end) + 16 * PAGE;
+    vm->brk_start = vm->brk = PALIGN(exe.end) + 16 * PAGE;
     /* Linux path of the program */
     {
         char wp[512]; vfs_path(n, wp, sizeof wp);
@@ -157,7 +155,7 @@ int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_
         for (char *c = p->exe; *c; c++) if (*c == '\\') *c = '/';
     }
     /* stack */
-    if (uvm_map(p->vm, STACK_TOP - STACK_SIZE, STACK_SIZE, VM_READ | VM_WRITE, VMF_STACK, true, NULL, 0, 0, NULL) < 0) { snprintf(err, ecap, "Could not map the stack."); goto fail; }
+    if (uvm_map(vm, STACK_TOP - STACK_SIZE, STACK_SIZE, VM_READ | VM_WRITE, VMF_STACK, true, NULL, 0, 0, NULL) < 0) { snprintf(err, ecap, "Could not map the stack."); return false; }
     {
         static const char *defenv[] = { "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/user", "USER=user", "LOGNAME=user",
                                         "SHELL=/bin/sh", "TERM=dumb", "LANG=C.UTF-8", "PWD=/", NULL };
@@ -165,14 +163,15 @@ int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_
         int envc = 0; while (env[envc]) envc++;
         uint64_t sp = STACK_TOP;
         uint64_t *argp = kmalloc(sizeof(uint64_t) * (argc + envc + 2));
+        if (!argp) { snprintf(err, ecap, "Not enough memory for the program's arguments."); return false; }
         /* strings */
-        #define PUSH_STR(s) ({ uint64_t l_ = strlen(s) + 1; sp -= l_; poke(p->vm, sp, (s), l_); sp; })
+        #define PUSH_STR(s) ({ uint64_t l_ = strlen(s) + 1; sp -= l_; poke(vm, sp, (s), l_); sp; })
         uint64_t execfn = PUSH_STR(p->exe);
         for (int i = 0; i < envc; i++) argp[argc + i] = PUSH_STR(env[i]);
         for (int i = argc - 1; i >= 0; i--) argp[i] = PUSH_STR(argv[i]);
         uint64_t platform = PUSH_STR("x86_64");
         uint8_t rnd[16]; for (int i = 0; i < 16; i++) rnd[i] = (uint8_t)(rdtsc() >> (i % 8 * 3)) ^ (uint8_t)(i * 73);
-        sp -= 16; poke(p->vm, sp, rnd, 16); uint64_t random = sp;
+        sp -= 16; poke(vm, sp, rnd, 16); uint64_t random = sp;
         sp &= ~15ull;
         uint32_t ca, cb, cc, cd; __asm__ volatile("cpuid" : "=a"(ca), "=b"(cb), "=c"(cc), "=d"(cd) : "a"(1));
         uint64_t aux[] = {
@@ -183,37 +182,218 @@ int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_
         if (words & 1) sp -= 8;                                 /* rsp % 16 == 0 at argc */
         sp -= words * 8;
         uint64_t *blk = kmalloc(words * 8), w = 0;
+        if (!blk) { kfree(argp); snprintf(err, ecap, "Not enough memory for the program's stack."); return false; }
         blk[w++] = argc;
         for (int i = 0; i < argc; i++) blk[w++] = argp[i];
         blk[w++] = 0;
         for (int i = 0; i < envc; i++) blk[w++] = argp[argc + i];
         blk[w++] = 0;
         for (unsigned i = 0; i < ARRAY_LEN(aux); i++) blk[w++] = aux[i];
-        bool ok = poke(p->vm, sp, blk, words * 8);
+        bool ok = poke(vm, sp, blk, words * 8);
         kfree(blk); kfree(argp);
-        if (!ok) { snprintf(err, ecap, "Not enough memory for the program's stack."); goto fail; }
-        regs_t r; memset(&r, 0, sizeof r);
-        r.eip = entry; r.esp = sp; r.cs = 0x2B; r.ss = 0x23; r.eflags = 0x202;
-        /* stdin/stdout/stderr: the console */
-        lxfile_t *cf = kzalloc(sizeof *cf);
-        cf->type = FD_CONSOLE; cf->con = con; cf->oflags = 2; strcpy(cf->path, "/dev/tty");
-        for (int i = 1; i < 3; i++) { p->fds[i] = cf; cf->refs++; }
-        lxfile_t *ci = cf;
-        if (in_con && in_con != con) { ci = kzalloc(sizeof *ci); ci->type = FD_CONSOLE; ci->con = in_con; strcpy(ci->path, "/dev/tty"); }
-        p->fds[0] = ci; ci->refs++;
-        const char *base = path_basename(wrld_path);
-        task_t *t = thread_new(p, base, &r, 0);
-        p->pid = t->pid;
-        klog("linux: started %s as pid %d (entry %llx%s)", p->exe, p->pid, (unsigned long long)entry, exe.interp[0] ? ", dynamic" : "");
-        return p->pid;
+        if (!ok) { snprintf(err, ecap, "Not enough memory for the program's stack."); return false; }
+        memset(out, 0, sizeof *out);
+        out->eip = entry; out->esp = sp; out->cs = 0x2B; out->ss = 0x23; out->eflags = 0x202;
     }
+    return true;
+}
+
+int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in_con, console_t *con, char *err, int ecap) {
+    vnode_t *n = vfs_resolve(wrld_path, NULL);
+    if (!n || n->dir) { snprintf(err, ecap, "File not found: %s", wrld_path); return -1; }
+    lxproc_t *p = proc_new();
+    if (!p) { snprintf(err, ecap, "Not enough memory to start the program."); return -1; }
+    p->con = con;
+    regs_t r;
+    if (!build_image(p, n, p->vm, argc, argv, envp, &r, err, ecap)) goto fail;
+    /* stdin/stdout/stderr: the console */
+    lxfile_t *cf = kzalloc(sizeof *cf);
+    if (!cf) { snprintf(err, ecap, "Not enough memory to start the program."); goto fail; }
+    cf->type = FD_CONSOLE; cf->con = con; cf->oflags = 2; strcpy(cf->path, "/dev/tty");
+    for (int i = 1; i < 3; i++) { p->fds[i] = cf; cf->refs++; }
+    lxfile_t *ci = cf;
+    if (in_con && in_con != con) { ci = kzalloc(sizeof *ci); ci->type = FD_CONSOLE; ci->con = in_con; strcpy(ci->path, "/dev/tty"); }
+    p->fds[0] = ci; ci->refs++;
+    const char *base = path_basename(wrld_path);
+    task_t *t = thread_new(p, base, &r, 0);
+    p->pid = t->pid;
+    klog("linux: started %s as pid %d (entry %llx)", p->exe, p->pid, (unsigned long long)r.eip);
+    return p->pid;
 fail:
+    for (int i = 0; i < LX_MAXFD; i++) if (p->fds[i]) { lx_file_put(p->fds[i]); p->fds[i] = NULL; }
     uvm_free(p->vm); kfree(p);
     return -1;
 }
 
+/* fork(): a second process with a copy of this address space, the same open
+ * files and the same thread state. The child returns 0 from the same call. */
+int64_t lx_fork(regs_t *r) {
+    task_t *self = task_current();
+    lxthread_t *th = LX(self);
+    lxproc_t *p = th->proc;
+    lxproc_t *c = kzalloc(sizeof *c);
+    if (!c) return -ENOMEM;
+    c->vm = uvm_clone(p->vm);
+    if (!c->vm) { kfree(c); return -ENOMEM; }
+    c->con = p->con; c->umask = p->umask; c->ppid = p->pid;
+    strlcpy(c->cwd, p->cwd, sizeof c->cwd);
+    strlcpy(c->exe, p->exe, sizeof c->exe);
+    for (int i = 0; i < LX_MAXFD; i++) {
+        c->fds[i] = p->fds[i];
+        c->fdflags[i] = p->fdflags[i];
+        if (c->fds[i]) c->fds[i]->refs++;
+    }
+    regs_t nr = *r;
+    nr.eax = 0;                                                 /* the child sees 0 */
+    char name[48]; snprintf(name, sizeof name, "%s:fork", self->name);
+    task_t *t = thread_new(c, name, &nr, th->fsbase);
+    lxthread_t *ct = LX(t);
+    ct->sigmask = th->sigmask;
+    c->pid = t->pid;
+    klog("linux: pid %d forked pid %d", p->pid, c->pid);
+    return c->pid;
+}
+
+static int user_str(lxproc_t *p, char *dst, uint64_t src, int cap) {
+    for (int i = 0; i < cap; i++) {
+        if (!uvm_check(p->vm, src + i, 1, false)) return -EFAULT;
+        char c = *(volatile char *)(uintptr_t)(src + i);
+        dst[i] = c;
+        if (!c) return i;
+    }
+    return -ENAMETOOLONG;
+}
+#define LX_MAXARG 256
+static int copy_vec(lxproc_t *p, uint64_t uvec, char **out) {
+    int n = 0;
+    if (!uvec) { out[0] = NULL; return 0; }
+    for (int i = 0; i < LX_MAXARG; i++) {
+        uint64_t sp;
+        if (!uvm_check(p->vm, uvec + i * 8, 8, false)) return -EFAULT;
+        memcpy(&sp, (void *)(uintptr_t)(uvec + i * 8), 8);
+        if (!sp) { out[n] = NULL; return n; }
+        char tmp[512];
+        int l = user_str(p, tmp, sp, sizeof tmp);
+        if (l < 0) return l;
+        out[n] = kmalloc(l + 1);
+        if (!out[n]) return -ENOMEM;
+        memcpy(out[n], tmp, l + 1);
+        n++;
+    }
+    return -E2BIG;
+}
+static void free_vec(char **v, int n) { for (int i = 0; i < n; i++) if (v[i]) kfree(v[i]); }
+
+/* execve(): replace this process's image. Everything that belongs to the old
+ * program is dropped, and the call returns into the new entry point. */
+int64_t lx_execve(regs_t *r, uint64_t upath, uint64_t uargv, uint64_t uenvp) {
+    task_t *self = task_current();
+    lxthread_t *th = LX(self);
+    lxproc_t *p = th->proc;
+    char path[512];
+    int rr = user_str(p, path, upath, sizeof path);
+    if (rr < 0) return rr;
+    if (!path[0]) return -ENOENT;
+    char *argv[LX_MAXARG + 1], *envp[LX_MAXARG + 1];
+    int argc = copy_vec(p, uargv, argv);
+    if (argc < 0) return argc;
+    int envc = copy_vec(p, uenvp, envp);
+    if (envc < 0) { free_vec(argv, argc); return envc; }
+    if (!argc) { argv[0] = kmalloc(strlen(path) + 1); if (argv[0]) { strcpy(argv[0], path); argc = 1; } }
+    /* the Linux path of the program */
+    char wrld[512];
+    int kind = lx_path(p, -100, path, wrld, sizeof wrld);
+    vnode_t *n = kind == LP_FILE ? vfs_resolve(wrld, NULL) : NULL;
+    int64_t ret = -ENOEXEC;
+    if (!n || n->dir) { ret = -ENOENT; goto out; }
+    uvm_t *nv = uvm_new();
+    if (!nv) { ret = -ENOMEM; goto out; }
+    regs_t nr; char err[128];
+    if (!build_image(p, n, nv, argc, argv, envc ? envp : NULL, &nr, err, sizeof err)) {
+        klog("linux: execve %s: %s", path, err);
+        uvm_free(nv);
+        ret = -ENOEXEC;
+        goto out;
+    }
+    /* every other thread of this process ends here. Mark them as having left
+     * through exit_group, so reaping one does not take the process down. */
+    for (task_t *o = task_list(); o;) {
+        task_t *nx = o->next;
+        if (o != self && o->lx && LX(o)->proc == p) { LX(o)->exited = true; task_kill(o->pid); }
+        o = nx;
+    }
+    /* close-on-exec descriptors */
+    for (int i = 0; i < LX_MAXFD; i++)
+        if (p->fds[i] && p->fdflags[i]) { lx_file_put(p->fds[i]); p->fds[i] = NULL; p->fdflags[i] = 0; }
+    /* switch address spaces before releasing the old one */
+    uvm_t *old = p->vm;
+    p->vm = nv;
+    self->cr3 = uvm_cr3(nv);
+    __asm__ volatile("mov %0, %%cr3" :: "r"(p->vm->pml4) : "memory");
+    uvm_free(old);
+    /* thread state that belonged to the old image */
+    th->clear_child_tid = 0; th->robust_list = 0; th->sigmask = 0; th->fsbase = 0;
+    { extern void arch_set_user_fs(uint64_t); arch_set_user_fs(0); }
+    lx_sig_reset();
+    p->exiting = false; p->exit_code = 0; p->term_sig = 0;
+    strlcpy(self->name, path_basename(p->exe), sizeof self->name);
+    *r = nr;
+    ret = 0;
+out:
+    free_vec(argv, argc);
+    free_vec(envp, envc);
+    return ret;
+}
+
+/* wait4(): collect a child that has ended. There are no signals yet, so a
+ * parent without WNOHANG sleeps until one of its children is reaped. */
+typedef struct lxzombie { int pid, ppid, status; struct lxzombie *next; } lxzombie_t;
+static lxzombie_t *zombies;
+
+static void record_zombie(lxproc_t *p) {
+    if (p->ppid <= 0) return;
+    lxzombie_t *z = kmalloc(sizeof *z);
+    if (!z) return;
+    z->pid = p->pid; z->ppid = p->ppid;
+    z->status = p->term_sig ? (p->term_sig & 0x7F) : ((p->exit_code & 0xFF) << 8);
+    z->next = zombies; zombies = z;
+}
+static bool child_exists(lxproc_t *p, int pid) {
+    for (task_t *t = task_list(); t; t = t->next)
+        if (t->lx && LX(t)->proc != p && LX(t)->proc->ppid == p->pid && (pid <= 0 || LX(t)->proc->pid == pid)) return true;
+    return false;
+}
+static bool put_user(lxproc_t *p, uint64_t dst, const void *src, uint64_t n) {
+    if (!uvm_check(p->vm, dst, n, true)) return false;
+    memcpy((void *)(uintptr_t)dst, src, n);
+    return true;
+}
+int64_t lx_wait4(lxproc_t *p, int pid, uint64_t ustatus, int options, uint64_t urusage) {
+    bool nohang = (options & 1) != 0;                            /* WNOHANG */
+    for (;;) {
+        lxzombie_t **pp = &zombies, *z = NULL;
+        while (*pp) {
+            if ((*pp)->ppid == p->pid && (pid <= 0 || (*pp)->pid == pid)) { z = *pp; break; }
+            pp = &(*pp)->next;
+        }
+        if (z) {
+            *pp = z->next;
+            int status = z->status, reaped = z->pid;
+            kfree(z);
+            if (ustatus && !put_user(p, ustatus, &status, 4)) return -EFAULT;
+            if (urusage) { uint8_t ru[144]; memset(ru, 0, sizeof ru); if (!put_user(p, urusage, ru, sizeof ru)) return -EFAULT; }
+            return reaped;
+        }
+        if (!child_exists(p, pid)) return -ECHILD;
+        if (nohang) return 0;
+        if (p->exiting) return -EINTR;
+        task_sleep(1);
+    }
+}
+
 static void proc_free(lxproc_t *p) {
     for (int i = 0; i < LX_MAXFD; i++) if (p->fds[i]) { lx_file_put(p->fds[i]); p->fds[i] = NULL; }
+    record_zombie(p);
     uvm_free(p->vm);
     klog("linux: pid %d ended (%d)", p->pid, p->exit_code);
     kfree(p);
@@ -293,6 +473,7 @@ bool lx_exception(regs_t *r, uintptr_t cr2) {
     for (unsigned i = 0; i < ARRAY_LEN(map); i++) if (map[i].vec == (int)r->int_no) { sig = map[i].sig; what = map[i].name; }
     klog("linux: pid %d: %s at %llx (address %llx, error %llx)", p->pid, what, (unsigned long long)r->eip, (unsigned long long)cr2, (unsigned long long)r->err_code);
     if (p->con) { char m[128]; snprintf(m, sizeof m, "%s\n", what); p->con->write(p->con, m, strlen(m)); }
+    p->term_sig = sig;
     lx_exit_group(p, 128 + sig);
     return true;
 }

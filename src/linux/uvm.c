@@ -41,6 +41,38 @@ static uint64_t *pte_of(uvm_t *vm, uint64_t va, bool create) {
     return &t[(va >> 12) & 511];
 }
 uint64_t *lx_pte_lookup(uvm_t *vm, uint64_t va) { uint64_t *e = pte_of(vm, va, false); return e && (*e & PTE_P) ? e : NULL; }
+uint64_t *uvm_pte(uvm_t *vm, uint64_t va, bool create) { return pte_of(vm, va, create); }
+
+/* fork(): a private copy of every mapping, and of every page that is resident.
+ * MAP_SHARED mappings are copied as well, so the two processes stop sharing them. */
+uvm_t *uvm_clone(uvm_t *src) {
+    uvm_t *dst = uvm_new();
+    if (!dst) return NULL;
+    for (vma_t *v = src->vmas; v; v = v->next) {
+        vma_t *n = kmalloc(sizeof *n);
+        if (!n) { uvm_free(dst); return NULL; }
+        *n = *v; n->next = NULL;
+        vma_t **pp = &dst->vmas;
+        while (*pp) pp = &(*pp)->next;
+        *pp = n;
+    }
+    dst->brk_start = src->brk_start;
+    dst->brk = src->brk;
+    for (vma_t *v = dst->vmas; v; v = v->next) {
+        for (uint64_t va = v->start; va < v->end; va += PAGE) {
+            uint64_t *sp = lx_pte_lookup(src, va);
+            if (!sp) continue;
+            uint64_t *dp = pte_of(dst, va, true);
+            if (!dp) { uvm_free(dst); return NULL; }
+            uint8_t *pg = pmm_alloc();
+            if (!pg) { uvm_free(dst); return NULL; }
+            memcpy(pg, (const void *)(uintptr_t)ADDR(*sp), PAGE);
+            *dp = (uint64_t)(uintptr_t)pg | (*sp & ~0x000FFFFFFFFFF000ull);
+            dst->pages++;
+        }
+    }
+    return dst;
+}
 static uint64_t pte_flags(int prot) {
     uint64_t f = PTE_P | PTE_U;
     if (prot & VM_WRITE) f |= PTE_W;
