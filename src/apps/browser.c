@@ -770,10 +770,10 @@ static node_t *doc_next(node_t *n, node_t *root) {
     while (n && n != root) { if (n->next) return n->next; n = n->parent; }
     return NULL;
 }
-static char *latin1_to_utf8(const char *s, int n) {
-    char *o = kmalloc(n * 2 + 1); int k = 0;
-    for (int i = 0; i < n; i++) { uint8_t c = s[i]; if (c < 0x80) o[k++] = c; else { o[k++] = 0xC0 | (c >> 6); o[k++] = 0x80 | (c & 0x3F); } }
-    o[k] = 0; return o;
+/* Text is UTF-8 throughout now, so a string copy is all a script needs. */
+static char *text_dup(const char *s, int n) {
+    char *o = kmalloc((size_t)n + 1);
+    memcpy(o, s, (size_t)n); o[n] = 0; return o;
 }
 static bool is_js_type(const char *t) {
     if (!t || !*t) return true;
@@ -811,7 +811,7 @@ static void run_scripts(browser_t *b, job_t *j, page_t *p) {
                 http_free(&r);
             }
         } else if (n->first && n->first->type == 1) {
-            char *u = latin1_to_utf8(n->first->text, strlen(n->first->text));
+            char *u = text_dup(n->first->text, strlen(n->first->text));
             char name[1100]; snprintf(name, sizeof name, "%s (inline script %d)", p->url, p->scripts_run + 1);
             rc = js_page_eval(p->js, u, strlen(u), name);
             kfree(u);
@@ -845,7 +845,7 @@ static void page_sync(browser_t *b, job_t *j, page_t *p) {
 static void open_link(browser_t *b, const char *href) {
     if (!strncasecmp(href, "mailto:", 7)) { set_status(b, "E-mail links are not supported."); return; }
     if (!strncasecmp(href, "javascript:", 11)) {
-        if (b->page && b->page->js) { char *u = latin1_to_utf8(href + 11, strlen(href + 11)); js_page_eval(b->page->js, u, strlen(u), "javascript: link"); kfree(u); b->page->tree_dirty = true; }
+        if (b->page && b->page->js) { char *u = text_dup(href + 11, strlen(href + 11)); js_page_eval(b->page->js, u, strlen(u), "javascript: link"); kfree(u); b->page->tree_dirty = true; }
         return;
     }
     const char *hash = strchr(href, '#');
@@ -926,7 +926,7 @@ void dom_reload(void *page) { page_t *p = page; if (alive(p)) browser_navigate_e
 void dom_alert(void *page, const char *kind, const char *text) {
     page_t *p = page;
     if (!alive(p) || ++p->alerts > 5) return;          /* no endless alert() loops */
-    char *l1 = kmalloc(strlen(text) * 3 + 1); latin1_from_utf8((const uint8_t *)text, strlen(text), l1);
+    char *l1 = kmalloc(strlen(text) * 3 + 1); utf8_normalise((const uint8_t *)text, strlen(text), l1);
     char t[200]; snprintf(t, sizeof t, "Message from %s", p->title[0] ? p->title : "webpage");
     msgbox(t, l1, !strcmp(kind, "alert") ? MBI_WARNING : MBI_QUESTION, MBX_OK, NULL, NULL);
     kfree(l1);

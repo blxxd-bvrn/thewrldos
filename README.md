@@ -25,6 +25,9 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
   shutdown sound plays before the computer turns off.
 - **Graphics:** drivers for the Bochs/QEMU, VirtualBox and VMware display adapters, so the
   resolution can be changed at runtime (1024×768 up to 1920×1200 or more).
+- **Text:** scalable TrueType fonts (Liberation Sans and Mono, read from `C:\WRLD\Fonts`) and
+  Unicode in the desktop and XplorerLite — Latin, Greek, Cyrillic, punctuation, arrows and
+  maths — at any size.
 
 ![Boot screen](docs/screenshots/boot.png)
 
@@ -362,8 +365,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   and the other structural pseudo-classes), parsed by Lexbor and matched on XplorerLite's tree,
   with the cascade by specificity and source order; simple `@media` queries are answered for an
   880-pixel-wide window. `querySelector()` uses the same matcher.
-- **HTML:** a forgiving parser with entities. UTF-8 and Windows-1252 are converted to Latin-1;
-  other characters are replaced with close ASCII equivalents.
+- **HTML:** a forgiving parser with entities. Documents are decoded to UTF-8 (Windows-1252
+  input is converted), so text is stored and drawn exactly as written.
 - **CSS:** simple selectors (tag, `.class`, `#id`) and `style` attributes, for colour,
   background, `display:none`, alignment, bold, italic, underline and size.
 - **Layout:**
@@ -419,7 +422,14 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 ### Desktop (`src/gui`)
 - **Rendering:**
   - Double-buffered framebuffer renderer (1024×768×32).
-  - Anti-aliased Liberation fonts (SIL OFL).
+  - **TrueType text** (`src/gui/ttf.c`): a small engine with no library dependencies that reads
+    the sfnt tables, Unicode cmaps (formats 4 and 12), composite glyphs and `kern` pairs, and
+    fills each glyph with 8 horizontal scanlines per pixel. Faces come from `C:\WRLD\Fonts`
+    (Liberation Sans and Mono, SIL OFL) and can be drawn at any pixel size; rasterisations are
+    cached. If the files are missing, or before the file system is up, the original
+    anti-aliased bitmaps are used instead.
+  - Text is UTF-8 from the parser to the screen, so the fonts' Latin, Greek, Cyrillic,
+    punctuation, arrow and maths coverage all reaches the display.
   - 64 original, procedurally drawn icons (48/32/16 px) and five procedural wallpapers.
 - **Branding:** a **globe logo** projected from a hand-drawn world map (`tools/globe.py`). It
   spins on the boot screen and is used for the Start button, About and Setup.
@@ -542,6 +552,9 @@ used to test every screen above, including a full install from a blank disk.
     FAT32 is the choice for very many small files. The driver mounts volumes it formatted;
     volumes made by Windows may use features it does not read. Checked with `ntfs-3g`'s tools,
     not with Windows' own chkdsk.
+- **Notepad and the Command Prompt** treat text as bytes, one cell per byte, so a
+  UTF-8 file's non-ASCII characters take two cells (as they always did). The desktop,
+  XplorerLite, the dialogs and the Win32 text APIs are UTF-8.
 - **Network and browser:**
   - Wired Ethernet only (no Wi-Fi, no USB adapters, no Broadcom), and IPv4 only.
   - HTTPS: no HTTP/2, and no post-quantum (hybrid ML-KEM) key exchange.
@@ -549,7 +562,10 @@ used to test every screen above, including a full install from a blank disk.
     canvas, modules or web workers) mostly won't.
   - It doesn't load external stylesheets or web fonts.
   - Unsupported images: WebP, SVG and progressive JPEG (the alt text is shown instead).
-  - Text is limited to Latin-1; other scripts are replaced with `?`.
+  - Text is limited to what the bundled fonts cover. Liberation has Latin, Greek (including
+    polytonic), Cyrillic, punctuation, arrows and common maths, but no CJK, emoji or Indic
+    scripts; those characters show as an empty box. There is no hinting, no shaping (Arabic and
+    Indic joining) and no right-to-left layout yet.
   - Text-heavy sites work best.
 - **Linux programs:**
   - `fork` copies the whole address space (there is no copy-on-write), and `MAP_SHARED` mappings
@@ -573,7 +589,8 @@ src/arch           boot stub, interrupt/context-switch assembly, linker script: 
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    FAT reader, inflate, DMG, persistence
 src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
-src/gui            graphics, globe + wordmark, themes, window manager, widgets, desktop, screens
+src/gui            graphics, the TrueType text engine (ttf.c), globe + wordmark, themes,
+                   window manager, widgets, desktop, screens
 src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup,
                    browser (html.c, imgdec.c, dom.c, adblock.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
@@ -597,8 +614,9 @@ docs/screenshots/  the screenshots in this README
 
 ## Credits and licences
 
-- Fonts: [Liberation](https://github.com/liberationfonts/liberation-fonts) (SIL Open Font
-  License).
+- Fonts: [Liberation](https://github.com/liberationfonts/liberation-fonts) 2.1.5 (SIL Open Font
+  License): the bitmaps generated by `tools/gen_assets.py` and the TrueType files in
+  `rootfs/WRLD/Fonts`, with the licence alongside them.
 - Boot loader: [GNU GRUB](https://www.gnu.org/software/grub/) (GPL v3). It is used on the CD,
   and Setup writes GRUB's boot images to the installed disk. Its source code is available from
   the GNU project.

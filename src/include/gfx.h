@@ -75,6 +75,10 @@ void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha);
 void flood_fill(canvas_t *c, int x, int y, uint32_t col);
 
 /* text */
+/* Strings are UTF-8. `n` is a byte count, and -1 or a value past the end means
+ * "up to the terminator". With the TrueType fonts loaded any size and any
+ * character the font covers is drawn; before that, and for Latin-1 callers,
+ * the bitmap fonts are used, one byte per character. */
 int font_height(int font);
 int font_ascent(int font);
 int text_width(int font, const char *s);
@@ -85,7 +89,7 @@ void draw_text_ellipsis(canvas_t *c, int font, int x, int y, int maxw, const cha
 void draw_text_centered(canvas_t *c, int font, rect_t r, const char *s, uint32_t col);
 int draw_text_wrapped(canvas_t *c, int font, int x, int y, int maxw, const char *s, uint32_t col, int line_gap);
 int text_wrapped_height(int font, int maxw, const char *s, int line_gap);
-int text_fit_chars(int font, const char *s, int maxw);
+int text_fit_chars(int font, const char *s, int maxw);   /* bytes that fit */
 
 /* icons */
 void draw_icon(canvas_t *c, int icon, int size, int x, int y);

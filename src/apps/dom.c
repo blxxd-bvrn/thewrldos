@@ -1,7 +1,7 @@
 /* XplorerLite: the document tree as seen from JavaScript (jsapi.h dom_*).
  * Nodes live in the page's arena and are never freed before the page, so a
- * node pointer stays valid for the page's lifetime. Strings to and from the
- * engine are UTF-8; the tree itself stores Latin-1. */
+ * node pointer stays valid for the page's lifetime. Strings are UTF-8
+ * everywhere: the tree stores the same bytes the renderer draws. */
 #include "kernel.h"
 #include "fs.h"
 #include "net.h"
@@ -13,23 +13,22 @@
 #define ND(x) ((node_t *)(x))
 
 /* ---------------- strings ---------------- */
+/* A copy for the script engine: the tree already holds UTF-8. */
 static char *to_utf8(const char *s, int n) {
     if (!s) return NULL;
     if (n < 0) n = strlen(s);
-    char *o = kmalloc(n * 2 + 1); int k = 0;
-    for (int i = 0; i < n; i++) {
-        uint8_t c = s[i];
-        if (c < 0x80) o[k++] = c; else { o[k++] = 0xC0 | (c >> 6); o[k++] = 0x80 | (c & 0x3F); }
-    }
-    o[k] = 0;
+    char *o = kmalloc((size_t)n + 1);
+    memcpy(o, s, (size_t)n);
+    o[n] = 0;
     return o;
 }
-static char *to_latin1(page_t *p, const char *u) {      /* into the page arena */
+/* A copy for the tree, normalised: scripts can hand us a JavaScript string
+ * that is already UTF-8, and stray Windows-1252 bytes still become the
+ * characters they stand for. */
+static char *to_text(page_t *p, const char *u) {        /* into the page arena */
     int n = strlen(u);
-    char *tmp = kmalloc(n * 3 + 1);
-    int l = latin1_from_utf8((const uint8_t *)u, n, tmp);
-    char *r = arena_strdup(&p->doc->arena, tmp, l);
-    kfree(tmp);
+    char *r = arena_alloc(&p->doc->arena, (size_t)n * 3 + 1);
+    utf8_normalise((const uint8_t *)u, (uint32_t)n, r);
     return r;
 }
 void dom_free(char *s) { kfree(s); }
@@ -58,7 +57,7 @@ static node_t *walk_next(node_t *n, node_t *root) {
     return NULL;
 }
 void *dom_by_id(void *page, const char *id) {
-    char *want = to_latin1(PG, id);
+    char *want = to_text(PG, id);
     node_t *root = PG->doc->root;
     for (node_t *n = root->first; n; n = walk_next(n, root)) {
         if (n->type) continue;
@@ -74,7 +73,7 @@ char *dom_get_attr(void *n, const char *name) {
     const char *v = node_attr(ND(n), name);
     return v ? to_utf8(v, -1) : NULL;
 }
-static void set_attr_l1(page_t *p, node_t *n, const char *name, char *val) {
+static void set_attr_text(page_t *p, node_t *n, const char *name, char *val) {
     for (int i = 0; i < n->nattr; i++) if (!strcmp(n->attr[i * 2], name)) { n->attr[i * 2 + 1] = val; return; }
     char **na = arena_alloc(&p->doc->arena, sizeof(char *) * (n->nattr * 2 + 4));
     if (n->nattr) memcpy(na, n->attr, sizeof(char *) * n->nattr * 2);
@@ -99,7 +98,7 @@ void dom_set_attr(void *page, void *n, const char *name, const char *value) {
     char nm[40]; int k = 0;
     for (; name[k] && k < 39; k++) nm[k] = tolower(name[k]);
     nm[k] = 0;
-    set_attr_l1(PG, ND(n), nm, to_latin1(PG, value));
+    set_attr_text(PG, ND(n), nm, to_text(PG, value));
     attr_changed(PG, ND(n), nm);
 }
 void dom_remove_attr(void *page, void *n, const char *name) {
@@ -189,9 +188,9 @@ static void mark_scripts(page_t *p, node_t *n) {           /* script elements ad
 }
 void dom_set_text(void *page, void *n, const char *text) {
     node_t *x = ND(n);
-    if (x->type == 1) { x->text = to_latin1(PG, text); PG->tree_dirty = true; return; }
+    if (x->type == 1) { x->text = to_text(PG, text); PG->tree_dirty = true; return; }
     while (x->first) unlink(x->first);
-    if (*text) { node_t *t = new_node(PG, 1, NULL); t->text = to_latin1(PG, text); link_before(x, t, NULL); }
+    if (*text) { node_t *t = new_node(PG, 1, NULL); t->text = to_text(PG, text); link_before(x, t, NULL); }
     if (!strcmp(x->tag, "title") || (x->parent && !strcmp(x->tag, "title"))) { strlcpy(PG->title, x->first ? x->first->text : "", sizeof PG->title); PG->title_dirty = true; }
     PG->tree_dirty = true;
 }
@@ -283,7 +282,7 @@ void *dom_create(void *page, const char *tag) {
     t[k] = 0;
     return new_node(PG, 0, t);
 }
-void *dom_create_text(void *page, const char *text) { node_t *n = new_node(PG, 1, NULL); n->text = to_latin1(PG, text); return n; }
+void *dom_create_text(void *page, const char *text) { node_t *n = new_node(PG, 1, NULL); n->text = to_text(PG, text); return n; }
 static node_t *clone_node(page_t *p, node_t *src, bool deep) {
     node_t *n = new_node(p, src->type, NULL);
     memcpy(n->tag, src->tag, sizeof n->tag);
@@ -324,13 +323,13 @@ static void style_rewrite(page_t *p, node_t *n, const char *prop, const char *va
         s = *e ? e + 1 : e;
     }
     if (value && *value) o += snprintf(out + o, sizeof out - o, "%s:%s;", prop, value);
-    set_attr_l1(p, n, "style", arena_strdup(&p->doc->arena, out, -1));
+    set_attr_text(p, n, "style", arena_strdup(&p->doc->arena, out, -1));
     html_restyle(p->doc, n);
     p->tree_dirty = true;
 }
 void dom_set_style(void *page, void *n, const char *prop, const char *value) {
     if (ND(n)->type) return;
-    char *v = to_latin1(PG, value);
+    char *v = to_text(PG, value);
     char pr[48]; strlcpy(pr, prop, sizeof pr);
     style_rewrite(PG, ND(n), pr, v);
 }
@@ -380,12 +379,12 @@ char *dom_get_value(void *page, void *n) {
 void dom_set_value(void *page, void *n, const char *value) {
     node_t *x = ND(n);
     ctrl_t *c = ctrl_of(PG, x);
-    char *l1 = to_latin1(PG, value);
+    char *val = to_text(PG, value);
     if (c) {
-        if (c->type == C_SELECT) { for (int i = 0; i < c->nopts; i++) if (!strcmp(c->optvals[i], l1)) c->sel = i; }
-        else strlcpy(c->value, l1, sizeof c->value);
+        if (c->type == C_SELECT) { for (int i = 0; i < c->nopts; i++) if (!strcmp(c->optvals[i], val)) c->sel = i; }
+        else strlcpy(c->value, val, sizeof c->value);
     } else if (!strcmp(x->tag, "textarea")) dom_set_text(page, n, value);
-    else set_attr_l1(PG, x, "value", l1);
+    else set_attr_text(PG, x, "value", val);
     PG->tree_dirty = true;
 }
 int dom_get_checked(void *page, void *n) { ctrl_t *c = ctrl_of(PG, ND(n)); return c ? c->checked : node_attr(ND(n), "checked") != NULL; }
@@ -394,7 +393,7 @@ void dom_set_checked(void *page, void *n, int on) {
     if (c) {
         if (on && c->type == C_RADIO) for (int i = 0; i < PG->nctrls; i++) { ctrl_t *o = &PG->ctrls[i]; if (o->type == C_RADIO && o->form == c->form && !strcmp(o->name, c->name)) o->checked = false; }
         c->checked = on;
-    } else if (on) set_attr_l1(PG, ND(n), "checked", arena_strdup(&PG->doc->arena, "", 0));
+    } else if (on) set_attr_text(PG, ND(n), "checked", arena_strdup(&PG->doc->arena, "", 0));
     else dom_remove_attr(page, n, "checked");
     PG->tree_dirty = true;
 }
@@ -404,8 +403,10 @@ void dom_set_selected_index(void *page, void *n, int i) { ctrl_t *c = ctrl_of(PG
 /* ---------------- title, URL ---------------- */
 char *dom_title(void *page) { return to_utf8(PG->title, -1); }
 void dom_set_title(void *page, const char *t) {
-    char *l1 = kmalloc(strlen(t) * 3 + 1); latin1_from_utf8((const uint8_t *)t, strlen(t), l1);
-    strlcpy(PG->title, l1, sizeof PG->title); kfree(l1);
+    char *u = kmalloc(strlen(t) * 3 + 1);
+    utf8_normalise((const uint8_t *)t, strlen(t), u);
+    strlcpy(PG->title, u, sizeof PG->title);
+    kfree(u);
     PG->title_dirty = true;
 }
 char *dom_url(void *page) { return to_utf8(PG->url, -1); }

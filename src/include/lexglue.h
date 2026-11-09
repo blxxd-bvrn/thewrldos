@@ -27,7 +27,7 @@ typedef struct {
     void *(*prev)(void *n);                        /* previous / next sibling element */
     void *(*next)(void *n);
     const char *(*tag)(void *n);                   /* lower case */
-    const char *(*attr)(void *n, const char *name); /* value (Latin-1) or NULL */
+    const char *(*attr)(void *n, const char *name); /* value (UTF-8) or NULL */
     int (*is_empty)(void *n);                      /* no element children and no text */
     int (*is_root)(void *n);                       /* matches :root */
 } lxg_tree_t;

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Unicode and fonts</title>
+<style>
+  .glyphs { font-size: 26px; color: #1E4A8A; }
+  .note { background-color: #FFF8D8; }
+  .label { color: #606060; }
+</style>
+</head>
+<body bgcolor="#FFFFFF">
+
+<table width="100%" cellpadding="8" cellspacing="0" bgcolor="#2E62B8">
+<tr><td><font color="#FFFFFF" size="6"><b>Unicode and fonts</b></font><br>
+<font color="#DCE8F7">TrueType text at any size, in every script the fonts cover.</font></td></tr>
+</table>
+
+<h2>Scalable text</h2>
+<p>The desktop used to draw text from small bitmaps baked at a fixed size. It now
+reads TrueType fonts from <code>C:\WRLD\Fonts</code> and rasterises each glyph as
+it is needed, so the same face can be any size and every character in the file
+can be shown. The font files are Liberation Sans and Liberation Mono (SIL Open
+Font License); the licence is in the same folder.</p>
+
+<p>Document text is UTF-8 from the parser to the screen. There is no
+transliteration step any more: an accented letter, a Greek word or a Cyrillic
+name is stored as written and drawn as written.</p>
+
+<h2>Latin, with accents</h2>
+<p class="glyphs">café · naïve · Zürich · São Paulo · Đà Nẵng · Ångström · Łódź</p>
+<p>Français&nbsp;: l&rsquo;élève a mangé une crème brûlée. Deutsch: Grüße aus
+München, schöne Wörter. Español: ¿Dónde está el niño? Português: ação, coração,
+não. Dansk: rødgrød med fløde. Íslenska: Þór og ð. Čeština: příliš žluťoučký kůň.
+Polski: zażółć gęślą jaźń.</p>
+<p>Ligatures and letters the bitmap set never had: ﬁ ﬂ œ æ ß ı Œ Æ.</p>
+
+<h2>Greek</h2>
+<p class="glyphs">Α Β Γ Δ Ε Ζ Η Θ Ι Κ Λ Μ Ν Ξ Ο Π Ρ Σ Τ Υ Φ Χ Ψ Ω</p>
+<p class="glyphs">α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω</p>
+<p>Polytonic accents are in the font as well: Ἡ γλῶσσα ἡ Ἑλληνική. Τα πάντα ῥεῖ.
+Γνῶθι σεαυτόν.</p>
+
+<h2>Cyrillic</h2>
+<p class="glyphs">А Б В Г Д Е Ж З И Й К Л М Н О П Р С Т У Ф Х Ц Ч Ш Щ Ъ Ы Ь Э Ю Я</p>
+<p class="glyphs">а б в г д е ж з и й к л м н о п р с т у ф х ц ч ш щ ъ ы ь э ю я</p>
+<p>Русский: Съешь же ещё этих мягких французских булок, да выпей чаю.
+Українська: Ґудзик, їжак, Європа. Български: здравей, свят. Ёжик в тумане.</p>
+
+<h2>Punctuation and symbols</h2>
+<table border="0" cellpadding="4" cellspacing="0">
+<tr><td class="label">Quotes</td><td>‘single’ “double” «guillemets» „German“ ‚low‘</td></tr>
+<tr><td class="label">Dashes</td><td>hyphen - en &ndash; em &mdash; minus &minus;</td></tr>
+<tr><td class="label">Spacing</td><td>ellipsis … bullet • middot · dagger † double ‡ section § pilcrow ¶</td></tr>
+<tr><td class="label">Currency</td><td>€ £ ¥ ¢ ¤ ₤ ₩ ₪</td></tr>
+<tr><td class="label">Maths</td><td>± × ÷ ≠ ≤ ≥ ≈ ∞ √ ∑ ∏ ∫ ° ′ ″ µ</td></tr>
+<tr><td class="label">Arrows</td><td>← → ↑ ↓ ↔</td></tr>
+<tr><td class="label">Letterlike</td><td>© ® ™ ℓ № ℮ Ω (ohm) Å (angstrom)</td></tr>
+</table>
+
+<h2>Monospaced, with box drawing</h2>
+<pre>
+  ┌──────────────┬──────────────┐
+  │  Unicode     │  in a        │
+  ├──────────────┼──────────────┤
+  │  terminal    │  font        │
+  └──────────────┴──────────────┘
+  0x2500 ─  0x2502 │  0x250C ┌  0x2518 ┘
+</pre>
+
+<h2>One face, many sizes</h2>
+<p><font size="1">Twenty-eight pixels: The quick brown fox jumps over the lazy dog.</font><br>
+<font size="5">Twenty-two pixels: The quick brown fox jumps over the lazy dog.</font><br>
+<font size="4">Seventeen pixels: The quick brown fox jumps over the lazy dog.</font><br>
+Fourteen pixels: The quick brown fox jumps over the lazy dog. Ωμέγα, Кириллица.<br>
+<small>Twelve pixels: The quick brown fox jumps over the lazy dog.</small></p>
+<p class="note">The line height still comes from the old bitmap metrics, so the
+layout of existing windows does not move. Only the glyphs themselves are new.</p>
+
+<h2>What is not there yet</h2>
+<p>The fonts cover Latin, Greek, Cyrillic, punctuation, arrows and a little maths.
+Chinese, Japanese, Korean and emoji are not in Liberation, so they come out as an
+empty box. There is no hinting (the rasteriser ignores the font&rsquo;s size
+hints), no shaping (Arabic and Indic joining) and no right-to-left layout; those
+need a shaper such as HarfBuzz. Syllabaries and historic scripts need a font that
+contains them.</p>
+
+<hr>
+<p><a href="file:///C:/Samples/Welcome.html">Back to the welcome page</a> &middot;
+<a href="wrld://home">Home</a></p>
+</body>
+</html>

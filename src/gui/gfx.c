@@ -1,6 +1,8 @@
 /* Software rasteriser: framebuffer, primitives, anti-aliased fonts, icons, cursors */
 #include "kernel.h"
+#include "fs.h"
 #include "gfx.h"
+#include "ttf.h"
 
 canvas_t screen;
 int SCREEN_W, SCREEN_H;
@@ -311,13 +313,267 @@ static inline const glyph_t *glyph(font_t *f, char ch) {
     if (c < 32 || (c > 126 && c < 160)) c = '?';    /* Latin-1 160..255 are drawn */
     return &f->g[c - 32];
 }
-int text_width_n(int font, const char *s, int n) {
-    font_t *f = F(font); int w = 0;
-    for (int i = 0; i < n && s[i]; i++) { if (s[i] == '\t') w += glyph(f, ' ')->adv * 4; else w += glyph(f, s[i])->adv; }
+
+/* ---------------- scalable fonts ---------------- */
+/* The bitmaps above are the fallback: before the file system is up, and if the
+ * font files are missing, text is drawn exactly as it always was. Once the VFS
+ * is available, the same family the bitmaps were generated from (Liberation,
+ * SIL OFL) is loaded from C:\WRLD\Fonts and drawn by the TrueType engine: any
+ * size, anti-aliased, and every character the font covers, read as UTF-8. */
+enum { TF_REGULAR, TF_BOLD, TF_ITALIC, TF_BOLD_ITALIC, TF_MONO, TF_COUNT };
+
+static const char *const ttf_files[TF_COUNT] = {
+    "LiberationSans-Regular.ttf",
+    "LiberationSans-Bold.ttf",
+    "LiberationSans-Italic.ttf",
+    "LiberationSans-BoldItalic.ttf",
+    "LiberationMono-Regular.ttf",
+};
+
+typedef struct { uint8_t face, px; } font_spec_t;
+static const font_spec_t font_specs[FONT_COUNT] = {
+    [FONT_UI]         = { TF_REGULAR, 12 },
+    [FONT_UI_BOLD]    = { TF_BOLD, 12 },
+    [FONT_TITLE]      = { TF_BOLD, 13 },
+    [FONT_LARGE]      = { TF_REGULAR, 18 },
+    [FONT_LARGE_BOLD] = { TF_BOLD, 18 },
+    [FONT_HUGE]       = { TF_BOLD, 30 },
+    [FONT_START]      = { TF_BOLD_ITALIC, 17 },
+    [FONT_MONO]       = { TF_MONO, 13 },
+    [FONT_SMALL]      = { TF_REGULAR, 10 },
+    [FONT_XL]         = { TF_REGULAR, 24 },
+    [FONT_LOGO]       = { TF_BOLD, 46 },
+    [FONT_WEB]        = { TF_REGULAR, 14 },
+    [FONT_WEB_B]      = { TF_BOLD, 14 },
+    [FONT_WEB_I]      = { TF_ITALIC, 14 },
+    [FONT_WEB_BI]     = { TF_BOLD_ITALIC, 14 },
+    [FONT_H1]         = { TF_BOLD, 28 },
+    [FONT_H2]         = { TF_BOLD, 22 },
+    [FONT_H3]         = { TF_BOLD, 17 },
+    [FONT_WEB_SMALL]  = { TF_REGULAR, 12 },
+};
+
+static ttf_face_t *ttf_face[TF_COUNT];
+static uint8_t *ttf_bytes[TF_COUNT];        /* the copies ttf_face points into */
+static uint8_t ttf_tries[TF_COUNT];
+static uint32_t ttf_retry[TF_COUNT];
+
+static void *ttf_mem_alloc(void *user, size_t n) { (void)user; return kmalloc(n); }
+static void ttf_mem_free(void *user, void *p) { (void)user; kfree(p); }
+
+/* Load a face on first use. Before the initrd has been unpacked the lookup
+ * fails, and the caller draws with the bitmaps; the attempt is retried a few
+ * times a second for the first eight seconds. */
+static ttf_face_t *ttf_get(int which) {
+    if (which < 0 || which >= TF_COUNT) return NULL;
+    if (ttf_face[which]) return ttf_face[which];
+    if (ttf_tries[which] >= 32) return NULL;
+    if (!vfs_root('C')) return NULL;
+    if ((int32_t)(timer_ticks() - ttf_retry[which]) < 0) return NULL;
+    ttf_tries[which]++;
+    ttf_retry[which] = timer_ticks() + 250;
+    char path[128];
+    snprintf(path, sizeof path, "C:\\WRLD\\Fonts\\%s", ttf_files[which]);
+    vnode_t *n = vfs_resolve(path, NULL);
+    if (!n || n->dir || !n->data || n->size < 12) return NULL;
+    /* The face keeps pointers into the file, so give it a copy of its own: a
+     * write to the vnode (or the file being replaced) must not move it. */
+    uint8_t *copy = kmalloc(n->size);
+    if (!copy) return NULL;
+    memcpy(copy, n->data, n->size);
+    ttf_face_t *f = ttf_open(copy, n->size, ttf_mem_alloc, ttf_mem_free, NULL);
+    if (!f) { kfree(copy); return NULL; }
+    ttf_face[which] = f;
+    ttf_bytes[which] = copy;
+    klog("gfx: %s loaded (%u bytes)", path, (unsigned)n->size);
+    return f;
+}
+static ttf_face_t *font_face(int font) {
+    if (font < 0 || font >= FONT_COUNT) return NULL;
+    return ttf_get(font_specs[font].face);
+}
+
+static int scale_units(int units, int px, int upem) {
+    if (upem <= 0) return 0;
+    int64_t v = (int64_t)units * px;
+    if (v >= 0) return (int)((v + upem / 2) / upem);
+    return -(int)((-v + upem / 2) / upem);
+}
+static int face_advance(ttf_face_t *f, int gid, int px) {
+    return scale_units(ttf_advance(f, gid), px, ttf_units_per_em(f));
+}
+static int face_kern(ttf_face_t *f, int left, int right, int px) {
+    return scale_units(ttf_kerning(f, left, right), px, ttf_units_per_em(f));
+}
+
+/* one UTF-8 character, or one Latin-1 byte when the sequence is not valid */
+static uint32_t utf8_next(const uint8_t **pp, const uint8_t *end) {
+    const uint8_t *p = *pp;
+    uint8_t c = *p;
+    if (c < 0x80) { *pp = p + 1; return c; }
+    int n;
+    uint32_t cp;
+    if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; n = 1; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; n = 2; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; n = 3; }
+    else { *pp = p + 1; return c; }
+    if (p + n >= end) { *pp = p + 1; return c; }
+    for (int i = 1; i <= n; i++) {
+        if ((p[i] & 0xC0) != 0x80) { *pp = p + 1; return c; }
+        cp = (cp << 6) | (p[i] & 0x3F);
+    }
+    if ((n == 1 && cp < 0x80) || (n == 2 && cp < 0x800) || (n == 3 && cp < 0x10000) ||
+        (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF) { *pp = p + 1; return c; }
+    *pp = p + n + 1;
+    return cp;
+}
+static int char_len(const char *s, const char *end) {
+    const uint8_t *p = (const uint8_t *)s, *q = p;
+    (void)utf8_next(&q, (const uint8_t *)end);
+    return (int)(q - p);
+}
+static int font_glyph(ttf_face_t *f, uint32_t cp) {
+    if (cp < 32 || (cp >= 0x7F && cp < 0xA0)) cp = '?';
+    return ttf_glyph_index(f, cp);
+}
+
+/* Glyph cache: direct-mapped, keyed by font and glyph index (the font decides
+ * the face and the size). 4096 entries are about 100 KiB of headers plus the
+ * coverage bitmaps, and avoid rasterising the same letter every frame. */
+#define GLYPH_CACHE 4096
+typedef struct {
+    uint16_t gid;
+    uint8_t used, font;
+    int16_t w, h, xoff, yoff, adv;
+    uint8_t *cov;
+} gcache_t;
+static gcache_t gcache[GLYPH_CACHE];
+
+static gcache_t *gcache_get(int font, ttf_face_t *f, int px, int gid) {
+    uint32_t h = (uint32_t)gid * 2654435761u ^ (uint32_t)font * 2246822519u;
+    h ^= h >> 15;
+    gcache_t *e = &gcache[(h >> 4) & (GLYPH_CACHE - 1)];
+    if (e->used && e->font == font && e->gid == (uint16_t)gid) return e;
+    ttf_glyph_t g;
+    if (ttf_render(f, gid, px, 0, &g) != 0) return NULL;
+    if (e->cov) kfree(e->cov);
+    e->cov = g.coverage;
+    e->w = (int16_t)g.width; e->h = (int16_t)g.height;
+    e->xoff = (int16_t)g.xoff; e->yoff = (int16_t)g.yoff;
+    e->adv = (int16_t)g.advance;
+    e->gid = (uint16_t)gid;
+    e->font = (uint8_t)font;
+    e->used = 1;
+    return e;
+}
+
+/* The readable length of a string: at most n bytes, and never past the
+ * terminator. Callers sometimes pass a one-byte buffer (a single character),
+ * so this must not call strlen on it. */
+static size_t text_span(const char *s, int n) {
+    if (n < 0) return strlen(s);
+    size_t len = 0;
+    while (len < (size_t)n && s[len]) len++;
+    return len;
+}
+static int ttf_width(int font, const char *s, int n) {
+    ttf_face_t *f = font_face(font);
+    if (!f) return -1;
+    int px = font_specs[font].px;
+    const uint8_t *p = (const uint8_t *)s, *end = p + text_span(s, n);
+    int w = 0, prev = -1;
+    while (p < end) {
+        uint32_t cp = utf8_next(&p, end);
+        if (cp == 0x00AD) continue;                     /* soft hyphen: invisible */
+        if (cp == '\t') { w += face_advance(f, ttf_glyph_index(f, ' '), px) * 4; prev = -1; continue; }
+        int gid = font_glyph(f, cp);
+        if (prev >= 0) w += face_kern(f, prev, gid, px);
+        w += face_advance(f, gid, px);
+        prev = gid;
+    }
     return w;
+}
+static int ttf_draw(canvas_t *c, int font, int x, int y, const char *s, int n, uint32_t col) {
+    ttf_face_t *f = font_face(font);
+    if (!f) return -1;
+    int px = font_specs[font].px;
+    const uint8_t *p = (const uint8_t *)s, *end = p + text_span(s, n);
+    int base = y + F(font)->ascent, x0 = x, prev = -1;
+    while (p < end) {
+        uint32_t cp = utf8_next(&p, end);
+        if (cp == 0x00AD) continue;                     /* soft hyphen: invisible */
+        if (cp == '\t') { x += face_advance(f, ttf_glyph_index(f, ' '), px) * 4; prev = -1; continue; }
+        int gid = font_glyph(f, cp);
+        if (prev >= 0) x += face_kern(f, prev, gid, px);
+        gcache_t *g = gcache_get(font, f, px, gid);
+        if (g) {
+            int gx = x + g->xoff, gy = base + g->yoff;
+            if (g->w > 0 && gx + g->w > c->clip.x && gx < c->clip.x + c->clip.w &&
+                gy + g->h > c->clip.y && gy < c->clip.y + c->clip.h) {
+                for (int j = 0; j < g->h; j++) {
+                    const uint8_t *row = g->cov + j * g->w;
+                    for (int k = 0; k < g->w; k++) {
+                        int a = row[k];
+                        if (a) blend_pixel(c, gx + k, gy + j, col, a * C_A(col) / 255);
+                    }
+                }
+            }
+            x += g->adv;
+        } else {
+            x += face_advance(f, gid, px);
+        }
+        prev = gid;
+    }
+    return x - x0;
+}
+static int ttf_fit(int font, const char *s, int maxw) {
+    ttf_face_t *f = font_face(font);
+    if (!f) return -1;
+    int px = font_specs[font].px;
+    const uint8_t *p = (const uint8_t *)s, *end = p + strlen(s);
+    int w = 0, prev = -1;
+    while (p < end) {
+        const uint8_t *start = p;
+        uint32_t cp = utf8_next(&p, end);
+        int a;
+        if (cp == 0x00AD) continue;                     /* soft hyphen: invisible */
+        if (cp == '\t') { a = face_advance(f, ttf_glyph_index(f, ' '), px) * 4; prev = -1; }
+        else {
+            int gid = font_glyph(f, cp);
+            a = face_advance(f, gid, px);
+            if (prev >= 0) a += face_kern(f, prev, gid, px);
+            prev = gid;
+        }
+        if (w + a > maxw) return (int)(start - (const uint8_t *)s);
+        w += a;
+    }
+    return (int)(p - (const uint8_t *)s);
+}
+/* the advance of one character, for line breaking: no strlen, no kerning */
+static int char_width_at(int font, const char *s, int cl) {
+    ttf_face_t *f = font_face(font);
+    if (!f) {
+        if (s[0] == '\t') return glyph(F(font), ' ')->adv * 4;
+        return glyph(F(font), s[0])->adv;
+    }
+    const uint8_t *p = (const uint8_t *)s, *end = p + cl;
+    uint32_t cp = utf8_next(&p, end);
+    if (cp == 0x00AD) return 0;                         /* soft hyphen: invisible */
+    if (cp == '\t') return face_advance(f, ttf_glyph_index(f, ' '), font_specs[font].px) * 4;
+    return face_advance(f, font_glyph(f, cp), font_specs[font].px);
+}
+
+int text_width_n(int font, const char *s, int n) {
+    int w = ttf_width(font, s, n);
+    if (w >= 0) return w;
+    font_t *f = F(font); int bw = 0;
+    for (int i = 0; i < n && s[i]; i++) { if (s[i] == '\t') bw += glyph(f, ' ')->adv * 4; else bw += glyph(f, s[i])->adv; }
+    return bw;
 }
 int text_width(int font, const char *s) { return text_width_n(font, s, 0x7FFFFFFF); }
 int draw_text_n(canvas_t *c, int font, int x, int y, const char *s, int n, uint32_t col) {
+    int w = ttf_draw(c, font, x, y, s, n, col);
+    if (w >= 0) return w;
     font_t *f = F(font);
     int base = y + f->ascent, x0 = x;
     for (int i = 0; i < n && s[i]; i++) {
@@ -340,6 +596,8 @@ int draw_text_n(canvas_t *c, int font, int x, int y, const char *s, int n, uint3
 }
 int draw_text(canvas_t *c, int font, int x, int y, const char *s, uint32_t col) { return draw_text_n(c, font, x, y, s, 0x7FFFFFFF, col); }
 int text_fit_chars(int font, const char *s, int maxw) {
+    int n = ttf_fit(font, s, maxw);
+    if (n >= 0) return n;
     font_t *f = F(font); int w = 0, i = 0;
     for (; s[i]; i++) { int a = glyph(f, s[i])->adv; if (w + a > maxw) break; w += a; }
     return i;
@@ -358,12 +616,14 @@ void draw_text_centered(canvas_t *c, int font, rect_t r, const char *s, uint32_t
 static int wrap_lines(int font, int maxw, const char *s, canvas_t *c, int x, int y, uint32_t col, int gap) {
     int lh = font_height(font) + gap, lines = 0;
     while (*s) {
+        const char *end = s + strlen(s);
         int n = 0, last_space = -1, w = 0;
-        while (s[n] && s[n] != '\n') {
-            int a = text_width_n(font, s + n, 1);
+        while (s + n < end && s[n] != '\n') {
+            int cl = char_len(s + n, end);
+            int a = char_width_at(font, s + n, cl);
             if (w + a > maxw && n > 0) break;
             if (s[n] == ' ') last_space = n;
-            w += a; n++;
+            w += a; n += cl;
         }
         int brk = n;
         if (s[n] && s[n] != '\n' && last_space > 0) brk = last_space;

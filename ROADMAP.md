@@ -73,7 +73,10 @@ Already working, and not on the list below:
 
 ### 8. Graphics and text
 
-- No FreeType, HarfBuzz, ICU, Skia or Cairo; text is Latin-1 only.
+- No FreeType, HarfBuzz, ICU, Skia or Cairo. The kernel-side GUI has its own small TrueType
+  engine (`src/gui/ttf.c`, faces in `C:\WRLD\Fonts`) and draws UTF-8, but it does not hint,
+  shape (Arabic and Indic joining) or do bidirectional layout; Linux programs have no font
+  stack at all.
 - Fonts need large file mappings; shaping needs HarfBuzz plus the ICU data (about 30 MB).
 - No GPU or 3D, so Skia has to use its software backend.
 - Missing codecs: WebP, SVG, progressive JPEG; audio/video beyond WAV.
@@ -109,3 +112,7 @@ Already working, and not on the list below:
 10. [ ] **`/proc`, `/sys`, honest `prctl`** - introspection and sandboxing.
 
 Milestones 1-3 are implemented in `src/linux/proc.c` and `src/linux/ipc.c`.
+
+The shell and XplorerLite no longer wait on milestone 7 for their own text: the GUI reads
+TrueType directly and handles UTF-8 end to end. A browser engine's text still needs the
+FreeType/HarfBuzz/ICU path, because shaping and bidi are what a web page assumes.

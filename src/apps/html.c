@@ -1,9 +1,10 @@
 /* XplorerLite: documents. Lexbor's HTML5 parser builds the tree (see
- * lexglue.h); text is kept as Latin-1 (UTF-8 / Windows-1252 converted, with
- * ASCII fallbacks). CSS: full selectors (parsed by Lexbor, matched here on
- * XplorerLite's tree) with the cascade by specificity and source order, simple
- * @media queries, and the small set of properties the layout uses (colour,
- * background, display, alignment, bold/italic/underline, size). */
+ * lexglue.h); text is UTF-8 end to end, so any character the fonts cover
+ * reaches the screen unchanged. Windows-1252 input is converted on the way in.
+ * CSS: full selectors (parsed by Lexbor, matched here on XplorerLite's tree)
+ * with the cascade by specificity and source order, simple @media queries, and
+ * the small set of properties the layout uses (colour, background, display,
+ * alignment, bold/italic/underline, size). */
 #include "browser.h"
 #include "fs.h"
 #include "lexglue.h"
@@ -25,38 +26,14 @@ char *arena_strdup(arena_t *a, const char *s, int n) { if (n < 0) n = strlen(s);
 void arena_free(arena_t *a) { while (a->head) { arena_chunk_t *n = a->head->next; kfree(a->head); a->head = n; } }
 
 /* ---------------- characters ---------------- */
-static const char *translit(uint32_t cp) {
-    switch (cp) {
-    case 0x2018: case 0x2019: case 0x201A: case 0x2032: return "'";
-    case 0x201C: case 0x201D: case 0x201E: case 0x2033: return "\"";
-    case 0x2013: case 0x2212: case 0x2010: case 0x2011: return "-";
-    case 0x2014: case 0x2015: return "--";
-    case 0x2026: return "...";
-    case 0x2022: case 0x25CF: case 0x2219: case 0x25AA: return "\xB7";
-    case 0x2122: return "(TM)";
-    case 0x20AC: return "EUR";
-    case 0x2190: return "<-"; case 0x2192: return "->"; case 0x2191: return "^"; case 0x2193: return "v";
-    case 0x2039: return "<"; case 0x203A: return ">";
-    case 0x2002: case 0x2003: case 0x2009: case 0x200A: case 0x202F: case 0x205F: return " ";
-    case 0x200B: case 0x200C: case 0x200D: case 0xFEFF: case 0x2060: return "";
-    case 0x2264: return "<="; case 0x2265: return ">="; case 0x2260: return "!=";
-    case 0x2713: case 0x2714: return "v"; case 0x2715: case 0x2716: case 0x2717: return "x";
-    case 0x2605: case 0x2606: return "*";
-    case 0x25B2: case 0x25B4: return "^"; case 0x25BC: case 0x25BE: return "v";
-    case 0x00A0: return "\xA0";
-    }
-    if (cp >= 0x1F000) return "";            /* emoji and pictographs */
-    return "?";
-}
 static const uint16_t cp1252[32] = { 0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
     0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178 };
-static int put_cp(char *out, uint32_t cp) {
-    if (cp == '\r') return 0;
-    if (cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF)) { out[0] = cp; return 1; }
-    const char *t = translit(cp);
-    int l = strlen(t); memcpy(out, t, l); return l;
-}
-int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out) {
+/* Text used to be narrowed to Latin-1 here, with typographic punctuation
+ * transliterated. The browser now keeps UTF-8 all the way to the screen, so
+ * this validates and normalises instead: stray Windows-1252 bytes become the
+ * characters they stand for, and invisible control characters are dropped.
+ * The caller sizes the buffer for n * 3 bytes, the worst case (0x80 -> U+20AC). */
+int utf8_normalise(const uint8_t *s, uint32_t n, char *out) {
     int o = 0;
     for (uint32_t i = 0; i < n;) {
         uint8_t c = s[i];
@@ -65,9 +42,13 @@ int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out) {
         else if ((c & 0xE0) == 0xC0 && i + 1 < n && (s[i + 1] & 0xC0) == 0x80) { cp = ((c & 0x1F) << 6) | (s[i + 1] & 0x3F); len = 2; }
         else if ((c & 0xF0) == 0xE0 && i + 2 < n && (s[i + 1] & 0xC0) == 0x80 && (s[i + 2] & 0xC0) == 0x80) { cp = ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F); len = 3; }
         else if ((c & 0xF8) == 0xF0 && i + 3 < n) { cp = ((c & 0x07) << 18) | ((s[i + 1] & 0x3F) << 12) | ((s[i + 2] & 0x3F) << 6) | (s[i + 3] & 0x3F); len = 4; }
-        else { cp = c >= 0x80 && c < 0xA0 ? (cp1252[c - 0x80] ? cp1252[c - 0x80] : '?') : c; len = 1; }   /* stray byte: treat as Windows-1252 */
-        o += put_cp(out + o, cp);
+        else { cp = c >= 0x80 && c < 0xA0 ? (cp1252[c - 0x80] ? cp1252[c - 0x80] : '?') : c; len = 1; }   /* stray byte: Windows-1252 */
         i += len;
+        if (!cp || cp == '\r' || cp == 0x200B || cp == 0x200C || cp == 0x200D || cp == 0x2060 || cp == 0xFEFF) continue;
+        if (cp < 0x80) out[o++] = (char)cp;
+        else if (cp < 0x800) { out[o++] = (char)(0xC0 | (cp >> 6)); out[o++] = (char)(0x80 | (cp & 0x3F)); }
+        else if (cp < 0x10000) { out[o++] = (char)(0xE0 | (cp >> 12)); out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[o++] = (char)(0x80 | (cp & 0x3F)); }
+        else { out[o++] = (char)(0xF0 | (cp >> 18)); out[o++] = (char)(0x80 | ((cp >> 12) & 0x3F)); out[o++] = (char)(0x80 | ((cp >> 6) & 0x3F)); out[o++] = (char)(0x80 | (cp & 0x3F)); }
     }
     out[o] = 0;
     return o;
@@ -171,9 +152,9 @@ static uint32_t utf8_from_1252(const uint8_t *s, uint32_t n, char *out) {
     out[o] = 0;
     return o;
 }
-static char *l1dup(arena_t *a, const char *u, unsigned n) {
-    char *t = arena_alloc(a, n * 4 + 1);           /* transliterations can be longer than the UTF-8 */
-    latin1_from_utf8((const uint8_t *)u, n, t);
+static char *textdup(arena_t *a, const char *u, unsigned n) {
+    char *t = arena_alloc(a, n * 4 + 1);            /* 3 bytes out per stray byte, 4 for a 4-byte sequence */
+    utf8_normalise((const uint8_t *)u, n, t);
     return t;
 }
 
@@ -211,7 +192,7 @@ static char **copy_attrs(doc_t *d, const lxg_attr_t *a, int na) {
         char *nm = arena_alloc(&d->arena, a[i].name_len + 1);
         for (unsigned k = 0; k < a[i].name_len; k++) nm[k] = tolower(a[i].name[k]);
         v[i * 2] = nm;
-        v[i * 2 + 1] = l1dup(&d->arena, a[i].value, a[i].value_len);
+        v[i * 2 + 1] = textdup(&d->arena, a[i].value, a[i].value_len);
     }
     return v;
 }
@@ -245,7 +226,7 @@ static void sink_start(void *ctx, const char *name, unsigned nl, const lxg_attr_
     if (!strcmp(tag, "base")) {
         for (int i = 0; i < na; i++) if (a[i].name_len == 4 && !memcmp(a[i].name, "href", 4)) {
             extern bool url_resolve(const char *, const char *, char *, int);
-            char *h = l1dup(&d->arena, a[i].value, a[i].value_len);
+            char *h = textdup(&d->arena, a[i].value, a[i].value_len);
             url_resolve(b->url, h, d->base, sizeof d->base);
         }
         push(b, NULL, FR_SKIP); return;
@@ -280,7 +261,7 @@ static void sink_end(void *ctx) {
     if (b->sp <= 1) return;
     frame_t f = b->st[--b->sp];
     if (f.kind == FR_TITLE) {
-        char *t = l1dup(&b->d->arena, b->buf ? b->buf : "", b->blen);
+        char *t = textdup(&b->d->arena, b->buf ? b->buf : "", b->blen);
         for (char *q = t; *q; q++) if (*q == '\n' || *q == '\t' || *q == '\r') *q = ' ';
         while (*t == ' ') t++;
         strlcpy(b->d->title, t, sizeof b->d->title);
@@ -295,7 +276,7 @@ static void sink_text(void *ctx, const char *s, unsigned n) {
     node_t *p = top_node(b);
     node_t *t = arena_alloc(&b->d->arena, sizeof *t);
     t->type = 1;
-    t->text = l1dup(&b->d->arena, s, n);
+    t->text = textdup(&b->d->arena, s, n);
     append(p, t);
 }
 

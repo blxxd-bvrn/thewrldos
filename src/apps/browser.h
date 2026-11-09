@@ -25,7 +25,7 @@ typedef struct { uint16_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 
 typedef struct node {
     uint8_t type;                 /* 0 element, 1 text */
     char tag[12];
-    char *text;                   /* text nodes (Latin-1, entities decoded) */
+    char *text;                   /* text nodes (UTF-8, entities decoded) */
     char **attr; int nattr;       /* name, value pairs */
     css_t css;                    /* from <style> rules and style="" */
     int aux;                      /* image or form-control index + 1 */
@@ -56,7 +56,7 @@ doc_t *html_parse_fragment(doc_t *page, const char *context_tag, const char *utf
 void doc_free(doc_t *d);
 const char *node_attr(node_t *n, const char *name);
 bool parse_color(const char *s, uint32_t *out);
-int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out);   /* returns length */
+int utf8_normalise(const uint8_t *s, uint32_t n, char *out);   /* returns length */
 
 
 /* ---------------- page model (shared by browser.c and dom.c) ---------------- */
