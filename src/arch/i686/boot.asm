@@ -25,10 +25,11 @@ mb2_start:
     dd 0                                            ; architecture: i386
     dd mb2_end - mb2_start                          ; header length
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))    ; checksum
-    ; framebuffer request: 1024x768x32
+    ; framebuffer request: 1024x768x32 (type, flags, size, then the mode)
     dw 5, 0
     dd 20
     dd 1024, 768, 32
+    dd 0                    ; tags are 8-byte aligned: pad this 20-byte tag
     ; end tag
     dw 0, 0
     dd 8
