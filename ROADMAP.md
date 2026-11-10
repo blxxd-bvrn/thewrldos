@@ -11,7 +11,8 @@ Already working, and not on the list below:
 - Ring-3 x86-64 execution, with the timer preempting user code.
 - Position-independent ELF loading (executable plus the `ld-linux` it names).
 - glibc dynamic linking (`libc.so.6`), plus static-PIE programs.
-- `mmap`/`munmap`/`mprotect`/`brk`/`mremap`, demand paging, per-process page tables.
+- `mmap`/`munmap`/`mprotect`/`brk`/`mremap`, with per-process page tables.
+- POSIX signals: real handlers, alt stacks, `SIGCHLD`, `SIGPIPE`, faults, `SA_RESTART`.
 - `clone()` as glibc's `pthread_create` uses it, futexes, mutexes, condition variables,
   `pthread_join`.
 - SSE/SSE2 and x87 for user code.
@@ -21,17 +22,21 @@ Already working, and not on the list below:
 
 ### 1. Process model
 
-- No `fork`/`vfork`/`execve`: `lx_spawn()` loads one program from the shell, and there is no way
-  to replace a running image.
-- No `wait4`/`waitid` and no parent/child bookkeeping; `getppid` returns a constant.
-- Needed by shell pipelines, `system()`, `posix_spawn`, and WebKit's process launcher.
+- `fork`, `vfork`, `execve` and `wait4` are in place, and `getppid` reports the real parent.
+- Missing: `waitid`, process groups and sessions (`setpgid` is a stub), `posix_spawn`'s
+  `POSIX_SPAWN_SETSIGDEF` details, and a `/proc` to look at processes through.
+- Needed by shell pipelines with job control and WebKit's process launcher.
 
 ### 2. Signals
 
-- `rt_sigaction` is remembered but never delivered; `rt_sigreturn` is a no-op and
-  `sigsuspend` returns `EINTR` unconditionally.
-- Missing: signal frames and alternate stacks, `SA_RESTART`, `SIGCHLD`, `SIGPIPE`, handler
-  dispatch for `SIGSEGV`, and `pthread_kill`.
+- Dispositions are per process, pending sets per process and per thread, and a handler runs on a
+  real x86-64 `rt_sigframe` (a `ucontext` with 23 registers and a 128-byte `siginfo`), so glibc's
+  `__restore_rt` and `rt_sigreturn` work unchanged. `sigaltstack`, `SA_RESTART`, `SA_NODEFER`,
+  `SA_RESETHAND`, `SA_SIGINFO`, `sigsuspend`, `sigpending`, `sigtimedwait`, `alarm`/`setitimer`,
+  `SIGCHLD`, `SIGPIPE` and ring-3 fault dispatch (`SIGSEGV`, `SIGFPE`, `SIGILL`, `SIGBUS`,
+  `SIGTRAP`) are wired up; `kill`, `tkill` and `tgkill` deliver to a process or one thread.
+- Still missing: job control (`SIGSTOP`/`SIGCONT`, `waitpid(WUNTRACED)`), `signalfd`, and
+  `SIGSEGV` inside a handler when the alternate stack overflows.
 - Blocking: glibc start-up paths, crash reporters, and any JIT that uses a guard page.
 
 ### 3. IPC and the event loop
@@ -117,14 +122,15 @@ Already working, and not on the list below:
 2. [x] **`pipe`, `AF_UNIX`, `SCM_RIGHTS`** - the IPC substrate.
 3. [x] **`epoll`, `eventfd`, `timerfd`** - the event loop.
 4. [x] **Socket system calls** over the existing TCP stack.
-5. [ ] **Signal delivery** - before anything JITs.
+5. [x] **Signal delivery** (`src/linux/signal.c`): handlers, framing, pending sets,
+   `sigsuspend`, `SIGCHLD`, `SIGPIPE`, `alarm`, faults-to-signals, `SA_RESTART`.
 6. [ ] **musl static-PIE** - stop shipping the build machine's glibc.
 7. [ ] **FreeType, HarfBuzz, ICU** - text and shaping.
 8. [ ] **Skia (software backend)** - rasterisation.
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.
 10. [ ] **`/proc`, `/sys`, honest `prctl`** - introspection and sandboxing.
 
-Milestones 1-4 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c` and `fs.c`.
+Milestones 1-5 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c` and `fs.c`.
 
 The shell and XplorerLite no longer wait on milestone 7 for their own text: the GUI reads
 TrueType directly and handles UTF-8 end to end. A browser engine's text still needs the

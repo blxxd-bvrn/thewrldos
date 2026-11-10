@@ -236,6 +236,7 @@ int64_t lx_fork(regs_t *r) {
     c->vm = uvm_clone(p->vm);
     if (!c->vm) { kfree(c); return -ENOMEM; }
     c->con = p->con; c->umask = p->umask; c->ppid = p->pid;
+    memcpy(c->acts, p->acts, sizeof c->acts);        /* fork inherits the dispositions */
     strlcpy(c->cwd, p->cwd, sizeof c->cwd);
     strlcpy(c->exe, p->exe, sizeof c->exe);
     for (int i = 0; i < LX_MAXFD; i++) {
@@ -334,7 +335,7 @@ int64_t lx_execve(regs_t *r, uint64_t upath, uint64_t uargv, uint64_t uenvp) {
     /* thread state that belonged to the old image */
     th->clear_child_tid = 0; th->robust_list = 0; th->sigmask = 0; th->fsbase = 0;
     { extern void arch_set_user_fs(uint64_t); arch_set_user_fs(0); }
-    lx_sig_reset();
+    lx_sig_reset(p);
     p->exiting = false; p->exit_code = 0; p->term_sig = 0;
     strlcpy(self->name, path_basename(p->exe), sizeof self->name);
     *r = nr;
@@ -386,14 +387,16 @@ int64_t lx_wait4(lxproc_t *p, int pid, uint64_t ustatus, int options, uint64_t u
         }
         if (!child_exists(p, pid)) return -ECHILD;
         if (nohang) return 0;
-        if (p->exiting) return -EINTR;
+        if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
     }
 }
 
 static void proc_free(lxproc_t *p) {
+    int status = p->term_sig ? (p->term_sig & 0x7F) : ((p->exit_code & 0xFF) << 8);
     for (int i = 0; i < LX_MAXFD; i++) if (p->fds[i]) { lx_file_put(p->fds[i]); p->fds[i] = NULL; }
     record_zombie(p);
+    lx_signal_child_exit(p, p->pid, status);
     uvm_free(p->vm);
     klog("linux: pid %d ended (%d)", p->pid, p->exit_code);
     kfree(p);
@@ -445,6 +448,10 @@ void lx_return_check(regs_t *r) {
     if (!t || !t->lx) return;
     lxthread_t *th = LX(t);
     if (th->proc->exiting) lx_thread_exit(th->proc->exit_code);
+    if (th->sig_frame) th->sig_frame = false;         /* a fault already built the frame */
+    else lx_signal_deliver(r);
+    th->sys_eintr = false;                            /* one restart opportunity per call */
+    if (th->proc->exiting) lx_thread_exit(th->proc->exit_code);
     r->eflags = (r->eflags & 0x0CD5) | 0x202;              /* user flags only, interrupts on */
     r->cs = 0x2B; r->ss = 0x23;
     uint32_t now = timer_ticks();
@@ -452,14 +459,20 @@ void lx_return_check(regs_t *r) {
 }
 
 void lx_syscall_c(regs_t *r) {
-    r->eax = (uint64_t)lx_syscall(r);
+    lxthread_t *th = lx_current();
+    uint64_t nr = r->eax;
+    int64_t v = lx_syscall(r);
+    if (th) { th->sys_nr = (uint32_t)nr; th->sys_eintr = nr != 15 && v == -EINTR; }
+    r->eax = (uint64_t)v;
 }
 
-/* exceptions: demand paging, or the end of a program that crashed */
+/* exceptions: demand paging, a signal handler, or the end of a program that
+ * crashed */
 bool lx_exception(regs_t *r, uintptr_t cr2) {
     task_t *t = task_current();
     if (!t || !t->lx) return false;
-    lxproc_t *p = LX(t)->proc;
+    lxthread_t *th = LX(t);
+    lxproc_t *p = th->proc;
     if (r->int_no == 14) {
         bool user_addr = cr2 >= USER_LO && cr2 < USER_HI;
         if (user_addr && !(r->err_code & 1) && uvm_fault(p->vm, cr2, r->err_code & 2)) return true;
@@ -471,6 +484,10 @@ bool lx_exception(regs_t *r, uintptr_t cr2) {
         { 17, 7, "Bus error" }, { 3, 5, "Trace/breakpoint trap" } };
     int sig = 11; const char *what = "Segmentation fault";
     for (unsigned i = 0; i < ARRAY_LEN(map); i++) if (map[i].vec == (int)r->int_no) { sig = map[i].sig; what = map[i].name; }
+    int code = 1; uint64_t addr = cr2;
+    if (r->int_no == 14) code = (r->err_code & 1) ? 2 : 1;  /* SEGV_ACCERR / SEGV_MAPERR */
+    else if (sig == 4 || sig == 8) addr = r->eip;
+    if (lx_signal_fault(r, sig, code, addr)) return true;   /* the program installed a handler */
     klog("linux: pid %d: %s at %llx (address %llx, error %llx)", p->pid, what, (unsigned long long)r->eip, (unsigned long long)cr2, (unsigned long long)r->err_code);
     if (p->con) { char m[128]; snprintf(m, sizeof m, "%s\n", what); p->con->write(p->con, m, strlen(m)); }
     p->term_sig = sig;

@@ -148,7 +148,7 @@ static int64_t pipe_read(lxpipe_t *pp, void *dst, uint64_t n, bool nb) {
         while (!pp->len) {
             if (!pp->writers) return (int64_t)got;
             if (nb) return got ? (int64_t)got : -EAGAIN;
-            if (cur_proc() && cur_proc()->exiting) return -EINTR;
+            if (lx_block_interrupted(lx_current())) return -EINTR;
             task_sleep(1);
         }
         uint32_t k = (uint32_t)MIN(n - got, (uint64_t)pp->len);
@@ -168,7 +168,7 @@ static int64_t pipe_write(lxpipe_t *pp, const void *src, uint64_t n, bool nb) {
         while (pp->len == pp->cap) {
             if (!pp->readers) return done ? (int64_t)done : -EPIPE;
             if (nb) return done ? (int64_t)done : -EAGAIN;
-            if (cur_proc() && cur_proc()->exiting) return -EINTR;
+            if (lx_block_interrupted(lx_current())) return -EINTR;
             task_sleep(1);
         }
         if (!pp->readers) return done ? (int64_t)done : -EPIPE;
@@ -241,7 +241,7 @@ static int64_t sock_recv(lxsock_t *s, void *dst, uint64_t n, bool nb, bool peek)
         if (!m) {
             if (s->peer_gone || !s->peer) return (int64_t)got;
             if (nb) return got ? (int64_t)got : -EAGAIN;
-            if (cur_proc() && cur_proc()->exiting) return -EINTR;
+            if (lx_block_interrupted(lx_current())) return -EINTR;
             task_sleep(1);
             continue;
         }
@@ -262,7 +262,7 @@ static int64_t sock_send(lxsock_t *s, const void *src, uint64_t n, bool nb, lxfi
     if (!s->peer || s->peer_gone) return -EPIPE;
     while (s->peer->qlen > SOCK_QLEN) {
         if (nb) return -EAGAIN;
-        if (cur_proc() && cur_proc()->exiting) return -EINTR;
+        if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
     }
     lxmsg_t *m = msg_new(src, n);
@@ -364,7 +364,7 @@ static int64_t inet_tcp_send(lxsock_t *s, const void *buf, uint64_t n, bool nb) 
     if (tcp_status(s->tcb) == 0) {
         if (nb) return -EAGAIN;
         while (tcp_status(s->tcb) == 0) {
-            if (cur_proc() && cur_proc()->exiting) return -EINTR;
+            if (lx_block_interrupted(lx_current())) return -EINTR;
             task_sleep(1);
         }
         inet_sync(s);
@@ -377,7 +377,7 @@ static int64_t inet_tcp_send(lxsock_t *s, const void *buf, uint64_t n, bool nb) 
         if (r < 0) return done ? (int64_t)done : (s->so_error ? -s->so_error : -EPIPE);
         if (!r) {
             if (nb) return done ? (int64_t)done : -EAGAIN;
-            if (cur_proc() && cur_proc()->exiting) return done ? (int64_t)done : -EINTR;
+            if (lx_block_interrupted(lx_current())) return done ? (int64_t)done : -EINTR;
             task_sleep(1);
             continue;
         }
@@ -428,7 +428,7 @@ static int64_t inet_read(lxsock_t *s, void *buf, uint64_t n, bool nb,
                   : inet_tcp_recv(s, buf, n, nb, peek);
         if (r != -EAGAIN) return r;
         if (nb) return -EAGAIN;
-        if (cur_proc() && cur_proc()->exiting) return -EINTR;
+        if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
     }
 }
@@ -506,7 +506,7 @@ int64_t lx_ipc_read(lxfile_t *f, void *dst, uint64_t n, bool nonblock) {
         if (n < 8) return -EINVAL;
         while (!e->count) {
             if (nonblock) return -EAGAIN;
-            if (cur_proc() && cur_proc()->exiting) return -EINTR;
+            if (lx_block_interrupted(lx_current())) return -EINTR;
             task_sleep(1);
         }
         uint64_t v = e->sem ? 1 : e->count;
@@ -517,7 +517,7 @@ int64_t lx_ipc_read(lxfile_t *f, void *dst, uint64_t n, bool nonblock) {
     case FD_TIMERFD: {
         lxtfd_t *t = f->obj;
         if (n < 8) return -EINVAL;
-        for (;;) { tfd_tick(t); if (t->exp) break; if (nonblock) return -EAGAIN; if (cur_proc() && cur_proc()->exiting) return -EINTR; task_sleep(1); }
+        for (;;) { tfd_tick(t); if (t->exp) break; if (nonblock) return -EAGAIN; if (lx_block_interrupted(lx_current())) return -EINTR; task_sleep(1); }
         uint64_t v = t->exp; t->exp = 0;
         memcpy(dst, &v, 8);
         return 8;
@@ -526,12 +526,14 @@ int64_t lx_ipc_read(lxfile_t *f, void *dst, uint64_t n, bool nonblock) {
     return -ENOTTY;
 }
 int64_t lx_ipc_write(lxfile_t *f, const void *src, uint64_t n, bool nonblock) {
+    int64_t r;
     switch (f->type) {
-    case FD_PIPE: return pipe_write(f->obj, src, n, nonblock);
+    case FD_PIPE: r = pipe_write(f->obj, src, n, nonblock); break;
     case FD_SOCKET: {
         lxsock_t *s = f->obj;
-        if (s->family == AF_INET_) return inet_write(s, src, n, nonblock, 0, 0, false);
-        return sock_send(s, src, n, nonblock, NULL, 0);
+        if (s->family == AF_INET_) r = inet_write(s, src, n, nonblock, 0, 0, false);
+        else r = sock_send(s, src, n, nonblock, NULL, 0);
+        break;
     }
     case FD_EVENTFD: {
         lxevfd_t *e = f->obj;
@@ -544,8 +546,13 @@ int64_t lx_ipc_write(lxfile_t *f, const void *src, uint64_t n, bool nonblock) {
         return 8;
     }
     case FD_TIMERFD: return -EINVAL;
+    default: return -ENOTTY;
     }
-    return -ENOTTY;
+    if (r == -EPIPE) {                                   /* a pipe or socket with nobody on the other end */
+        lxthread_t *t = lx_current();
+        if (t) lx_signal_raise(t->proc, 13);             /* SIGPIPE */
+    }
+    return r;
 }
 
 void lx_ipc_release(lxfile_t *f) {
@@ -768,7 +775,7 @@ static int64_t do_connect(lxproc_t *p, int fd, uint64_t uaddr, int len) {
         if (nb) return -EINPROGRESS;
         uint32_t t0 = timer_ticks();
         while (tcp_status(t) == 0) {
-            if (p->exiting) { tcp_close(t); s->tcb = NULL; return -EINTR; }
+            if (lx_block_interrupted(lx_current())) { tcp_close(t); s->tcb = NULL; return -EINTR; }
             if (timer_ticks() - t0 > 30000) { tcp_close(t); s->tcb = NULL; return -ETIMEDOUT; }
             task_sleep(2);
         }
@@ -842,7 +849,7 @@ static int64_t do_accept(lxproc_t *p, int fd, uint64_t uaddr, uint64_t ualen, in
         }
         if (!s->listening) return -EINVAL;
         if (nb) return -EAGAIN;
-        if (p->exiting) return -EINTR;
+        if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
     }
 }
@@ -1025,7 +1032,7 @@ static int64_t do_recvmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
         if (s->qhead) break;
         if (s->peer_gone || !s->peer) { mh.flags = 0; put(p, umsg, &mh, sizeof mh); return 0; }
         if (nb) return -EAGAIN;
-        if (p->exiting) return -EINTR;
+        if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
     }
     lxmsg_t *m = s->qhead;
@@ -1296,7 +1303,7 @@ static int64_t do_epoll_wait(lxproc_t *p, int epfd, uint64_t uevents, int maxeve
         if (n) return n;
         if (timeout == 0) return 0;
         if (timeout > 0 && (int32_t)(timer_ticks() - deadline) >= 0) return 0;
-        if (p->exiting) return -EINTR;
+        if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
     }
 }

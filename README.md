@@ -326,7 +326,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   identity and limits (`syscall.c`); kernel code stays cooperative, and a program running in
   ring 3 is preempted by the timer.
 - Type the program's path in the Command Prompt, for example
-  `C:/Linux/usr/local/bin/hello`. The 64-bit ISO carries test programs from `samples/linux` and the
+  `C:/Linux/usr/bin/hello` or `C:/Linux/usr/local/bin/signals`. The 64-bit ISO carries test
+  programs from `samples/linux` (`hello`, `threads`, `ipc`, `procs`, `signals`, `socket`) and the
   glibc they need (copied from the build machine).
 - Threads: `clone()` with the flags glibc's `pthread_create` uses (new TLS, child TID cleared
   and woken on exit), so mutexes, condition variables and `pthread_join` work.
@@ -346,8 +347,17 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Event loop:** `epoll_create1`/`epoll_ctl`/`epoll_wait`, `eventfd` and `timerfd`, and `poll()`
   now asks each pipe, socket, eventfd and timerfd whether it is ready instead of answering
   "always ready".
-- Not yet: signal delivery, IPv6 sockets and a loopback interface, and a real `vfork` (it does
-  not suspend the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
+- **Signals (`signal.c`):** POSIX dispositions per process, pending sets per process and per
+  thread, and a real x86-64 `rt_sigframe` (a `ucontext` with 23 registers and a 128-byte
+  `siginfo`) handed to a handler in ring 3, so glibc's `__restore_rt` and `rt_sigreturn` work
+  unchanged. `sigaltstack`, `SA_RESTART`, `SA_NODEFER`, `SA_RESETHAND`, `SA_SIGINFO`,
+  `sigsuspend`, `sigpending`, `sigtimedwait`, `alarm`/`setitimer`, `SIGCHLD` from a child that
+  ends, `SIGPIPE` from a pipe or socket with no reader, and dispatch of `SIGSEGV`/`SIGFPE`/
+  `SIGILL`/`SIGBUS`/`SIGTRAP` to a handler installed for them. `kill`, `tkill` and `tgkill`
+  deliver to a whole process or to one thread.
+- Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
+  loopback interface, and a real `vfork` (it does not suspend the parent). See `ROADMAP.md` for
+  the rest of the way to WPE WebKit.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):

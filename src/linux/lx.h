@@ -78,6 +78,12 @@ typedef struct lxfile {
 } lxfile_t;
 #define LX_MAXFD 256
 
+/* ---- signals ---- */
+#define LX_NSIG 64
+/* Linux's kernel sigaction as x86-64 passes it through rt_sigaction:
+ * handler, flags, restorer, and the mask applied while the handler runs. */
+typedef struct { uint64_t handler, flags, restorer, mask; } lxsigaction_t;
+
 /* ---- processes and threads ---- */
 typedef struct lxproc {
     int pid;                                   /* = pid of the main thread's task */
@@ -93,6 +99,11 @@ typedef struct lxproc {
     int term_sig;                              /* signal that killed the process, 0 for a normal exit */
     bool exiting;
     uint32_t umask;
+    lxsigaction_t acts[LX_NSIG];                /* per-process dispositions, like Linux */
+    uint64_t sig_pending;                      /* process-directed signals */
+    uint32_t alarm_at; int alarm_sig;          /* alarm() and ITIMER_REAL */
+    uint32_t alarm_iv;                         /* ITIMER_REAL interval */
+    int sig_child_pid, sig_child_status;       /* what the next SIGCHLD reports */
 } lxproc_t;
 typedef struct lxthread {
     lxproc_t *proc;
@@ -101,6 +112,13 @@ typedef struct lxthread {
     uint64_t clear_child_tid;                  /* set_tid_address / CLONE_CHILD_CLEARTID */
     uint64_t robust_list;
     uint64_t sigmask;
+    uint64_t sig_pending;                      /* thread-directed signals (tkill/tgkill) */
+    uint64_t alt_sp; uint32_t alt_size; int alt_flags;   /* sigaltstack */
+    uint32_t sys_nr;                           /* number of the system call in progress */
+    bool sys_eintr;                            /* ... and it returned -EINTR (SA_RESTART) */
+    bool sig_frame;                            /* a frame was just pushed on this return */
+    bool sig_suspend;                          /* sigsuspend: restore an older mask after the handler */
+    uint64_t sig_suspend_old;
     uint32_t slice_start;                      /* for preemption */
     bool exited;                               /* left through exit/exit_group, not killed */
     regs_t start_regs;                         /* first entry into ring 3 */
@@ -126,10 +144,28 @@ int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_
 int64_t lx_fork(regs_t *r);
 int64_t lx_execve(regs_t *r, uint64_t upath, uint64_t uargv, uint64_t uenvp);
 int64_t lx_wait4(lxproc_t *p, int pid, uint64_t ustatus, int options, uint64_t urusage);
-void lx_sig_reset(void);                       /* execve drops every handler */
+void lx_sig_reset(lxproc_t *p);                /* execve drops every handler */
 void lx_exit_group(lxproc_t *p, int code);
 void lx_thread_exit(int code);
 bool lx_is_elf(const uint8_t *d, uint32_t n);
+
+/* signals (src/linux/signal.c) */
+void lx_signal_deliver(regs_t *r);             /* before a return to ring 3 */
+bool lx_signal_check(lxthread_t *th);          /* a signal that deserves EINTR is pending */
+bool lx_signal_fault(regs_t *r, int sig, int code, uint64_t addr);   /* a ring-3 fault: handler? */
+bool lx_block_interrupted(lxthread_t *th);     /* ... or the process is going away */
+void lx_signal_raise(lxproc_t *p, int sig);    /* set a process-directed pending signal */
+void lx_signal_raise_thread(lxthread_t *th, int sig);
+void lx_signal_child_exit(lxproc_t *p, int pid, int status);   /* SIGCHLD to p */
+lxproc_t *lx_proc_by_pid(int pid);
+int64_t lx_signal_kill(lxproc_t *self, int pid, int sig);
+int64_t lx_signal_tkill(lxproc_t *self, int tid, int sig);
+int64_t lx_signal_tgkill(lxproc_t *self, int tgid, int tid, int sig);
+int64_t lx_rt_sigreturn(regs_t *r);             /* restores the frame at r->esp - 8 */
+int64_t lx_signal_sigsuspend(regs_t *r, uint64_t uset, uint64_t setsize);
+int64_t lx_signal_sigtimedwait(lxproc_t *p, uint64_t uset, uint64_t uinfo, uint64_t utime, uint64_t setsize);
+int64_t lx_signal_pending(lxthread_t *th, uint64_t uset, uint64_t setsize);
+void lx_signal_alarm_check(lxproc_t *p);
 
 /* pipes, sockets, epoll, eventfd and timerfd (src/linux/ipc.c) */
 int64_t lx_sys_ipc(lxthread_t *t, int nr, regs_t *r, bool *handled);

@@ -8,10 +8,6 @@ static uvm_t *VM(void) { return lx_current()->proc->vm; }
 static bool uin(void *dst, uint64_t src, uint64_t n) { if (!uvm_check(VM(), src, n, false)) return false; memcpy(dst, (void *)(uintptr_t)src, n); return true; }
 static bool uout(uint64_t dst, const void *src, uint64_t n) { if (!uvm_check(VM(), dst, n, true)) return false; memcpy((void *)(uintptr_t)dst, src, n); return true; }
 
-/* signal handlers are remembered per process; execve drops them all */
-static uint8_t sig_acts[64][32];
-void lx_sig_reset(void) { memset(sig_acts, 0, sizeof sig_acts); }
-
 /* ---------------- time ---------------- */
 static int64_t boot_epoch = -1; static uint32_t boot_tick;
 static int64_t epoch_ms(void) {
@@ -46,10 +42,21 @@ static int64_t sys_clock_gettime(uint64_t clk, uint64_t ut) {
     }
     return uout(ut, ts, 16) ? 0 : -EFAULT;
 }
-static void sleep_ns(uint64_t ns) {
+static int64_t sleep_ns(uint64_t ns) {
     uint64_t ms = (ns + 999999) / 1000000;
-    if (!ms) { task_yield(); return; }
-    task_sleep(ms > 0x7FFFFFFF ? 0x7FFFFFFF : (uint32_t)ms);
+    if (!ms) {
+        if (lx_block_interrupted(lx_current())) return -EINTR;
+        task_yield();
+        return 0;
+    }
+    if (ms > 0x7FFFFFFFull) ms = 0x7FFFFFFFull;
+    uint32_t end = timer_ticks() + (uint32_t)ms;
+    while ((int32_t)(end - timer_ticks()) > 0) {
+        if (lx_block_interrupted(lx_current())) return -EINTR;
+        uint32_t left = end - timer_ticks();
+        task_sleep(MIN(left, 50));
+    }
+    return 0;
 }
 
 /* ---------------- futex (single address space for now) ---------------- */
@@ -82,6 +89,7 @@ static int64_t sys_futex(lxproc_t *p, uint64_t uaddr, int op, uint32_t val, uint
         int64_t r = 0;
         while (!w->woken) {
             if (p->exiting) break;
+            if (lx_block_interrupted(lx_current())) { r = -EINTR; break; }
             if (timed && (int32_t)(timer_ticks() - deadline) >= 0) { r = -ETIMEDOUT; break; }
             task_sleep(1);
         }
@@ -198,21 +206,47 @@ int64_t lx_syscall(regs_t *r) {
         }
         return 0;
     case 26: case 27: case 149: case 150: case 151: case 152: return 0;   /* msync, mincore, mlock... */
-    case 13: {                                                        /* rt_sigaction: remembered, not delivered yet */
-        if (a0 < 1 || a0 > 64) return -EINVAL;
-        if (a2 && !uout(a2, sig_acts[a0 - 1], 32)) return -EFAULT;
-        if (a1 && !uin(sig_acts[a0 - 1], a1, 32)) return -EFAULT;
+    case 13: {                                                        /* rt_sigaction */
+        if (a0 < 1 || a0 > LX_NSIG || a0 == 9 || a0 == 19) return -EINVAL;
+        if (a3 && a3 != 8) return -EINVAL;
+        lxsigaction_t *slot = &p->acts[a0 - 1];
+        if (a2 && !uout(a2, slot, sizeof *slot)) return -EFAULT;
+        if (a1) {
+            lxsigaction_t na;
+            if (!uin(&na, a1, sizeof na)) return -EFAULT;
+            if (na.handler == 0 || na.handler == 1) { na.flags = 0; na.restorer = 0; na.mask = 0; }
+            *slot = na;
+        }
         return 0;
     }
     case 14: {                                                        /* rt_sigprocmask */
+        if (a3 && a3 != 8) return -EINVAL;
         uint64_t old = t->sigmask, set;
-        if (a1) { if (!uin(&set, a1, 8)) return -EFAULT; if (a0 == 0) t->sigmask |= set; else if (a0 == 1) t->sigmask &= ~set; else if (a0 == 2) t->sigmask = set; else return -EINVAL; }
+        if (a1) { if (!uin(&set, a1, 8)) return -EFAULT; set &= ~((1ull << 8) | (1ull << 18));   /* SIGKILL, SIGSTOP */
+            if (a0 == 0) t->sigmask |= set; else if (a0 == 1) t->sigmask &= ~set; else if (a0 == 2) t->sigmask = set; else return -EINVAL; }
         if (a2 && !uout(a2, &old, 8)) return -EFAULT;
         return 0;
     }
-    case 131: return 0;                                               /* sigaltstack */
-    case 127: case 128: case 130: return -EINTR;                      /* rt_sigpending / timedwait / sigsuspend */
-    case 15: lx_thread_exit(0); return 0;                             /* rt_sigreturn: nothing was delivered */
+    case 131: {                                                       /* sigaltstack */
+        typedef struct { uint64_t sp; int32_t flags; uint32_t pad; uint64_t size; } ustack_t;
+        ustack_t old = { t->alt_sp, t->alt_size ? 0 : 2, 0, t->alt_size };
+        if (a1 && !uout(a1, &old, sizeof old)) return -EFAULT;
+        if (a0) {
+            ustack_t ns;
+            if (!uin(&ns, a0, sizeof ns)) return -EFAULT;
+            if (ns.flags & 2) { t->alt_sp = 0; t->alt_size = 0; t->alt_flags = 2; }
+            else {
+                if (ns.flags & ~(1 | 0x80000000)) return -EINVAL;
+                if (!ns.sp || ns.size < 2048) return -ENOMEM;
+                t->alt_sp = ns.sp; t->alt_size = (uint32_t)ns.size; t->alt_flags = 0;
+            }
+        }
+        return 0;
+    }
+    case 127: return lx_signal_pending(t, a0, a1);                    /* rt_sigpending */
+    case 128: return lx_signal_sigtimedwait(p, a0, a1, a2, a3);       /* rt_sigtimedwait */
+    case 130: return lx_signal_sigsuspend(r, a0, a1);                 /* rt_sigsuspend */
+    case 15: return lx_rt_sigreturn(r);                               /* rt_sigreturn */
     case 16: {                                                        /* ioctl */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
         if (f->type != FD_CONSOLE) return -ENOTTY;
@@ -281,11 +315,52 @@ int64_t lx_syscall(regs_t *r) {
         }
     }
     case 24: task_yield(); return 0;                                  /* sched_yield */
+    case 34: {                                                        /* pause */
+        for (;;) { if (lx_block_interrupted(t)) return -EINTR; task_sleep(1); }
+    }
     case 35: case 230: {                                              /* nanosleep, clock_nanosleep */
         int64_t ts[2]; if (!uin(ts, nr == 35 ? a0 : a2, 16)) return -EFAULT;
         uint64_t ns = ts[0] * 1000000000ull + ts[1];
         if (nr == 230 && (a1 & 1)) { uint64_t now = a0 == 0 ? (uint64_t)epoch_ms() * 1000000ull : mono_ns(); ns = ns > now ? ns - now : 0; }   /* TIMER_ABSTIME */
-        sleep_ns(ns);
+        return sleep_ns(ns);
+    }
+    case 36: {                                                        /* getitimer: only ITIMER_REAL is real here */
+        typedef struct { int64_t sec, usec; } tv_t;
+        if (a0 != 0) return -EINVAL;
+        tv_t it[2]; memset(it, 0, sizeof it);
+        uint32_t now = timer_ticks();
+        if (p->alarm_at && (int32_t)(p->alarm_at - now) > 0) {
+            uint32_t left = p->alarm_at - now;
+            it[0].sec = left / 1000; it[0].usec = (left % 1000) * 1000;
+        }
+        if (p->alarm_iv) { it[1].sec = p->alarm_iv / 1000; it[1].usec = (p->alarm_iv % 1000) * 1000; }
+        return uout(a1, it, sizeof it) ? 0 : -EFAULT;
+    }
+    case 37: {                                                        /* alarm */
+        uint32_t now = timer_ticks(), old = 0;
+        if (p->alarm_at && (int32_t)(p->alarm_at - now) > 0) old = (p->alarm_at - now + 999) / 1000;
+        if (a0) { p->alarm_at = now + (uint32_t)MIN(a0 * 1000ull, 0x7FFFFFFFull); p->alarm_sig = 14; p->alarm_iv = 0; }
+        else p->alarm_at = 0;
+        return old;
+    }
+    case 38: {                                                        /* setitimer */
+        typedef struct { int64_t sec, usec; } tv_t;
+        if (a0 != 0) return -EINVAL;                                 /* ITIMER_REAL only */
+        tv_t it[2];
+        if (!uin(it, a1, sizeof it)) return -EFAULT;
+        uint32_t now = timer_ticks(), left = 0;
+        if (p->alarm_at && (int32_t)(p->alarm_at - now) > 0) left = p->alarm_at - now;
+        if (a2) {
+            tv_t old[2]; memset(old, 0, sizeof old);
+            old[0].sec = left / 1000; old[0].usec = (left % 1000) * 1000;
+            if (p->alarm_iv) { old[1].sec = p->alarm_iv / 1000; old[1].usec = (p->alarm_iv % 1000) * 1000; }
+            if (!uout(a2, old, sizeof old)) return -EFAULT;
+        }
+        uint64_t ms = (uint64_t)MAX(it[0].sec, 0) * 1000 + MAX(it[0].usec, 0) / 1000;
+        uint64_t iv = (uint64_t)MAX(it[1].sec, 0) * 1000 + MAX(it[1].usec, 0) / 1000;
+        p->alarm_at = ms ? now + (uint32_t)MIN(ms, 0x7FFFFFFFull) : 0;
+        p->alarm_iv = (uint32_t)MIN(iv, 0x7FFFFFFFull);
+        p->alarm_sig = 14;
         return 0;
     }
     case 228: return sys_clock_gettime(a0, a1);
@@ -343,20 +418,9 @@ int64_t lx_syscall(regs_t *r) {
         return a1;
     }
     case 157: return 0;                                               /* prctl */
-    case 62: case 200: case 234: {                                    /* kill, tkill, tgkill */
-        int sig = nr == 234 ? (int)a2 : (int)a1;
-        if (!sig) return 0;
-        int target = nr == 234 ? (int)a0 : (int)a0;
-        if (target == p->pid || target == 0 || target == -1 || (nr != 62 && task_find(target) && task_find(target)->lx && LX(task_find(target))->proc == p)) {
-            static const char *names[32] = { 0, "Hangup", "Interrupt", "Quit", "Illegal instruction", "Trace/breakpoint trap", "Aborted", "Bus error",
-                "Floating point exception", "Killed", "User defined signal 1", "Segmentation fault", "User defined signal 2", "Broken pipe", "Alarm clock", "Terminated" };
-            if (sig == 17 || sig == 28 || sig == 23 || sig == 18) return 0;          /* SIGCHLD, SIGWINCH, SIGURG, SIGCONT: ignored by default */
-            if (p->con && sig < 16 && names[sig]) { char m[64]; snprintf(m, sizeof m, "%s\n", names[sig]); p->con->write(p->con, m, strlen(m)); }
-            p->term_sig = sig;
-            lx_exit_group(p, 128 + sig);
-        }
-        return -ESRCH;
-    }
+    case 62: return lx_signal_kill(p, (int)a0, (int)a1);              /* kill */
+    case 200: return lx_signal_tkill(p, (int)a0, (int)a1);            /* tkill */
+    case 234: return lx_signal_tgkill(p, (int)a0, (int)a1, (int)a2);  /* tgkill */
     case 56: { extern int64_t lx_clone(regs_t *r, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t); return lx_clone(r, a0, a1, a2, a3, a4); }   /* clone */
     case 57: case 58: return lx_fork(r);                              /* fork, vfork (vfork does not suspend the parent) */
     case 59: return lx_execve(r, a0, a1, a2);                         /* execve */
