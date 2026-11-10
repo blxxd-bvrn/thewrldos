@@ -106,7 +106,7 @@ extern int mouse_speed;               /* 1..10 */
 extern bool mouse_swap_buttons;
 
 /* ---- memory ---- */
-void mm_init(uint32_t mb_info);
+void mm_init(void);
 void *kmalloc(size_t n);
 void *kzalloc(size_t n);
 void *krealloc(void *p, size_t n);

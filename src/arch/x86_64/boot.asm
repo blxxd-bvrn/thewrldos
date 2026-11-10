@@ -20,6 +20,23 @@ align 4
     dd 768
     dd 32
 
+; Multiboot 2 header, used by GRUB on UEFI (and on BIOS just as happily).
+section .multiboot2
+align 8
+mb2_start:
+    dd 0xE85250D6                                   ; magic
+    dd 0                                            ; architecture: i386
+    dd mb2_end - mb2_start                          ; header length
+    dd -(0xE85250D6 + 0 + (mb2_end - mb2_start))    ; checksum
+    ; framebuffer request: 1024x768x32
+    dw 5, 0
+    dd 20
+    dd 1024, 768, 32
+    ; end tag
+    dw 0, 0
+    dd 8
+mb2_end:
+
 section .bss
 align 4096
 global boot_pml4, boot_pdpt, boot_pd

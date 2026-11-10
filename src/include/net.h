@@ -63,10 +63,30 @@ typedef struct tcb tcb_t;
 tcb_t *tcp_connect(uint32_t ip, uint16_t port, uint32_t timeout_ms, char *err, int errcap);
 int tcp_send(tcb_t *t, const void *data, uint32_t len);             /* bytes queued, -1 on error */
 int tcp_recv(tcb_t *t, void *buf, uint32_t max, uint32_t timeout_ms); /* >0 bytes, 0 = closed by peer, -1 error, -2 timeout */
+int tcp_peek(tcb_t *t, void *buf, uint32_t max);            /* same without consuming; -2 when empty */
+void tcp_shutdown_wr(tcb_t *t);                                     /* send our FIN; reads still drain */
 void tcp_close(tcb_t *t);                                            /* graceful close; t must not be used afterwards */
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, uint32_t len);
 void tcp_timers(void);
 int tcp_count(void);
+
+/* TCP for the Linux socket layer: non-blocking active opens and passive ones.
+ * Addresses and ports are in host order, as everywhere else in this stack. */
+tcb_t *tcp_open(uint32_t ip, uint16_t port);              /* begin an active open; NULL if no network/memory */
+tcb_t *tcp_open_from(uint32_t ip, uint16_t port, uint16_t lport);   /* same, binding lport (0 = ephemeral) */
+int tcp_status(tcb_t *t);                                 /* 1 established, 0 in progress, -1 failed/closed */
+int tcp_error(tcb_t *t);                                  /* 1 refused, 2 reset, 3 timed out, 0 none */
+bool tcp_recv_ready(tcb_t *t);
+bool tcp_send_ready(tcb_t *t);
+bool tcp_hup(tcb_t *t);
+int tcp_send_nb(tcb_t *t, const void *data, uint32_t len);/* queue what fits; 0 when full, -1 error */
+uint16_t tcp_local_port(tcb_t *t);
+uint16_t tcp_remote_port(tcb_t *t);
+uint32_t tcp_remote_ip(tcb_t *t);
+int tcp_listen(uint16_t port);                            /* 0, or -1 when the port is in use */
+void tcp_unlisten(uint16_t port);
+bool tcp_accept_ready(uint16_t port);                      /* a completed connection waits on the listener */
+tcb_t *tcp_accept(uint16_t port);                         /* an established connection, or NULL */
 
 /* ---- TLS: Mbed TLS (src/tls/tls.c), TLS 1.3 and 1.2 ---- */
 typedef struct tls_conn tls_conn_t;

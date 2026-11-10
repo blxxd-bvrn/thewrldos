@@ -106,7 +106,7 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
         part_t parts[4];
         if (!mbr_read(dev, parts)) continue;
         for (int i = 0; i < 4; i++) {
-            if (parts[i].type != 0x0B && parts[i].type != 0x0C && parts[i].type != 0x07) continue;
+            if (parts[i].type != 0x0B && parts[i].type != 0x0C && parts[i].type != 0xEF && parts[i].type != 0x07) continue;
             vol_t *v = vol_mount(dev, parts[i].lba, parts[i].sectors);
             if (!v) continue;
             if ((serial && vol_serial(v) == serial) || (!serial && vol_exists(v, "boot\\wrld.elf"))) {

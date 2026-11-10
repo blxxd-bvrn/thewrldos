@@ -5,7 +5,7 @@
 #include "kernel.h"
 #include "net.h"
 
-enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, LAST_ACK, TIME_WAIT };
+enum { CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT_1, FIN_WAIT_2, CLOSE_WAIT, LAST_ACK, TIME_WAIT, SYN_RCVD };
 #define F_FIN 0x01
 #define F_SYN 0x02
 #define F_RST 0x04
@@ -28,8 +28,23 @@ struct tcb {
     uint32_t dead_at;
     int err;                               /* 0, or reason the connection failed */
     struct tcb *next;
+    struct tcb *accept_next;               /* queued on a listener, waiting for accept() */
 };
 static tcb_t *conns;
+
+/* Passive opens: a listening port holds connections that finished the
+ * handshake until an application accepts them. */
+typedef struct tcp_listener {
+    struct tcp_listener *next;
+    uint16_t port;
+    tcb_t *head, *tail;
+} tcp_listener_t;
+static tcp_listener_t *listeners;
+
+static tcp_listener_t *find_listener(uint16_t port) {
+    for (tcp_listener_t *l = listeners; l; l = l->next) if (l->port == port) return l;
+    return NULL;
+}
 
 static void put16(uint8_t *p, uint16_t v) { p[0] = v >> 8; p[1] = v; }
 static void put32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
@@ -77,21 +92,142 @@ static void output(tcb_t *t) {
         if (!t->rtx_at) arm_timer(t);
     }
 }
+/* remove a tcb from any listener's accept queue; true if it was queued */
+static bool accept_remove(tcb_t *t) {
+    for (tcp_listener_t *l = listeners; l; l = l->next) {
+        if (l->head == t) {
+            l->head = t->accept_next;
+            if (!l->head) l->tail = NULL;
+            t->accept_next = NULL;
+            return true;
+        }
+        for (tcb_t *q = l->head; q && q->accept_next; q = q->accept_next)
+            if (q->accept_next == t) {
+                q->accept_next = t->accept_next;
+                if (l->tail == t) l->tail = q;
+                t->accept_next = NULL;
+                return true;
+            }
+    }
+    return false;
+}
 static void destroy(tcb_t *t) {
+    accept_remove(t);
     for (tcb_t **pp = &conns; *pp; pp = &(*pp)->next) if (*pp == t) { *pp = t->next; break; }
     kfree(t->rbuf); kfree(t->sbuf); kfree(t);
 }
-static void fail(tcb_t *t, int err) { t->err = err; t->state = CLOSED; t->rtx_at = 0; if (t->app_closed) t->dead_at = timer_ticks(); }
+static void fail(tcb_t *t, int err) {
+    t->err = err; t->state = CLOSED; t->rtx_at = 0;
+    /* A connection that failed before anyone accepted it has no owner; free it
+     * now.  One the application holds stays until it closes the socket, so it
+     * can still report the error through getsockopt(). */
+    if (accept_remove(t)) { destroy(t); return; }
+    if (t->app_closed) t->dead_at = timer_ticks();
+}
 
-tcb_t *tcp_connect(uint32_t ip, uint16_t port, uint32_t timeout_ms, char *err, int errcap) {
-    if (!net_wait_ready(8000)) { snprintf(err, errcap, "The network is not connected."); return NULL; }
+/* ---- entry points for the Linux socket layer ---- */
+static tcb_t *conn_new(uint32_t ip, uint16_t port, int state) {
     tcb_t *t = kzalloc(sizeof *t);
+    if (!t) return NULL;
     t->rbuf = kmalloc(RCAP); t->sbuf = kmalloc(SCAP);
+    if (!t->rbuf || !t->sbuf) { kfree(t->rbuf); kfree(t->sbuf); kfree(t); return NULL; }
     t->rip = ip; t->rport = port; t->lport = net_ephemeral_port();
     t->iss = rand_next() ^ (uint32_t)rdtsc();
     t->snd_una = t->iss; t->snd_nxt = t->iss + 1; t->mss = 536; t->rto = 1000;
-    t->state = SYN_SENT;
+    t->state = state;
     t->next = conns; conns = t;
+    return t;
+}
+tcb_t *tcp_open_from(uint32_t ip, uint16_t port, uint16_t lport) {
+    if (!net_ready()) return NULL;
+    tcb_t *t = conn_new(ip, port, SYN_SENT);
+    if (!t) return NULL;
+    if (lport) t->lport = lport;             /* 0 means pick an ephemeral port */
+    send_seg(t, t->iss, F_SYN, NULL, 0);
+    arm_timer(t);
+    return t;
+}
+tcb_t *tcp_open(uint32_t ip, uint16_t port) { return tcp_open_from(ip, port, 0); }
+int tcp_status(tcb_t *t) {
+    if (!t) return -1;
+    switch (t->state) {
+    case ESTABLISHED: case CLOSE_WAIT: case FIN_WAIT_1: case FIN_WAIT_2: case LAST_ACK: return 1;
+    case SYN_SENT: case SYN_RCVD: return 0;
+    default: return -1;
+    }
+}
+int tcp_error(tcb_t *t) { return t ? t->err : 0; }
+bool tcp_recv_ready(tcb_t *t) { return t && (t->rlen > 0 || t->fin_rcvd || t->state == CLOSED); }
+bool tcp_send_ready(tcb_t *t) {
+    if (!t) return false;
+    if (t->state == CLOSED) return true;            /* poll wakes the program so it sees the error */
+    if (t->state != ESTABLISHED && t->state != CLOSE_WAIT) return false;
+    return t->slen < SCAP;
+}
+bool tcp_hup(tcb_t *t) { return t && (t->fin_rcvd || t->state == CLOSED); }
+int tcp_send_nb(tcb_t *t, const void *data, uint32_t len) {
+    if (!t) return -1;
+    if (t->state != ESTABLISHED && t->state != CLOSE_WAIT) return -1;
+    uint32_t space = SCAP - t->slen;
+    uint32_t n = MIN(space, len);
+    if (n) { memcpy(t->sbuf + t->slen, data, n); t->slen += n; output(t); }
+    return (int)n;
+}
+uint16_t tcp_local_port(tcb_t *t) { return t ? t->lport : 0; }
+uint16_t tcp_remote_port(tcb_t *t) { return t ? t->rport : 0; }
+uint32_t tcp_remote_ip(tcb_t *t) { return t ? t->rip : 0; }
+
+int tcp_listen(uint16_t port) {
+    if (!port || find_listener(port)) return -1;
+    tcp_listener_t *l = kzalloc(sizeof *l);
+    if (!l) return -1;
+    l->port = port;
+    l->next = listeners;
+    listeners = l;
+    return 0;
+}
+void tcp_unlisten(uint16_t port) {
+    tcp_listener_t **pp = &listeners;
+    while (*pp && (*pp)->port != port) pp = &(*pp)->next;
+    tcp_listener_t *l = *pp;
+    if (!l) return;
+    *pp = l->next;
+    for (tcb_t *t = l->head; t; ) {
+        tcb_t *nx = t->accept_next;
+        t->accept_next = NULL;
+        t->state = CLOSED; t->rtx_at = 0;
+        if (!t->app_closed) { t->app_closed = true; t->dead_at = timer_ticks(); }
+        t = nx;
+    }
+    kfree(l);
+}
+bool tcp_accept_ready(uint16_t port) {
+    tcp_listener_t *l = find_listener(port);
+    for (tcb_t *t = l ? l->head : NULL; t; t = t->accept_next)
+        if (t->state == ESTABLISHED || t->state == CLOSE_WAIT ||
+            t->state == FIN_WAIT_1 || t->state == FIN_WAIT_2) return true;
+    return false;
+}
+tcb_t *tcp_accept(uint16_t port) {
+    tcp_listener_t *l = find_listener(port);
+    while (l && l->head) {
+        tcb_t *t = l->head;
+        l->head = t->accept_next;
+        if (!l->head) l->tail = NULL;
+        t->accept_next = NULL;
+        if (t->state == ESTABLISHED || t->state == CLOSE_WAIT ||
+            t->state == FIN_WAIT_1 || t->state == FIN_WAIT_2)
+            return t;
+        /* reset before the program got to it: let the timer task free it */
+        if (!t->app_closed) { t->app_closed = true; t->dead_at = timer_ticks(); }
+    }
+    return NULL;
+}
+
+tcb_t *tcp_connect(uint32_t ip, uint16_t port, uint32_t timeout_ms, char *err, int errcap) {
+    if (!net_wait_ready(8000)) { snprintf(err, errcap, "The network is not connected."); return NULL; }
+    tcb_t *t = conn_new(ip, port, SYN_SENT);
+    if (!t) { snprintf(err, errcap, "Not enough memory for a connection."); return NULL; }
     send_seg(t, t->iss, F_SYN, NULL, 0);
     arm_timer(t);
     uint32_t t0 = timer_ticks();
@@ -134,10 +270,29 @@ int tcp_recv(tcb_t *t, void *buf, uint32_t max, uint32_t timeout_ms) {
     if (t->state != CLOSED && rwnd(t) >= t->last_wnd_adv + 8192) send_ack(t);
     return n;
 }
+void tcp_shutdown_wr(tcb_t *t) {
+    if (!t || t->fin_sent || t->fin_pending) return;
+    if (t->state != ESTABLISHED && t->state != CLOSE_WAIT) return;
+    t->fin_pending = true;                  /* output() sends the FIN; reads still drain */
+    output(t);
+}
+int tcp_peek(tcb_t *t, void *buf, uint32_t max) {
+    if (!t) return -1;
+    if (!t->rlen) return (t->fin_rcvd || t->state == CLOSED) ? 0 : -2;
+    uint32_t n = MIN(max, t->rlen);
+    memcpy(buf, t->rbuf, n);
+    return (int)n;
+}
 void tcp_close(tcb_t *t) {
     if (!t) return;
     t->app_closed = true;
+    accept_remove(t);
     if (t->state == ESTABLISHED || t->state == CLOSE_WAIT) { t->fin_pending = true; output(t); t->dead_at = timer_ticks() + 10000; }
+    else if (t->state == SYN_SENT || t->state == SYN_RCVD) {
+        /* never completed: reset instead of retransmitting to the grave */
+        send_seg(t, t->snd_nxt, F_RST, NULL, 0);
+        t->state = CLOSED; t->rtx_at = 0; t->dead_at = timer_ticks();
+    }
     else if (t->state == CLOSED) t->dead_at = timer_ticks();
     else t->dead_at = timer_ticks() + 5000;
 }
@@ -150,6 +305,30 @@ static void rst_reply(uint32_t src, const uint8_t *s, uint32_t len) {
     if (fl & F_ACK) send_seg(&tmp, get32(s + 8), F_RST, NULL, 0);
     else { tmp.rcv_nxt = get32(s + 4) + (len - hl) + ((fl & F_SYN) ? 1 : 0) + ((fl & F_FIN) ? 1 : 0); send_seg(&tmp, 0, F_RST | F_ACK, NULL, 0); }
 }
+
+/* A SYN arrived for a listening port: create the connection in SYN_RCVD and
+ * answer with SYN-ACK.  The third handshake segment moves it to the listener's
+ * accept queue. */
+static tcb_t *accept_syn(tcp_listener_t *l, uint32_t src, uint16_t sport, uint32_t seq,
+                         const uint8_t *s, uint32_t hl, uint16_t win) {
+    tcb_t *t = conn_new(src, sport, SYN_RCVD);
+    if (!t) return NULL;
+    t->lport = l->port;
+    t->rcv_nxt = seq + 1;
+    t->snd_wnd = win;
+    for (uint32_t o = 20; o + 1 < hl;) {                      /* options: MSS */
+        uint8_t k = s[o];
+        if (k == 0) break;
+        if (k == 1) { o++; continue; }
+        if (k == 2 && s[o + 1] == 4 && o + 4 <= hl) t->mss = MIN(1460, get16(s + o + 2));
+        if (s[o + 1] < 2) break;
+        o += s[o + 1];
+    }
+    send_seg(t, t->iss, F_SYN | F_ACK, NULL, 0);
+    arm_timer(t);
+    return t;
+}
+
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *s, uint32_t len) {
     if (len < 20) return;
     uint32_t hl = (s[12] >> 4) * 4;
@@ -161,7 +340,14 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *s, uint32_t len) {
     const uint8_t *data = s + hl; uint32_t dlen = len - hl;
     tcb_t *t = conns;
     while (t && !(t->rip == src && t->rport == sport && t->lport == dport)) t = t->next;
-    if (!t || t->state == CLOSED) { if (!(fl & F_RST)) rst_reply(src, s, len); return; }
+    if (!t || t->state == CLOSED) {
+        if ((fl & F_SYN) && !(fl & F_ACK)) {
+            tcp_listener_t *l = find_listener(dport);
+            if (l) { if (accept_syn(l, src, sport, seq, s, hl, win)) return; }
+        }
+        if (!(fl & F_RST)) rst_reply(src, s, len);
+        return;
+    }
 
     if (t->state == SYN_SENT) {
         if ((fl & F_ACK) && ack != t->iss + 1) { if (!(fl & F_RST)) rst_reply(src, s, len); return; }
@@ -183,7 +369,18 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *s, uint32_t len) {
         return;
     }
     if (fl & F_RST) { if (seq_le(t->rcv_nxt, seq) && seq_lt(seq, t->rcv_nxt + RCAP)) fail(t, 2); return; }
-    if (fl & F_SYN) { send_ack(t); return; }                 /* retransmitted SYN-ACK */
+    if (t->state == SYN_RCVD) {
+        if (fl & F_SYN) { send_seg(t, t->iss, F_SYN | F_ACK, NULL, 0); arm_timer(t); return; }   /* SYN-ACK lost */
+        if (!(fl & F_ACK) || ack != t->iss + 1) return;
+        t->snd_una = ack; t->snd_wnd = win; t->retries = 0; t->rto = 1000; t->rtx_at = 0;
+        t->state = ESTABLISHED;
+        tcp_listener_t *l = find_listener(t->lport);
+        if (!l) { fail(t, 1); return; }
+        t->accept_next = NULL;
+        if (l->tail) l->tail->accept_next = t; else l->head = t;
+        l->tail = t;
+        /* the ACK may carry the first data segment: fall through */
+    } else if (fl & F_SYN) { send_ack(t); return; }         /* retransmitted SYN-ACK */
 
     /* acknowledgements */
     if (fl & F_ACK) {
@@ -229,6 +426,7 @@ void tcp_timers(void) {
         if (++t->retries > 8) { fail(t, 3); continue; }
         t->rto = MIN(t->rto * 2, 16000u);
         if (t->state == SYN_SENT) { send_seg(t, t->iss, F_SYN, NULL, 0); arm_timer(t); continue; }
+        if (t->state == SYN_RCVD) { send_seg(t, t->iss, F_SYN | F_ACK, NULL, 0); arm_timer(t); continue; }
         /* go back to the oldest unacknowledged byte */
         t->snd_nxt = t->snd_una;
         bool fin = t->fin_sent; t->fin_sent = false;

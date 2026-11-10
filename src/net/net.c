@@ -139,6 +139,7 @@ static udp_sock_t udps[16];
 static uint16_t next_port;
 uint16_t net_ephemeral_port(void) { if (!next_port) next_port = 49152 + rand_next() % 8000; return next_port = next_port >= 65000 ? 49152 : next_port + 1; }
 bool udp_bind(uint16_t port, udp_handler_t h, void *ctx) {
+    for (int i = 0; i < 16; i++) if (udps[i].port == port && port) return false;   /* one owner per port */
     for (int i = 0; i < 16; i++) if (!udps[i].port) { udps[i] = (udp_sock_t){ port, h, ctx }; return true; }
     return false;
 }

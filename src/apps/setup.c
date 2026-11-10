@@ -4,6 +4,7 @@
  *  2. First boot from the hard disk: a graphical wizard collects the user's
  *     name, computer name, time zone and look, then finishes the installation. */
 #include "kernel.h"
+#include "bootinfo.h"
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
@@ -152,7 +153,7 @@ static void build_items(void) {
             if (k == no) break;
             part_t *p = &ptab[d][order[k]];
             item_t it = { .kind = IT_PART, .disk = d, .slot = order[k], .lba = p->lba, .sectors = p->sectors, .type = p->type, .letter = letter++ };
-            if (p->type == 0x0B || p->type == 0x0C || p->type == 0x07) {
+            if (p->type == 0x0B || p->type == 0x0C || p->type == 0xEF || p->type == 0x07) {
                 vol_t *v = vol_mount(dv, p->lba, p->sectors);
                 if (v) { it.fat = true; it.fskind = vol_kind(v); it.free_mb = vol_free_bytes(v) / (1024 * 1024); strlcpy(it.fslabel, vol_label(v), sizeof it.fslabel); vol_unmount(v); }
             }
@@ -253,6 +254,10 @@ static bool do_install(int disk, int slot, int mode) {
     char dd[96]; disk_desc(disk, dd, sizeof dd);
     char err[200];
     uint32_t serial = rand_next() ^ (timer_ticks() << 16) ^ 0x57524C44;
+    if (bootinfo.is_efi && mode < 2) {
+        message_screen("This computer started Setup in UEFI mode, so the system partition must be FAT32 (it becomes the EFI System Partition).\n\nRun Setup again and choose a FAT32 option.\n\nPress ENTER to return.", "ENTER=Continue");
+        return false;
+    }
     /* boot loader files from the running system */
     uint32_t bl, cl;
     char corep[64]; snprintf(corep, sizeof corep, "C:\\boot\\grub\\core%d.img", slot + 1);
@@ -284,6 +289,10 @@ static bool do_install(int disk, int slot, int mode) {
     }
     vol_t *v = vol_mount(dv, p->lba, p->sectors);
     if (!v) { message_screen("Setup could not open the file system on the selected partition.\n\nPress ENTER to return.", "ENTER=Continue"); kfree(bootimg); kfree(core); return false; }
+    if (bootinfo.is_efi && vol_kind(v) != FS_FAT32) {
+        message_screen("This computer started Setup in UEFI mode, so the system partition must be FAT32 (it becomes the EFI System Partition).\n\nRun Setup again and choose a FAT32 option.\n\nPress ENTER to return.", "ENTER=Continue");
+        vol_unmount(v); kfree(bootimg); kfree(core); return false;
+    }
     serial = vol_serial(v);
     /* copy files */
     flist_t L = { 0 };
@@ -324,11 +333,32 @@ static bool do_install(int disk, int slot, int mode) {
     snprintf(cfg, sizeof cfg,
         "# THE WRLD OS boot menu - written by Setup\n"
         "set timeout=4\nset default=0\n\n"
-        "menuentry \"" OS_NAME "\" {\n    multiboot /boot/wrld.elf root=%08X\n    boot\n}\n"
-        "menuentry \"" OS_NAME " (verbose boot)\" {\n    multiboot /boot/wrld.elf root=%08X verbose\n    boot\n}\n"
-        "menuentry \"" OS_NAME " (safe mode - Classic theme)\" {\n    multiboot /boot/wrld.elf root=%08X safe\n    boot\n}\n",
+        "menuentry \"" OS_NAME "\" {\n    multiboot2 /boot/wrld.elf root=%08X\n    boot\n}\n"
+        "menuentry \"" OS_NAME " (verbose boot)\" {\n    multiboot2 /boot/wrld.elf root=%08X verbose\n    boot\n}\n"
+        "menuentry \"" OS_NAME " (safe mode - Classic theme)\" {\n    multiboot2 /boot/wrld.elf root=%08X safe\n    boot\n}\n",
         serial, serial, serial);
     vol_write(v, "boot\\grub\\grub.cfg", cfg, strlen(cfg), false);
+    if (bootinfo.is_efi) {
+        uint32_t el = 0;
+        uint8_t *efi = vfs_read_file("C:\\boot\\grub\\BOOTX64.EFI", &el);
+        if (!efi || !el) {
+            message_screen("Setup cannot find the UEFI boot loader (C:\\boot\\grub\\BOOTX64.EFI) on the installation media. Setup cannot continue.\n\nPress ENTER to return.", "ENTER=Continue");
+            vol_unmount(v); kfree(bootimg); kfree(core); return false;
+        }
+        vol_mkdir(v, "EFI");
+        vol_mkdir(v, "EFI\\BOOT");
+        bool eok = vol_write(v, "EFI\\BOOT\\BOOTX64.EFI", efi, el, false);
+        kfree(efi);
+        if (!eok) {
+            message_screen("Setup could not write the UEFI boot loader to the disk.\n\nPress ENTER to return.", "ENTER=Continue");
+            vol_unmount(v); kfree(bootimg); kfree(core); return false;
+        }
+        /* The partition holds the EFI loader now, so the firmware must see it
+         * as an EFI System Partition.  FAT32 still mounts as C: on later boots. */
+        p->type = 0xEF;
+        write_ptab(disk);
+        klog("setup: EFI System Partition on disk %d partition %d", disk, slot + 1);
+    }
     rtc_time_t t; rtc_now(&t);
     char ini[256];
     snprintf(ini, sizeof ini, "; THE WRLD OS settings\r\n[WRLD]\r\nsetup=oobe\r\ninstalled=%04d-%02d-%02d %02d:%02d\r\nserial=%08X\r\n", t.year, t.month, t.day, t.hour, t.minute, serial);
@@ -525,10 +555,20 @@ void setup_text_mode(bool from_desktop) {
                 }
                 /* file system choice */
                 bool keep_ok = !fresh && it.fat;
-                const char *opts[5] = { "Format the partition using the NTFS file system (Quick)", "Format the partition using the NTFS file system",
-                                        "Format the partition using the FAT file system (Quick)", "Format the partition using the FAT file system",
-                                        "Leave the current file system intact (no changes)" };
-                int nopt = keep_ok ? 5 : 4, o = 0;
+                static const char *opts[5] = { "Format the partition using the NTFS file system (Quick)", "Format the partition using the NTFS file system",
+                                               "Format the partition using the FAT file system (Quick)", "Format the partition using the FAT file system",
+                                               "Leave the current file system intact (no changes)" };
+                /* UEFI firmware boots from an EFI System Partition, which must be
+                 * FAT; NTFS cannot be one.  Only offer formats that can boot. */
+                int modes[5], nopt = 0;
+                if (bootinfo.is_efi) {
+                    modes[nopt++] = 2; modes[nopt++] = 3;
+                    if (keep_ok && it.fskind == FS_FAT32) modes[nopt++] = 4;
+                } else {
+                    modes[nopt++] = 0; modes[nopt++] = 1; modes[nopt++] = 2; modes[nopt++] = 3;
+                    if (keep_ok) modes[nopt++] = 4;
+                }
+                int o = 0;
                 bool back = false;
                 for (;;) {
                     ts_begin("ENTER=Continue  ESC=Cancel", NULL);
@@ -538,11 +578,14 @@ void setup_text_mode(bool from_desktop) {
                     if (fresh || !it.fat) tx_wrap(2, 3, "The partition you selected is not formatted. Setup will now format the partition.", TS_FG);
                     else tx(2, 3, "Setup will install " OS_NAME " on partition", TS_FG);
                     tx(6, 6, pd, TS_HI); tx(2, 8, "on", TS_FG); tx(2, 9, dd, TS_FG);
-                    tx_wrap(2, 11, "Use the UP and DOWN ARROW keys to select the file system you want, and then press ENTER. If you want to select a different partition for " OS_NAME ", press ESC.", TS_FG);
+                    if (bootinfo.is_efi)
+                        tx_wrap(2, 11, "This computer started Setup in UEFI mode, so the system partition must be FAT32 (it becomes the EFI System Partition). Press ESC to choose another partition.", TS_FG);
+                    else
+                        tx_wrap(2, 11, "Use the UP and DOWN ARROW keys to select the file system you want, and then press ENTER. If you want to select a different partition for " OS_NAME ", press ESC.", TS_FG);
                     ts_box(X(4), Y(15) - 6, 66 * cw, (nopt + 1) * LH + 6, TS_FG, false);
                     for (int i = 0; i < nopt; i++) {
-                        if (i == o) { fill_rect(&screen, X(5), Y(15 + i) - 1, 64 * cw, LH, TS_FG); tx(6, 15 + i, opts[i], TS_BG); }
-                        else tx(6, 15 + i, opts[i], TS_FG);
+                        if (i == o) { fill_rect(&screen, X(5), Y(15 + i) - 1, 64 * cw, LH, TS_FG); tx(6, 15 + i, opts[modes[i]], TS_BG); }
+                        else tx(6, 15 + i, opts[modes[i]], TS_FG);
                     }
                     ts_present();
                     int k2 = ts_key();
@@ -550,7 +593,7 @@ void setup_text_mode(bool from_desktop) {
                     else if (k2 == KEY_DOWN) o = (o + 1) % nopt;
                     else if (k2 == KEY_ESC) { back = true; break; }
                     else if (k2 == KEY_ENTER) {
-                        if (o < 4 && it.fat && !fresh) {
+                        if (modes[o] != 4 && it.fat && !fresh) {
                             ts_begin("F=Format  ESC=Cancel", NULL);
                             tx(2, 3, "WARNING: Formatting this drive will delete all files on it.", TS_HI);
                             tx(2, 5, "To format the drive, press F. To select a different partition, press ESC.", TS_FG);
@@ -562,7 +605,7 @@ void setup_text_mode(bool from_desktop) {
                     }
                 }
                 if (back) break;
-                if (do_install(it.disk, slot, o)) { finished_screen(); return; }
+                if (do_install(it.disk, slot, modes[o])) { finished_screen(); return; }
                 break;
             }
         }

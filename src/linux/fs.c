@@ -4,6 +4,7 @@
  * the WRLD VFS (whole files in memory), so reads and mmap() copy from there. */
 #ifdef __x86_64__
 #include "lx.h"
+#include "net.h"
 
 #define AT_FDCWD -100
 #define O_ACCMODE 3
@@ -137,6 +138,35 @@ static void fill_stat(lstat_t *st, vnode_t *n, int kind) {
     st->atime = st->mtime = st->ctime = node_time(n);
 }
 
+/* glibc's name resolver insists on reading a few configuration files before it
+ * will use our sockets.  Create them in the RAM file system the first time they
+ * are looked up; resolv.conf follows whatever DHCP handed us. */
+static vnode_t *etc_seed(const char *abs, const char *wrld) {
+    static const struct { const char *path, *text; } fixed[] = {
+        { "/etc/host.conf",     "order hosts,bind\nmulti on\n" },
+        { "/etc/nsswitch.conf", "hosts: files dns\n" },
+        { "/etc/hosts",         "# The only names this machine knows without DNS.\n"
+                                "127.0.0.1\tlocalhost\n::1\t\tlocalhost\n" },
+        { "/etc/services",      "ftp 21/tcp\nssh 22/tcp\nsmtp 25/tcp\ndomain 53/udp\n"
+                                "http 80/tcp\nhttps 443/tcp\nntp 123/udp\n" },
+    };
+    if (strncmp(abs, "/etc", 4) || (abs[4] && abs[4] != '/')) return NULL;
+    if (!vfs_resolve("C:\\Linux", NULL)) return NULL;      /* no Linux root installed */
+    vfs_mkdir_p("C:\\Linux\\etc");
+    for (unsigned i = 0; i < ARRAY_LEN(fixed); i++)
+        if (!strcmp(abs, fixed[i].path) && !vfs_resolve(wrld, NULL))
+            vfs_write_file(wrld, fixed[i].text, strlen(fixed[i].text));
+    if (!strcmp(abs, "/etc/resolv.conf")) {
+        char text[64];
+        if (netif.dns) {
+            char a[16]; ip_to_str(netif.dns, a);
+            snprintf(text, sizeof text, "nameserver %s\n", a);
+        } else strlcpy(text, "# no DNS server configured\n", sizeof text);
+        vfs_write_file(wrld, text, strlen(text));
+    }
+    return vfs_resolve(wrld, NULL);
+}
+
 /* resolve a Linux path to a node (NULL: not found) */
 static vnode_t *resolve(lxproc_t *p, int dirfd, const char *upath, int *kind, char *labs, int lcap) {
     char w[512];
@@ -144,7 +174,9 @@ static vnode_t *resolve(lxproc_t *p, int dirfd, const char *upath, int *kind, ch
     if (kind) *kind = k;
     if (k == LP_PROC_SELF_EXE) { char we[512]; to_wrld(p->exe, we, sizeof we); return vfs_resolve(we, NULL); }
     if (k != LP_FILE) return NULL;
-    return vfs_resolve(w, NULL);
+    vnode_t *n = vfs_resolve(w, NULL);
+    if (!n) n = etc_seed(labs, w);
+    return n;
 }
 
 static int64_t do_open(lxproc_t *p, int dirfd, uint64_t upath, int flags, int mode) {

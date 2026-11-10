@@ -2,13 +2,7 @@
  * x86: 4 MiB pages identity-map all 4 GiB. x64: the boot stub's tables identity-map
  * the first 4 GiB with 2 MiB pages; Win32 processes get private address spaces. */
 #include "kernel.h"
-
-typedef struct PACKED {
-    uint32_t flags, mem_lower, mem_upper, boot_device, cmdline, mods_count, mods_addr;
-    uint32_t syms[4];
-    uint32_t mmap_length, mmap_addr;
-} mb_info_t;
-typedef struct PACKED { uint32_t size; uint64_t addr, len; uint32_t type; } mb_mmap_t;
+#include "bootinfo.h"
 
 extern uint8_t kernel_end[];
 #ifndef __x86_64__
@@ -243,43 +237,58 @@ uint8_t *initrd_data;
 uint32_t initrd_size;
 bool boot_verbose, boot_safe_mode;
 
-void mm_init(uint32_t mbaddr) {
-    mb_info_t *mb = (mb_info_t *)(uintptr_t)mbaddr;
+void mm_init(void) {
     /* 4..16 MiB is reserved for Win32 process images; the kernel itself is loaded at 16 MiB */
     uintptr_t lowest = ((uintptr_t)kernel_end + 0xFFF) & ~(uintptr_t)0xFFF;
     if (lowest < 16 * 1024 * 1024) lowest = 16 * 1024 * 1024;
     uint32_t top = 64 * 1024 * 1024;
-    if (mb->flags & 1) phys_total = (mb->mem_upper + 1024) * 1024;
-    if (mb->flags & (1 << 6)) {
-        uint32_t best = 0;
-        for (uint32_t p = mb->mmap_addr; p < mb->mmap_addr + mb->mmap_length;) {
-            mb_mmap_t *e = (mb_mmap_t *)(uintptr_t)p;
-            if (e->type == 1 && e->addr <= 0x100000 + 0 && 0) {}
+    if (bootinfo.have_mem) phys_total = (bootinfo.mem_upper + 1024) * 1024;
+    if (bootinfo.mmap_count) {
+        uint64_t best = 0;
+        for (int i = 0; i < bootinfo.mmap_count; i++) {
+            const boot_mmap_t *e = &bootinfo.mmap[i];
             if (e->type == 1 && e->addr >= 0x100000 && e->addr < 0xFFFFFFFFull) {
                 uint64_t end = e->addr + e->len;
                 if (end > 0xF0000000ull) end = 0xF0000000ull;
                 if (end - e->addr > best) { best = end - e->addr; top = (uint32_t)end; }
             }
-            p += e->size + 4;
         }
         if (top > phys_total) phys_total = top;
-    } else if (mb->flags & 1) top = (mb->mem_upper + 1024) * 1024;
+    } else if (bootinfo.have_mem) top = (bootinfo.mem_upper + 1024) * 1024;
 
     /* initrd module: copy it above the reserved window */
     uint32_t mod_start = 0, mod_end = 0;
-    if ((mb->flags & 8) && mb->mods_count) {
-        uint32_t *mod = (uint32_t *)(uintptr_t)mb->mods_addr;
-        mod_start = mod[0]; mod_end = mod[1];
-        if (mod_end > lowest) lowest = (mod_end + 0xFFF) & ~0xFFFu;
+    if (bootinfo.module_count) {
+        uint64_t s = bootinfo.modules[0].start, e = bootinfo.modules[0].end;
+        if (e > s && e <= 0xFFFFFFFFull) {
+            mod_start = (uint32_t)s; mod_end = (uint32_t)e;
+            if (mod_end > lowest) lowest = (mod_end + 0xFFF) & ~0xFFFu;
+        } else if (e > s) {
+            klog("initrd: module at %llx is above the 4 GiB identity map, ignored", (unsigned long long)s);
+        }
     }
-    if (mb->flags & 4) {
-        const char *cmd = (const char *)(uintptr_t)mb->cmdline;
+    if (bootinfo.cmdline) {
+        const char *cmd = bootinfo.cmdline;
         if (strstr(cmd, "verbose")) boot_verbose = true;
         if (strstr(cmd, "safe")) boot_safe_mode = true;
         extern bool boot_setup_mode; extern uint32_t boot_root_serial;
         if (strstr(cmd, "setup")) boot_setup_mode = true;
         const char *r = strstr(cmd, "root=");
         if (r) boot_root_serial = strtoul(r + 5, NULL, 16);
+    }
+    /* Stay inside the one available region that holds the kernel and initrd.
+     * EFI memory maps have reserved holes (ACPI, runtime services) that a
+     * linear heap growing towards the top of RAM must not walk into.  On a
+     * BIOS map this normally selects the same range as before. */
+    if (bootinfo.mmap_count) {
+        for (int i = 0; i < bootinfo.mmap_count; i++) {
+            const boot_mmap_t *e = &bootinfo.mmap[i];
+            if (e->type != 1 || e->addr > lowest || lowest >= e->addr + e->len) continue;
+            uint64_t end = e->addr + e->len;
+            if (end > 0xF0000000ull) end = 0xF0000000ull;
+            if (end > lowest) top = (uint32_t)end;
+            break;
+        }
     }
     paging_init();
     heap_init(lowest, top);

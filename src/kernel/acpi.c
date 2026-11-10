@@ -2,8 +2,12 @@
  * the DSDT so the machine really powers off on any ACPI PC or hypervisor
  * (QEMU, VirtualBox, VMware, Hyper-V, real hardware). Also implements the
  * ACPI reset register for restarts. All of physical memory below 4 GiB is
- * identity-mapped, so the tables can be read in place. */
+ * identity-mapped, so the tables can be read in place.
+ *
+ * EFI firmware does not have to leave an RSDP in the legacy 0xE0000 window;
+ * GRUB's Multiboot 2 tags carry it instead. Both sources are tried. */
 #include "kernel.h"
+#include "bootinfo.h"
 
 typedef struct PACKED { char sig[8]; uint8_t sum; char oem[6]; uint8_t rev; uint32_t rsdt; uint32_t len; uint64_t xsdt; uint8_t xsum; uint8_t r[3]; } rsdp_t;
 typedef struct PACKED { char sig[4]; uint32_t len; uint8_t rev, sum; char oem[6], oemtab[8]; uint32_t oemrev, creator, crev; } sdt_t;
@@ -19,6 +23,14 @@ static char acpi_oem[7];
 
 static bool checksum(const void *p, uint32_t n) { uint8_t s = 0; for (uint32_t i = 0; i < n; i++) s += ((const uint8_t *)p)[i]; return s == 0; }
 static rsdp_t *find_rsdp(void) {
+    /* Multiboot 2 hands over a copy of the RSDP; on EFI this is the only
+     * reliable place for it. Check both the 1.0 and 2.0 checksums. */
+    if (bootinfo.acpi_rsdp && bootinfo.acpi_rsdp < 0xFFFFFFFFull) {
+        rsdp_t *r = (rsdp_t *)(uintptr_t)bootinfo.acpi_rsdp;
+        if (!memcmp(r->sig, "RSD PTR ", 8) && checksum(r, 20) &&
+            (r->rev < 2 || checksum(r, 36)))
+            return r;
+    }
     uintptr_t bda = 0x40E;
     __asm__("" : "+r"(bda));                       /* BIOS data area: EBDA segment */
     uint32_t ebda = (uint32_t)(*(volatile uint16_t *)bda) << 4;
@@ -59,7 +71,9 @@ void acpi_init(void) {
     if (!rsdp) { klog("acpi: no RSDP found (no ACPI)"); return; }
     memcpy(acpi_oem, rsdp->oem, 6); acpi_oem[6] = 0;
     bool x = rsdp->rev >= 2 && rsdp->xsdt && rsdp->xsdt < 0xFFFFFFFFull;
-    uint32_t root = x ? (uint32_t)rsdp->xsdt : rsdp->rsdt;
+    uint64_t root64 = x ? rsdp->xsdt : rsdp->rsdt;
+    if (root64 >= 0xFFFFFFFFull) { klog("acpi: root table at %llx is above the 4 GiB identity map", (unsigned long long)root64); return; }
+    uint32_t root = (uint32_t)root64;
     if (!table_ok(root)) { klog("acpi: bad root table"); return; }
     sdt_t *rt = (sdt_t *)(uintptr_t)root;
     int n = (rt->len - sizeof(sdt_t)) / (x ? 8 : 4);

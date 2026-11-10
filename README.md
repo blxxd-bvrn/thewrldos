@@ -7,7 +7,8 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
 **XplorerLite**.
 
-- Boots from a GRUB CD into a spinning-globe boot screen, a log-on screen and the desktop.
+- Boots from a GRUB CD image (BIOS or UEFI) into a spinning-globe boot screen, a log-on
+  screen and the desktop.
 - **Two editions from the same sources:** `wrldos.iso` (32-bit, i686) runs 32-bit Win32
   programs; `wrldos64.iso` (64-bit, x86-64 long mode) runs 64-bit (x64) Win32 programs.
   Everything else is the same.
@@ -81,7 +82,7 @@ again.
 ### Linux (or a WSL terminal)
 
 ```bash
-sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-common xorriso mtools qemu-system-x86
+sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools qemu-system-x86
 ```
 
 ```bash
@@ -125,8 +126,10 @@ You can also choose the emulated hardware:
 ### In VirtualBox, VMware or on a real PC
 
 Boot `wrldos.iso` (or `wrldos64.iso`, in a VM set up for a 64-bit guest, for example
-VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** boot (not UEFI) and at least
-**64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). To install,
+VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** or **UEFI** boot and at least
+**64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). The ISO
+is a hybrid image: a PC-BIOS core and an x86-64 EFI System Partition (`EFI/BOOT/BOOTX64.EFI`).
+UEFI firmware must be 64-bit (the usual kind); a 32-bit-only EFI machine cannot boot it. To install,
 attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **NVMe**, or **SCSI**
 (VMware/VirtualBox **LSI Logic** and **LSI Logic SAS**, **VMware Paravirtual**, **virtio-scsi**), or a
 **virtio-blk** disk in QEMU/KVM/Proxmox. USB disks and BusLogic adapters are not supported.
@@ -163,9 +166,11 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 1. **Text-mode Setup** (blue screens, keyboard-driven, like XP's):
    - welcome screen and licence (F8 to agree);
    - **partition list**, where you can create (C) and delete (D) partitions;
-   - **format** as NTFS or FAT32, quick or full, or keep the existing file system;
+   - **format** as NTFS or FAT32, quick or full, or keep the existing file system. When Setup
+     was started by UEFI firmware the system partition must be FAT32: it becomes the EFI System
+     Partition (type `0xEF`) and receives `\EFI\BOOT\BOOTX64.EFI`;
    - **copies the system** and writes the boot loader: GRUB's boot code in the MBR and its core
-     image after the MBR;
+     image after the MBR (which also keeps the disk BIOS-bootable);
    - restarts.
 2. **First boot from the disk**: a graphical wizard asks for:
    - time zone;
@@ -217,18 +222,21 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 ### 32-bit and 64-bit (`src/arch/i686`, `src/arch/x86_64`)
 - One set of C sources builds both editions; only the boot stub, the interrupt and
   context-switch assembly and the linker script are per architecture.
-- **x86-64:** GRUB loads the 64-bit ELF kernel through multiboot. A 32-bit stub checks for long
-  mode, identity-maps the first 4 GiB with 2 MiB pages, enables PAE, long mode, the FPU and SSE,
-  and calls the same `kmain`. Interrupt stubs save the SSE state (`FXSAVE`), so drivers and the
-  JavaScript engine can use SSE; the cooperative context switch keeps the callee-saved
-  registers.
+- **x86-64:** GRUB loads the 64-bit ELF kernel through Multiboot 2 (or Multiboot 1 on an older
+  GRUB). A 32-bit stub checks for long mode, identity-maps the first 4 GiB with 2 MiB pages,
+  enables PAE, long mode, the FPU and SSE, and calls the same `kmain`. Interrupt stubs save the
+  SSE state (`FXSAVE`), so drivers and the JavaScript engine can use SSE; the cooperative
+  context switch keeps the callee-saved registers.
 - Win32 programs get their own address space: on x64 a private PML4/PDPT, with the image
   mapped at its preferred base (usually `0x140000000`) in 2 MiB pages, so no relocation is
   needed.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
-  - Multiboot entry with a VBE framebuffer request.
+  - Multiboot 1 **and** Multiboot 2 headers with a 1024x768x32 framebuffer request. A small
+    boot-information layer (`bootinfo.c`) normalises memory maps, modules, command lines and
+    the framebuffer; on UEFI, Multiboot 2 also supplies the ACPI RSDP and marks the firmware
+    as EFI.
   - x86: GDT with a per-thread FS segment for the Win32 TEB; x64: the TEB through the GS base
     MSR. IDT and remapped PIC.
   - Exception handling: a faulting program is closed with an error dialog; kernel faults show
@@ -324,11 +332,17 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   last writer closes.
 - **Sockets (`ipc.c`):** `AF_UNIX` stream, datagram and seqpacket sockets, `socketpair`,
   `bind`/`connect`/`listen`/`accept`, `sendmsg`/`recvmsg` with `SCM_RIGHTS` descriptor passing.
-  There are no network socket families yet.
-- **Event loop:** `epoll_create1`/`epoll_ctl`/`epoll_wait`, `eventfd` and `timerfd`, so a
-  program can wait on several descriptors at once.
-- Not yet: signal delivery, IPv4/IPv6 sockets, and a real `vfork` (it does not suspend
-  the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
+- **Network sockets:** `AF_INET` TCP and UDP over the kernel stack in `src/net`, with
+  `send`/`recv`/`sendto`/`recvfrom`, `getsockname`/`getpeername`, `getsockopt`/`setsockopt`
+  (`SO_REUSEADDR`, `SO_ERROR`, `SO_TYPE`, buffers, `TCP_NODELAY`) and non-blocking mode.
+  `getaddrinfo` works through the distribution's glibc: `/etc/hosts`, `/etc/host.conf`,
+  `/etc/nsswitch.conf`, `/etc/resolv.conf` (from the DHCP lease) and `/etc/services` are created
+  in the RAM file system on first lookup.
+- **Event loop:** `epoll_create1`/`epoll_ctl`/`epoll_wait`, `eventfd` and `timerfd`, and `poll()`
+  now asks each pipe, socket, eventfd and timerfd whether it is ready instead of answering
+  "always ready".
+- Not yet: signal delivery, IPv6 sockets and a loopback interface, and a real `vfork` (it does
+  not suspend the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
@@ -342,8 +356,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     show "cable unplugged".
 - **Protocols:** Ethernet, ARP, IPv4, ICMP, UDP, DHCP client, and a DNS resolver (with
   `C:\WRLD\hosts`).
-- **TCP:** client side, with MSS, a 64 KiB window, retransmission with back-off, and graceful
-  close.
+- **TCP:** client and server side, with MSS, a 64 KiB window, retransmission with back-off,
+  graceful close, and non-blocking connects for the socket layer.
 - **HTTPS (TLS 1.3 and 1.2):**
   - [Mbed TLS](https://www.trustedfirmware.org/projects/mbed-tls/) 4.1 with TF-PSA-Crypto
     (`third_party/mbedtls`), built freestanding against the same small C library as QuickJS
@@ -546,7 +560,11 @@ used to test every screen above, including a full install from a blank disk.
   - Disks with 4 KB sectors (4Kn) can't be installed to: a BIOS can't start from them.
   - At boot the whole partition is loaded into memory and changes are written back, so the
     installed system's size is limited by RAM.
-  - BIOS/MBR only: no UEFI or GPT install.
+  - **Boot:** the CD is a hybrid image: PC BIOS and 64-bit UEFI both boot it. Installed systems
+  use an MBR partition table (no GPT). Setup always writes the BIOS boot loader; when Setup
+  itself runs under UEFI the system partition must be FAT32, becomes an EFI System Partition
+  and receives `\EFI\BOOT\BOOTX64.EFI`. An NTFS installation can therefore be started only by
+  BIOS/CSM, and a 32-bit-EFI-only machine cannot boot the images.
   - NTFS: no compression, encryption, alternate data streams or attribute lists, and the MFT
     has a fixed size (4096 files and folders on partitions under 512 MB, 16384 above), so
     FAT32 is the choice for very many small files. The driver mounts volumes it formatted;
@@ -570,7 +588,8 @@ used to test every screen above, including a full install from a blank disk.
 - **Linux programs:**
   - `fork` copies the whole address space (there is no copy-on-write), and `MAP_SHARED` mappings
     are copied too, so two processes stop sharing them. `vfork` behaves like `fork`.
-  - Pipes hold at most 64 KiB, and sockets are `AF_UNIX` only: no IPv4/IPv6 sockets yet.
+  - Pipes hold at most 64 KiB; network sockets are IPv4 only, with no loopback interface and no
+    IP fragmentation (a UDP datagram tops out at 1472 bytes).
 - **Hardware and design:**
   - No USB, and sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
@@ -608,6 +627,7 @@ rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 sa
 rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrldstyle;
                    the build adds boot/ (kernel and GRUB images)
 grub/grub.cfg      CD boot menu
+grub/efi.cfg       early config embedded in the installed EFI loader
 tools/             asset/globe/root-certificate generators, DMG builder, build-iso.sh, QEMU harness
 docs/screenshots/  the screenshots in this README
 ```

@@ -248,17 +248,37 @@ int64_t lx_syscall(regs_t *r) {
         default: return -EINVAL;
         }
     }
-    case 7: {                                                         /* poll: files and consoles are always ready */
-        int ready = 0;
-        for (uint64_t i = 0; i < a1 && i < 1024; i++) {
-            struct { int32_t fd; int16_t ev, rev; } pf;
-            if (!uin(&pf, a0 + i * 8, 8)) return -EFAULT;
-            pf.rev = pf.fd < 0 ? 0 : !lx_fd_get(p, pf.fd) ? 0x20 : (pf.ev & (1 | 4));
-            if (pf.rev) ready++;
-            uout(a0 + i * 8, &pf, 8);
+    case 7: {                                                         /* poll */
+        uint32_t deadline = timer_ticks() + ((int64_t)a2 > 0 ? (uint32_t)a2 : 0);
+        for (;;) {
+            int ready = 0;
+            for (uint64_t i = 0; i < a1 && i < 1024; i++) {
+                struct { int32_t fd; int16_t ev, rev; } pf;
+                if (!uin(&pf, a0 + i * 8, 8)) return -EFAULT;
+                lxfile_t *f = pf.fd < 0 ? NULL : lx_fd_get(p, pf.fd);
+                int16_t rev = 0;
+                if (pf.fd >= 0) {
+                    if (!f) rev = 0x20;                               /* POLLNVAL */
+                    else if (f->type >= FD_FILE && f->type <= FD_RANDOM)
+                        rev = pf.ev & (1 | 4);                        /* files and devices never block */
+                    else {
+                        if (lx_ipc_ready(f, 0x001)) rev |= 0x001;     /* POLLIN */
+                        if (lx_ipc_ready(f, 0x004)) rev |= 0x004;     /* POLLOUT */
+                        if (lx_ipc_ready(f, 0x008)) rev |= 0x008;     /* POLLERR */
+                        if (lx_ipc_ready(f, 0x010)) rev |= 0x010;     /* POLLHUP */
+                        rev &= pf.ev | 0x018;
+                    }
+                }
+                pf.rev = rev;
+                if (rev) ready++;
+                if (!uout(a0 + i * 8, &pf, 8)) return -EFAULT;
+            }
+            if (ready) return ready;
+            if ((int64_t)a2 == 0) return 0;
+            if ((int64_t)a2 > 0 && (int32_t)(timer_ticks() - deadline) >= 0) return 0;
+            if (p->exiting) return -EINTR;
+            task_sleep(1);
         }
-        if (!ready && (int64_t)a2 > 0) task_sleep(a2);
-        return ready;
     }
     case 24: task_yield(); return 0;                                  /* sched_yield */
     case 35: case 230: {                                              /* nanosleep, clock_nanosleep */

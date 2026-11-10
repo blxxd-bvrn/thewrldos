@@ -1,5 +1,6 @@
 /* THE WRLD OS kernel entry point */
 #include "kernel.h"
+#include "bootinfo.h"
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
@@ -8,14 +9,6 @@
 #include "disk.h"
 #include "net.h"
 #include "audio.h"
-
-typedef struct PACKED {
-    uint32_t flags, mem_lower, mem_upper, boot_device, cmdline, mods_count, mods_addr;
-    uint32_t syms[4];
-    uint32_t mmap_length, mmap_addr, drives_length, drives_addr, config_table, boot_loader_name, apm_table;
-    uint32_t vbe_control_info, vbe_mode_info; uint16_t vbe_mode, vbe_if_seg, vbe_if_off, vbe_if_len;
-    uint64_t fb_addr; uint32_t fb_pitch, fb_width, fb_height; uint8_t fb_bpp, fb_type;
-} mb_info_full_t;
 
 extern void (*panic_hook)(const char *msg);
 extern void (*fault_hook)(task_t *t, const char *msg);
@@ -95,17 +88,21 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     gdt_init();
     idt_init();
     panic_hook = text_panic;
-    if (magic != 0x2BADB002) panic("Not booted by a Multiboot loader (magic %08x)", magic);
-    mb_info_full_t *mb = (mb_info_full_t *)(uintptr_t)mbaddr;
-    mm_init(mbaddr);
+    bootinfo_init(magic, mbaddr);
+    if (!bootinfo.valid) panic("Not booted by a Multiboot 1 or 2 loader (magic %08x)", magic);
+    mm_init();
     task_init();
     timer_init();
     sti();
     klog("%s %s %s (build %s) starting", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
-    if (!(mb->flags & (1 << 12)) || mb->fb_bpp != 32)
-        panic("No 32-bit linear framebuffer from the bootloader (flags=%x bpp=%d).\nBoot with GRUB using the supplied grub.cfg.", mb->flags, mb->fb_bpp);
-    fb_info.addr = (uint32_t)mb->fb_addr; fb_info.pitch = mb->fb_pitch;
-    fb_info.width = mb->fb_width; fb_info.height = mb->fb_height; fb_info.bpp = mb->fb_bpp;
+    klog("boot: %s, %s", bootinfo.from_mb2 ? "Multiboot 2" : "Multiboot 1",
+         bootinfo.is_efi ? "EFI firmware" : "BIOS/legacy firmware");
+    if (!bootinfo.have_fb || bootinfo.fb_bpp != 32 || bootinfo.fb_type != 1 || bootinfo.fb_addr > 0xFFFFFFFFull)
+        panic("No usable 32-bit linear framebuffer from the bootloader (flags=%d bpp=%d type=%d addr=%llx).\n"
+              "Boot with GRUB using the supplied grub.cfg.", bootinfo.have_fb, bootinfo.fb_bpp,
+              bootinfo.fb_type, (unsigned long long)bootinfo.fb_addr);
+    fb_info.addr = (uint32_t)bootinfo.fb_addr; fb_info.pitch = bootinfo.fb_pitch;
+    fb_info.width = bootinfo.fb_width; fb_info.height = bootinfo.fb_height; fb_info.bpp = bootinfo.fb_bpp;
     klog("framebuffer %ux%ux%u at %08x pitch %u", fb_info.width, fb_info.height, fb_info.bpp, fb_info.addr, fb_info.pitch);
     klog("memory: %u MB detected, heap %u MB", mm_phys_total() / (1024 * 1024), mm_total() / (1024 * 1024));
     gfx_init();

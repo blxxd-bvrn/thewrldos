@@ -9,7 +9,7 @@ set -euo pipefail
 
 SRC="$(cd "${1:-.}" && pwd)"
 BUILD_DIR="${WRLD_BUILD_DIR:-$HOME/.cache/wrldos-build}"
-PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-common xorriso mtools"
+PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -20,6 +20,7 @@ fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 have_tools() {
     for t in make gcc nasm grub-mkrescue grub-mkimage xorriso mformat; do command -v "$t" >/dev/null 2>&1 || return 1; done
     [ -f /usr/lib/grub/i386-pc/boot.img ] || return 1
+    [ -f /usr/lib/grub/x86_64-efi/kernel.img ] || return 1
     echo 'int x;' | gcc -m32 -x c -c - -o /dev/null 2>/dev/null || return 1   # 32-bit support (gcc-multilib)
 }
 if ! have_tools; then

@@ -1,15 +1,18 @@
-/* Pipes, AF_UNIX sockets with descriptor passing, epoll, eventfd and timerfd.
+/* Pipes, sockets, epoll, eventfd and timerfd.
  *
  * Everything here is polled from the cooperative scheduler: a call that would
  * block sleeps for a millisecond and looks again. That is enough for an event
  * loop, and it keeps the kernel free of wait queues for now.
  *
- * Sockets are local to this machine: AF_UNIX only, no addresses of any other
- * family. A socket pair moves messages, not bytes, so SOCK_STREAM reads may
- * return less than was written; SOCK_DGRAM and SOCK_SEQPACKET keep boundaries.
+ * AF_UNIX sockets are local to this machine and move messages, not bytes, so
+ * SOCK_STREAM reads may return less than was written; SOCK_DGRAM and
+ * SOCK_SEQPACKET keep boundaries.  AF_INET sockets (TCP and UDP) hand their
+ * bytes to the stack in src/net; their ports and addresses are in host order
+ * here and converted at the sockaddr boundary.
  */
 #ifdef __x86_64__
 #include "lx.h"
+#include "net.h"
 
 #define PIPE_CAP      (64 * 1024)
 #define SOCK_QLEN     (256 * 1024)
@@ -27,9 +30,12 @@
 #define TFD_CLOEXEC   02000000
 
 #define AF_UNIX_      1
+#define AF_INET_      2
 #define SOCK_STREAM_  1
 #define SOCK_DGRAM_   2
 #define SOCK_SEQPACKET_ 5
+#define IPPROTO_TCP_  6
+#define IPPROTO_UDP_  17
 
 #define POLLIN_  0x001
 #define POLLOUT_ 0x004
@@ -52,6 +58,8 @@ typedef struct lxmsg {
     uint8_t *data;
     int nfds;
     lxfile_t *fds[MAX_MSG_FD];
+    uint32_t src_ip;              /* AF_INET datagrams */
+    uint16_t src_port;
 } lxmsg_t;
 
 typedef struct lxsock {
@@ -65,6 +73,17 @@ typedef struct lxsock {
     uint64_t dropped;
     struct lxsock *accept_head, *accept_next;
     struct lxsock *reg_next;
+
+    /* AF_INET: addresses and ports are in host order, like the network stack */
+    int family;
+    int proto;
+    uint32_t laddr, raddr;
+    uint16_t lport, rport;
+    bool udp_bound;
+    bool reuseaddr, nodelay;
+    int so_error;
+    tcb_t *tcb;                   /* stream socket */
+    struct lxsock *inet_next;
 } lxsock_t;
 
 typedef struct lxepitem { int fd; uint32_t events; uint64_t data; } lxepitem_t;
@@ -80,6 +99,7 @@ typedef struct lxtfd {
 } lxtfd_t;
 
 static lxsock_t *bound_list;
+static lxsock_t *inet_socks;
 
 static lxproc_t *cur_proc(void) { lxthread_t *t = lx_current(); return t ? t->proc : NULL; }
 static bool put(lxproc_t *p, uint64_t dst, const void *src, uint64_t n) {
@@ -252,6 +272,173 @@ static int64_t sock_send(lxsock_t *s, const void *src, uint64_t n, bool nb, lxfi
     return (int64_t)n;
 }
 
+/* ---------------- AF_INET sockets ---------------- */
+/* Linux sockaddr_in, as it appears in memory: 16 bytes, network byte order. */
+typedef struct PACKED { uint16_t family, port; uint32_t addr; uint8_t zero[8]; } sin_t;
+
+static bool inet_port_used(uint16_t port, lxsock_t *except) {
+    for (lxsock_t *o = inet_socks; o; o = o->inet_next)
+        if (o != except && o->bound && o->lport == port) return true;
+    return false;
+}
+static void inet_link(lxsock_t *s) { s->inet_next = inet_socks; inet_socks = s; }
+static void inet_unlink(lxsock_t *s) {
+    for (lxsock_t **pp = &inet_socks; *pp; pp = &(*pp)->inet_next)
+        if (*pp == s) { *pp = s->inet_next; s->inet_next = NULL; return; }
+}
+static lxsock_t *inet_new(int type) {
+    lxsock_t *s = sock_new(type);
+    if (!s) return NULL;
+    s->family = AF_INET_;
+    s->proto = type == SOCK_STREAM_ ? IPPROTO_TCP_ : IPPROTO_UDP_;
+    inet_link(s);
+    return s;
+}
+static int in_parse(lxproc_t *p, uint64_t uaddr, int len, uint32_t *ip, uint16_t *port) {
+    if (len < 8) return -EINVAL;
+    sin_t sa; memset(&sa, 0, sizeof sa);
+    if (!get(p, &sa, uaddr, MIN((int)sizeof sa, len))) return -EFAULT;
+    if (sa.family != AF_INET_) return -EAFNOSUPPORT;
+    if (port) *port = ntohs(sa.port);
+    if (ip) *ip = ntohl(sa.addr);
+    return 0;
+}
+static int in_put(lxproc_t *p, uint64_t uaddr, uint64_t ualen, uint32_t ip, uint16_t port) {
+    if (!uaddr || !ualen) return 0;
+    int32_t cap = 0;
+    if (!get(p, &cap, ualen, 4)) return -EFAULT;
+    sin_t sa; memset(&sa, 0, sizeof sa);
+    sa.family = AF_INET_; sa.port = htons(port); sa.addr = htonl(ip);
+    if (!put(p, uaddr, &sa, MIN((uint64_t)MAX(cap, 0), (uint64_t)sizeof sa))) return -EFAULT;
+    int32_t l = sizeof sa;
+    return put(p, ualen, &l, 4) ? 0 : -EFAULT;
+}
+static int inet_map_error(int e) { return e == 1 ? ECONNREFUSED : e == 2 ? ECONNRESET : ETIMEDOUT; }
+
+/* A connecting socket becomes usable as soon as the stack says so. */
+static void inet_sync(lxsock_t *s) {
+    if (s->family != AF_INET_ || s->type != SOCK_STREAM_ || !s->tcb || s->connected) return;
+    int st = tcp_status(s->tcb);
+    if (st == 1) { s->connected = true; s->lport = tcp_local_port(s->tcb); }
+    else if (st < 0 && !s->so_error) s->so_error = inet_map_error(tcp_error(s->tcb));
+}
+
+/* Datagrams arrive on the network task; queue them for recv(). */
+static void inet_udp_input(uint32_t src, uint16_t sport, const uint8_t *data, uint32_t len, void *ctx) {
+    lxsock_t *s = ctx;
+    if (!s || s->family != AF_INET_ || s->type != SOCK_DGRAM_) return;
+    if (s->qlen + len > SOCK_QLEN) { s->dropped++; return; }
+    lxmsg_t *m = msg_new(data, len);
+    if (!m) { s->dropped++; return; }
+    m->src_ip = src; m->src_port = sport;
+    q_push(s, m);
+}
+static int inet_auto_bind(lxsock_t *s) {
+    if (s->family != AF_INET_ || s->bound) return 0;
+    for (int i = 0; i < 128; i++) {
+        uint16_t port = net_ephemeral_port();
+        if (inet_port_used(port, s)) continue;
+        if (s->type == SOCK_DGRAM_) {
+            if (!udp_bind(port, inet_udp_input, s)) continue;
+            s->udp_bound = true;
+        }
+        s->lport = port; s->bound = true;
+        return 0;
+    }
+    return -EADDRINUSE;
+}
+static int64_t inet_udp_send(lxsock_t *s, const void *buf, uint64_t n, uint32_t dip, uint16_t dport, bool have_dest) {
+    if (!have_dest) {
+        if (!s->connected) return -EDESTADDRREQ;
+        dip = s->raddr; dport = s->rport;
+    }
+    if (n > 1472) return -EMSGSIZE;                      /* no IP fragmentation in this stack */
+    int r = inet_auto_bind(s);
+    if (r < 0) return r;
+    if (!udp_send(dip, s->lport, dport, buf, (uint32_t)n)) return -ENOBUFS;
+    return (int64_t)n;
+}
+static int64_t inet_tcp_send(lxsock_t *s, const void *buf, uint64_t n, bool nb) {
+    if (!s->tcb) return -ENOTCONN;
+    inet_sync(s);
+    if (tcp_status(s->tcb) == 0) {
+        if (nb) return -EAGAIN;
+        while (tcp_status(s->tcb) == 0) {
+            if (cur_proc() && cur_proc()->exiting) return -EINTR;
+            task_sleep(1);
+        }
+        inet_sync(s);
+    }
+    if (tcp_status(s->tcb) < 0)
+        return s->so_error ? -s->so_error : -ECONNRESET;
+    uint64_t done = 0;
+    while (done < n) {
+        int r = tcp_send_nb(s->tcb, (const uint8_t *)buf + done, (uint32_t)MIN(n - done, 0x7FFFFFFFu));
+        if (r < 0) return done ? (int64_t)done : (s->so_error ? -s->so_error : -EPIPE);
+        if (!r) {
+            if (nb) return done ? (int64_t)done : -EAGAIN;
+            if (cur_proc() && cur_proc()->exiting) return done ? (int64_t)done : -EINTR;
+            task_sleep(1);
+            continue;
+        }
+        done += (uint32_t)r;
+    }
+    return (int64_t)done;
+}
+static int64_t inet_tcp_recv(lxsock_t *s, void *buf, uint64_t n, bool nb, bool peek) {
+    (void)nb;
+    if (!s->tcb) return -ENOTCONN;
+    inet_sync(s);
+    if (tcp_status(s->tcb) < 0 && !tcp_recv_ready(s->tcb))
+        return s->so_error ? -s->so_error : -ECONNRESET;
+    int r = peek ? tcp_peek(s->tcb, buf, (uint32_t)MIN(n, 0x7FFFFFFFu))
+                 : tcp_recv(s->tcb, buf, (uint32_t)MIN(n, 0x7FFFFFFFu), 0);
+    if (r == -2) return -EAGAIN;
+    if (r < 0) {
+        int e = tcp_error(s->tcb);
+        s->so_error = e ? inet_map_error(e) : ECONNRESET;
+        return -s->so_error;
+    }
+    return r;
+}
+static int64_t inet_udp_recv(lxsock_t *s, void *buf, uint64_t n, bool peek,
+                             uint32_t *sip, uint16_t *sport, uint32_t *full) {
+    lxmsg_t *m = s->qhead;
+    if (!m) return -EAGAIN;
+    uint32_t len = m->len;
+    uint64_t k = MIN(n, (uint64_t)len);
+    if (k) memcpy(buf, m->data, k);
+    if (sip) *sip = m->src_ip;
+    if (sport) *sport = m->src_port;
+    if (full) *full = len;
+    if (!peek) {
+        s->qhead = m->next;
+        if (!s->qhead) s->qtail = NULL;
+        s->qlen -= len;
+        msg_free(m);
+    }
+    return (int64_t)k;
+}
+static int64_t inet_read(lxsock_t *s, void *buf, uint64_t n, bool nb,
+                         uint32_t *sip, uint16_t *sport, uint32_t *full, bool peek) {
+    if (!n) return 0;
+    for (;;) {
+        int64_t r = s->type == SOCK_DGRAM_
+                  ? inet_udp_recv(s, buf, n, peek, sip, sport, full)
+                  : inet_tcp_recv(s, buf, n, nb, peek);
+        if (r != -EAGAIN) return r;
+        if (nb) return -EAGAIN;
+        if (cur_proc() && cur_proc()->exiting) return -EINTR;
+        task_sleep(1);
+    }
+}
+static int64_t inet_write(lxsock_t *s, const void *buf, uint64_t n, bool nb,
+                          uint32_t dip, uint16_t dport, bool have_dest) {
+    if (s->type == SOCK_DGRAM_) return inet_udp_send(s, buf, n, dip, dport, have_dest);
+    if (have_dest) return -EISCONN;
+    return inet_tcp_send(s, buf, n, nb);
+}
+
 /* ---------------- eventfd and timerfd ---------------- */
 static void tfd_tick(lxtfd_t *t) {
     if (!t->armed) return;
@@ -276,6 +463,25 @@ bool lx_ipc_ready(lxfile_t *f, uint32_t want) {
     }
     case FD_SOCKET: {
         lxsock_t *s = f->obj;
+        if (s->family == AF_INET_) {
+            inet_sync(s);
+            if (want & POLLIN_) {
+                if (s->type == SOCK_DGRAM_) return s->qhead != NULL;
+                if (s->listening) return tcp_accept_ready(s->lport);
+                if (!s->tcb) return true;             /* unconnected: read reports ENOTCONN */
+                if (!s->connected) return tcp_status(s->tcb) != 0;   /* failed connect is readable so read() reports it */
+                return tcp_recv_ready(s->tcb);
+            }
+            if (want & POLLOUT_) {
+                if (s->type == SOCK_DGRAM_) return true;
+                if (!s->tcb) return false;
+                if (!s->connected) return tcp_status(s->tcb) != 0;
+                return tcp_send_ready(s->tcb);
+            }
+            if (want & POLLERR_) return s->so_error != 0 || (s->tcb && tcp_status(s->tcb) < 0);
+            if (want & POLLHUP_) return s->tcb && tcp_hup(s->tcb);
+            return false;
+        }
         if (want & POLLIN_) return sock_readable(s);
         if (want & POLLOUT_) return sock_writable(s) && s->qlen < SOCK_QLEN;
         if (want & POLLHUP_) return s->peer_gone;
@@ -290,7 +496,11 @@ bool lx_ipc_ready(lxfile_t *f, uint32_t want) {
 int64_t lx_ipc_read(lxfile_t *f, void *dst, uint64_t n, bool nonblock) {
     switch (f->type) {
     case FD_PIPE: return pipe_read(f->obj, dst, n, nonblock);
-    case FD_SOCKET: return sock_recv(f->obj, dst, n, nonblock, false);
+    case FD_SOCKET: {
+        lxsock_t *s = f->obj;
+        if (s->family == AF_INET_) return inet_read(s, dst, n, nonblock, NULL, NULL, NULL, false);
+        return sock_recv(s, dst, n, nonblock, false);
+    }
     case FD_EVENTFD: {
         lxevfd_t *e = f->obj;
         if (n < 8) return -EINVAL;
@@ -318,7 +528,11 @@ int64_t lx_ipc_read(lxfile_t *f, void *dst, uint64_t n, bool nonblock) {
 int64_t lx_ipc_write(lxfile_t *f, const void *src, uint64_t n, bool nonblock) {
     switch (f->type) {
     case FD_PIPE: return pipe_write(f->obj, src, n, nonblock);
-    case FD_SOCKET: return sock_send(f->obj, src, n, nonblock, NULL, 0);
+    case FD_SOCKET: {
+        lxsock_t *s = f->obj;
+        if (s->family == AF_INET_) return inet_write(s, src, n, nonblock, 0, 0, false);
+        return sock_send(s, src, n, nonblock, NULL, 0);
+    }
     case FD_EVENTFD: {
         lxevfd_t *e = f->obj;
         uint64_t v;
@@ -349,6 +563,18 @@ void lx_ipc_release(lxfile_t *f) {
     }
     case FD_SOCKET: {
         lxsock_t *s = f->obj;
+        if (s->family == AF_INET_) {
+            inet_unlink(s);
+            if (s->type == SOCK_DGRAM_) {
+                if (s->udp_bound) { udp_unbind(s->lport); s->udp_bound = false; }
+            } else {
+                if (s->listening) { tcp_unlisten(s->lport); s->listening = false; }
+                if (s->tcb) { tcp_close(s->tcb); s->tcb = NULL; }
+            }
+            q_clear(s);
+            if (--o->refs <= 0) kfree(s);
+            return;
+        }
         if (s->bound) { sock_unregister(s); s->bound = false; }
         if (s->peer && s->peer->peer == s) { s->peer->peer = NULL; s->peer->peer_gone = true; }
         q_clear(s);
@@ -392,16 +618,30 @@ static lxsock_t *sock_fd(lxproc_t *p, int fd) {
 }
 
 static int64_t do_socket(lxproc_t *p, int domain, int type, int proto) {
-    if (domain != AF_UNIX_) return -EAFNOSUPPORT;
-    if (proto != 0) return -EPROTONOSUPPORT;
     int base = type & 0xF;
-    if (base != SOCK_STREAM_ && base != SOCK_DGRAM_ && base != SOCK_SEQPACKET_) return -EPROTOTYPE;
-    lxsock_t *s = sock_new(base);
-    if (!s) return -ENOMEM;
-    lxfile_t *f = wrap(FD_SOCKET, s);
-    if (!f) { kfree(s); return -ENOMEM; }
-    f->oflags = (type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
-    return install(p, f, type);
+    if (domain == AF_UNIX_) {
+        if (proto != 0) return -EPROTONOSUPPORT;
+        if (base != SOCK_STREAM_ && base != SOCK_DGRAM_ && base != SOCK_SEQPACKET_) return -EPROTOTYPE;
+        lxsock_t *s = sock_new(base);
+        if (!s) return -ENOMEM;
+        lxfile_t *f = wrap(FD_SOCKET, s);
+        if (!f) { kfree(s); return -ENOMEM; }
+        f->oflags = (type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+        return install(p, f, type);
+    }
+    if (domain == AF_INET_) {
+        if (base != SOCK_STREAM_ && base != SOCK_DGRAM_) return -EPROTOTYPE;
+        int want = base == SOCK_STREAM_ ? IPPROTO_TCP_ : IPPROTO_UDP_;
+        if (proto != 0 && proto != want) return -EPROTONOSUPPORT;
+        lxsock_t *s = inet_new(base);
+        if (!s) return -ENOMEM;
+        s->proto = proto ? proto : want;
+        lxfile_t *f = wrap(FD_SOCKET, s);
+        if (!f) { inet_unlink(s); kfree(s); return -ENOMEM; }
+        f->oflags = (type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+        return install(p, f, type);
+    }
+    return -EAFNOSUPPORT;
 }
 
 static int64_t do_socketpair(lxproc_t *p, int domain, int type, int proto, uint64_t usv) {
@@ -446,6 +686,27 @@ static int64_t do_bind(lxproc_t *p, int fd, uint64_t uaddr, int len) {
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
     if (s->bound) return -EINVAL;
+    if (s->family == AF_INET_) {
+        uint32_t ip = 0; uint16_t port = 0;
+        int r = in_parse(p, uaddr, len, &ip, &port);
+        if (r < 0) return r;
+        if (ip && netif.ip && ip != netif.ip && ip != 0x7F000001) return -EADDRNOTAVAIL;
+        if (!port) {
+            for (int i = 0; i < 128 && !port; i++) {
+                uint16_t cand = net_ephemeral_port();
+                if (!inet_port_used(cand, s)) port = cand;
+            }
+            if (!port) return -EADDRINUSE;
+        } else if (inet_port_used(port, s) && !s->reuseaddr) {
+            return -EADDRINUSE;
+        }
+        if (s->type == SOCK_DGRAM_) {
+            if (!udp_bind(port, inet_udp_input, s)) return -EADDRINUSE;
+            s->udp_bound = true;
+        }
+        s->laddr = ip; s->lport = port; s->bound = true;
+        return 0;
+    }
     char path[108];
     int r = sun_parse(p, uaddr, len, path, sizeof path);
     if (r < 0) return r;
@@ -462,6 +723,17 @@ static int64_t do_listen(lxproc_t *p, int fd, int backlog) {
     (void)backlog;
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
+    if (s->family == AF_INET_) {
+        if (s->type != SOCK_STREAM_) return -EOPNOTSUPP;
+        if (s->listening) return 0;
+        if (!s->bound) {
+            int r = inet_auto_bind(s);
+            if (r < 0) return r;
+        }
+        if (tcp_listen(s->lport) != 0) return -EADDRINUSE;
+        s->listening = true;
+        return 0;
+    }
     if (!s->bound) return -EINVAL;
     s->listening = true;
     return 0;
@@ -470,6 +742,45 @@ static int64_t do_listen(lxproc_t *p, int fd, int backlog) {
 static int64_t do_connect(lxproc_t *p, int fd, uint64_t uaddr, int len) {
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
+    lxfile_t *self = lx_fd_get(p, fd);
+    if (s->family == AF_INET_) {
+        uint32_t ip = 0; uint16_t port = 0;
+        int r = in_parse(p, uaddr, len, &ip, &port);
+        if (r < 0) return r;
+        if (!port) return -ECONNREFUSED;
+        if (!ip) return -EADDRNOTAVAIL;
+        if (s->type == SOCK_DGRAM_) { s->raddr = ip; s->rport = port; s->connected = true; return 0; }
+        if (s->connected) return -EISCONN;
+        if (s->tcb) return -EALREADY;
+        bool nb = (self->oflags & O_NONBLOCK_F) != 0;
+        if (!net_ready()) {
+            if (!nb && !net_wait_ready(8000)) return -ENETUNREACH;
+            if (nb) return -ENETUNREACH;
+        }
+        if (!s->bound) {
+            r = inet_auto_bind(s);                 /* reserve the local port once */
+            if (r < 0) return r;
+        }
+        tcb_t *t = tcp_open_from(ip, port, s->lport);
+        if (!t) return -ENOMEM;
+        s->tcb = t; s->raddr = ip; s->rport = port; s->so_error = 0;
+        s->lport = tcp_local_port(t);
+        if (nb) return -EINPROGRESS;
+        uint32_t t0 = timer_ticks();
+        while (tcp_status(t) == 0) {
+            if (p->exiting) { tcp_close(t); s->tcb = NULL; return -EINTR; }
+            if (timer_ticks() - t0 > 30000) { tcp_close(t); s->tcb = NULL; return -ETIMEDOUT; }
+            task_sleep(2);
+        }
+        if (tcp_status(t) < 0) {
+            int e = inet_map_error(tcp_error(t));
+            tcp_close(t); s->tcb = NULL;
+            return -e;
+        }
+        s->connected = true;
+        s->lport = tcp_local_port(t);
+        return 0;
+    }
     if (s->connected) return -EISCONN;
     char path[108];
     int r = sun_parse(p, uaddr, len, path, sizeof path);
@@ -492,7 +803,25 @@ static int64_t do_accept(lxproc_t *p, int fd, uint64_t uaddr, uint64_t ualen, in
     lxfile_t *self = lx_fd_get(p, fd);
     bool nb = (flags & SOCK_NONBLOCK) || (self->oflags & O_NONBLOCK_F);
     for (;;) {
-        if (s->accept_head) {
+        if (s->family == AF_INET_) {
+            if (!s->listening) return -EINVAL;
+            tcb_t *c = tcp_accept(s->lport);
+            if (c) {
+                lxsock_t *ns = inet_new(SOCK_STREAM_);
+                if (!ns) { tcp_close(c); return -ENOMEM; }
+                ns->tcb = c; ns->connected = true;
+                ns->laddr = s->laddr; ns->lport = s->lport;
+                ns->raddr = tcp_remote_ip(c); ns->rport = tcp_remote_port(c);
+                lxfile_t *f = wrap(FD_SOCKET, ns);
+                if (!f) { inet_unlink(ns); kfree(ns); tcp_close(c); return -ENOMEM; }
+                f->oflags = (flags & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+                int nfd = install(p, f, flags);
+                if (nfd < 0) return nfd;
+                int rr = in_put(p, uaddr, ualen, ns->raddr, ns->rport);
+                if (rr < 0) return rr;
+                return nfd;
+            }
+        } else if (s->accept_head) {
             lxsock_t *c = s->accept_head;
             s->accept_head = c->accept_next;
             c->accept_next = NULL;
@@ -518,16 +847,27 @@ static int64_t do_accept(lxproc_t *p, int fd, uint64_t uaddr, uint64_t ualen, in
     }
 }
 
-static int64_t do_sendto(lxproc_t *p, int fd, uint64_t buf, uint64_t n, int flags) {
+static int64_t do_sendto(lxproc_t *p, int fd, uint64_t buf, uint64_t n, int flags, uint64_t uaddr, uint64_t ulen) {
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
     lxfile_t *self = lx_fd_get(p, fd);
     bool nb = (flags & MSG_DONTWAIT_) || (self->oflags & O_NONBLOCK_F);
-    if (n > SOCK_QLEN) return -EMSGSIZE;
+    if (s->type == SOCK_STREAM_) {
+        if (n > SOCK_QLEN) n = SOCK_QLEN;       /* a stream write may be short */
+    } else if (n > SOCK_QLEN) return -EMSGSIZE;
     uint8_t *tmp = kmalloc(n ? n : 1);
     if (!tmp) return -ENOMEM;
     if (n && !get(p, tmp, buf, n)) { kfree(tmp); return -EFAULT; }
-    int64_t r = sock_send(s, tmp, n, nb, NULL, 0);
+    int64_t r;
+    if (s->family == AF_INET_) {
+        uint32_t dip = 0; uint16_t dport = 0;
+        bool have = uaddr && ulen;
+        if (have) {
+            int e = in_parse(p, uaddr, (int)ulen, &dip, &dport);
+            if (e < 0) { kfree(tmp); return e; }
+        }
+        r = inet_write(s, tmp, n, nb, dip, dport, have);
+    } else r = sock_send(s, tmp, n, nb, NULL, 0);
     kfree(tmp);
     return r;
 }
@@ -537,9 +877,23 @@ static int64_t do_recvfrom(lxproc_t *p, int fd, uint64_t buf, uint64_t n, int fl
     if (!s) return -ENOTSOCK;
     lxfile_t *self = lx_fd_get(p, fd);
     bool nb = (flags & MSG_DONTWAIT_) || (self->oflags & O_NONBLOCK_F);
-    uint8_t *tmp = kmalloc(n ? n : 1);
+    uint64_t want = MIN(n, (uint64_t)SOCK_QLEN);
+    uint8_t *tmp = kmalloc(want ? want : 1);
     if (!tmp) return -ENOMEM;
-    int64_t r = sock_recv(s, tmp, n, nb, (flags & MSG_PEEK_) != 0);
+    int64_t r;
+    if (s->family == AF_INET_) {
+        uint32_t sip = s->raddr, full = 0; uint16_t sport = s->rport;
+        r = inet_read(s, tmp, want, nb, &sip, &sport, &full, (flags & MSG_PEEK_) != 0);
+        if (r > 0 && !put(p, buf, tmp, r)) { kfree(tmp); return -EFAULT; }
+        kfree(tmp);
+        if (r >= 0 && uaddr && ualen) {
+            int e = in_put(p, uaddr, ualen, sip, sport);
+            if (e < 0) return e;
+        }
+        if ((flags & MSG_TRUNC_) && s->type == SOCK_DGRAM_ && r >= 0) return full;
+        return r;
+    }
+    r = sock_recv(s, tmp, want, nb, (flags & MSG_PEEK_) != 0);
     if (r > 0 && !put(p, buf, tmp, r)) { kfree(tmp); return -EFAULT; }
     kfree(tmp);
     if (r >= 0 && uaddr && ualen) {
@@ -562,17 +916,21 @@ static int64_t do_sendmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
     for (uint64_t i = 0; i < mh.iovlen && i < 1024; i++) {
         iovec_t v;
         if (!get(p, &v, mh.iov + i * 16, 16)) return -EFAULT;
-        if (v.len > SOCK_QLEN || total + v.len > SOCK_QLEN) return -EMSGSIZE;
+        if (v.len > SOCK_QLEN || total + v.len > SOCK_QLEN) {
+            if (s->type == SOCK_STREAM_) break;    /* a stream write may be short */
+            return -EMSGSIZE;
+        }
         total += v.len;
     }
     uint8_t *buf = kmalloc(total ? total : 1);
     if (!buf) return -ENOMEM;
     uint64_t o = 0;
-    for (uint64_t i = 0; i < mh.iovlen && i < 1024; i++) {
+    for (uint64_t i = 0; i < mh.iovlen && i < 1024 && o < total; i++) {
         iovec_t v;
         if (!get(p, &v, mh.iov + i * 16, 16)) { kfree(buf); return -EFAULT; }
-        if (v.len && !get(p, buf + o, v.base, v.len)) { kfree(buf); return -EFAULT; }
-        o += v.len;
+        uint64_t k = MIN(v.len, total - o);
+        if (k && !get(p, buf + o, v.base, k)) { kfree(buf); return -EFAULT; }
+        o += k;
     }
     lxfile_t *fds[MAX_MSG_FD];
     int nfds = 0;
@@ -599,6 +957,18 @@ static int64_t do_sendmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
     }
     lxfile_t *self = lx_fd_get(p, fd);
     bool nb = (flags & MSG_DONTWAIT_) || (self->oflags & O_NONBLOCK_F);
+    if (s->family == AF_INET_) {
+        for (int i = 0; i < nfds; i++) lx_file_put(fds[i]);
+        uint32_t dip = 0; uint16_t dport = 0;
+        bool have = mh.name && mh.namelen;
+        if (have) {
+            int e = in_parse(p, mh.name, (int)mh.namelen, &dip, &dport);
+            if (e < 0) { kfree(buf); return e; }
+        }
+        int64_t ir = inet_write(s, buf, total, nb, dip, dport, have);
+        kfree(buf);
+        return ir;
+    }
     int64_t r = sock_send(s, buf, total, nb, fds, nfds);
     if (r < 0) for (int i = 0; i < nfds; i++) lx_file_put(fds[i]);
     kfree(buf);
@@ -612,6 +982,45 @@ static int64_t do_recvmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
     if (!get(p, &mh, umsg, sizeof mh)) return -EFAULT;
     lxfile_t *self = lx_fd_get(p, fd);
     bool nb = (flags & MSG_DONTWAIT_) || (self->oflags & O_NONBLOCK_F);
+    if (s->family == AF_INET_) {
+        uint64_t cap = 0;
+        for (uint64_t i = 0; i < mh.iovlen && i < 1024; i++) {
+            iovec_t v;
+            if (!get(p, &v, mh.iov + i * 16, 16)) return -EFAULT;
+            if (v.len > SOCK_QLEN || cap + v.len > SOCK_QLEN) {
+                if (s->type == SOCK_STREAM_) break;
+                return -EMSGSIZE;
+            }
+            cap += v.len;
+        }
+        uint8_t *buf = kmalloc(cap ? cap : 1);
+        if (!buf) return -ENOMEM;
+        uint32_t sip = s->raddr, full = 0; uint16_t sport = s->rport;
+        int64_t r = inet_read(s, buf, cap, nb, &sip, &sport, &full,
+                              (flags & MSG_PEEK_) != 0);
+        if (r < 0) { kfree(buf); return r; }
+        uint64_t copied = 0;
+        for (uint64_t i = 0; i < mh.iovlen && i < 1024 && copied < (uint64_t)r; i++) {
+            iovec_t v;
+            if (!get(p, &v, mh.iov + i * 16, 16)) { kfree(buf); return -EFAULT; }
+            uint32_t k = (uint32_t)MIN(v.len, (uint64_t)r - copied);
+            if (k && !put(p, v.base, buf + copied, k)) { kfree(buf); return -EFAULT; }
+            copied += k;
+        }
+        kfree(buf);
+        mh.flags = (s->type == SOCK_DGRAM_ && (uint64_t)full > copied) ? MSG_TRUNC_ : 0;
+        mh.controllen = 0;
+        if (mh.name && mh.namelen) {
+            sin_t sa; memset(&sa, 0, sizeof sa);
+            sa.family = AF_INET_; sa.port = htons(sport); sa.addr = htonl(sip);
+            uint64_t k = MIN((uint64_t)mh.namelen, (uint64_t)sizeof sa);
+            if (!put(p, mh.name, &sa, k)) return -EFAULT;
+            mh.namelen = sizeof sa;
+        }
+        if (!put(p, umsg, &mh, sizeof mh)) return -EFAULT;
+        if ((flags & MSG_TRUNC_) && s->type == SOCK_DGRAM_) return full;
+        return r;
+    }
     for (;;) {
         if (s->qhead) break;
         if (s->peer_gone || !s->peer) { mh.flags = 0; put(p, umsg, &mh, sizeof mh); return 0; }
@@ -669,6 +1078,15 @@ static int64_t do_recvmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
 static int64_t do_shutdown(lxproc_t *p, int fd, int how) {
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
+    if (s->family == AF_INET_) {
+        if (s->type == SOCK_DGRAM_) {
+            if (how != 0) s->connected = false;            /* stop using the default peer */
+            return 0;
+        }
+        if (!s->tcb) return -ENOTCONN;
+        if (how == 1 || how == 2) tcp_shutdown_wr(s->tcb); /* SHUT_WR, SHUT_RDWR */
+        return 0;                                          /* discarding input is not modelled */
+    }
     if (how == 1 || how == 2) s->peer_gone = true;                 /* SHUT_WR, SHUT_RDWR */
     if (how == 0 || how == 2) { if (s->peer) s->peer->peer_gone = true; }
     return 0;
@@ -677,6 +1095,11 @@ static int64_t do_shutdown(lxproc_t *p, int fd, int how) {
 static int64_t do_getname(lxproc_t *p, int fd, uint64_t uaddr, uint64_t ualen, bool peer) {
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
+    if (s->family == AF_INET_) {
+        if (peer && !s->connected) return -ENOTCONN;
+        return in_put(p, uaddr, ualen, peer ? s->raddr : s->laddr,
+                      peer ? s->rport : s->lport);
+    }
     if (!uaddr || !ualen) return 0;
     sun_t sa; memset(&sa, 0, sizeof sa);
     sa.family = AF_UNIX_;
@@ -693,13 +1116,47 @@ static int64_t do_sockopt(lxproc_t *p, int fd, int level, int opt, uint64_t uval
     lxsock_t *s = sock_fd(p, fd);
     if (!s) return -ENOTSOCK;
     if (get_opt) {
-        int32_t v = 0;
-        if (level == SOL_SOCKET_ && opt == 3) v = s->type;          /* SO_TYPE */
-        if (level == SOL_SOCKET_ && opt == 4) v = 0;                /* SO_ERROR */
-        if (level == SOL_SOCKET_ && (opt == 7 || opt == 8)) v = SOCK_QLEN;   /* SO_SNDBUF, SO_RCVBUF */
-        return put(p, uval, &v, 4) ? 0 : -EFAULT;
+        if (level == SOL_SOCKET_) {
+            switch (opt) {
+            case 2:  case 15: { int32_t v = s->reuseaddr; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            case 3:  { int32_t v = s->type; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            case 4:  { int32_t v = s->so_error; s->so_error = 0;
+                       if (v && s->tcb && tcp_status(s->tcb) < 0) { tcp_close(s->tcb); s->tcb = NULL; }
+                       return put(p, uval, &v, 4) ? 0 : -EFAULT; }   /* SO_ERROR clears on read */
+            case 7:  case 8: { int32_t v = SOCK_QLEN; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            case 38: { int32_t v = s->proto; return put(p, uval, &v, 4) ? 0 : -EFAULT; }  /* SO_PROTOCOL */
+            case 39: { int32_t v = s->family; return put(p, uval, &v, 4) ? 0 : -EFAULT; } /* SO_DOMAIN */
+            case 18: case 19: { int32_t v = 1; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            case 20: case 21: {                       /* SO_RCVTIMEO, SO_SNDTIMEO: always no timeout */
+                uint8_t tv[16]; memset(tv, 0, sizeof tv);
+                return put(p, uval, tv, MIN(ulen, (uint64_t)sizeof tv)) ? 0 : -EFAULT;
+            }
+            case 9: case 13: { int32_t v = 0; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            default: return -ENOPROTOOPT;
+            }
+        }
+        if (level == IPPROTO_TCP_) {
+            if (opt == 1) { int32_t v = s->nodelay; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            return -ENOPROTOOPT;
+        }
+        return -ENOPROTOOPT;
     }
-    return 0;
+    int32_t v = 0;
+    if (!uval || ulen < 4) return -EINVAL;
+    if (!get(p, &v, uval, 4)) return -EFAULT;
+    if (level == SOL_SOCKET_) {
+        switch (opt) {
+        case 2: case 15: s->reuseaddr = v != 0; return 0;   /* SO_REUSEADDR, SO_REUSEPORT */
+        case 6: case 9: case 10: case 12: case 13: case 20: case 21: case 18: case 19:
+            return 0;                                        /* accepted no-ops */
+        default: return -ENOPROTOOPT;
+        }
+    }
+    if (level == IPPROTO_TCP_) {
+        if (opt == 1) { s->nodelay = v != 0; return 0; }     /* TCP_NODELAY */
+        return -ENOPROTOOPT;
+    }
+    return -ENOPROTOOPT;
 }
 
 /* ---------------- pipes, eventfd, timerfd, epoll ---------------- */
@@ -859,7 +1316,7 @@ int64_t lx_sys_ipc(lxthread_t *t, int nr, regs_t *r, bool *handled) {
     case 42: return do_connect(p, (int)a0, a1, (int)a2);                /* connect */
     case 43: return do_accept(p, (int)a0, a1, a2, 0);                   /* accept */
     case 288: return do_accept(p, (int)a0, a1, a2, (int)a3);            /* accept4 */
-    case 44: return do_sendto(p, (int)a0, a1, a2, (int)a3);             /* sendto */
+    case 44: return do_sendto(p, (int)a0, a1, a2, (int)a3, a4, a5);      /* sendto */
     case 45: return do_recvfrom(p, (int)a0, a1, a2, (int)a3, a4, a5);   /* recvfrom */
     case 46: return do_sendmsg(p, (int)a0, a1, (int)a2);                /* sendmsg */
     case 47: return do_recvmsg(p, (int)a0, a1, (int)a2);                /* recvmsg */

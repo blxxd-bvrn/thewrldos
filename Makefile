@@ -72,9 +72,17 @@ MINGW64 := x86_64-w64-mingw32-gcc
 SAMPLE_EXES64 := $(patsubst samples/%.c,rootfs64/Samples/%.exe,$(SAMPLES))
 
 GRUBDIR ?= $(firstword $(wildcard /usr/lib/grub/i386-pc /usr/lib/grub2/i386-pc /usr/share/grub/i386-pc) /usr/lib/grub/i386-pc)
+GRUBEFIDIR ?= $(firstword $(wildcard /usr/lib/grub/x86_64-efi /usr/lib/grub2/x86_64-efi /usr/share/grub/x86_64-efi) /usr/lib/grub/x86_64-efi)
 GRUB_MKRESCUE ?= $(firstword $(shell command -v grub-mkrescue grub2-mkrescue 2>/dev/null) grub-mkrescue)
 GRUB_MKIMAGE  ?= $(firstword $(shell command -v grub-mkimage grub2-mkimage 2>/dev/null) grub-mkimage)
-GRUB_MODS := biosdisk part_msdos fat ntfs multiboot normal configfile boot vbe vga video_bochs video_cirrus echo test
+GRUB_MODS := biosdisk part_msdos part_gpt fat ntfs multiboot multiboot2 normal configfile boot vbe vga video_bochs video_cirrus echo test
+# Modules carried inside the ISO's BIOS and EFI core images, so the menu can
+# use them before it has read anything from the disc.
+GRUB_ISO_MODS := all_video part_msdos part_gpt fat ntfs iso9660 multiboot multiboot2 normal configfile search echo test gfxterm
+# A standalone UEFI loader for installed systems: it carries the commands it
+# needs, so Setup only has to copy one file to the EFI System Partition.
+GRUB_EFI_MODS := part_msdos part_gpt fat ntfs multiboot2 normal configfile boot \
+                 all_video acpi echo test search search_fs_file search_label
 SYS     := $(BUILD)/sys
 CORES   := $(foreach n,1 2 3 4,$(SYS)/boot/grub/core$(n).img)
 DISK    := $(if $(filter x86_64,$(ARCH)),disk64.img,disk.img)
@@ -106,10 +114,13 @@ $(error This is $(UNAME) (MSYS2/Cygwin). Its gcc makes Windows PE files, not the
 endif
 MISSING := $(strip $(foreach t,$(NASM) $(CC) $(GRUB_MKRESCUE) $(GRUB_MKIMAGE) xorriso,$(if $(shell command -v $(t) 2>/dev/null),,$(t))))
 ifneq ($(MISSING),)
-$(error Missing build tools: $(MISSING). On Debian/Ubuntu/WSL run: sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-common xorriso mtools qemu-system-x86)
+$(error Missing build tools: $(MISSING). On Debian/Ubuntu/WSL run: sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools qemu-system-x86)
 endif
 ifeq ($(wildcard $(GRUBDIR)/boot.img),)
 $(error GRUB BIOS files not found in $(GRUBDIR). Install grub-pc-bin (Debian/Ubuntu) or grub2-pc-modules (Fedora))
+endif
+ifeq ($(wildcard $(GRUBEFIDIR)/kernel.img),)
+$(error GRUB EFI files not found in $(GRUBEFIDIR). Install grub-efi-amd64-bin (Debian/Ubuntu) or grub2-efi-x64-modules (Fedora))
 endif
 endif
 
@@ -193,6 +204,9 @@ $(SYS)/boot/grub/boot.img: $(GRUBDIR)/boot.img
 $(SYS)/boot/grub/core%.img: Makefile
 	@mkdir -p $(dir $@)
 	$(GRUB_MKIMAGE) -O i386-pc -d $(GRUBDIR) -o $@ -p '(,msdos$*)/boot/grub' $(GRUB_MODS)
+$(SYS)/boot/grub/BOOTX64.EFI: grub/efi.cfg Makefile
+	@mkdir -p $(dir $@)
+	$(GRUB_MKIMAGE) -O x86_64-efi -d $(GRUBEFIDIR) -o $@ -p /boot/grub -c grub/efi.cfg $(GRUB_EFI_MODS)
 $(SYS)/boot/wrld.elf: $(KERNEL)
 	@mkdir -p $(dir $@)
 	cp $< $@
@@ -216,7 +230,7 @@ $(LXROOT)/.stamp: $(LXBINS)
 	@touch $@
 
 # initrd = rootfs/ plus the boot files Setup copies to the disk
-$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
+$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
 	@mkdir -p $(BUILD)
 	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .) $(if $(filter x86_64,$(ARCH)),-C $(CURDIR)/$(LXROOT) Linux)
 
@@ -225,7 +239,7 @@ $(ISO): $(KERNEL) $(BUILD)/initrd.tar grub/grub.cfg
 	cp $(KERNEL) $(BUILD)/iso/boot/wrld.elf
 	cp $(BUILD)/initrd.tar $(BUILD)/iso/boot/initrd.tar
 	cp grub/grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
-	$(GRUB_MKRESCUE) -o $@ $(BUILD)/iso 2>/dev/null
+	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS)" -o $@ $(BUILD)/iso
 
 # live session from the CD (nothing is saved)
 run: $(ISO)
@@ -252,6 +266,7 @@ check-tools:
 	@for t in $(NASM) $(CC) $(GRUB_MKRESCUE) $(GRUB_MKIMAGE) xorriso qemu-system-i386; do \
 	  if command -v $$t >/dev/null 2>&1; then echo "  ok       $$t"; else echo "  MISSING  $$t"; fi; done
 	@if [ -f $(GRUBDIR)/boot.img ]; then echo "  ok       GRUB BIOS files ($(GRUBDIR))"; else echo "  MISSING  GRUB BIOS files (grub-pc-bin)"; fi
+	@if [ -f $(GRUBEFIDIR)/kernel.img ]; then echo "  ok       GRUB EFI files ($(GRUBEFIDIR))"; else echo "  MISSING  GRUB EFI files (grub-efi-amd64-bin)"; fi
 
 clean:
 	rm -rf build build64 wrldos.iso wrldos64.iso

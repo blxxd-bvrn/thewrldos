@@ -36,18 +36,29 @@ Already working, and not on the list below:
 
 ### 3. IPC and the event loop
 
-- No `pipe`/`pipe2`, no `socketpair`, no `AF_UNIX`, no `SCM_RIGHTS` descriptor passing.
-- No `epoll`, `eventfd`, `timerfd`, `inotify`, `signalfd`, `memfd_create`, or shared memory.
-- `poll()` answers "always ready", so it cannot drive an event loop.
+- `pipe`/`pipe2`, `socketpair`, `AF_UNIX` and `SCM_RIGHTS` descriptor passing are implemented in
+  `src/linux/ipc.c`; abstract socket names are not.
+- `epoll`, `eventfd` and `timerfd` exist and are level-triggered; `EPOLLET`, `EPOLLONESHOT`,
+  `signalfd`, `inotify`, `memfd_create` and shared memory do not.
+- `poll()` and `epoll_wait()` now ask the object behind each descriptor (`lx_ipc_ready`); they
+  sleep in 1 ms steps between checks, because the scheduler has no wait queues.
 - Blocking: WebKit's architecture is `AF_UNIX` plus `epoll` plus descriptor passing between its
   UI, Web and Network processes.
 
 ### 4. Sockets
 
-- No socket system calls at all. The TCP/UDP/DNS stack in `src/net` is reachable only from the
-  kernel-side browser.
-- Missing: `socket`/`bind`/`connect`/`listen`/`accept`/`send`/`recv`/`getsockopt`/`setsockopt`,
-  non-blocking mode, `getaddrinfo`, `SO_REUSEADDR`.
+- `AF_INET` TCP and UDP are wired to the stack in `src/net`: `socket`, `bind`, `connect`,
+  `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `sendmsg`, `recvmsg`,
+  `getsockname`, `getpeername`, `getsockopt` and `setsockopt` (`SO_REUSEADDR`, `SO_ERROR`,
+  `SO_TYPE`, buffer sizes, `TCP_NODELAY`), including non-blocking sockets and readiness through
+  `poll`/`epoll`.
+- `getaddrinfo` runs in the distribution's glibc: `/etc/hosts`, `/etc/host.conf`,
+  `/etc/nsswitch.conf`, `/etc/resolv.conf` (written from the DHCP lease) and `/etc/services` are
+  created in the RAM file system on first lookup, and DNS then travels over the UDP stack.
+- Still missing: `AF_INET6`, a loopback interface (so `127.0.0.1` does not answer), IP
+  fragmentation (a datagram is capped at 1472 bytes), TCP options beyond MSS,
+  `SO_REUSEPORT` (accepted, then treated as `SO_REUSEADDR`), and socket timeouts
+  (`SO_RCVTIMEO`/`SO_SNDTIMEO` are accepted but not enforced).
 
 ### 5. Memory
 
@@ -69,7 +80,8 @@ Already working, and not on the list below:
 - glibc is copied from the build machine rather than built for this ABI.
 - No musl build yet; static-PIE would remove the `ld-linux` dependency.
 - No C++ runtime: libstdc++ needs unwinding (`_Unwind_*`), `__cxa_*` and thread-safe statics.
-- No `getaddrinfo`/`getpwnam` beyond `/etc/passwd`, no `iconv`, no locale past Latin-1.
+- `getaddrinfo` now resolves through glibc and the kernel's UDP stack (section 4); `getpwnam` has
+  only `/etc/passwd`; no `iconv`, no locale past Latin-1.
 
 ### 8. Graphics and text
 
@@ -96,14 +108,15 @@ Already working, and not on the list below:
 - The installed partition is loaded into RAM at boot, so its size is bounded by RAM.
 - No USB and no Wi-Fi; wired IPv4 Ethernet only.
 - An unimplemented system call returns `ENOSYS`, is logged once, and the program dies.
-- The Linux ABI is covered by two test programs, `samples/linux/hello.c` and `threads.c`.
+- The Linux ABI is covered by the test programs in `samples/linux`: `hello.c`, `threads.c`,
+  `ipc.c`, `procs.c` and `socket.c`.
 
 ## Milestones
 
 1. [x] **`fork`, `execve`, `wait4`** - process creation and replacement.
 2. [x] **`pipe`, `AF_UNIX`, `SCM_RIGHTS`** - the IPC substrate.
 3. [x] **`epoll`, `eventfd`, `timerfd`** - the event loop.
-4. [ ] **Socket system calls** over the existing TCP stack.
+4. [x] **Socket system calls** over the existing TCP stack.
 5. [ ] **Signal delivery** - before anything JITs.
 6. [ ] **musl static-PIE** - stop shipping the build machine's glibc.
 7. [ ] **FreeType, HarfBuzz, ICU** - text and shaping.
@@ -111,7 +124,7 @@ Already working, and not on the list below:
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.
 10. [ ] **`/proc`, `/sys`, honest `prctl`** - introspection and sandboxing.
 
-Milestones 1-3 are implemented in `src/linux/proc.c` and `src/linux/ipc.c`.
+Milestones 1-4 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c` and `fs.c`.
 
 The shell and XplorerLite no longer wait on milestone 7 for their own text: the GUI reads
 TrueType directly and handles UTF-8 end to end. A browser engine's text still needs the
