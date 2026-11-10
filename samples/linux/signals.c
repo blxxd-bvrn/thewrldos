@@ -15,7 +15,10 @@
 static volatile sig_atomic_t counts[32];
 static volatile sig_atomic_t on_alt_stack;
 
-static unsigned char altstack[SIGSTKSZ * 2];
+/* SIGSTKSZ stopped being a constant in glibc 2.34 (it is sysconf() now), so a
+ * fixed size is the portable way to get a static alternate stack. */
+#define ALTSTACK_SIZE (32 * 1024)
+static unsigned char altstack[ALTSTACK_SIZE];
 
 static void handler(int sig) { counts[sig]++; }
 static void handler_alt(int sig) {
