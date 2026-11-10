@@ -13,6 +13,7 @@
 
 void *memcpy(void *d, const void *s, size_t n);
 void *memset(void *d, int c, size_t n);
+void *memmove(void *d, const void *s, size_t n);
 
 #define TAG4(a, b, c, d) (((uint32_t)(a) << 24) | ((uint32_t)(b) << 16) | \
                           ((uint32_t)(c) << 8) | (uint32_t)(d))
@@ -38,6 +39,9 @@ struct ttf_face {
     uint32_t loca, loca_len;
     uint32_t glyf, glyf_len;
     uint32_t kern, kern_len;
+    uint32_t gsub, gsub_len;          /* OpenType layout tables */
+    uint32_t gpos, gpos_len;
+    uint32_t gdef, gdef_len;
 
     uint32_t num_glyphs;
     uint32_t num_hmetrics;
@@ -119,6 +123,9 @@ ttf_face_t *ttf_open(const void *data, size_t size, ttf_alloc_fn alloc,
         case TAG4('l', 'o', 'c', 'a'): f->loca = off; f->loca_len = len; break;
         case TAG4('g', 'l', 'y', 'f'): f->glyf = off; f->glyf_len = len; break;
         case TAG4('k', 'e', 'r', 'n'): f->kern = off; f->kern_len = len; break;
+        case TAG4('G', 'S', 'U', 'B'): f->gsub = off; f->gsub_len = len; break;
+        case TAG4('G', 'P', 'O', 'S'): f->gpos = off; f->gpos_len = len; break;
+        case TAG4('G', 'D', 'E', 'F'): f->gdef = off; f->gdef_len = len; break;
         default: break;
         }
     }
@@ -260,6 +267,803 @@ int ttf_kerning(const ttf_face_t *f, int left, int right) {
         else return rs16(f->data + p + 4);
     }
     return 0;
+}
+
+/* ---------------- OpenType layout ----------------
+ *
+ * GSUB and GPOS share a shape: a script list chooses features, a feature names
+ * lookups, and a lookup holds the actual subtables. Only what text needs is
+ * here - single, multiple, alternate, ligature, contextual (formats 1-3) and
+ * chaining substitutions, pair, mark-to-base, mark-to-ligature and mark-to-mark
+ * positioning - and every read is bounds checked; a malformed font loses that
+ * substitution, not the kernel. */
+
+#define LF_IGNORE_BASE  0x0002
+#define LF_IGNORE_LIG   0x0004
+#define LF_IGNORE_MARK  0x0008
+#define LF_MARK_SET     0x0010
+
+#define MAX_SHAPE_LOOKUPS 128
+
+typedef struct { ttf_shaped_t *g; int n, cap; uint8_t *form; int forms; } gbuf_t;
+
+static int coverage_index(const ttf_face_t *f, uint32_t off, int gid) {
+    if (!f || !off || gid < 0 || !in_file(f, off, 4)) return -1;
+    const uint8_t *d = f->data;
+    uint16_t fmt = rd16(d + off);
+    if (fmt == 1) {
+        uint16_t n = rd16(d + off + 2);
+        if (!in_file(f, off + 4, (uint32_t)n * 2)) return -1;
+        int lo = 0, hi = n;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            uint16_t g = rd16(d + off + 4 + (uint32_t)mid * 2);
+            if (g < gid) lo = mid + 1; else hi = mid;
+        }
+        if (lo < n && rd16(d + off + 4 + (uint32_t)lo * 2) == gid) return lo;
+        return -1;
+    }
+    if (fmt == 2) {
+        uint16_t n = rd16(d + off + 2);
+        if (!in_file(f, off + 4, (uint32_t)n * 6)) return -1;
+        int lo = 0, hi = n;
+        while (lo < hi) {
+            int mid = lo + (hi - lo) / 2;
+            uint32_t r = off + 4 + (uint32_t)mid * 6;
+            uint16_t e = rd16(d + r + 2);
+            if (e < gid) lo = mid + 1; else hi = mid;
+        }
+        if (lo < n) {
+            uint32_t r = off + 4 + (uint32_t)lo * 6;
+            uint16_t s = rd16(d + r), e = rd16(d + r + 2);
+            if (gid >= s && gid <= e) return rd16(d + r + 4) + gid - s;
+        }
+    }
+    return -1;
+}
+
+static int classdef_get(const ttf_face_t *f, uint32_t off, int gid) {
+    if (!f || !off || gid < 0 || !in_file(f, off, 4)) return 0;
+    const uint8_t *d = f->data;
+    uint16_t fmt = rd16(d + off);
+    if (fmt == 1) {
+        uint16_t start = rd16(d + off + 2), n = rd16(d + off + 4);
+        if (gid < start || (uint32_t)(gid - start) >= n) return 0;
+        uint32_t p = off + 6 + (uint32_t)(gid - start) * 2;
+        return in_file(f, p, 2) ? rd16(d + p) : 0;
+    }
+    if (fmt == 2) {
+        uint16_t n = rd16(d + off + 2);
+        if (!in_file(f, off + 4, (uint32_t)n * 6)) return 0;
+        for (uint16_t i = 0; i < n; i++) {
+            uint32_t r = off + 4 + (uint32_t)i * 6;
+            uint16_t s = rd16(d + r), e = rd16(d + r + 2);
+            if (gid >= s && gid <= e) return rd16(d + r + 4);
+            if (gid < s) break;
+        }
+    }
+    return 0;
+}
+
+/* GDEF says whether a glyph is a base, a ligature or a mark; lookup flags use
+ * that to ignore the right kind when matching a sequence. */
+static int glyph_class(const ttf_face_t *f, int gid) {
+    if (!f || !f->gdef || f->gdef_len < 12) return 0;
+    return classdef_get(f, f->gdef + rd16(f->data + f->gdef + 4), gid);
+}
+static int mark_set_has(const ttf_face_t *f, int set, int gid) {
+    if (!f || !f->gdef || f->gdef_len < 18 || set < 0) return 1;
+    uint32_t ms = f->gdef + rd16(f->data + f->gdef + 12);
+    if (!ms || !in_file(f, ms, 4)) return 1;
+    uint16_t n = rd16(f->data + ms + 2);
+    if ((uint32_t)set >= n) return 1;
+    uint32_t cov = rd32(f->data + ms + 4 + (uint32_t)set * 4);
+    return coverage_index(f, ms + cov, gid) >= 0;
+}
+static int ignore_glyph(const ttf_face_t *f, uint16_t flag, int set, int gid) {
+    int cls = glyph_class(f, gid);
+    if ((flag & LF_IGNORE_BASE) && cls == 1) return 1;
+    if ((flag & LF_IGNORE_LIG) && cls == 2) return 1;
+    if ((flag & LF_IGNORE_MARK) && cls == 3) return 1;
+    if ((flag & LF_MARK_SET) && cls == 3 && !mark_set_has(f, set, gid)) return 1;
+    if (!(flag & LF_MARK_SET)) {
+        int attach = (flag >> 8) & 0xFF;
+        if (cls == 3 && attach) {
+            uint32_t mc = f->gdef + rd16(f->data + f->gdef + 10);
+            if (classdef_get(f, mc, gid) != attach) return 1;
+        }
+    }
+    return 0;
+}
+static int next_glyph(const ttf_face_t *f, const gbuf_t *b, uint16_t flag, int set, int from) {
+    for (int i = from + 1; i < b->n; i++)
+        if (!ignore_glyph(f, flag, set, b->g[i].gid)) return i;
+    return -1;
+}
+static int prev_glyph(const ttf_face_t *f, const gbuf_t *b, uint16_t flag, int set, int from) {
+    for (int i = from - 1; i >= 0; i--)
+        if (!ignore_glyph(f, flag, set, b->g[i].gid)) return i;
+    return -1;
+}
+
+/* The script table for `tag`, or the default one, or 0. */
+static uint32_t find_script(const ttf_face_t *f, uint32_t table, uint32_t tag) {
+    const uint8_t *d = f->data;
+    if (!table || !in_file(f, table, 10)) return 0;
+    uint32_t sl = table + rd16(d + table + 4);
+    if (!in_file(f, sl, 2)) return 0;
+    uint16_t n = rd16(d + sl);
+    uint32_t dflt = 0;
+    for (uint16_t i = 0; i < n; i++) {
+        uint32_t r = sl + 2 + (uint32_t)i * 6;
+        if (!in_file(f, r, 6)) break;
+        uint32_t t = rd32(d + r);
+        uint32_t s = sl + rd16(d + r + 4);
+        if (t == tag) return s;
+        if (t == TAG4('D', 'F', 'L', 'T')) dflt = s;
+    }
+    return dflt;
+}
+
+/* Append the lookup indices of `feat` for `script` to `out`. */
+static int feature_lookups(const ttf_face_t *f, uint32_t table, uint32_t script,
+                           uint32_t feat, uint16_t *out, int max) {
+    const uint8_t *d = f->data;
+    uint32_t s = find_script(f, table, script);
+    if (!s || !in_file(f, s, 6)) return 0;
+    uint32_t ls = rd16(d + s);
+    if (!ls) return 0;                                    /* no default language */
+    ls += s;
+    if (!in_file(f, ls, 6)) return 0;
+    uint16_t nf = rd16(d + ls + 4);
+    uint32_t fl = table + rd16(d + table + 6);
+    if (!in_file(f, fl, 2)) return 0;
+    uint16_t nfeature = rd16(d + fl);
+    int got = 0;
+    for (uint16_t i = 0; i < nf; i++) {
+        uint32_t fr = ls + 6 + (uint32_t)i * 2;
+        if (!in_file(f, fr, 2)) break;
+        uint16_t fi = rd16(d + fr);
+        if (fi >= nfeature) continue;
+        uint32_t rec = fl + 2 + (uint32_t)fi * 6;
+        if (!in_file(f, rec, 6) || rd32(d + rec) != feat) continue;
+        uint32_t ft = fl + rd16(d + rec + 4);
+        if (!in_file(f, ft, 4)) continue;
+        uint16_t nl = rd16(d + ft + 2);
+        for (uint16_t k = 0; k < nl && got < max; k++) {
+            uint32_t lr = ft + 4 + (uint32_t)k * 2;
+            if (!in_file(f, lr, 2)) break;
+            out[got++] = rd16(d + lr);
+        }
+    }
+    return got;
+}
+
+/* Grow or shrink the buffer at `at`, keeping the parallel form array in step. */
+static int gbuf_insert(const ttf_face_t *f, gbuf_t *b, int at, int count) {
+    if (count <= 0) return 0;
+    if (b->n + count > b->cap) return 0;
+    memmove(&b->g[at + count], &b->g[at], (size_t)(b->n - at) * sizeof *b->g);
+    if (b->forms) {
+        memmove(&b->form[at + count], &b->form[at], (size_t)(b->n - at));
+        memset(&b->form[at], 0, (size_t)count);
+    }
+    b->n += count;
+    return 1;
+}
+static void gbuf_remove(gbuf_t *b, int at, int count) {
+    if (count <= 0 || at < 0 || at + count > b->n) return;
+    memmove(&b->g[at], &b->g[at + count], (size_t)(b->n - at - count) * sizeof *b->g);
+    if (b->forms) memmove(&b->form[at], &b->form[at + count], (size_t)(b->n - at - count));
+    b->n -= count;
+}
+
+/* A lookup applied at one position. Returns 1 when it matched; *delta is how
+ * many glyphs appeared (positive) or disappeared (negative). */
+static int gsub_at(const ttf_face_t *f, uint32_t lookup, gbuf_t *b, int pos, int depth, int *delta);
+
+static int gsub_single(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos, int *delta) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 6)) return 0;
+    uint16_t fmt = rd16(d + sub);
+    int idx = coverage_index(f, sub + rd16(d + sub + 2), b->g[pos].gid);
+    if (idx < 0) return 0;
+    if (fmt == 1) {
+        b->g[pos].gid = (uint16_t)(b->g[pos].gid + (uint16_t)rd16(d + sub + 4));
+    } else if (fmt == 2) {
+        uint16_t n = rd16(d + sub + 4);
+        if ((uint32_t)idx >= n || !in_file(f, sub + 6, (uint32_t)n * 2)) return 0;
+        b->g[pos].gid = rd16(d + sub + 6 + (uint32_t)idx * 2);
+    } else return 0;
+    b->g[pos].advance = ttf_advance(f, b->g[pos].gid);
+    *delta = 0;
+    return 1;
+}
+
+static int gsub_multiple(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos, int *delta) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 6) || rd16(d + sub) != 1) return 0;
+    int idx = coverage_index(f, sub + rd16(d + sub + 2), b->g[pos].gid);
+    if (idx < 0) return 0;
+    uint16_t nseq = rd16(d + sub + 4);
+    if ((uint32_t)idx >= nseq || !in_file(f, sub + 6, (uint32_t)nseq * 2)) return 0;
+    uint32_t sp = sub + rd16(d + sub + 6 + (uint32_t)idx * 2);
+    if (!in_file(f, sp, 2)) return 0;
+    uint16_t count = rd16(d + sp);
+    if (count == 0) { gbuf_remove(b, pos, 1); *delta = -1; return 1; }
+    if (count == 1) {
+        b->g[pos].gid = rd16(d + sp + 2);
+        b->g[pos].advance = ttf_advance(f, b->g[pos].gid);
+        *delta = 0;
+        return 1;
+    }
+    if (!gbuf_insert(f, b, pos + 1, count - 1)) return 0;
+    ttf_shaped_t first = b->g[pos];
+    for (int i = 0; i < count; i++) {
+        ttf_shaped_t g = first;
+        g.gid = rd16(d + sp + 2 + (uint32_t)i * 2);
+        g.advance = ttf_advance(f, g.gid);
+        g.x_offset = g.y_offset = 0;
+        b->g[pos + i] = g;
+    }
+    *delta = count - 1;
+    return 1;
+}
+
+static int gsub_alternate(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos, int *delta) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 6) || rd16(d + sub) != 1) return 0;
+    int idx = coverage_index(f, sub + rd16(d + sub + 2), b->g[pos].gid);
+    if (idx < 0) return 0;
+    uint16_t nseq = rd16(d + sub + 4);
+    if ((uint32_t)idx >= nseq || !in_file(f, sub + 6, (uint32_t)nseq * 2)) return 0;
+    uint32_t sp = sub + rd16(d + sub + 6 + (uint32_t)idx * 2);
+    if (!in_file(f, sp, 4)) return 0;
+    if (!rd16(d + sp)) return 0;
+    b->g[pos].gid = rd16(d + sp + 2);
+    b->g[pos].advance = ttf_advance(f, b->g[pos].gid);
+    *delta = 0;
+    return 1;
+}
+
+static int gsub_ligature(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos,
+                         uint16_t flag, int set, int *delta) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 6) || rd16(d + sub) != 1) return 0;
+    int idx = coverage_index(f, sub + rd16(d + sub + 2), b->g[pos].gid);
+    if (idx < 0) return 0;
+    uint16_t nsets = rd16(d + sub + 4);
+    if ((uint32_t)idx >= nsets || !in_file(f, sub + 6, (uint32_t)nsets * 2)) return 0;
+    uint32_t lp = sub + rd16(d + sub + 6 + (uint32_t)idx * 2);
+    if (!in_file(f, lp, 2)) return 0;
+    uint16_t nlig = rd16(d + lp);
+    for (uint16_t i = 0; i < nlig; i++) {
+        uint32_t lr = lp + rd16(d + lp + 2 + (uint32_t)i * 2);
+        if (!in_file(f, lr, 4)) break;
+        int lig = rd16(d + lr);
+        uint16_t comps = rd16(d + lr + 2);
+        if (comps < 2 || comps > 16) continue;
+        int p[17]; p[0] = pos;
+        int ok = 1;
+        for (int k = 1; k < comps && ok; k++) {
+            p[k] = next_glyph(f, b, flag, set, p[k - 1]);
+            if (p[k] < 0 || rd16(d + lr + 4 + (uint32_t)(k - 1) * 2) != b->g[p[k]].gid) ok = 0;
+        }
+        if (!ok) continue;
+        b->g[pos].gid = lig;
+        b->g[pos].advance = ttf_advance(f, lig);
+        for (int k = comps - 1; k >= 1; k--) gbuf_remove(b, p[k], 1);
+        *delta = -(comps - 1);
+        return 1;
+    }
+    return 0;
+}
+
+/* format 3 contextual / chaining: coverage tables for the input, and records
+ * that run other lookups at a chosen position */
+static int gsub_context3(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos,
+                         uint16_t flag, int set, int chained, int depth, int *delta) {
+    const uint8_t *d = f->data;
+    uint32_t p;
+    uint16_t records;
+    int back[33], input[33];
+    int nb = 0, ni = 0, na = 0;
+    if (chained) {
+        p = sub + 2;
+        nb = rd16(d + p); p += 2;
+        if (nb > 32 || (nb && !in_file(f, p, (uint32_t)nb * 2))) return 0;
+        int at = pos;
+        for (int i = 0; i < nb; i++) {
+            at = prev_glyph(f, b, flag, set, at);
+            if (at < 0 || coverage_index(f, sub + rd16(d + p + (uint32_t)i * 2), b->g[at].gid) < 0) return 0;
+            back[i] = at;
+        }
+        p += (uint32_t)nb * 2;
+        ni = rd16(d + p); p += 2;
+        if (ni < 1 || ni > 32 || !in_file(f, p, (uint32_t)ni * 2)) return 0;
+        input[0] = pos;
+        for (int i = 0; i < ni; i++) {
+            if (i) input[i] = next_glyph(f, b, flag, set, input[i - 1]);
+            if (input[i] < 0 || coverage_index(f, sub + rd16(d + p + (uint32_t)i * 2), b->g[input[i]].gid) < 0) return 0;
+        }
+        p += (uint32_t)ni * 2;
+        na = rd16(d + p); p += 2;
+        if (na > 32 || (na && !in_file(f, p, (uint32_t)na * 2))) return 0;
+        int at2 = input[ni - 1];
+        for (int i = 0; i < na; i++) {
+            at2 = next_glyph(f, b, flag, set, at2);
+            if (at2 < 0 || coverage_index(f, sub + rd16(d + p + (uint32_t)i * 2), b->g[at2].gid) < 0) return 0;
+        }
+        p += (uint32_t)na * 2;
+        records = rd16(d + p); p += 2;
+    } else {
+        uint16_t glyphs = rd16(d + sub + 2);
+        records = rd16(d + sub + 4);
+        if (glyphs < 1 || glyphs > 32) return 0;
+        p = sub + 6;
+        ni = glyphs;
+        input[0] = pos;
+        for (int i = 0; i < ni; i++) {
+            if (i) input[i] = next_glyph(f, b, flag, set, input[i - 1]);
+            if (input[i] < 0 || coverage_index(f, sub + rd16(d + p + (uint32_t)i * 2), b->g[input[i]].gid) < 0) return 0;
+        }
+        p += (uint32_t)ni * 2;
+    }
+    if (records > 32) return 0;
+    if (records > 0 && !in_file(f, p, (uint32_t)records * 4)) return 0;
+    int changed = 0;
+    for (uint16_t r = 0; r < records; r++) {
+        uint16_t seq = rd16(d + p + (uint32_t)r * 4);
+        uint16_t li = rd16(d + p + (uint32_t)r * 4 + 2);
+        if (seq >= (uint16_t)ni) continue;
+        int at = input[seq];
+        if (at < 0 || at >= b->n) continue;
+        int d2 = 0;
+        uint32_t ll = f->gsub + rd16(f->data + f->gsub + 8);
+        if (gsub_at(f, ll + rd16(f->data + ll + 2 + (uint32_t)li * 2), b, at, depth + 1, &d2) && d2) {
+            for (int k = 0; k < ni; k++) if (input[k] > at) input[k] += d2;
+            changed += d2;
+        }
+    }
+    *delta = changed;
+    return 1;
+}
+
+static int gsub_at(const ttf_face_t *f, uint32_t lookup, gbuf_t *b, int pos, int depth, int *delta) {
+    const uint8_t *d = f->data;
+    if (depth > 8 || pos < 0 || pos >= b->n || !f->gsub) return 0;
+    if (!in_file(f, lookup, 6)) return 0;
+    int type = rd16(d + lookup), nsub = rd16(d + lookup + 4);
+    uint16_t flag = rd16(d + lookup + 2);
+    int set = 0;
+    if (flag & LF_MARK_SET) {
+        if (!in_file(f, lookup + 6 + (uint32_t)nsub * 2, 2)) return 0;
+        set = rd16(d + lookup + 6 + (uint32_t)nsub * 2);
+    }
+    if (ignore_glyph(f, flag, set, b->g[pos].gid)) return 0;
+    for (int s = 0; s < nsub; s++) {
+        uint32_t sub = lookup + rd16(d + lookup + 6 + (uint32_t)s * 2);
+        int t = type;
+        if (type == 7) {                                 /* extension */
+            if (!in_file(f, sub, 8) || rd16(d + sub) != 1) continue;
+            t = rd16(d + sub + 2);
+            sub = sub + rd32(d + sub + 4);
+        }
+        int ok = 0;
+        switch (t) {
+        case 1: ok = gsub_single(f, sub, b, pos, delta); break;
+        case 2: ok = gsub_multiple(f, sub, b, pos, delta); break;
+        case 3: ok = gsub_alternate(f, sub, b, pos, delta); break;
+        case 4: ok = gsub_ligature(f, sub, b, pos, flag, set, delta); break;
+        case 5: ok = gsub_context3(f, sub, b, pos, flag, set, 0, depth, delta); break;
+        case 6: ok = gsub_context3(f, sub, b, pos, flag, set, 1, depth, delta); break;
+        default: break;
+        }
+        if (ok) return 1;
+    }
+    return 0;
+}
+
+static void gsub_lookup(const ttf_face_t *f, uint32_t lookup, gbuf_t *b, int depth) {
+    for (int i = 0; i < b->n; ) {
+        int delta = 0;
+        if (gsub_at(f, lookup, b, i, depth, &delta)) {
+            if (delta < 0 && i + delta < 0) i = 0;
+            else i += 1 + (delta > 0 ? delta : 0);
+        } else i++;
+    }
+}
+
+static void gsub_feature(const ttf_face_t *f, uint32_t script, uint32_t feat, gbuf_t *b, int depth) {
+    uint16_t lookups[MAX_SHAPE_LOOKUPS];
+    int n = feature_lookups(f, f->gsub, script, feat, lookups, MAX_SHAPE_LOOKUPS);
+    for (int i = 0; i < n; i++) {
+        uint32_t ll = f->gsub + rd16(f->data + f->gsub + 8);
+        gsub_lookup(f, ll + rd16(f->data + ll + 2 + (uint32_t)lookups[i] * 2), b, depth);
+    }
+}
+
+/* the same feature, but only at the glyphs that ask for it (Arabic forms) */
+static void gsub_form_feature(const ttf_face_t *f, uint32_t script, uint32_t feat,
+                              int form, gbuf_t *b) {
+    uint16_t lookups[MAX_SHAPE_LOOKUPS];
+    int nl = feature_lookups(f, f->gsub, script, feat, lookups, MAX_SHAPE_LOOKUPS);
+    if (!nl || !b->forms) return;
+    for (int li = 0; li < nl; li++) {
+        uint32_t ll = f->gsub + rd16(f->data + f->gsub + 8);
+        uint32_t lookup = ll + rd16(f->data + ll + 2 + (uint32_t)lookups[li] * 2);
+        for (int i = 0; i < b->n; ) {
+            if (b->form[i] != form) { i++; continue; }
+            int delta = 0;
+            if (gsub_at(f, lookup, b, i, 0, &delta)) i += 1 + (delta > 0 ? delta : 0);
+            else i++;
+        }
+    }
+}
+
+/* ---------------- GPOS ---------------- */
+typedef struct { int xpl, ypl, xadv, yadv; } value_t;
+
+static int value_size(uint16_t fmt) {
+    int n = 0;
+    for (int i = 0; i < 8; i++) if (fmt & (1u << i)) n += 2;
+    return n;
+}
+static int value_read(const ttf_face_t *f, uint32_t p, uint16_t fmt, value_t *v) {
+    const uint8_t *d = f->data;
+    int n = value_size(fmt);
+    if (!in_file(f, p, (uint32_t)n)) return 0;
+    v->xpl = v->ypl = v->xadv = v->yadv = 0;
+    if (fmt & 0x0001) { v->xpl = rs16(d + p); p += 2; }
+    if (fmt & 0x0002) { v->ypl = rs16(d + p); p += 2; }
+    if (fmt & 0x0004) { v->xadv = rs16(d + p); p += 2; }
+    if (fmt & 0x0008) { v->yadv = rs16(d + p); p += 2; }
+    return 1;
+}
+static void value_apply(ttf_shaped_t *g, const value_t *v) {
+    g->x_offset += v->xpl;
+    g->y_offset += v->ypl;
+    g->advance += v->xadv;
+}
+static int anchor_read(const ttf_face_t *f, uint32_t p, int *x, int *y) {
+    if (!in_file(f, p, 6)) return 0;
+    *x = rs16(f->data + p + 2);
+    *y = rs16(f->data + p + 4);
+    return 1;
+}
+
+static int gpos_pair(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos,
+                     uint16_t flag, int set, int *changed) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 10)) return 0;
+    uint16_t fmt = rd16(d + sub);
+    int idx = coverage_index(f, sub + rd16(d + sub + 2), b->g[pos].gid);
+    if (idx < 0) return 0;
+    int j = next_glyph(f, b, flag, set, pos);
+    if (j < 0) return 0;
+    uint16_t vf1 = rd16(d + sub + 4), vf2 = rd16(d + sub + 6);
+    value_t v1, v2;
+    if (fmt == 1) {
+        uint16_t nsets = rd16(d + sub + 8);
+        if ((uint32_t)idx >= nsets || !in_file(f, sub + 10, (uint32_t)nsets * 2)) return 0;
+        uint32_t ps = sub + rd16(d + sub + 10 + (uint32_t)idx * 2);
+        if (!in_file(f, ps, 2)) return 0;
+        uint16_t np = rd16(d + ps);
+        uint32_t rec = ps + 2;
+        for (uint16_t i = 0; i < np; i++) {
+            uint32_t r = rec + (uint32_t)i * (4 + value_size(vf1) + value_size(vf2));
+            if (!in_file(f, r, 2)) break;
+            if (rd16(d + r) != b->g[j].gid) continue;
+            uint32_t p = r + 2;
+            if (!value_read(f, p, vf1, &v1)) return 0;
+            p += (uint32_t)value_size(vf1);
+            if (!value_read(f, p, vf2, &v2)) return 0;
+            value_apply(&b->g[pos], &v1);
+            value_apply(&b->g[j], &v2);
+            *changed = 1;
+            return 1;
+        }
+        return 0;
+    }
+    if (fmt == 2) {
+        int c1 = classdef_get(f, sub + rd16(d + sub + 8), b->g[pos].gid);
+        int c2 = classdef_get(f, sub + rd16(d + sub + 10), b->g[j].gid);
+        uint16_t n1 = rd16(d + sub + 12), n2 = rd16(d + sub + 14);
+        if (c1 >= n1 || c2 >= n2) return 0;
+        uint32_t rec = sub + 16 + ((uint32_t)c1 * n2 + (uint32_t)c2) * (value_size(vf1) + value_size(vf2));
+        uint32_t p = rec;
+        if (!value_read(f, p, vf1, &v1)) return 0;
+        p += (uint32_t)value_size(vf1);
+        if (!value_read(f, p, vf2, &v2)) return 0;
+        value_apply(&b->g[pos], &v1);
+        value_apply(&b->g[j], &v2);
+        *changed = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* MarkArray / BaseArray / LigatureAttach / Mark2Array share the same shape:
+ * a count followed by classCount anchor offsets per entry. */
+static int anchor_pair(const ttf_face_t *f, uint32_t array, int entry, int cls,
+                       int class_count, int *ax, int *ay) {
+    uint32_t p = array + 2 + (uint32_t)entry * (uint32_t)class_count * 2 + (uint32_t)cls * 2;
+    if (!in_file(f, p, 2)) return 0;
+    uint16_t off = rd16(f->data + p);
+    if (!off) return 0;
+    return anchor_read(f, array + off, ax, ay);
+}
+
+static int mark_anchor(const ttf_face_t *f, uint32_t mark_array, int entry, int *cls, int *x, int *y) {
+    uint32_t p = mark_array + 2 + (uint32_t)entry * 4;
+    if (!in_file(f, p, 4)) return 0;
+    *cls = rd16(f->data + p);
+    uint16_t off = rd16(f->data + p + 2);
+    if (!off) return 0;
+    return anchor_read(f, mark_array + off, x, y);
+}
+
+static int gpos_mark_base(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 12) || rd16(d + sub) != 1) return 0;
+    uint32_t mc = sub + rd16(d + sub + 2), bc = sub + rd16(d + sub + 4);
+    int class_count = rd16(d + sub + 6);
+    uint32_t ma = sub + rd16(d + sub + 8), ba = sub + rd16(d + sub + 10);
+    int mi = coverage_index(f, mc, b->g[pos].gid);
+    if (mi < 0 || class_count <= 0) return 0;
+    int base = -1;
+    for (int i = pos - 1, k = 0; i >= 0 && k < 64; i--, k++) {
+        if (coverage_index(f, bc, b->g[i].gid) >= 0) { base = i; break; }
+        if (glyph_class(f, b->g[i].gid) != 3) break;
+    }
+    if (base < 0) return 0;
+    int bi = coverage_index(f, bc, b->g[base].gid);
+    if (bi < 0) return 0;
+    int cls, mx, my, ax, ay;
+    if (!mark_anchor(f, ma, mi, &cls, &mx, &my)) return 0;
+    if (cls >= class_count) return 0;
+    if (!anchor_pair(f, ba, bi, cls, class_count, &ax, &ay)) return 0;
+    b->g[pos].x_offset += ax - mx;
+    b->g[pos].y_offset += ay - my;
+    return 1;
+}
+
+static int gpos_mark_lig(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 12) || rd16(d + sub) != 1) return 0;
+    uint32_t mc = sub + rd16(d + sub + 2), lc = sub + rd16(d + sub + 4);
+    int class_count = rd16(d + sub + 6);
+    uint32_t ma = sub + rd16(d + sub + 8), la = sub + rd16(d + sub + 10);
+    int mi = coverage_index(f, mc, b->g[pos].gid);
+    if (mi < 0 || class_count <= 0) return 0;
+    int lig = -1;
+    for (int i = pos - 1, k = 0; i >= 0 && k < 64; i--, k++) {
+        if (coverage_index(f, lc, b->g[i].gid) >= 0) { lig = i; break; }
+        if (glyph_class(f, b->g[i].gid) != 3) break;
+    }
+    if (lig < 0) return 0;
+    int li = coverage_index(f, lc, b->g[lig].gid);
+    if (li < 0 || !in_file(f, la, 2)) return 0;
+    uint16_t nlig = rd16(d + la);
+    if ((uint32_t)li >= nlig) return 0;
+    uint32_t at = la + rd16(d + la + 2 + (uint32_t)li * 2);
+    if (!in_file(f, at, 2)) return 0;
+    int comps = rd16(d + at);
+    if (comps <= 0) return 0;
+    int cls, mx, my, ax, ay;
+    if (!mark_anchor(f, ma, mi, &cls, &mx, &my) || cls >= class_count) return 0;
+    int comp = comps - 1;                                  /* the mark follows the ligature */
+    uint32_t p = at + 2 + (uint32_t)comp * (uint32_t)class_count * 2 + (uint32_t)cls * 2;
+    if (!in_file(f, p, 2) || !rd16(d + p)) return 0;
+    if (!anchor_read(f, at + rd16(d + p), &ax, &ay)) return 0;
+    b->g[pos].x_offset += ax - mx;
+    b->g[pos].y_offset += ay - my;
+    return 1;
+}
+
+static int gpos_mark_mark(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos) {
+    const uint8_t *d = f->data;
+    if (!in_file(f, sub, 12) || rd16(d + sub) != 1) return 0;
+    uint32_t c1 = sub + rd16(d + sub + 2), c2 = sub + rd16(d + sub + 4);
+    int class_count = rd16(d + sub + 6);
+    uint32_t a1 = sub + rd16(d + sub + 8), a2 = sub + rd16(d + sub + 10);
+    int m1 = coverage_index(f, c1, b->g[pos].gid);
+    if (m1 < 0 || class_count <= 0) return 0;
+    int base = -1;
+    for (int i = pos - 1, k = 0; i >= 0 && k < 64; i--, k++) {
+        if (coverage_index(f, c2, b->g[i].gid) >= 0) { base = i; break; }
+        if (glyph_class(f, b->g[i].gid) != 3) break;      /* a base ends the mark stack */
+    }
+    if (base < 0) return 0;
+    int m2 = coverage_index(f, c2, b->g[base].gid);
+    if (m2 < 0) return 0;
+    int cls, mx, my, ax, ay;
+    if (!mark_anchor(f, a1, m1, &cls, &mx, &my) || cls >= class_count) return 0;
+    if (!anchor_pair(f, a2, m2, cls, class_count, &ax, &ay)) return 0;
+    b->g[pos].x_offset += ax - mx;
+    b->g[pos].y_offset += ay - my;
+    return 1;
+}
+
+static int gpos_at(const ttf_face_t *f, uint32_t lookup, gbuf_t *b, int pos, uint16_t flag, int set) {
+    const uint8_t *d = f->data;
+    int type = rd16(d + lookup), nsub = rd16(d + lookup + 4);
+    for (int s = 0; s < nsub; s++) {
+        uint32_t sub = lookup + rd16(d + lookup + 6 + (uint32_t)s * 2);
+        int t = type;
+        if (type == 9) {
+            if (!in_file(f, sub, 8) || rd16(d + sub) != 1) continue;
+            t = rd16(d + sub + 2);
+            sub = sub + rd32(d + sub + 4);
+        }
+        int changed = 0, ok = 0;
+        switch (t) {
+        case 1: {                                        /* single adjustment */
+            if (rd16(d + sub) != 1) break;
+            int idx = coverage_index(f, sub + rd16(d + sub + 2), b->g[pos].gid);
+            if (idx < 0) break;
+            uint16_t vf = rd16(d + sub + 4);
+            uint32_t p = sub + 6 + (uint32_t)idx * (uint32_t)value_size(vf);
+            value_t v;
+            if (value_read(f, p, vf, &v)) { value_apply(&b->g[pos], &v); ok = changed = 1; }
+            break;
+        }
+        case 2: ok = gpos_pair(f, sub, b, pos, flag, set, &changed); break;
+        case 4: ok = gpos_mark_base(f, sub, b, pos) ? 1 : 0; changed = ok; break;
+        case 5: ok = gpos_mark_lig(f, sub, b, pos) ? 1 : 0; changed = ok; break;
+        case 6: ok = gpos_mark_mark(f, sub, b, pos) ? 1 : 0; changed = ok; break;
+        default: break;
+        }
+        if (ok) return changed;
+    }
+    return 0;
+}
+
+static void gpos_feature(const ttf_face_t *f, uint32_t script, uint32_t feat, gbuf_t *b) {
+    uint16_t lookups[MAX_SHAPE_LOOKUPS];
+    int n = feature_lookups(f, f->gpos, script, feat, lookups, MAX_SHAPE_LOOKUPS);
+    for (int k = 0; k < n; k++) {
+        uint32_t ll = f->gpos + rd16(f->data + f->gpos + 8);
+        uint32_t lookup = ll + rd16(f->data + ll + 2 + (uint32_t)lookups[k] * 2);
+        if (!in_file(f, lookup, 6)) continue;
+        uint16_t flag = rd16(f->data + lookup + 2);
+        int set = 0;
+        if (flag & LF_MARK_SET) {
+            uint16_t ns = rd16(f->data + lookup + 4);
+            if (in_file(f, lookup + 6 + (uint32_t)ns * 2, 2))
+                set = rd16(f->data + lookup + 6 + (uint32_t)ns * 2);
+        }
+        for (int i = 0; i < b->n; i++)
+            gpos_at(f, lookup, b, i, flag, set);
+    }
+}
+
+/* ---------------- Arabic joining ---------------- */
+enum { JOIN_U, JOIN_R, JOIN_D, JOIN_L, JOIN_C, JOIN_T };
+enum { FORM_NONE, FORM_ISOL, FORM_INIT, FORM_MEDI, FORM_FINA };
+
+static int in_range(uint32_t c, uint32_t lo, uint32_t hi) { return c >= lo && c <= hi; }
+
+static int join_type(uint32_t c) {
+    /* transparent: combining marks never break a join */
+    if (in_range(c, 0x0300, 0x036F) || in_range(c, 0x0483, 0x0489) ||
+        in_range(c, 0x0591, 0x05BD) || c == 0x05BF || in_range(c, 0x05C1, 0x05C2) ||
+        in_range(c, 0x05C4, 0x05C5) || c == 0x05C7 ||
+        in_range(c, 0x0610, 0x061A) || in_range(c, 0x064B, 0x065F) || c == 0x0670 ||
+        in_range(c, 0x06D6, 0x06DC) || in_range(c, 0x06DF, 0x06E4) ||
+        in_range(c, 0x06E7, 0x06E8) || in_range(c, 0x06EA, 0x06ED) ||
+        c == 0x0711 || in_range(c, 0x0730, 0x074A) || in_range(c, 0x07A6, 0x07B0) ||
+        in_range(c, 0x07EB, 0x07F3) || in_range(c, 0x0816, 0x0819) ||
+        in_range(c, 0x081B, 0x0823) || in_range(c, 0x0825, 0x0827) ||
+        in_range(c, 0x0829, 0x082D) || in_range(c, 0x0859, 0x085B) ||
+        in_range(c, 0x0898, 0x089F) || in_range(c, 0x08CA, 0x08E1) ||
+        in_range(c, 0x08E3, 0x08FF) || in_range(c, 0x1AB0, 0x1AFF) ||
+        in_range(c, 0x1DC0, 0x1DFF) || in_range(c, 0x20D0, 0x20FF) ||
+        in_range(c, 0xFE00, 0xFE0F) || in_range(c, 0xFE20, 0xFE2F))
+        return JOIN_T;
+    if (c == 0x0640 || c == 0x200D) return JOIN_C;          /* tatweel, ZWJ */
+    if (c == 0x200C || c == 0x200B) return JOIN_U;          /* ZWNJ, ZWSP */
+    if (c == 0x0710 || c == 0x07FA) return JOIN_R;          /* Syriac alaph, Mandaic */
+    if (in_range(c, 0x0620, 0x064A) || in_range(c, 0x066E, 0x06D3) ||
+        in_range(c, 0x06D5, 0x06D5) || in_range(c, 0x06EE, 0x06EF) ||
+        in_range(c, 0x06FA, 0x06FC) || c == 0x06FF ||
+        in_range(c, 0x0750, 0x077F) || in_range(c, 0x08A0, 0x08C8)) {
+        /* right-joining: alef, dal, thal, reh, zain, waw and friends */
+        if (c == 0x0622 || c == 0x0623 || c == 0x0624 || c == 0x0625 ||
+            c == 0x0627 || c == 0x0629 || in_range(c, 0x062F, 0x0632) ||
+            c == 0x0648 || c == 0x0671 || c == 0x0672 || c == 0x0673 ||
+            in_range(c, 0x0675, 0x0677) || in_range(c, 0x0688, 0x0699) ||
+            c == 0x06C0 || in_range(c, 0x06C3, 0x06CB) || c == 0x06CD ||
+            c == 0x06CF || in_range(c, 0x06D2, 0x06D3) || c == 0x06D5 ||
+            c == 0x06EE || c == 0x06EF || c == 0x06FE || c == 0x08AA ||
+            c == 0x08AE || c == 0x08B1 || c == 0x08B2 || c == 0x08B9)
+            return JOIN_R;
+        return JOIN_D;
+    }
+    if (in_range(c, 0x0700, 0x070D) || in_range(c, 0x0800, 0x0815) ||
+        in_range(c, 0x0840, 0x0858) || in_range(c, 0x0860, 0x086A) ||
+        in_range(c, 0x0870, 0x0887) || in_range(c, 0x0889, 0x088E))
+        return JOIN_D;
+    if (in_range(c, 0x1807, 0x1807) || in_range(c, 0x1820, 0x1878) ||
+        in_range(c, 0xA840, 0xA871)) return JOIN_D;        /* Mongolian, Phags-pa */
+    return JOIN_U;
+}
+
+static void arabic_forms(const uint32_t *cps, int n, uint8_t *form) {
+    for (int i = 0; i < n; i++) {
+        int t = join_type(cps[i]);
+        form[i] = FORM_NONE;
+        if (t != JOIN_R && t != JOIN_D && t != JOIN_L && t != JOIN_C) continue;
+        int p = i - 1;
+        while (p >= 0 && join_type(cps[p]) == JOIN_T) p--;
+        int q = i + 1;
+        while (q < n && join_type(cps[q]) == JOIN_T) q++;
+        int pt = p >= 0 ? join_type(cps[p]) : JOIN_U;
+        int qt = q < n ? join_type(cps[q]) : JOIN_U;
+        int prev_joins = (pt == JOIN_D || pt == JOIN_L || pt == JOIN_C) &&
+                         (t == JOIN_D || t == JOIN_R || t == JOIN_C);
+        int next_joins = (t == JOIN_D || t == JOIN_L || t == JOIN_C) &&
+                         (qt == JOIN_D || qt == JOIN_R || qt == JOIN_C);
+        form[i] = prev_joins && next_joins ? FORM_MEDI :
+                  prev_joins ? FORM_FINA : next_joins ? FORM_INIT : FORM_ISOL;
+    }
+}
+
+ttf_shaped_t *ttf_shape(const ttf_face_t *f, const uint32_t *cps, int n,
+                        uint32_t script, int rtl, int *out_n) {
+    if (out_n) *out_n = 0;
+    if (!f || !cps || n <= 0 || n > 65536) return NULL;
+    int cap = n * 3 + 16;
+    ttf_shaped_t *g = f->alloc(f->user, (size_t)cap * sizeof *g);
+    if (!g) return NULL;
+    uint8_t *forms = f->alloc(f->user, (size_t)cap);
+    if (!forms) { f->free(f->user, g); return NULL; }
+    uint8_t *orig = f->alloc(f->user, (size_t)n);
+    if (!orig) { f->free(f->user, forms); f->free(f->user, g); return NULL; }
+    arabic_forms(cps, n, orig);
+    gbuf_t b = { g, 0, cap, forms, 1 };
+    for (int i = 0; i < n; i++) {
+        uint32_t cp = cps[i];
+        if (cp == 0x200B || cp == 0x200C || cp == 0x200D || cp == 0x2060 || cp == 0x00AD)
+            continue;                                     /* invisible format characters */
+        int gid = ttf_glyph_index(f, cp);
+        b.g[b.n].gid = gid;
+        b.g[b.n].advance = ttf_advance(f, gid);
+        b.g[b.n].x_offset = b.g[b.n].y_offset = 0;
+        b.g[b.n].cluster = i;
+        b.form[b.n] = orig[i];
+        b.n++;
+    }
+    f->free(f->user, orig);
+    if (!b.n) { f->free(f->user, forms); f->free(f->user, g); return NULL; }
+    b.cap = cap;
+
+    if (f->gsub) {
+        gsub_feature(f, script, TAG4('c', 'c', 'm', 'p'), &b, 0);
+        gsub_feature(f, script, TAG4('l', 'o', 'c', 'l'), &b, 0);
+        if (script == TAG4('a', 'r', 'a', 'b')) {
+            gsub_form_feature(f, script, TAG4('i', 's', 'o', 'l'), FORM_ISOL, &b);
+            gsub_form_feature(f, script, TAG4('i', 'n', 'i', 't'), FORM_INIT, &b);
+            gsub_form_feature(f, script, TAG4('m', 'e', 'd', 'i'), FORM_MEDI, &b);
+            gsub_form_feature(f, script, TAG4('f', 'i', 'n', 'a'), FORM_FINA, &b);
+        }
+        gsub_feature(f, script, TAG4('r', 'l', 'i', 'g'), &b, 0);
+        gsub_feature(f, script, TAG4('c', 'a', 'l', 't'), &b, 0);
+        gsub_feature(f, script, TAG4('l', 'i', 'g', 'a'), &b, 0);
+        gsub_feature(f, script, TAG4('c', 'l', 'i', 'g'), &b, 0);
+    }
+    if (f->gpos) {
+        gpos_feature(f, script, TAG4('k', 'e', 'r', 'n'), &b);
+        gpos_feature(f, script, TAG4('m', 'a', 'r', 'k'), &b);
+        gpos_feature(f, script, TAG4('m', 'k', 'm', 'k'), &b);
+    }
+    f->free(f->user, forms);
+    if (out_n) *out_n = b.n;
+    return g;
+}
+
+void ttf_shape_free(const ttf_face_t *f, ttf_shaped_t *shaped) {
+    if (f && shaped) f->free(f->user, shaped);
 }
 
 /* ---------------- outlines ---------------- */

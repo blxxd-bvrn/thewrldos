@@ -56,4 +56,29 @@ int ttf_render(const ttf_face_t *face, int glyph, int px, int slant,
                ttf_glyph_t *out);
 void ttf_glyph_release(const ttf_face_t *face, ttf_glyph_t *glyph);
 
+/* ---------------- layout ---------------- */
+
+/* One glyph after shaping, in font units (y grows upwards, like the outlines).
+ * `advance` is how far the pen moves; `x_offset`/`y_offset` move this glyph
+ * from the pen, which is how marks sit over their base. `cluster` is the index
+ * of the first code point this glyph came from. */
+typedef struct {
+    int gid;
+    int advance;
+    int x_offset, y_offset;
+    int cluster;
+} ttf_shaped_t;
+
+/* Shapes one run of text - a single script, one direction - with the font's
+ * own GSUB and GPOS tables: ligatures, contextual substitutions, Arabic
+ * joining forms and mark attachment. `script` is an OpenType script tag
+ * ('arab', 'hebr', 'latn', ...) or 0 for the default script. `rtl` selects the
+ * Arabic joining features and reverses advances for the caller to lay out.
+ *
+ * The result belongs to the face's allocator: release it with
+ * ttf_shape_free(). Returns NULL when the text has no glyphs. */
+ttf_shaped_t *ttf_shape(const ttf_face_t *face, const uint32_t *cps, int n,
+                        uint32_t script, int rtl, int *out_n);
+void ttf_shape_free(const ttf_face_t *face, ttf_shaped_t *shaped);
+
 #endif

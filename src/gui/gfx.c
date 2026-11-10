@@ -3,6 +3,7 @@
 #include "fs.h"
 #include "gfx.h"
 #include "ttf.h"
+#include "text.h"
 
 canvas_t screen;
 int SCREEN_W, SCREEN_H;
@@ -320,7 +321,7 @@ static inline const glyph_t *glyph(font_t *f, char ch) {
  * is available, the same family the bitmaps were generated from (Liberation,
  * SIL OFL) is loaded from C:\WRLD\Fonts and drawn by the TrueType engine: any
  * size, anti-aliased, and every character the font covers, read as UTF-8. */
-enum { TF_REGULAR, TF_BOLD, TF_ITALIC, TF_BOLD_ITALIC, TF_MONO, TF_COUNT };
+enum { TF_REGULAR, TF_BOLD, TF_ITALIC, TF_BOLD_ITALIC, TF_MONO, TF_ARABIC, TF_COUNT };
 
 static const char *const ttf_files[TF_COUNT] = {
     "LiberationSans-Regular.ttf",
@@ -328,6 +329,7 @@ static const char *const ttf_files[TF_COUNT] = {
     "LiberationSans-Italic.ttf",
     "LiberationSans-BoldItalic.ttf",
     "LiberationMono-Regular.ttf",
+    "NotoNaskhArabic-Regular.ttf",
 };
 
 typedef struct { uint8_t face, px; } font_spec_t;
@@ -357,6 +359,7 @@ static ttf_face_t *ttf_face[TF_COUNT];
 static uint8_t *ttf_bytes[TF_COUNT];        /* the copies ttf_face points into */
 static uint8_t ttf_tries[TF_COUNT];
 static uint32_t ttf_retry[TF_COUNT];
+static void shape_cache_clear(void);
 
 static void *ttf_mem_alloc(void *user, size_t n) { (void)user; return kmalloc(n); }
 static void ttf_mem_free(void *user, void *p) { (void)user; kfree(p); }
@@ -385,6 +388,7 @@ static ttf_face_t *ttf_get(int which) {
     if (!f) { kfree(copy); return NULL; }
     ttf_face[which] = f;
     ttf_bytes[which] = copy;
+    shape_cache_clear();                         /* results without this face are stale */
     klog("gfx: %s loaded (%u bytes)", path, (unsigned)n->size);
     return f;
 }
@@ -401,9 +405,6 @@ static int scale_units(int units, int px, int upem) {
 }
 static int face_advance(ttf_face_t *f, int gid, int px) {
     return scale_units(ttf_advance(f, gid), px, ttf_units_per_em(f));
-}
-static int face_kern(ttf_face_t *f, int left, int right, int px) {
-    return scale_units(ttf_kerning(f, left, right), px, ttf_units_per_em(f));
 }
 
 /* one UTF-8 character, or one Latin-1 byte when the sequence is not valid */
@@ -432,28 +433,26 @@ static int char_len(const char *s, const char *end) {
     (void)utf8_next(&q, (const uint8_t *)end);
     return (int)(q - p);
 }
-static int font_glyph(ttf_face_t *f, uint32_t cp) {
-    if (cp < 32 || (cp >= 0x7F && cp < 0xA0)) cp = '?';
-    return ttf_glyph_index(f, cp);
-}
 
-/* Glyph cache: direct-mapped, keyed by font and glyph index (the font decides
- * the face and the size). 4096 entries are about 100 KiB of headers plus the
- * coverage bitmaps, and avoid rasterising the same letter every frame. */
+/* Glyph cache: direct-mapped, keyed by font, face and glyph index (the font
+ * decides the size, the face decides which font file). 4096 entries are about
+ * 100 KiB of headers plus the coverage bitmaps, and avoid rasterising the same
+ * letter every frame. */
 #define GLYPH_CACHE 4096
 typedef struct {
     uint16_t gid;
-    uint8_t used, font;
+    uint8_t used, font, face;
     int16_t w, h, xoff, yoff, adv;
     uint8_t *cov;
 } gcache_t;
 static gcache_t gcache[GLYPH_CACHE];
 
-static gcache_t *gcache_get(int font, ttf_face_t *f, int px, int gid) {
-    uint32_t h = (uint32_t)gid * 2654435761u ^ (uint32_t)font * 2246822519u;
+static gcache_t *gcache_get(int font, int face, ttf_face_t *f, int px, int gid) {
+    uint32_t h = (uint32_t)gid * 2654435761u ^ (uint32_t)font * 2246822519u ^
+                 (uint32_t)(face + 1) * 1402946738u;
     h ^= h >> 15;
     gcache_t *e = &gcache[(h >> 4) & (GLYPH_CACHE - 1)];
-    if (e->used && e->font == font && e->gid == (uint16_t)gid) return e;
+    if (e->used && e->font == font && e->face == face && e->gid == (uint16_t)gid) return e;
     ttf_glyph_t g;
     if (ttf_render(f, gid, px, 0, &g) != 0) return NULL;
     if (e->cov) kfree(e->cov);
@@ -463,6 +462,7 @@ static gcache_t *gcache_get(int font, ttf_face_t *f, int px, int gid) {
     e->adv = (int16_t)g.advance;
     e->gid = (uint16_t)gid;
     e->font = (uint8_t)font;
+    e->face = (uint8_t)face;
     e->used = 1;
     return e;
 }
@@ -476,74 +476,259 @@ static size_t text_span(const char *s, int n) {
     while (len < (size_t)n && s[len]) len++;
     return len;
 }
-static int ttf_width(int font, const char *s, int n) {
-    ttf_face_t *f = font_face(font);
-    if (!f) return -1;
-    int px = font_specs[font].px;
-    const uint8_t *p = (const uint8_t *)s, *end = p + text_span(s, n);
-    int w = 0, prev = -1;
-    while (p < end) {
-        uint32_t cp = utf8_next(&p, end);
-        if (cp == 0x00AD) continue;                     /* soft hyphen: invisible */
-        if (cp == '\t') { w += face_advance(f, ttf_glyph_index(f, ' '), px) * 4; prev = -1; continue; }
-        int gid = font_glyph(f, cp);
-        if (prev >= 0) w += face_kern(f, prev, gid, px);
-        w += face_advance(f, gid, px);
-        prev = gid;
+/* ---------------- shaped lines ----------------
+ *
+ * Text is decoded once, given bidi levels, cut into runs of one script,
+ * direction and face (the Arabic fallback joins in here), and each run is
+ * shaped by the font. Runs are then put in visual order and the glyphs of a
+ * right-to-left run are laid out from the right. The result is cached: the
+ * desktop and the browser draw the same labels every frame. */
+
+typedef struct {
+    uint16_t gid;
+    uint8_t face;
+    int16_t adv;
+    int16_t x, y;             /* from the start of the line; y grows upwards */
+} pplaced_t;
+
+typedef struct {
+    int start, len, level;
+    uint8_t face;
+    uint32_t script;
+    ttf_shaped_t *sh;
+    int n, width;
+} srun_t;
+
+#define SHAPE_CACHE  160
+#define SHAPE_BUDGET 32768
+typedef struct {
+    uint64_t hash;
+    int font, n, count, width;
+    pplaced_t *g;
+} scache_t;
+static scache_t scache[SHAPE_CACHE];
+static int scache_glyphs;
+static pplaced_t empty_place;
+
+static void shape_cache_clear(void)
+{
+    for (int i = 0; i < SHAPE_CACHE; i++) {
+        if (scache[i].g) kfree(scache[i].g);
+        memset(&scache[i], 0, sizeof scache[i]);
     }
+    scache_glyphs = 0;
+}
+
+static uint64_t shape_hash(int font, const char *s, int n)
+{
+    uint64_t h = 1469598103934665603ull ^ (uint64_t)(uint32_t)font;
+    for (int i = 0; i < n; i++) { h ^= (uint8_t)s[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+/* The face that has a glyph for `cp`: the font's own face, then the Arabic
+ * fallback, then whatever the previous character used (marks and punctuation
+ * inside a run). */
+static int face_for_cp(int font, uint32_t cp, int prev)
+{
+    if (text_script(cp) == 0 && prev >= 0 && ttf_face[prev] &&
+        ttf_glyph_index(ttf_face[prev], cp))
+        return prev;
+    int primary = font_specs[font].face;
+    if (ttf_face[primary] && ttf_glyph_index(ttf_face[primary], cp)) return primary;
+    if (ttf_face[TF_ARABIC] && ttf_glyph_index(ttf_face[TF_ARABIC], cp)) return TF_ARABIC;
+    if (prev >= 0 && ttf_face[prev] && ttf_glyph_index(ttf_face[prev], cp)) return prev;
+    return primary;
+}
+
+static int shape_build_slow(int font, const char *s, int span,
+                            pplaced_t **out, int *out_n, int *out_w)
+{
+    ttf_face_t *primary = font_face(font);
+    if (!primary) return 0;
+    int px = font_specs[font].px;
+    int m = 0;
+    for (const uint8_t *p = (const uint8_t *)s, *end = p + span; p < end; ) {
+        uint32_t cp = utf8_next(&p, end);
+        if (cp == '\t') m += 4;
+        else if (cp != 0x00AD && cp != '\n' && cp != '\r') m++;
+    }
+    if (m <= 0) { *out = NULL; *out_n = 0; *out_w = 0; return 1; }
+
+    uint32_t *cps = kmalloc((size_t)m * sizeof *cps);
+    uint8_t *lev = kmalloc((size_t)m);
+    uint8_t *fc = kmalloc((size_t)m);
+    srun_t *runs = kzalloc((size_t)m * sizeof *runs);
+    if (!cps || !lev || !fc || !runs) {
+        if (cps) kfree(cps); if (lev) kfree(lev); if (fc) kfree(fc); if (runs) kfree(runs);
+        return 0;
+    }
+    int k = 0;
+    for (const uint8_t *p = (const uint8_t *)s, *end = p + span; p < end; ) {
+        uint32_t cp = utf8_next(&p, end);
+        if (cp == '\t') { cps[k++] = ' '; cps[k++] = ' '; cps[k++] = ' '; cps[k++] = ' '; }
+        else if (cp != 0x00AD && cp != '\n' && cp != '\r') cps[k++] = cp;
+    }
+    m = k;
+    int base = text_bidi_base(cps, m);
+    text_bidi_levels(cps, m, lev, base);
+    for (int i = 0; i < m; i++) if (lev[i] & 1) cps[i] = text_mirror(cps[i]);
+    int arabic = 0;
+    for (int i = 0; i < m; i++)
+        if (text_script(cps[i]) == 0x61726162u) { arabic = 1; break; }
+    if (arabic && !ttf_face[TF_ARABIC]) ttf_get(TF_ARABIC);
+    int prev = -1;
+    for (int i = 0; i < m; i++) { fc[i] = (uint8_t)face_for_cp(font, cps[i], prev); prev = fc[i]; }
+
+    /* runs of one level, script and face */
+    int nr = 0;
+    for (int i = 0; i < m; ) {
+        srun_t *r = &runs[nr++];
+        memset(r, 0, sizeof *r);
+        r->start = i; r->level = lev[i]; r->face = fc[i];
+        r->script = text_script(cps[i]);
+        int j = i + 1;
+        while (j < m) {
+            uint32_t sc = text_script(cps[j]);
+            if (lev[j] != r->level || fc[j] != r->face) break;
+            if (sc && r->script && r->script != sc) break;
+            if (!r->script) r->script = sc;
+            j++;
+        }
+        r->len = j - i;
+        int shn = 0;
+        r->sh = ttf_shape(ttf_face[r->face], cps + i, r->len, r->script, r->level & 1, &shn);
+        r->n = r->sh ? shn : 0;
+        int w = 0;
+        for (int q = 0; q < r->n; q++)
+            w += scale_units(r->sh[q].advance, px, ttf_units_per_em(ttf_face[r->face]));
+        r->width = w;
+        i = j;
+    }
+
+    /* UAX #9 L2: reverse runs from the highest level down to the lowest odd */
+    int maxlev = 0, minodd = 99, total = 0;
+    for (int i = 0; i < nr; i++) {
+        if (runs[i].level > maxlev) maxlev = runs[i].level;
+        if ((runs[i].level & 1) && runs[i].level < minodd) minodd = runs[i].level;
+        total += runs[i].n;
+    }
+    for (int l = maxlev; l >= minodd && l > 0; l--) {
+        for (int i = 0; i < nr; ) {
+            if (runs[i].level < l) { i++; continue; }
+            int a = i;
+            while (i < nr && runs[i].level >= l) i++;
+            for (int x = a, y = i - 1; x < y; x++, y--) {
+                srun_t t = runs[x]; runs[x] = runs[y]; runs[y] = t;
+            }
+        }
+    }
+
+    pplaced_t *g = total ? kmalloc((size_t)total * sizeof *g) : NULL;
+    if (total && (!g || !runs)) {
+        for (int i = 0; i < nr; i++) if (runs[i].sh) ttf_shape_free(ttf_face[runs[i].face], runs[i].sh);
+        kfree(cps); kfree(lev); kfree(fc); kfree(runs);
+        return 0;
+    }
+    int at = 0, pen = 0;
+    for (int i = 0; i < nr; i++) {
+        srun_t *r = &runs[i];
+        int cum = 0;
+        for (int q = 0; q < r->n; q++) {
+            int adv = scale_units(r->sh[q].advance, px, ttf_units_per_em(ttf_face[r->face]));
+            int xo = scale_units(r->sh[q].x_offset, px, ttf_units_per_em(ttf_face[r->face]));
+            int yo = scale_units(r->sh[q].y_offset, px, ttf_units_per_em(ttf_face[r->face]));
+            pplaced_t *p = &g[at++];
+            p->gid = (uint16_t)r->sh[q].gid;
+            p->face = r->face;
+            p->adv = (int16_t)adv;
+            p->x = (int16_t)((r->level & 1) ? pen + r->width - cum - adv + xo : pen + cum + xo);
+            p->y = (int16_t)yo;
+            cum += adv;
+        }
+        pen += r->width;
+        if (r->sh) ttf_shape_free(ttf_face[r->face], r->sh);
+    }
+    kfree(cps); kfree(lev); kfree(fc); kfree(runs);
+    *out = g; *out_n = total; *out_w = pen;
+    return 1;
+}
+
+static pplaced_t *shape_get(int font, const char *s, int n, int *count, int *width)
+{
+    int span = (int)text_span(s, n);
+    *count = 0; *width = 0;
+    if (!span) return &empty_place;
+    if (!font_face(font)) return NULL;
+    uint64_t h = shape_hash(font, s, span);
+    scache_t *e = &scache[(h >> 7) % SHAPE_CACHE];
+    if (e->g && e->hash == h && e->font == font && e->n == span) {
+        *count = e->count; *width = e->width;
+        return e->g;
+    }
+    pplaced_t *g; int cnt, w;
+    if (!shape_build_slow(font, s, span, &g, &cnt, &w)) return NULL;
+    if (!g) return &empty_place;
+    if (e->g) { scache_glyphs -= e->count; kfree(e->g); }
+    if (scache_glyphs + cnt > SHAPE_BUDGET) shape_cache_clear();
+    e->g = g; e->count = cnt; e->width = w;
+    e->font = font; e->n = span; e->hash = h;
+    scache_glyphs += cnt;
+    *count = cnt; *width = w;
+    return g;
+}
+
+static int ttf_width(int font, const char *s, int n) {
+    int count, w;
+    if (!shape_get(font, s, n, &count, &w)) return -1;
     return w;
 }
 static int ttf_draw(canvas_t *c, int font, int x, int y, const char *s, int n, uint32_t col) {
-    ttf_face_t *f = font_face(font);
-    if (!f) return -1;
+    int count, w;
+    pplaced_t *g = shape_get(font, s, n, &count, &w);
+    if (!g) return -1;
     int px = font_specs[font].px;
-    const uint8_t *p = (const uint8_t *)s, *end = p + text_span(s, n);
-    int base = y + F(font)->ascent, x0 = x, prev = -1;
-    while (p < end) {
-        uint32_t cp = utf8_next(&p, end);
-        if (cp == 0x00AD) continue;                     /* soft hyphen: invisible */
-        if (cp == '\t') { x += face_advance(f, ttf_glyph_index(f, ' '), px) * 4; prev = -1; continue; }
-        int gid = font_glyph(f, cp);
-        if (prev >= 0) x += face_kern(f, prev, gid, px);
-        gcache_t *g = gcache_get(font, f, px, gid);
-        if (g) {
-            int gx = x + g->xoff, gy = base + g->yoff;
-            if (g->w > 0 && gx + g->w > c->clip.x && gx < c->clip.x + c->clip.w &&
-                gy + g->h > c->clip.y && gy < c->clip.y + c->clip.h) {
-                for (int j = 0; j < g->h; j++) {
-                    const uint8_t *row = g->cov + j * g->w;
-                    for (int k = 0; k < g->w; k++) {
-                        int a = row[k];
-                        if (a) blend_pixel(c, gx + k, gy + j, col, a * C_A(col) / 255);
-                    }
+    int base = y + F(font)->ascent;
+    for (int i = 0; i < count; i++) {
+        ttf_face_t *f = ttf_face[g[i].face];
+        if (!f) continue;
+        gcache_t *gc = gcache_get(font, g[i].face, f, px, g[i].gid);
+        if (!gc) continue;
+        int gx = x + g[i].x + gc->xoff;
+        int gy = base - g[i].y + gc->yoff;
+        if (gc->w > 0 && gx + gc->w > c->clip.x && gx < c->clip.x + c->clip.w &&
+            gy + gc->h > c->clip.y && gy < c->clip.y + c->clip.h) {
+            for (int j = 0; j < gc->h; j++) {
+                const uint8_t *row = gc->cov + j * gc->w;
+                for (int k = 0; k < gc->w; k++) {
+                    int a = row[k];
+                    if (a) blend_pixel(c, gx + k, gy + j, col, a * C_A(col) / 255);
                 }
             }
-            x += g->adv;
-        } else {
-            x += face_advance(f, gid, px);
         }
-        prev = gid;
     }
-    return x - x0;
+    return w;
 }
+static int cp_advance(int font, uint32_t cp)
+{
+    if (cp < 32 || (cp >= 0x7F && cp < 0xA0)) cp = '?';
+    int face = face_for_cp(font, cp, -1);
+    ttf_face_t *f = ttf_face[face];
+    if (!f) return 0;
+    return face_advance(f, ttf_glyph_index(f, cp), font_specs[font].px);
+}
+
 static int ttf_fit(int font, const char *s, int maxw) {
-    ttf_face_t *f = font_face(font);
-    if (!f) return -1;
-    int px = font_specs[font].px;
+    if (!font_face(font)) return -1;
     const uint8_t *p = (const uint8_t *)s, *end = p + strlen(s);
-    int w = 0, prev = -1;
+    int w = 0;
     while (p < end) {
         const uint8_t *start = p;
         uint32_t cp = utf8_next(&p, end);
         int a;
         if (cp == 0x00AD) continue;                     /* soft hyphen: invisible */
-        if (cp == '\t') { a = face_advance(f, ttf_glyph_index(f, ' '), px) * 4; prev = -1; }
-        else {
-            int gid = font_glyph(f, cp);
-            a = face_advance(f, gid, px);
-            if (prev >= 0) a += face_kern(f, prev, gid, px);
-            prev = gid;
-        }
+        if (cp == '\t') a = cp_advance(font, ' ') * 4;
+        else a = cp_advance(font, cp);
         if (w + a > maxw) return (int)(start - (const uint8_t *)s);
         w += a;
     }
@@ -551,16 +736,15 @@ static int ttf_fit(int font, const char *s, int maxw) {
 }
 /* the advance of one character, for line breaking: no strlen, no kerning */
 static int char_width_at(int font, const char *s, int cl) {
-    ttf_face_t *f = font_face(font);
-    if (!f) {
+    if (!font_face(font)) {
         if (s[0] == '\t') return glyph(F(font), ' ')->adv * 4;
         return glyph(F(font), s[0])->adv;
     }
     const uint8_t *p = (const uint8_t *)s, *end = p + cl;
     uint32_t cp = utf8_next(&p, end);
     if (cp == 0x00AD) return 0;                         /* soft hyphen: invisible */
-    if (cp == '\t') return face_advance(f, ttf_glyph_index(f, ' '), font_specs[font].px) * 4;
-    return face_advance(f, font_glyph(f, cp), font_specs[font].px);
+    if (cp == '\t') return cp_advance(font, ' ') * 4;
+    return cp_advance(font, cp);
 }
 
 int text_width_n(int font, const char *s, int n) {
@@ -613,8 +797,20 @@ void draw_text_centered(canvas_t *c, int font, rect_t r, const char *s, uint32_t
     int w = text_width(font, s);
     draw_text(c, font, r.x + (r.w - w) / 2, r.y + (r.h - font_height(font)) / 2, s, col);
 }
+static int string_base(const char *s) {
+    uint32_t cps[64];
+    int n = 0;
+    const uint8_t *p = (const uint8_t *)s, *end = p + strlen(s);
+    while (p < end && n < 64) {
+        uint32_t cp = utf8_next(&p, end);
+        if (cp == '\n') break;
+        cps[n++] = cp;
+    }
+    return text_bidi_base(cps, n);
+}
 static int wrap_lines(int font, int maxw, const char *s, canvas_t *c, int x, int y, uint32_t col, int gap) {
     int lh = font_height(font) + gap, lines = 0;
+    int rtl = string_base(s);
     while (*s) {
         const char *end = s + strlen(s);
         int n = 0, last_space = -1, w = 0;
@@ -627,7 +823,11 @@ static int wrap_lines(int font, int maxw, const char *s, canvas_t *c, int x, int
         }
         int brk = n;
         if (s[n] && s[n] != '\n' && last_space > 0) brk = last_space;
-        if (c) draw_text_n(c, font, x, y + lines * lh, s, brk, col);
+        if (c) {
+            int lx = x;
+            if (rtl) lx = x + maxw - text_width_n(font, s, brk);
+            draw_text_n(c, font, lx, y + lines * lh, s, brk, col);
+        }
         lines++;
         s += brk;
         if (*s == ' ' || *s == '\n') s++;

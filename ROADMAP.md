@@ -101,11 +101,14 @@ Already working, and not on the list below:
 
 ### 9. Graphics and text
 
-- No FreeType, HarfBuzz, ICU, Skia or Cairo. The kernel-side GUI has its own small TrueType
-  engine (`src/gui/ttf.c`, faces in `C:\WRLD\Fonts`) and draws UTF-8, but it does not hint,
-  shape (Arabic and Indic joining) or do bidirectional layout; Linux programs have no font
-  stack at all.
-- Fonts need large file mappings; shaping needs HarfBuzz plus the ICU data (about 30 MB).
+- The kernel-side GUI has its own TrueType engine (`src/gui/ttf.c`, faces in `C:\WRLD\Fonts`)
+  that draws UTF-8, shapes text with the font's own GSUB and GPOS tables (ligatures, contextual
+  forms, Arabic joining, mark positioning) and lays out mixed left-to-right and right-to-left
+  text with the UAX #9 algorithm (`src/gui/text.c`). Noto Naskh Arabic is bundled as the Arabic
+  fallback, so the scripts in the font files reach the screen. It still does not hint.
+- Missing from the text stack: Indic shaping (syllable reordering, GSUB beyond the generic
+  engine), CJK and emoji coverage (the fonts have none), and the FreeType/HarfBuzz/ICU APIs
+  themselves for Linux programs, which have no font stack at all.
 - No GPU or 3D, so Skia has to use its software backend.
 - Missing codecs: WebP, SVG, progressive JPEG; audio/video beyond WAV.
 
@@ -137,13 +140,18 @@ Already working, and not on the list below:
    `sigsuspend`, `SIGCHLD`, `SIGPIPE`, `alarm`, faults-to-signals, `SA_RESTART`.
 6. [x] **musl static-PIE** - `musl-gcc -static-pie` builds the sample userland, so the image
    needs no C library; gcc + glibc remains the fallback when musl is not installed.
-7. [ ] **FreeType, HarfBuzz, ICU** - text and shaping.
+7. [x] **Text and shaping** - the GUI's own engine gained OpenType GSUB/GPOS, Arabic joining,
+   mark positioning, right-to-left layout and bidi (`src/gui/ttf.c`, `text.c`), with Noto Naskh
+   Arabic as the Arabic fallback. FreeType, HarfBuzz and ICU themselves are not used: for the
+   scripts the image ships, the same work is done without a 30 MB dependency.
 8. [ ] **Skia (software backend)** - rasterisation.
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.
 10. [ ] **`/proc`, `/sys`, honest `prctl`** - introspection and sandboxing.
 
-Milestones 1-5 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c` and `fs.c`.
+Milestones 1-7 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
+`fs.c` and `src/gui/ttf.c`/`text.c`.
 
-The shell and XplorerLite no longer wait on milestone 7 for their own text: the GUI reads
-TrueType directly and handles UTF-8 end to end. A browser engine's text still needs the
-FreeType/HarfBuzz/ICU path, because shaping and bidi are what a web page assumes.
+The shell and XplorerLite get their text from the same engine as the desktop: TrueType,
+OpenType shaping and bidi, so Arabic and Hebrew reach the screen without a library dependency.
+A full browser engine would still benefit from a CJK font and Indic shaping, which is what the
+fonts and the generic GSUB engine do not cover.

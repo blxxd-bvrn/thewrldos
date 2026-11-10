@@ -664,10 +664,19 @@ static void page_users(window_t *w, cp_t *c, int ox, int oy) {
 }
 static void page_fonts(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Preview fonts", "Fonts are rasterised with anti-aliasing from the Liberation family (SIL Open Font License).");
+    heading(s, ox + 20, oy + 16, "Preview fonts", "Text is shaped by the font's own OpenType tables (Liberation family, SIL Open Font License; Noto Naskh Arabic for Arabic).");
     static const struct { int f; const char *n; } fl[] = { { FONT_UI, "Sans 12 (UI)" }, { FONT_UI_BOLD, "Sans Bold 12" }, { FONT_TITLE, "Sans Bold 13 (title bars)" }, { FONT_LARGE, "Sans 18" }, { FONT_XL, "Sans 24" }, { FONT_MONO, "Mono 13 (console)" }, { FONT_START, "Sans Bold Italic 17" } };
-    int y = oy + 76;
+    int y = oy + 96;
     for (unsigned i = 0; i < ARRAY_LEN(fl); i++) { draw_text(s, FONT_SMALL, ox + 24, y, fl[i].n, W7_TEXT); draw_text(s, fl[i].f, ox + 200, y - 2, "The quick brown fox jumps over the lazy dog", BLACK); y += font_height(fl[i].f) + 12; }
+    y += 4;
+    draw_text(s, FONT_SMALL, ox + 24, y, "Arabic (right to left)", W7_TEXT);
+    draw_text(s, FONT_LARGE, ox + 200, y - 2, "العربية: مرحبًا بالعالم", BLACK);
+    y += font_height(FONT_LARGE) + 12;
+    draw_text(s, FONT_SMALL, ox + 24, y, "Hebrew (right to left)", W7_TEXT);
+    draw_text(s, FONT_LARGE, ox + 200, y - 2, "שלום עולם", BLACK);
+    y += font_height(FONT_LARGE) + 12;
+    draw_text(s, FONT_SMALL, ox + 24, y, "Bidirectional", W7_TEXT);
+    draw_text(s, FONT_UI, ox + 200, y - 1, "WRLD 7 — العربية 123 abc", BLACK);
 }
 static void page_ease(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
