@@ -159,6 +159,11 @@ when you report the problem.
 
 The installed system has its own boot menu with the same normal, verbose and safe-mode entries.
 
+If the firmware never delivers the 8259's timer interrupt, the kernel notices within the first
+few milliseconds and switches to the local APIC timer by itself, so the clock, the boot
+animation and every timeout keep working. Adding `lapic` to a kernel command line forces that
+timer, which is useful when testing a machine that boots with a silent timer.
+
 ### What Setup does
 
 You can also start Setup from the **Install THE WRLD OS** icon on the live desktop.

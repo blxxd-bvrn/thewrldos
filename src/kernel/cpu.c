@@ -158,6 +158,11 @@ void isr_handler(regs_t *r) {
             if (!(irq == 7 ? (outb(0x20, 0x0B), inb(0x20) & 0x80) : (outb(0xA0, 0x0B), inb(0xA0) & 0x80))) return;
         }
         if (irq_handlers[irq]) irq_handlers[irq](r);
+        if (irq == 0) {
+            timer_eoi();
+            if (timer_using_lapic()) return;     /* APIC interrupt: no 8259 EOI, which could
+                                                  * clear another device's in-service bit */
+        }
         if (irq >= 8) outb(0xA0, 0x20);
         outb(0x20, 0x20);
         return;

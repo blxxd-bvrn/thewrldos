@@ -28,6 +28,85 @@ void sleep_ms(uint32_t ms) {
     while ((int32_t)(end - ticks) > 0) hlt();
 }
 
+/* ---------------- local APIC timer ----------------
+ * Some PCs (and firmware left in a certain state) never deliver IRQ0 through
+ * the 8259: the timer is behind the IOAPIC, or the PIT is not wired up at all.
+ * The kernel cannot tell the difference until interrupts are on, so timer_check
+ * measures the tick counter and starts the local APIC timer when it is silent.
+ * The APIC timer needs no IOAPIC routing, so it works on any x86 with one. */
+static volatile uint32_t *lapic;
+static bool lapic_on;
+static uint32_t lapic_read(uint32_t off) { return lapic ? lapic[off / 4] : 0; }
+static void lapic_write(uint32_t off, uint32_t v) { if (lapic) lapic[off / 4] = v; }
+static uint64_t msr_read(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+static void msr_write(uint32_t msr, uint64_t v) {
+    __asm__ volatile("wrmsr" :: "c"(msr), "a"((uint32_t)v), "d"((uint32_t)(v >> 32)));
+}
+static bool has_apic(void) {
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    return (d >> 9) & 1;
+}
+/* A delay that does not need interrupts: PIT channel 2 in one-shot mode,
+ * gated through port 0x61. Returns false if the counter never reaches zero. */
+static bool pit2_wait_ms(uint32_t ms) {
+    uint32_t div = (1193182u / 1000u) * ms;
+    if (div > 0xFFFF) div = 0xFFFF;
+    uint8_t ctl = inb(0x61);
+    outb(0x61, ctl & ~3);                       /* gate low, speaker off */
+    outb(0x43, 0xB0);                           /* channel 2, mode 0, binary */
+    outb(0x42, div & 0xFF); outb(0x42, div >> 8);
+    outb(0x61, (ctl & ~3) | 1);                 /* gate high: start counting */
+    bool ok = false;
+    for (uint32_t i = 0; i < 2000000u; i++)
+        if (inb(0x61) & 0x20) { ok = true; break; }   /* OUT2 went high */
+    outb(0x61, ctl);
+    return ok;
+}
+static void lapic_start(void) {
+    if (!has_apic()) { klog("timer: this CPU has no local APIC; IRQ0 is the only timer"); return; }
+    uint64_t v = msr_read(0x1B);
+    uint64_t base = v & 0xFFFFF000ull;
+    if (base == 0 || base > 0xFFFFFFFFull) base = 0xFEE00000;   /* the architectural default */
+    v = (v & ~0xFFFFF000ull) | base;
+    v &= ~(1ull << 10);                          /* legacy MMIO mode, which is what we touch */
+    v |= 1ull << 11;                             /* APIC global enable */
+    msr_write(0x1B, v);
+    lapic = (volatile uint32_t *)(uintptr_t)base;
+    paging_set_uncached((uintptr_t)base);
+    outb(0x21, inb(0x21) | 1);                   /* the 8259 must not also claim IRQ0 */
+    lapic_write(0xF0, 0x1FF);                    /* spurious vector 0xFF, enabled */
+    lapic_write(0x80, 0);                        /* task priority 0 */
+    lapic_write(0x3E0, 0x3);                     /* divide by 16 */
+    lapic_write(0x320, (1u << 16) | 32);         /* one-shot on vector 32, masked */
+    lapic_write(0x380, 0xFFFFFFFFu);
+    uint32_t per_ms = 100000;                    /* 100 MHz bus / 16, if the PIT cannot tell us */
+    if (pit2_wait_ms(10)) {
+        uint32_t delta = 0xFFFFFFFFu - lapic_read(0x390);
+        if (delta > 100000) per_ms = delta / 10;
+    }
+    lapic_write(0x320, (1u << 17) | 32);         /* periodic, vector 32 */
+    lapic_write(0x380, per_ms);
+    lapic_on = true;
+    klog("timer: 8259 timer silent, using the local APIC timer (%u counts/ms)", per_ms);
+}
+bool timer_using_lapic(void) { return lapic_on; }
+void timer_check(void) {
+    if (boot_force_lapic) { klog("timer: the local APIC timer was requested on the command line"); lapic_start(); return; }
+    uint32_t t0 = ticks;
+    bool timed = pit2_wait_ms(30);
+    /* A working 1 kHz IRQ0 gives about 30 ticks in that window; a stray edge or
+     * two is not enough to run the scheduler on. */
+    if (timed ? ticks - t0 >= 10 : ticks != t0) return;
+    if (!timed) klog("timer: PIT channel 2 did not finish its delay");
+    lapic_start();
+}
+void timer_eoi(void) { if (lapic_on) lapic_write(0xB0, 0); }
+
 /* ---------------- speaker ---------------- */
 void speaker_beep(uint32_t freq, uint32_t ms) {
     if (freq) {
@@ -44,7 +123,9 @@ int tz_offset_minutes = 0;
 static uint8_t cmos(uint8_t r) { outb(0x70, r); return inb(0x71); }
 static int bcd(int v) { return (v & 0x0F) + ((v >> 4) * 10); }
 void rtc_read(rtc_time_t *t) {
-    while (cmos(0x0A) & 0x80) {}
+    /* the update-in-progress bit stays set for about 2 ms; do not wait forever
+     * on hardware whose RTC never clears it */
+    for (int i = 0; i < 100000 && (cmos(0x0A) & 0x80); i++) {}
     int s = cmos(0), m = cmos(2), h = cmos(4), d = cmos(7), mo = cmos(8), y = cmos(9);
     int b = cmos(0x0B);
     if (!(b & 4)) { s = bcd(s); m = bcd(m); h = ((h & 0x7F) ? bcd(h & 0x7F) : 0) | (h & 0x80); d = bcd(d); mo = bcd(mo); y = bcd(y); }
@@ -145,7 +226,7 @@ static void kb_byte(uint8_t sc) {
 static void ps2_service(void);
 static void kb_irq(regs_t *r) { (void)r; ps2_service(); }
 void keyboard_init(void) {
-    while (inb(0x64) & 1) inb(0x60);
+    for (int i = 0; i < 256 && (inb(0x64) & 1); i++) inb(0x60);
     irq_install(1, kb_irq);
 }
 bool keyboard_poll(key_event_t *ev) {

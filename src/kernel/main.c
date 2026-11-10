@@ -94,6 +94,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     task_init();
     timer_init();
     sti();
+    timer_check();
     klog("%s %s %s (build %s) starting", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
     klog("boot: %s, %s", bootinfo.from_mb2 ? "Multiboot 2" : "Multiboot 1",
          bootinfo.is_efi ? "EFI firmware" : "BIOS/legacy firmware");

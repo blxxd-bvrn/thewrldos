@@ -76,8 +76,12 @@ extern void (*timer_tick_hook)(uint32_t ticks);
 struct regs;
 extern void (*watchdog_hook)(struct regs *r, uint32_t ticks);   /* timer interrupt, every 64 ms */
 void timer_init(void);
+void timer_check(void);               /* after sti(): falls back to the local APIC if IRQ0 is silent */
+void timer_eoi(void);                 /* acknowledge a local APIC timer interrupt */
+bool timer_using_lapic(void);         /* true when IRQ0 no longer comes from the 8259 */
 uint32_t timer_ticks(void);           /* milliseconds since boot */
 extern volatile uint32_t idle_ticks;
+extern bool boot_force_lapic;         /* "lapic" on the kernel command line */
 typedef struct { int year, month, day, hour, minute, second, weekday; } rtc_time_t;
 void rtc_read(rtc_time_t *t);
 void rtc_now(rtc_time_t *t);          /* rtc + timezone offset applied */

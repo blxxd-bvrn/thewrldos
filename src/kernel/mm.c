@@ -235,7 +235,7 @@ void mm_release_initrd(void) {
 }
 uint8_t *initrd_data;
 uint32_t initrd_size;
-bool boot_verbose, boot_safe_mode;
+bool boot_verbose, boot_safe_mode, boot_force_lapic;
 
 void mm_init(void) {
     /* 4..16 MiB is reserved for Win32 process images; the kernel itself is loaded at 16 MiB */
@@ -271,6 +271,7 @@ void mm_init(void) {
         const char *cmd = bootinfo.cmdline;
         if (strstr(cmd, "verbose")) boot_verbose = true;
         if (strstr(cmd, "safe")) boot_safe_mode = true;
+        if (strstr(cmd, "lapic")) boot_force_lapic = true;
         extern bool boot_setup_mode; extern uint32_t boot_root_serial;
         if (strstr(cmd, "setup")) boot_setup_mode = true;
         const char *r = strstr(cmd, "root=");
