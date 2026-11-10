@@ -212,18 +212,30 @@ $(SYS)/boot/wrld.elf: $(KERNEL)
 	cp $< $@
 
 # Linux userland for the 64-bit edition (C:\Linux): the test programs in
-# samples/linux, built PIE with the host's gcc, and the glibc they need
-# (the dynamic loader and libc.so.6, copied from the build machine).
+# samples/linux. With musl-gcc installed they are static PIE built against
+# musl, so the image carries no C library at all (milestone 6). Without it the
+# host's gcc is used and the glibc they need (the dynamic loader and libc.so.6)
+# is copied from the build machine, as before.
+MUSLCC  := $(shell command -v musl-gcc 2>/dev/null)
 LXROOT  := $(BUILD)/linuxroot
 LXBINS  := $(patsubst samples/linux/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux/*.c))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux/%.c
 	@mkdir -p $(dir $@)
+ifneq ($(MUSLCC),)
+	$(MUSLCC) -O2 -Wall -static-pie -o $@ $< -lpthread
+else
 	gcc -O2 -Wall -o $@ $< -lpthread
 	gcc -O2 -Wall -static-pie -o $@-static $< -lpthread
+endif
 $(LXROOT)/.stamp: $(LXBINS)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
+ifneq ($(MUSLCC),)
+	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"
+else
 	cp -L /lib/x86_64-linux-gnu/libc.so.6 $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/
 	cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+	@echo "  linux userland: glibc from this machine (install musl-tools for a self-contained build)"
+endif
 	printf 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n' > $(LXROOT)/Linux/etc/passwd
 	printf 'root:x:0:\nuser:x:1000:\n' > $(LXROOT)/Linux/etc/group
 	printf 'wrld\n' > $(LXROOT)/Linux/etc/hostname
