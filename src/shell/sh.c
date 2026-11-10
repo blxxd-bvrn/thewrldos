@@ -1049,11 +1049,61 @@ static int b_sha256sum(sh_t *s, int argc, char **argv, io_t *io) {
     }
     return 0;
 }
+/* The console stores one byte per cell and draws a byte above 0x7F as that
+ * Latin-1 character, so UTF-8 from QuickJS is narrowed here. Characters with
+ * no Latin-1 form are transliterated when they have an obvious ASCII (or
+ * punctuation) spelling, and '?' otherwise. The caller sizes the buffer for
+ * n * 4 bytes: U+2122 becomes "(TM)", which is wider than its UTF-8 form. */
+static const char *latin1_translit(uint32_t cp) {
+    switch (cp) {
+    case 0x2018: case 0x2019: case 0x201A: case 0x2032: return "'";
+    case 0x201C: case 0x201D: case 0x201E: case 0x2033: return "\"";
+    case 0x2010: case 0x2011: case 0x2013: case 0x2212: return "-";
+    case 0x2014: case 0x2015: return "--";
+    case 0x2026: return "...";
+    case 0x2022: case 0x25CF: case 0x2219: case 0x25AA: return "\xB7";
+    case 0x2122: return "(TM)";
+    case 0x20AC: return "EUR";
+    case 0x2190: return "<-"; case 0x2192: return "->"; case 0x2191: return "^"; case 0x2193: return "v";
+    case 0x2039: return "<"; case 0x203A: return ">";
+    case 0x2002: case 0x2003: case 0x2009: case 0x200A: case 0x202F: case 0x205F: return " ";
+    case 0x200B: case 0x200C: case 0x200D: case 0x2060: case 0xFEFF: return "";
+    case 0x2264: return "<="; case 0x2265: return ">="; case 0x2260: return "!=";
+    case 0x2713: case 0x2714: return "v"; case 0x2715: case 0x2716: case 0x2717: return "x";
+    case 0x2605: case 0x2606: return "*";
+    case 0x25B2: case 0x25B4: return "^"; case 0x25BC: case 0x25BE: return "v";
+    case 0x00A0: return "\xA0";
+    }
+    if (cp >= 0x1F000) return "";                       /* emoji and pictographs */
+    return "?";
+}
+/* UTF-8 to Latin-1. A byte that starts no valid sequence is taken as
+ * Windows-1252, which is what a mislabelled document means by it. */
+static int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out) {
+    static const uint16_t cp1252[32] = { 0x20AC, 0, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0, 0x017D, 0,
+        0, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0, 0x017E, 0x0178 };
+    int o = 0;
+    for (uint32_t i = 0; i < n;) {
+        uint8_t c = s[i];
+        uint32_t cp; int len;
+        if (c < 0x80) { cp = c; len = 1; }
+        else if ((c & 0xE0) == 0xC0 && i + 1 < n && (s[i + 1] & 0xC0) == 0x80) { cp = ((c & 0x1F) << 6) | (s[i + 1] & 0x3F); len = 2; }
+        else if ((c & 0xF0) == 0xE0 && i + 2 < n && (s[i + 1] & 0xC0) == 0x80 && (s[i + 2] & 0xC0) == 0x80) { cp = ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F); len = 3; }
+        else if ((c & 0xF8) == 0xF0 && i + 3 < n && (s[i + 1] & 0xC0) == 0x80 && (s[i + 2] & 0xC0) == 0x80 && (s[i + 3] & 0xC0) == 0x80)
+            { cp = ((c & 0x07) << 18) | ((s[i + 1] & 0x3F) << 12) | ((s[i + 2] & 0x3F) << 6) | (s[i + 3] & 0x3F); len = 4; }
+        else { cp = c >= 0x80 && c < 0xA0 ? (cp1252[c - 0x80] ? cp1252[c - 0x80] : '?') : c; len = 1; }
+        i += len;
+        if (cp == '\r') continue;
+        if (cp < 0x80 || (cp >= 0xA0 && cp <= 0xFF)) out[o++] = (char)cp;
+        else { const char *t = latin1_translit(cp); while (*t) out[o++] = *t++; }
+    }
+    out[o] = 0;
+    return o;
+}
 /* js: run JavaScript (QuickJS) */
 static void js_out(void *u, const char *t) {
     io_t *io = u;
-    int n = strlen(t); char *l1 = kmalloc(n * 3 + 1);
-    extern int latin1_from_utf8(const uint8_t *s, uint32_t n, char *out);
+    int n = strlen(t); char *l1 = kmalloc(n * 4 + 1);
     int l = latin1_from_utf8((const uint8_t *)t, n, l1); l1[l] = 0;
     out_s(io, l1); kfree(l1);
 }
