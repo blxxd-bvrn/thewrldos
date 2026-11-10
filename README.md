@@ -328,8 +328,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   ring 3 is preempted by the timer.
 - Type the program's path in the Command Prompt, for example
   `C:/Linux/usr/bin/hello` or `C:/Linux/usr/local/bin/signals`. The 64-bit ISO carries test
-  programs from `samples/linux` (`hello`, `threads`, `ipc`, `procs`, `signals`, `socket`) and the
-  glibc they need (copied from the build machine).
+  programs from `samples/linux` (`hello`, `threads`, `ipc`, `procs`, `signals`, `socket`); they are
+  built against **musl** as static PIE when `musl-gcc` is installed, so nothing else is needed, or
+  against the build machine's glibc (copied in) when only gcc is available.
 - Threads: `clone()` with the flags glibc's `pthread_create` uses (new TLS, child TID cleared
   and woken on exit), so mutexes, condition variables and `pthread_join` work.
 - **Processes:** `fork`, `vfork` and `execve` (a new image and start-up stack in the same pid),
@@ -361,24 +362,27 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   the rest of the way to WPE WebKit.
 
 ### USB (`src/usb`)
-- **Host controller:** UHCI (`uhci.c`), the USB 1.1 controller in PIIX/ICH chipsets and QEMU. A
-  1024-entry frame list drives one queue head, every transfer is a chain of transfer descriptors,
-  and the driver polls them: control transfers (setup, data, status), interrupt IN for HID, and
-  bulk IN/OUT for storage. Every UHCI controller in the machine is enumerated; the stack itself is
-  written against a small host-controller interface so another driver can be added beside it.
-- **Enumeration:** port reset and enable, `GET_DESCRIPTOR`, `SET_ADDRESS`, full configuration
-  parsing (interfaces and endpoints) and `SET_CONFIGURATION`, plus one level of **hub**: the hub's
-  ports are powered and reset and the devices behind them enumerated too.
+- **Host controllers:** **xHCI** (`xhci.c`, USB 3.x — what every machine has had for the last
+  decade) and **UHCI** (`uhci.c`, USB 1.1 on PIIX/ICH chipsets and older VMs). Both are driven by
+  polling: xHCI through command, event and per-endpoint TRB rings with device contexts and slots;
+  UHCI through a frame list of queue heads and transfer descriptors. Every controller found is
+  enumerated, and more than one can be active at once.
+- **Enumeration:** port reset and enable, `GET_DESCRIPTOR`, `SET_ADDRESS` (on xHCI the address
+  lives in the slot context), full configuration parsing (interfaces and endpoints) and
+  `SET_CONFIGURATION`, plus one level of **hub**: the hub's ports are powered and reset and the
+  devices behind them enumerated too, with the xHCI route string filled in.
 - **HID:** boot-protocol keyboards and mice. Reports are translated to PS/2 set 1 scancodes and
-  packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock, speed, button swap)
-  works unchanged.
+  packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock, speed, button
+  swap) works unchanged.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.
-- Tested in QEMU with `-device piix3-usb-uhci -device usb-kbd -device usb-mouse -device
-  usb-storage,...`: a USB keyboard logs in with no PS/2 keyboard attached, a USB mouse moves the
-  pointer and clicks, and a USB disk reads and writes sectors. Not yet: EHCI/xHCI, isochronous
-  transfers, hotplug after boot, and more than one configuration per device.
+- Tested in QEMU: `-device qemu-xhci -device usb-kbd -device usb-mouse` and the same with
+  `-device usb-storage`; with both controllers in one machine, each enumerates its own devices.
+  With the PS/2 keyboard and mouse bypassed, a USB keyboard logs in and a USB mouse moves and
+  clicks, and a USB disk reads and writes sectors back unchanged. Not yet: EHCI/OHCI (USB 2.0
+  and 1.0-only motherboards), isochronous transfers, hotplug after boot, and more than one
+  configuration per device.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
@@ -628,9 +632,9 @@ used to test every screen above, including a full install from a blank disk.
   - Pipes hold at most 64 KiB; network sockets are IPv4 only, with no loopback interface and no
     IP fragmentation (a UDP datagram tops out at 1472 bytes).
 - **Hardware and design:**
-  - USB is USB 1.1 over a UHCI controller (keyboards, mice, disks, hubs), the kind every ICH and
-    PIIX chipset has. EHCI (USB 2.0) and xHCI (USB 3.x) are not implemented, and neither are
-    isochronous devices (USB audio and video), so a machine with only USB 2/3 ports is not covered.
+  - USB runs on **xHCI** (USB 3.x) and **UHCI** (USB 1.1) controllers. EHCI (USB 2.0-only) and
+    OHCI are not implemented, nor are isochronous devices (USB audio and video); the buses are
+    scanned once, at boot.
   - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.

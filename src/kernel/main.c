@@ -166,7 +166,9 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     welcome_screen();
     wm_redraw_all();
     if (system_sounds) { char err[64]; audio_play_file(SOUND_STARTUP, err, sizeof err); }
-    if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
+    if (usb_unsupported && !usb_count())
+        notify_balloon("USB", "This computer's USB 2.0 controller (EHCI/OHCI) has no driver yet. A PS/2 keyboard and mouse still work.");
+    else if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
     wm_run();
 }

@@ -24,6 +24,7 @@ struct usb_dev {
     uint8_t toggle_in, toggle_out, toggle_int;
     uint8_t report[16];                        /* last HID report, for key-up detection */
     bool seen;                                 /* has this device sent a report yet? */
+    int root_port, route;                      /* where it sits, for xHCI's slot context */
     int id;
     char name[40];
     usb_dev_t *next;
@@ -42,14 +43,18 @@ struct usb_hcd {
                     uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms);
     /* reset a root port and report whether a device is attached, and its speed */
     bool (*port_reset)(usb_hcd_t *h, int port, bool *low_speed);
+    /* a device appeared (root_port is 1-based, route is the hub path): xHCI has
+     * to allocate a slot before endpoint 0 can be used. May be NULL. */
+    bool (*new_device)(usb_hcd_t *h, int root_port, int route, bool low_speed);
     int ports;
     void *priv;
 };
 
-void usb_init(void);                            /* probe controllers and enumerate */
+void usb_init(void);
 void usb_poll(void);                            /* poll HID devices for reports */
 int usb_count(void);
 usb_dev_t *usb_first(void);
+extern int usb_unsupported;                    /* USB controllers this kernel has no driver for */
 void usb_attach(usb_hcd_t *h);                  /* a controller enumerates its root ports */
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len);
 int usb_in(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms);
@@ -57,5 +62,6 @@ int usb_out(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, const void *
 
 /* host controllers */
 void uhci_probe(void);
+void xhci_probe(void);
 
 #endif

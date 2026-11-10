@@ -138,6 +138,12 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
     draw_text(c, FONT_UI_BOLD, bx + 40, by + 9, "Turn off computer", hot == 2 ? HEX(0xFFE08A) : WHITE);
     const char *hint = "After you log on, you can add or change accounts in Control Panel > User Accounts.";
     draw_text(c, FONT_UI, SCREEN_W - text_width(FONT_UI, hint) - 30, SCREEN_H - 44, hint, WHITE);
+    {   /* no usable input device is the one failure a user cannot click away */
+        extern int usb_unsupported; extern int usb_count(void);
+        if (usb_unsupported && !usb_count())
+            draw_text(c, FONT_UI_BOLD, 30, SCREEN_H - 84,
+                      "USB input has no driver on this computer yet (EHCI/OHCI); a PS/2 keyboard still works.", HEX(0xFFD070));
+    }
 }
 void welcome_screen(void) {
     mouse_state_t ms; key_event_t ke;

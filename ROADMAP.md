@@ -82,19 +82,21 @@ Already working, and not on the list below:
 
 ### 7. C and C++ runtime
 
-- glibc is copied from the build machine rather than built for this ABI.
-- No musl build yet; static-PIE would remove the `ld-linux` dependency.
+- The test programs in `samples/linux` are built against **musl** as static PIE when `musl-gcc`
+  is installed, so the image carries no C library at all; with only gcc, the build machine's
+  glibc is copied instead (dynamic linking still works: the kernel loads `ld-linux` and glibc).
 - No C++ runtime: libstdc++ needs unwinding (`_Unwind_*`), `__cxa_*` and thread-safe statics.
-- `getaddrinfo` now resolves through glibc and the kernel's UDP stack (section 4); `getpwnam` has
-  only `/etc/passwd`; no `iconv`, no locale past Latin-1.
+- `getaddrinfo` resolves through the C library and the kernel's UDP stack (section 4);
+  `getpwnam` has only `/etc/passwd`; no `iconv`, no locale past Latin-1.
 
 ### 8. USB
 
-- The host stack (`src/usb`) speaks UHCI, USB 1.1: control, interrupt and bulk transfers,
-  enumeration through hubs, boot-protocol HID keyboards and mice, and bulk-only mass storage.
-- Missing: EHCI (USB 2.0) and xHCI (USB 3.x), which is what a machine made after roughly 2012
-  has for its own ports; isochronous transfers (USB audio, video and MIDI); hotplug after boot
-  (the buses are scanned once); and multiple configurations or alternate settings.
+- The host stack (`src/usb`) speaks **xHCI** (USB 3.x, the controller every recent machine has)
+  and **UHCI** (USB 1.1): control, interrupt and bulk transfers, enumeration through hubs,
+  boot-protocol HID keyboards and mice, and bulk-only mass storage.
+- Missing: EHCI and OHCI (machines whose ports are USB 2.0-only); isochronous transfers (USB
+  audio, video and MIDI); hotplug after boot (the buses are scanned once); and multiple
+  configurations or alternate settings.
 - Needed by a browser only for input and storage, but a modern PC needs xHCI for both.
 
 ### 9. Graphics and text
@@ -120,8 +122,7 @@ Already working, and not on the list below:
 - 512 MB minimum and about 3.75 GB maximum, 64-bit edition only; WebKit wants 1-2 GB per
   process.
 - The installed partition is loaded into RAM at boot, so its size is bounded by RAM.
-- No Wi-Fi; USB is USB 1.1 (UHCI) only, so EHCI and xHCI machines need a companion controller;
-  wired IPv4 Ethernet only.
+- No Wi-Fi; USB needs xHCI or UHCI, and wired IPv4 Ethernet only.
 - An unimplemented system call returns `ENOSYS`, is logged once, and the program dies.
 - The Linux ABI is covered by the test programs in `samples/linux`: `hello.c`, `threads.c`,
   `ipc.c`, `procs.c` and `socket.c`.
@@ -134,7 +135,8 @@ Already working, and not on the list below:
 4. [x] **Socket system calls** over the existing TCP stack.
 5. [x] **Signal delivery** (`src/linux/signal.c`): handlers, framing, pending sets,
    `sigsuspend`, `SIGCHLD`, `SIGPIPE`, `alarm`, faults-to-signals, `SA_RESTART`.
-6. [ ] **musl static-PIE** - stop shipping the build machine's glibc.
+6. [x] **musl static-PIE** - `musl-gcc -static-pie` builds the sample userland, so the image
+   needs no C library; gcc + glibc remains the fallback when musl is not installed.
 7. [ ] **FreeType, HarfBuzz, ICU** - text and shaping.
 8. [ ] **Skia (software backend)** - rasterisation.
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.

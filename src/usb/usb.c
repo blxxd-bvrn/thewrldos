@@ -9,6 +9,7 @@
 static usb_dev_t *devices;
 static int next_id = 1;
 static int next_addr = 2;                       /* USB addresses start at 2 */
+int usb_unsupported;
 
 int usb_count(void) { int n = 0; for (usb_dev_t *d = devices; d; d = d->next) n++; return n; }
 usb_dev_t *usb_first(void) { return devices; }
@@ -45,7 +46,7 @@ static int get_descriptor(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_
     return h->control(h, addr, low, 0x80, 6, (uint16_t)((type << 8) | index), 0, buf, len);
 }
 
-static void enumerate_one(usb_hcd_t *h, bool low, const char *where);
+static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route);
 static void hub_attach(usb_dev_t *hub);
 
 /* ---------------- HID ---------------- */
@@ -265,11 +266,13 @@ static void parse_config(usb_dev_t *d, const uint8_t *cfg, int len, int *iface_o
     }
 }
 
-static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, const char *where)
+static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, const char *where,
+                          int root_port, int route)
 {
     usb_dev_t *d = kzalloc(sizeof *d);
     if (!d) return;
     d->hcd = h; d->addr = addr; d->low_speed = low;
+    d->root_port = root_port; d->route = route;
     d->vendor = (uint16_t)(dev[8] | (dev[9] << 8));
     d->product = (uint16_t)(dev[10] | (dev[11] << 8));
     d->cls = dev[4]; d->subcls = dev[5]; d->proto = dev[6];
@@ -349,16 +352,21 @@ static void hub_attach(usb_dev_t *hub)
         bool low = (st[1] & 0x02) != 0;                               /* port status bit 9 */
         char where[24];
         snprintf(where, sizeof where, "hub %d port %d", hub->addr, p);
-        enumerate_one(hub->hcd, low, where);
+        enumerate_one(hub->hcd, low, where, hub->root_port, (hub->route << 4) | p);
     }
 }
 
 /* Read one device's descriptors and give it an address. `where` names the port
  * or hub port in the log. */
-static void enumerate_one(usb_hcd_t *h, bool low, const char *where)
+static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route)
 {
     uint32_t t0 = timer_ticks();
     while ((int32_t)(timer_ticks() - t0) < 30) task_yield();
+    /* xHCI needs a slot (and endpoint 0) before it can move anything */
+    if (h->new_device && !h->new_device(h, root_port, route, low)) {
+        klog("usb: %s: could not prepare the device", where);
+        return;
+    }
     uint8_t d8[8];
     if (get_descriptor(h, 0, low, 1, 0, d8, 8) < 8) { klog("usb: %s: no device descriptor", where); return; }
     int addr = next_addr;
@@ -369,7 +377,7 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where)
     while ((int32_t)(timer_ticks() - t0) < 10) task_yield();
     uint8_t dev[18];
     if (get_descriptor(h, addr, low, 1, 0, dev, 18) < 18) { klog("usb: address %d: descriptor read failed", addr); return; }
-    device_attach(h, addr, low, dev, where);
+    device_attach(h, addr, low, dev, where, root_port, route);
 }
 
 void usb_attach(usb_hcd_t *h)
@@ -379,7 +387,7 @@ void usb_attach(usb_hcd_t *h)
         if (!h->port_reset || !h->port_reset(h, port, &low)) continue;
         char where[16];
         snprintf(where, sizeof where, "port %d", port + 1);
-        enumerate_one(h, low, where);
+        enumerate_one(h, low, where, port + 1, 0);
     }
 }
 
@@ -404,7 +412,22 @@ static void usb_task(void *arg)
 void usb_init(void)
 {
     hid_init_table();
+    {   /* say what the machine actually has, so a missing driver is visible */
+        pci_dev_t *devs = NULL;
+        int n = pci_list(&devs);
+        for (int i = 0; i < n; i++) {
+            pci_dev_t *pd = &devs[i];
+            if (pd->cls != 0x0C || pd->sub != 0x03) continue;
+            const char *kind = pd->prog == 0x00 ? "UHCI" : pd->prog == 0x10 ? "OHCI"
+                             : pd->prog == 0x20 ? "EHCI" : pd->prog == 0x30 ? "xHCI" : "USB";
+            bool ours = pd->prog == 0x00 || pd->prog == 0x30;   /* UHCI or xHCI */
+            if (!ours) usb_unsupported++;
+            klog("usb: %02x:%02x.%x %04x:%04x %s%s", pd->bus, pd->dev, pd->fn, pd->vendor, pd->device,
+                 kind, ours ? "" : " (no driver for this controller yet)");
+        }
+    }
     uhci_probe();
+    xhci_probe();
     if (devices) {
         task_create("usbd", usb_task, NULL, 8192);
         klog("usb: %d device(s)", usb_count());
@@ -413,4 +436,7 @@ void usb_init(void)
 #else
 #include "usb.h"
 void usb_init(void) {}                          /* USB needs the 64-bit edition */
+void usb_poll(void) {}
+int usb_count(void) { return 0; }
+int usb_unsupported;
 #endif
