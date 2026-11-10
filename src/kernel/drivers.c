@@ -251,6 +251,7 @@ static uint8_t mouse_read(void) { ps2_wait_read(); return inb(0x60); }
 
 static volatile bool ps2_ready;              /* both devices initialised */
 static uint32_t ms_last;
+void mouse_inject(int dx, int dy, int buttons, int wheel);
 static void mouse_byte(uint8_t b) {
     if (ms_cycle && ticks - ms_last > 40) ms_cycle = 0;   /* a packet's bytes arrive together: drop a stale half */
     ms_last = ticks;
@@ -261,18 +262,31 @@ static void mouse_byte(uint8_t b) {
     if (ms_pkt[0] & 0xC0) return;               /* overflow */
     int dx = ms_pkt[1] - ((ms_pkt[0] & 0x10) ? 256 : 0);
     int dy = ms_pkt[2] - ((ms_pkt[0] & 0x20) ? 256 : 0);
+    int wheel = ms_pkt_size == 4 ? (int8_t)(ms_pkt[3] << 4) >> 4 : 0;
+    mouse_inject(dx, dy, ms_pkt[0] & 7, wheel);
+}
+/* A USB HID mouse reports the same thing a PS/2 packet does: deltas, buttons
+ * and a wheel step. Both paths end here so speed and button swap apply. */
+void mouse_inject(int dx, int dy, int buttons, int wheel)
+{
     int sp = mouse_speed;
     dx = dx * sp / 5; dy = dy * sp / 5;
     int ad = (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
     if (sp > 5 && ad > 6) { dx = dx * 3 / 2; dy = dy * 3 / 2; }
+    uint32_t f = irq_save();
     ms_x = CLAMP(ms_x + dx, 0, ms_w - 1);
     ms_y = CLAMP(ms_y - dy, 0, ms_h - 1);
-    int btn = ms_pkt[0] & 7;
+    int btn = buttons & 7;
     if (mouse_swap_buttons) btn = (btn & 4) | ((btn & 1) << 1) | ((btn & 2) >> 1);
     ms_buttons = btn;
-    if (ms_pkt_size == 4) { int8_t wz = (int8_t)(ms_pkt[3] << 4) >> 4; ms_wheel += wz; }
+    ms_wheel += wheel;
     ms_changed = true;
+    irq_restore(f);
 }
+
+/* PS/2 set 1 make/break codes from a USB HID boot keyboard */
+void keyboard_scancode(uint8_t code) { kb_byte(code); }
+
 /* The keyboard controller has one output buffer for both devices; a byte left
  * in it blocks every later byte and interrupt. So both interrupts (and a timer
  * poll, in case an interrupt is ever lost) drain it, routing each byte by the

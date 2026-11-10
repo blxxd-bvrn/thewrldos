@@ -28,7 +28,7 @@ LDFLAGS := $(firstword $(ARCHFLAGS)) -nostdlib -no-pie -static -T src/arch/$(ARC
 # --no-warn-rwx-segments only exists in binutils 2.39+ (Ubuntu 22.04 ships 2.38)
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)
 
-CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c src/linux/*.c)
+CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/shell/*.c src/net/*.c src/linux/*.c src/usb/*.c)
 # Mbed TLS 4.1 (TLS 1.3/1.2 for XplorerLite, wget and curl): the TLS library and
 # TF-PSA-Crypto, built freestanding against the same C library shim as QuickJS,
 # configured by third_party/mbedtls-config. src/tls/*.c is the glue.

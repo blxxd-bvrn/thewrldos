@@ -9,6 +9,7 @@
 #include "disk.h"
 #include "net.h"
 #include "audio.h"
+#include "usb.h"
 
 extern void (*panic_hook)(const char *msg);
 extern void (*fault_hook)(task_t *t, const char *msg);
@@ -123,6 +124,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     boot_screen_progress("Initializing devices...", 10);
     keyboard_init();
     mouse_init(SCREEN_W, SCREEN_H);
+    usb_init();
     char vendor[16], brand[52]; cpu_get_info(vendor, brand);
     klog("cpu: %s (%s)", brand, vendor);
     acpi_init();

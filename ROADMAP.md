@@ -88,7 +88,16 @@ Already working, and not on the list below:
 - `getaddrinfo` now resolves through glibc and the kernel's UDP stack (section 4); `getpwnam` has
   only `/etc/passwd`; no `iconv`, no locale past Latin-1.
 
-### 8. Graphics and text
+### 8. USB
+
+- The host stack (`src/usb`) speaks UHCI, USB 1.1: control, interrupt and bulk transfers,
+  enumeration through hubs, boot-protocol HID keyboards and mice, and bulk-only mass storage.
+- Missing: EHCI (USB 2.0) and xHCI (USB 3.x), which is what a machine made after roughly 2012
+  has for its own ports; isochronous transfers (USB audio, video and MIDI); hotplug after boot
+  (the buses are scanned once); and multiple configurations or alternate settings.
+- Needed by a browser only for input and storage, but a modern PC needs xHCI for both.
+
+### 9. Graphics and text
 
 - No FreeType, HarfBuzz, ICU, Skia or Cairo. The kernel-side GUI has its own small TrueType
   engine (`src/gui/ttf.c`, faces in `C:\WRLD\Fonts`) and draws UTF-8, but it does not hint,
@@ -98,7 +107,7 @@ Already working, and not on the list below:
 - No GPU or 3D, so Skia has to use its software backend.
 - Missing codecs: WebP, SVG, progressive JPEG; audio/video beyond WAV.
 
-### 9. Services a browser engine expects
+### 10. Services a browser engine expects
 
 - `/proc` has only `/proc/self/exe`; it needs `/proc/self/{maps,stat,status,fd}`, `/proc/meminfo`
   and `/proc/cpuinfo`.
@@ -106,12 +115,13 @@ Already working, and not on the list below:
 - No seccomp-bpf, namespaces or `CLONE_NEWUSER`; `prctl` returns success, so `NO_NEW_PRIVS` is
   dishonest and the sandbox has to be disabled rather than faked.
 
-### 10. Practical ceilings
+### 11. Practical ceilings
 
 - 512 MB minimum and about 3.75 GB maximum, 64-bit edition only; WebKit wants 1-2 GB per
   process.
 - The installed partition is loaded into RAM at boot, so its size is bounded by RAM.
-- No USB and no Wi-Fi; wired IPv4 Ethernet only.
+- No Wi-Fi; USB is USB 1.1 (UHCI) only, so EHCI and xHCI machines need a companion controller;
+  wired IPv4 Ethernet only.
 - An unimplemented system call returns `ENOSYS`, is logged once, and the program dies.
 - The Linux ABI is covered by the test programs in `samples/linux`: `hello.c`, `threads.c`,
   `ipc.c`, `procs.c` and `socket.c`.

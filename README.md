@@ -131,8 +131,9 @@ VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** or **UEFI** boot and
 is a hybrid image: a PC-BIOS core and an x86-64 EFI System Partition (`EFI/BOOT/BOOTX64.EFI`).
 UEFI firmware must be 64-bit (the usual kind); a 32-bit-only EFI machine cannot boot it. To install,
 attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **NVMe**, or **SCSI**
-(VMware/VirtualBox **LSI Logic** and **LSI Logic SAS**, **VMware Paravirtual**, **virtio-scsi**), or a
-**virtio-blk** disk in QEMU/KVM/Proxmox. USB disks and BusLogic adapters are not supported.
+(VMware/VirtualBox **LSI Logic** and **LSI Logic SAS**, **VMware Paravirtual**, **virtio-scsi**), a
+**virtio-blk** disk in QEMU/KVM/Proxmox, or a **USB** disk behind a UHCI (USB 1.1) controller.
+USB keyboards and mice work the same way, including through a hub. BusLogic adapters are not supported.
 For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
 **SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
 VMware's SVGA, and those can change resolution. Every network adapter VMware offers works (**e1000**, **e1000e**,
@@ -359,6 +360,26 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   loopback interface, and a real `vfork` (it does not suspend the parent). See `ROADMAP.md` for
   the rest of the way to WPE WebKit.
 
+### USB (`src/usb`)
+- **Host controller:** UHCI (`uhci.c`), the USB 1.1 controller in PIIX/ICH chipsets and QEMU. A
+  1024-entry frame list drives one queue head, every transfer is a chain of transfer descriptors,
+  and the driver polls them: control transfers (setup, data, status), interrupt IN for HID, and
+  bulk IN/OUT for storage. Every UHCI controller in the machine is enumerated; the stack itself is
+  written against a small host-controller interface so another driver can be added beside it.
+- **Enumeration:** port reset and enable, `GET_DESCRIPTOR`, `SET_ADDRESS`, full configuration
+  parsing (interfaces and endpoints) and `SET_CONFIGURATION`, plus one level of **hub**: the hub's
+  ports are powered and reset and the devices behind them enumerated too.
+- **HID:** boot-protocol keyboards and mice. Reports are translated to PS/2 set 1 scancodes and
+  packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock, speed, button swap)
+  works unchanged.
+- **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
+  `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
+  the block layer like any other, so Setup and the volume code see it as a normal disk.
+- Tested in QEMU with `-device piix3-usb-uhci -device usb-kbd -device usb-mouse -device
+  usb-storage,...`: a USB keyboard logs in with no PS/2 keyboard attached, a USB mouse moves the
+  pointer and clicks, and a USB disk reads and writes sectors. Not yet: EHCI/xHCI, isochronous
+  transfers, hotplug after boot, and more than one configuration per device.
+
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
   - Intel PRO/1000 8254x, 8257x (VMware's e1000e is an 82574L), ICH8-10/PCH and I217/I218/I219 (`e1000.c`).
@@ -570,8 +591,9 @@ used to test every screen above, including a full install from a blank disk.
 - **Storage:**
   - The live CD runs from RAM.
   - An installed system keeps `C:` on an NTFS or FAT32 partition of an IDE, SATA, NVMe, SCSI or
-    virtio disk. USB disks, BusLogic and the LSI 53C895A (QEMU's `-drive if=scsi` default) are not
-    supported. Hyper-V's synthetic SCSI is not supported either, so use a generation 1 VM's IDE disk.
+    virtio disk, or of a USB disk on a UHCI controller. BusLogic and the LSI 53C895A (QEMU's
+    `-drive if=scsi` default) are not supported. Hyper-V's synthetic SCSI is not supported either,
+    so use a generation 1 VM's IDE disk.
   - Disks with 4 KB sectors (4Kn) can't be installed to: a BIOS can't start from them.
   - At boot the whole partition is loaded into memory and changes are written back, so the
     installed system's size is limited by RAM.
@@ -606,7 +628,10 @@ used to test every screen above, including a full install from a blank disk.
   - Pipes hold at most 64 KiB; network sockets are IPv4 only, with no loopback interface and no
     IP fragmentation (a UDP datagram tops out at 1472 bytes).
 - **Hardware and design:**
-  - No USB, and sound is playback only (no recording).
+  - USB is USB 1.1 over a UHCI controller (keyboards, mice, disks, hubs), the kind every ICH and
+    PIIX chipset has. EHCI (USB 2.0) and xHCI (USB 3.x) are not implemented, and neither are
+    isochronous devices (USB audio and video), so a machine with only USB 2/3 ports is not covered.
+  - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.
   - Single CPU. Both editions use memory below 4 GiB only (about 3.75 GB at most); the desktop
