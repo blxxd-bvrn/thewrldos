@@ -142,6 +142,67 @@ static const char *pin_kind(int devtype) {
                                  "line in", "aux", "mic", "telephony", "S/PDIF in", "digital in", "other", "other" };
     return k[devtype & 15];
 }
+/* Read one audio function group's widgets and route its output pins to analog
+ * DACs. Jacks the codec reports as connected come first (line out, speaker,
+ * headphones, then the rest); if it reports none, every output-capable pin.
+ * Returns the number of DACs found (0 when this group has no analog output). */
+static int route_out(int cad, int afg, int *dacs, int *pins_out)
+{
+    hda_cmd(cad, afg, VERB(0x705, 0));                      /* power D0 */
+    for (int t = 0; t < 20 && ((hda_cmd(cad, afg, VERB(0xF05, 0)) >> 4) & 0xF) != 0; t++) sleep_ms(5);
+    uint32_t afg_amp = param(cad, afg, 0x12);
+    afg_in_amp = param(cad, afg, 0x0D);
+    uint32_t sub = param(cad, afg, 0x04);
+    wstart = (sub >> 16) & 0xFF; wcount = MIN((int)(sub & 0xFF), 128);
+    for (int i = 0; i < wcount; i++) {
+        int nid = wstart + i; widget_t *w = &wg[i];
+        w->caps = param(cad, nid, 0x09); w->type = (w->caps >> 20) & 0xF;
+        uint32_t cl = param(cad, nid, 0x0E); int n = cl & 0x7F; bool lng = cl & 0x80;
+        w->nconn = 0;
+        if ((w->caps & (1 << 8)) && n && !lng)
+            for (int o = 0; o < n && w->nconn < 16; o += 4) {
+                uint32_t e = hda_cmd(cad, nid, VERB(0xF02, o));
+                for (int b = 0; b < 4 && o + b < n && w->nconn < 16; b++) w->conn[w->nconn++] = (e >> (8 * b)) & 0xFF;
+            }
+        if (w->caps & (1 << 10)) hda_cmd(cad, nid, VERB(0x705, 0));   /* widgets with power control: D0 */
+    }
+    int ndacs = 0, pins = 0;
+    for (int pass = 0; pass < 3; pass++) {
+        if (pass == 2 && pins) break;
+        for (int i = 0; i < wcount; i++) {
+            widget_t *w = &wg[i]; int nid = wstart + i;
+            if (w->type != 4) continue;
+            uint32_t pcaps = param(cad, nid, 0x0C), cfg = hda_cmd(cad, nid, VERB(0xF1C, 0));
+            int conn = cfg >> 30, devtype = (cfg >> 20) & 0xF;
+            if (!(pcaps & (1 << 4))) continue;                        /* not output capable */
+            if (devtype == 4 || devtype == 5 || (w->caps & (1 << 9))) continue;   /* digital */
+            bool preferred = devtype <= 2;
+            if (pass == 0 && (conn == 1 || !preferred)) continue;
+            if (pass == 1 && (conn == 1 || preferred)) continue;
+            if (pass == 2 && conn != 1) continue;
+            plen = 0;
+            if (!find_dac(cad, nid, 0)) continue;
+            int d = path[plen - 1], k;
+            for (k = 0; k < ndacs && dacs[k] != d; k++) {}
+            if (k == ndacs && ndacs < 8) dacs[ndacs++] = d;
+            pins++;
+            for (int j = 0; j < plen; j++) amp_unmute(cad, path[j], afg_amp);
+            hda_cmd(cad, nid, VERB(0x707, 0x40 | (devtype == 2 ? 0x80 : 0)));   /* output enable (+ headphone amp) */
+            if (pcaps & (1 << 16)) hda_cmd(cad, nid, VERB(0x70C, 2));        /* external amplifier (EAPD) on */
+            diag("pin %d (%s%s) -> DAC %d\n", nid, pin_kind(devtype), conn == 1 ? ", reported unconnected" : "", d);
+        }
+    }
+    if (!ndacs)   /* no pin path: use the first analog DAC anyway */
+        for (int i = 0; i < wcount; i++)
+            if (wg[i].type == 0 && !(wg[i].caps & (1 << 9))) {
+                dacs[ndacs++] = wstart + i;
+                amp_unmute(cad, wstart + i, afg_amp);
+                break;
+            }
+    *pins_out = pins;
+    return ndacs;
+}
+
 static bool hda_init(pci_dev_t *p) {
     uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
     pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x06);
@@ -186,69 +247,47 @@ static bool hda_init(pci_dev_t *p) {
      * big ones like VMware's Realtek-style codec. */
     R16(0x5A) = 1;
     R8(0x4C) = 2; R8(0x5C) = 3;                              /* CORB run; RIRB DMA + response flag */
-    int cad = 0; while (cad < 15 && !(codecs & (1 << cad))) cad++;
-    uint32_t vid = param(cad, 0, 0x00);
-    if (vid == 0xFFFFFFFF || !vid) {                         /* rings answer nonsense: immediate commands */
-        R8(0x4C) = 0; R8(0x5C) = 0; use_immediate = true; hda_dead = false;
-        vid = param(cad, 0, 0x00);
-    }
-    if (hda_dead || !vid || vid == 0xFFFFFFFF) { strlcpy(hda_why, "HDA codec does not answer", sizeof hda_why); klog("hda: codec %d does not answer", cad); return false; }
-    diag("codec %d: %08x, %s commands\n", cad, vid, use_immediate ? "immediate" : "CORB/RIRB");
-    /* find the audio function group */
-    uint32_t sub = param(cad, 0, 0x04);
-    int afg = 0;
-    for (int n = (sub >> 16) & 0xFF, k = 0; k < (int)(sub & 0xFF); k++, n++) if ((param(cad, n, 0x05) & 0xFF) == 1) { afg = n; break; }
-    if (!afg) { strlcpy(hda_why, "HDA codec has no audio function group", sizeof hda_why); klog("hda: codec %d has no audio function group", cad); return false; }
-    hda_cmd(cad, afg, VERB(0x705, 0));                      /* power D0 */
-    for (int t = 0; t < 20 && ((hda_cmd(cad, afg, VERB(0xF05, 0)) >> 4) & 0xF) != 0; t++) sleep_ms(5);
-    uint32_t afg_amp = param(cad, afg, 0x12);
-    afg_in_amp = param(cad, afg, 0x0D);
-    sub = param(cad, afg, 0x04);
-    wstart = (sub >> 16) & 0xFF; wcount = MIN((int)(sub & 0xFF), 128);
-    for (int i = 0; i < wcount; i++) {
-        int nid = wstart + i; widget_t *w = &wg[i];
-        w->caps = param(cad, nid, 0x09); w->type = (w->caps >> 20) & 0xF;
-        uint32_t cl = param(cad, nid, 0x0E); int n = cl & 0x7F; bool lng = cl & 0x80;
-        w->nconn = 0;
-        if ((w->caps & (1 << 8)) && n && !lng)
-            for (int o = 0; o < n && w->nconn < 16; o += 4) {
-                uint32_t e = hda_cmd(cad, nid, VERB(0xF02, o));
-                for (int b = 0; b < 4 && o + b < n && w->nconn < 16; b++) w->conn[w->nconn++] = (e >> (8 * b)) & 0xFF;
+    /* A codec can be an analog one, an HDMI/DP one, or both on different
+     * function groups. Try every codec present and every audio function group
+     * in it, and use the first that has an analog output converter: the first
+     * codec is not necessarily the one the speakers are on. */
+    int cad = -1, afg = 0, dacs[8], ndacs = 0, pins = 0;
+    uint32_t vid = 0;
+    bool queried = false;
+    for (int c = 0; c < 15 && !ndacs; c++) {
+        if (!(codecs & (1 << c))) continue;
+        uint32_t v = param(c, 0, 0x00);
+        if (!queried) {
+            queried = true;
+            if (v == 0xFFFFFFFF || !v) {                     /* rings answer nonsense: immediate commands */
+                R8(0x4C) = 0; R8(0x5C) = 0; use_immediate = true; hda_dead = false;
+                v = param(c, 0, 0x00);
             }
-        if (w->caps & (1 << 10)) hda_cmd(cad, nid, VERB(0x705, 0));   /* widgets with power control: D0 */
-    }
-    /* Route output pins to DACs: jacks the codec reports as connected first (line out,
-     * speaker, headphones, then the rest); if it reports none, every output-capable
-     * pin. All the DACs used play the same stream. */
-    int dacs[8], ndacs = 0, pins = 0;
-    for (int pass = 0; pass < 3; pass++) {
-        if (pass == 2 && pins) break;
-        for (int i = 0; i < wcount; i++) {
-            widget_t *w = &wg[i]; int nid = wstart + i;
-            if (w->type != 4) continue;
-            uint32_t pcaps = param(cad, nid, 0x0C), cfg = hda_cmd(cad, nid, VERB(0xF1C, 0));
-            int conn = cfg >> 30, devtype = (cfg >> 20) & 0xF;
-            if (!(pcaps & (1 << 4))) continue;                        /* not output capable */
-            if (devtype == 4 || devtype == 5 || (w->caps & (1 << 9))) continue;   /* digital */
-            bool preferred = devtype <= 2;
-            if (pass == 0 && (conn == 1 || !preferred)) continue;
-            if (pass == 1 && (conn == 1 || preferred)) continue;
-            if (pass == 2 && conn != 1) continue;
-            plen = 0;
-            if (!find_dac(cad, nid, 0)) continue;
-            int d = path[plen - 1], k;
-            for (k = 0; k < ndacs && dacs[k] != d; k++) {}
-            if (k == ndacs && ndacs < 8) dacs[ndacs++] = d;
-            pins++;
-            for (int j = 0; j < plen; j++) amp_unmute(cad, path[j], afg_amp);
-            hda_cmd(cad, nid, VERB(0x707, 0x40 | (devtype == 2 ? 0x80 : 0)));   /* output enable (+ headphone amp) */
-            if (pcaps & (1 << 16)) hda_cmd(cad, nid, VERB(0x70C, 2));        /* external amplifier (EAPD) on */
-            diag("pin %d (%s%s) -> DAC %d\n", nid, pin_kind(devtype), conn == 1 ? ", reported unconnected" : "", d);
+        }
+        if (hda_dead || !v || v == 0xFFFFFFFF) continue;
+        diag("codec %d: %08x, %s commands\n", c, v, use_immediate ? "immediate" : "CORB/RIRB");
+        uint32_t sub = param(c, 0, 0x04);
+        for (int n = (sub >> 16) & 0xFF, k = 0; k < (int)(sub & 0xFF); k++, n++) {
+            if ((param(c, n, 0x05) & 0xFF) != 1) continue;   /* audio function group */
+            int nd = route_out(c, n, dacs, &pins);
+            if (nd) { ndacs = nd; cad = c; afg = n; vid = v; break; }
         }
     }
-    if (!ndacs)   /* no pin path: use the first analog DAC anyway */
-        for (int i = 0; i < wcount; i++) if (wg[i].type == 0 && !(wg[i].caps & (1 << 9))) { dacs[ndacs++] = wstart + i; amp_unmute(cad, wstart + i, afg_amp); break; }
-    if (!ndacs) { strlcpy(hda_why, "HDA codec has no output converter", sizeof hda_why); klog("hda: no output converter found"); return false; }
+    if (!ndacs) {
+        char ids[64]; int len = 0;
+        ids[0] = 0;
+        for (int c = 0; c < 15 && len < (int)sizeof ids - 10; c++) {
+            if (!(codecs & (1 << c))) continue;
+            uint32_t v = param(c, 0, 0x00);
+            if (!v || v == 0xFFFFFFFFu) continue;
+            len += snprintf(ids + len, sizeof ids - len, "%s%d:%08x", len ? " " : "", c, v);
+        }
+        snprintf(hda_why, sizeof hda_why, "no analog output (codecs %s)", ids[0] ? ids : "none");
+        klog("hda: no codec with an analog output converter (%s)", ids[0] ? ids : "none");
+        return false;
+    }
+    diag("using codec %d, function group %d: %d DAC(s), %d pin(s)\n", cad, afg, ndacs, pins);
+
     /* output stream 1 -> every DAC used */
     for (int k = 0; k < ndacs; k++) {
         hda_cmd(cad, dacs[k], VERB(0x706, 1 << 4));         /* stream 1, channel 0 */

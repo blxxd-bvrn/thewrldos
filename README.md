@@ -264,7 +264,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       settings?" countdown, and are saved in `wrld.ini`.
   - **Sound (`audio.c`):**
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
-      DAC to the speaker or headphone pins.
+      DAC to the speaker or headphone pins. Every codec on the link and every audio function
+      group is tried, so a display-audio (HDMI/DP) codec that comes first does not hide the analog
+      one, and a codec's jack detection decides which pin is used.
     - **AC'97:** bus-master DMA, for Intel ICH and the compatible nVidia nForce, AMD and SiS
       controllers.
     - **Ensoniq AudioPCI:** ES1370 (AK4531 codec) and ES1371/ES1373/CT5880 (AC'97 codec and
