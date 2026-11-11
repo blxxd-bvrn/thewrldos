@@ -64,7 +64,7 @@ int usb_has_input(void) {
 }
 int usb_input_active(void) {
     for (usb_dev_t *d = devices; d; d = d->next)
-        if ((d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->seen) return 1;
+        if ((d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->acted) return 1;
     return 0;
 }
 const char *usb_device_summary(void) {
@@ -75,7 +75,24 @@ const char *usb_device_summary(void) {
         const char *k = d->kind == USB_KIND_KEYBOARD ? "kbd" : d->kind == USB_KIND_MOUSE ? "mouse"
                       : d->kind == USB_KIND_STORAGE ? "disk" : d->cls == 9 ? "hub" : "dev";
         int n = snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d%s", len ? ", " : "", k,
-                         d->addr, (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->seen ? "*" : "");
+                         d->addr, (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->acted ? "*" : "");
+        if (n > 0 && len + n < (int)sizeof out) len += n;
+    }
+    return out;
+}
+
+/* How far each HID device has got: interrupt polls and the reports they gave,
+ * then GET_REPORT answers. A device that never moves past polls has an endpoint
+ * the controller cannot reach; one that answers GET_REPORT is still usable. */
+const char *usb_live_text(void) {
+    static char out[512];
+    int len = 0;
+    out[0] = 0;
+    for (usb_dev_t *d = devices; d; d = d->next) {
+        if (d->kind != USB_KIND_KEYBOARD && d->kind != USB_KIND_MOUSE) continue;
+        int n = snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d i%u r%u g%u",
+                         len ? ", " : "", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr,
+                         (unsigned)d->irq_polls, (unsigned)d->irq_reports, (unsigned)d->ctl_reports);
         if (n > 0 && len + n < (int)sizeof out) len += n;
     }
     return out;
@@ -177,6 +194,7 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
     memset(r, 0, sizeof r);
     memcpy(r, rep, (size_t)MIN(n, 8));
     if (n < 3 || r[2] == 0x01) return;                  /* too many keys at once: nothing changed */
+    for (int i = 0; i < 8; i++) if (r[i]) d->acted = true;
     for (int i = 0; i < 8; i++) {
         uint8_t bit = (uint8_t)(1u << i);
         bool was = (d->report[0] & bit) != 0, now = (r[0] & bit) != 0;
@@ -213,6 +231,9 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
         d->seen = true;
         klog("usb: %s at address %d is sending reports", d->kind == USB_KIND_KEYBOARD ? "keyboard" : "mouse", d->addr);
     }
+    int keep = MIN(n, (int)sizeof d->last_rep);
+    memcpy(d->last_rep, rep, (size_t)keep);
+    d->last_len = keep;
     int dx = 0, dy = 0, btn = 0, wheel = 0;
     bool mouse = false;
     if (d->boot) {
@@ -241,6 +262,7 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
     }
     if (!mouse) return;
     if (stale) dx = dy = wheel = 0;
+    if (dx || dy || (btn & 7) || wheel) d->acted = true;
     /* HID counts Y downwards and the wheel away from the user; the mouse code
      * takes PS/2 packets, which count both the other way. */
     mouse_inject(dx, -dy, btn & 7, -CLAMP(wheel, -8, 8));
@@ -572,31 +594,55 @@ void usb_attach(usb_hcd_t *h)
 
 /* ---------------- polling and start-up ---------------- */
 /* A HID device answers its interrupt endpoint only when something changed, so
- * silence is normal and proves nothing. GET_REPORT is a stand-in for a device
- * whose interrupt endpoint has never delivered anything: it is tried only after
- * a long silence, and dropped for good the moment a real report arrives. */
-#define HID_SILENT_MS  3000
-#define HID_CONTROL_MS 64
+ * silence is normal and proves nothing. GET_REPORT is the stand-in for a device
+ * whose interrupt endpoint never delivers anything: after a second of silence
+ * the current report is asked for directly, at about the rate a mouse reports.
+ * A mouse answers with its last report until it has a new one, so a report that
+ * has not changed is one movement already counted, not another. Once the
+ * interrupt endpoint has delivered a report of its own, it is trusted alone. */
+#define HID_SILENT_MS     1000
+#define HID_KBD_CTL_MS      32
+#define HID_MOUSE_CTL_MS    16
+#define HID_CTL_RETRY_MS   500                  /* after a failure */
+#define HID_CTL_GIVE_UP      8
+
+/* how many bytes the device's input report is: asking for more than it has is
+ * enough to make some devices refuse the request */
+static int hid_report_len(const usb_dev_t *d)
+{
+    int n;
+    if (d->boot) n = d->kind == USB_KIND_KEYBOARD ? 8 : MIN((int)d->maxpkt_int, 8);
+    else {
+        n = d->kind == USB_KIND_MOUSE ? d->fmt.mouse.len : d->fmt.keys.len;
+        if (d->fmt.ids) n++;
+        if (n <= 1) n = MIN((int)d->maxpkt_int, (int)sizeof d->last_rep);
+    }
+    if (n < 1) n = 8;
+    if (n > (int)sizeof d->last_rep) n = (int)sizeof d->last_rep;
+    return n;
+}
 
 static void hid_control_poll(usb_dev_t *d)
 {
     uint8_t rep[64];
     memset(rep, 0, sizeof rep);
     int id = d->boot ? 0 : d->kind == USB_KIND_MOUSE ? d->fmt.mouse.id : d->fmt.keys.id;
-    int c = usb_control(d, 0xA1, 1, (uint16_t)(0x0100 | id), (uint16_t)d->iface, rep, sizeof rep);
+    int want = hid_report_len(d);
+    d->ctl_polls++;
+    int c = usb_control(d, 0xA1, 1, (uint16_t)(0x0100 | id), (uint16_t)d->iface, rep, want);
     if (c <= 0) {
-        d->use_control = -1;
-        usb_diag("%s@%d GET_REPORT failed", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr);
+        if (++d->ctl_fail <= 2)
+            usb_diag("%s@%d GET_REPORT failed (%d)", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr, c);
+        d->ctl_next = timer_ticks() + HID_CTL_RETRY_MS;
+        if (d->ctl_fail >= HID_CTL_GIVE_UP) d->use_control = -1;
         return;
     }
-    /* A mouse answers with its last report until it has a new one, so the same
-     * bytes twice are one movement, not two; and the first answer of all may be
-     * left over from before we were listening. */
-    int keep = MIN(c, (int)sizeof d->ctl_rep);
-    bool stale = d->use_control == 0 || (keep == d->ctl_len && !memcmp(rep, d->ctl_rep, (size_t)keep));
-    memcpy(d->ctl_rep, rep, (size_t)keep);
-    d->ctl_len = keep;
+    d->ctl_fail = 0;
     d->use_control = 1;
+    d->ctl_reports++;
+    /* A mouse keeps answering with the same report until it moves, and an
+     * interrupt report may already have delivered that one. */
+    bool stale = d->last_len && c == d->last_len && !memcmp(rep, d->last_rep, (size_t)c);
     hid_report(d, rep, c, stale);
 }
 
@@ -613,14 +659,20 @@ void usb_poll(void)
         uint8_t rep[64];
         memset(rep, 0, sizeof rep);
         int len = MIN((int)d->maxpkt_int, (int)sizeof rep);
+        d->irq_polls++;
         int n = d->hcd->transfer(d->hcd, d->addr, d->low_speed, d->ep_int, true,
                                  d->maxpkt_int, &d->toggle_int, rep, len, 3);
-        if (n > 0) { d->irq_seen = true; hid_report(d, rep, n, false); continue; }
+        if (n > 0) {
+            d->irq_reports++;
+            d->irq_seen = true;
+            hid_report(d, rep, n, false);
+            continue;
+        }
         if (d->irq_seen || d->use_control < 0) continue;
         uint32_t now = timer_ticks();
         if (!d->ctl_next) d->ctl_next = now + HID_SILENT_MS;
         if ((int32_t)(now - d->ctl_next) < 0) continue;
-        d->ctl_next = now + HID_CONTROL_MS;
+        d->ctl_next = now + (d->kind == USB_KIND_MOUSE ? HID_MOUSE_CTL_MS : HID_KBD_CTL_MS);
         hid_control_poll(d);
     }
 }
@@ -694,6 +746,7 @@ const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition";
 int usb_has_input(void) { return 0; }
 int usb_input_active(void) { return 0; }
 const char *usb_device_summary(void) { return ""; }
+const char *usb_live_text(void) { return ""; }
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) { (void)pd; (void)ok; (void)ports; (void)connected; }
 void usb_diag(const char *fmt, ...) { (void)fmt; }
 const char *usb_diag_text(void) { return ""; }

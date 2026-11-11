@@ -21,6 +21,7 @@ typedef struct {
     struct {
         bool present;                       /* a relative X and Y were found */
         int id;                             /* the report they are in */
+        int len;                            /* that report's length in bytes, without the ID */
         int btn_off, btn_bits;              /* bit offsets and widths, after the ID byte */
         int x_off, x_bits, y_off, y_bits;
         int w_off, w_bits;
@@ -28,6 +29,7 @@ typedef struct {
     struct {
         bool present;
         int id;
+        int len;
         int mod_off;                        /* the eight modifier bits, -1 = none */
         int key_off, key_bits, key_count;   /* an array of the usages held down */
         int map_off, map_min, map_count;    /* or one bit per usage (N-key rollover) */

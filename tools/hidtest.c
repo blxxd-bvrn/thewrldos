@@ -105,6 +105,7 @@ int main(void)
     check("boot mouse x off", f.mouse.x_off, 8);
     check("boot mouse y off", f.mouse.y_off, 16);
     check("boot mouse w off", f.mouse.w_off, 24);
+    check("boot mouse len", f.mouse.len, 4);
     check("boot mouse keys", f.keys.present, 0);
     {
         const uint8_t r[4] = { 0x05, 0x05, 0xFB, 0xFF };        /* left+middle, right 5, up 5, wheel -1 */
@@ -126,6 +127,7 @@ int main(void)
     check("wide y off", f.mouse.y_off, 32);
     check("wide w off", f.mouse.w_off, 48);
     check("wide w bits", f.mouse.w_bits, 8);
+    check("wide len", f.mouse.len, 8);
     {
         /* after the ID byte: buttons 0x0002, X = -300, Y = +1000, wheel +1, pan 0 */
         const uint8_t r[8] = { 0x02,0x00, 0xD4,0xFE, 0xE8,0x03, 0x01, 0x00 };
@@ -142,6 +144,7 @@ int main(void)
     check("packed x bits", f.mouse.x_bits, 12);
     check("packed y off", f.mouse.y_off, 20);
     check("packed w off", f.mouse.w_off, 32);
+    check("packed len", f.mouse.len, 5);
     {
         /* X = -2 (0xFFE), Y = +3 (0x003): bytes FE 3F 00 */
         const uint8_t r[5] = { 0x01, 0xFE, 0x3F, 0x00, 0xFF };
@@ -164,6 +167,7 @@ int main(void)
     check("kbd key bits", f.keys.key_bits, 8);
     check("kbd key count", f.keys.key_count, 6);
     check("kbd no map", f.keys.map_count, 0);
+    check("kbd len", f.keys.len, 8);
     {
         uint8_t out[8];
         const uint8_t r[8] = { 0x22, 0x00, 0x04, 0x1D, 0x00, 0x00, 0x00, 0x00 };   /* LShift+RShift, A, Z */
@@ -185,6 +189,7 @@ int main(void)
     check("nkro map min", f.keys.map_min, 4);
     check("nkro map count", f.keys.map_count, 120);
     check("nkro no array", f.keys.key_count, 0);
+    check("nkro len", f.keys.len, 16);
     {
         uint8_t out[8];
         uint8_t r[16];

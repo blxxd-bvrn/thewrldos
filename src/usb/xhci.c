@@ -114,6 +114,8 @@ typedef struct xdev {
         uint64_t armed;        /* an interrupt IN TRB waiting in the controller */
         int armed_len;
         int errors;            /* failed interrupt transfers in a row */
+        bool ever_done;        /* the endpoint has completed a transfer */
+        int idle;              /* polls since it was armed, while it never has */
         uint8_t *ibuf;         /* this endpoint's own report buffer, one packet long */
     } ep[16];
     int max_dci;
@@ -365,7 +367,9 @@ static int xhci_configure(xhci_t *x, xdev_t *d, int epnum, bool in, int maxpkt, 
     int dci = epnum * 2 + (in ? 1 : 0);
     ring_init(&d->ep[epnum].ring, 32, true);
     if (!d->ep[epnum].ring.n) return -1;
-    uint32_t *inctx = ctx_alloc(x, 32);
+    /* the input control context, the slot context, and one per endpoint up to
+     * this one: endpoint 15 uses context 32 */
+    uint32_t *inctx = ctx_alloc(x, dci + 2);
     if (!inctx) return -1;
     inctx[1] = 0x1 | (1u << dci);
     int entries = d->max_dci > dci ? d->max_dci : dci;
@@ -551,6 +555,8 @@ static int xhci_poll_in(xhci_t *x, xdev_t *d, int epnum, void *buf, int len)
             return -1;
         }
         d->ep[epnum].errors = 0;
+        d->ep[epnum].ever_done = true;
+        d->ep[epnum].idle = 0;
         if (got < 0) got = 0;
         if (got > len) got = len;
         if (got) memcpy(buf, d->ep[epnum].ibuf, got);
@@ -566,6 +572,14 @@ static int xhci_poll_in(xhci_t *x, xdev_t *d, int epnum, void *buf, int len)
         ring_doorbell(x, d->slot, dci);
         d->ep[epnum].armed = trb;
         d->ep[epnum].armed_len = room;
+        d->ep[epnum].idle = 0;
+    } else if (!d->ep[epnum].ever_done && ++d->ep[epnum].idle > 1000) {
+        /* Armed for eight seconds and never completed once: the controller is
+         * not polling this endpoint (or the doorbell was missed). Restart it;
+         * the next poll arms it again. */
+        d->ep[epnum].idle = 0;
+        d->ep[epnum].armed = 0;
+        xhci_ep_restart(x, d, dci, &d->ep[epnum].ring, false);
     }
     return -2;
 }

@@ -30,12 +30,16 @@ struct usb_dev {
     bool irq_seen;                             /* the interrupt endpoint has delivered a report */
     int use_control;                           /* GET_REPORT stand-in: 0 untried, 1 in use, -1 refused */
     uint32_t ctl_next;                         /* when it is asked next, 0 = not timed yet */
-    uint8_t ctl_rep[16];                       /* the last GET_REPORT answer, to spot a stale one */
-    int ctl_len;
+    int ctl_fail;                              /* GET_REPORT failures in a row */
+    uint8_t last_rep[32];                      /* the last report taken, by either path */
+    int last_len;                              /* so the same report is not counted twice */
+    uint32_t irq_polls, irq_reports;           /* counters for the log-on screen */
+    uint32_t ctl_polls, ctl_reports;
     uint8_t report[16];                        /* last HID report, for key-up detection */
     uint8_t rep_usage;                         /* the key that is auto-repeating, 0 = none */
     uint32_t rep_next;                         /* when it repeats next */
     bool seen;                                 /* has this device sent a report yet? */
+    bool acted;                                /* a report has moved the pointer or pressed a key */
     int root_port, route;                      /* where it sits, for xHCI's slot context */
     int id;
     char name[40];
@@ -75,8 +79,9 @@ int usb_count(void);
 usb_dev_t *usb_first(void);
 const char *usb_boot_summary(void);             /* controller list and device count, for the logon screen */
 int usb_has_input(void);                        /* a USB keyboard or mouse was enumerated */
-int usb_input_active(void);                     /* at least one HID report has arrived */
+int usb_input_active(void);                     /* a USB report moved the pointer or pressed a key */
 const char *usb_device_summary(void);           /* "kbd@2, mouse@3*, hub@7" */
+const char *usb_live_text(void);                /* per-device interrupt/GET_REPORT counters */
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected);
 void usb_diag(const char *fmt, ...);            /* last USB failures, shown on the log-on screen */
 const char *usb_diag_text(void);

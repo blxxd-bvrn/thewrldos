@@ -206,6 +206,8 @@ void hid_parse_format(hid_format_t *f, const uint8_t *p, int n)
     if (w_id != x_id) f->mouse.w_bits = 0;
     f->keys.present = f->keys.key_count > 0 || f->keys.map_count > 0;
     f->keys.id = key_id < 0 ? 0 : key_id;
+    f->mouse.len = (*bit_pos(s, f->mouse.id) + 7) / 8;
+    f->keys.len = (*bit_pos(s, f->keys.id) + 7) / 8;
 }
 
 bool hid_decode_mouse(const hid_format_t *f, const uint8_t *p, int n,

@@ -154,12 +154,18 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
                       HEX(0xFFD070));
         } else if (!usb_input_active()) {
             char line[512];
-            snprintf(line, sizeof line, "USB keyboard/mouse enumerated but no reports yet. Controllers: %s. Devices: %s.",
+            snprintf(line, sizeof line, "USB keyboard/mouse enumerated, but no input has arrived yet. Controllers: %s. Devices: %s.",
                      usb_boot_summary(), usb_device_summary());
             int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
             int y = SCREEN_H - 190 + h + 6;
             const char *d = usb_diag_text();
             if (*d) y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, d, HEX(0xFFD070), 2) + 4;
+            /* live, so a photo shows how far each device has got */
+            const char *l = usb_live_text();
+            if (*l) {
+                snprintf(line, sizeof line, "%s (i = interrupt polls, r = reports from them, g = GET_REPORT answers)", l);
+                y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, line, HEX(0xFFD070), 2) + 4;
+            }
             draw_text(c, FONT_UI, 30, y,
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
@@ -172,6 +178,8 @@ void welcome_screen(void) {
     int hot = 0, prev = 0;
     welcome_draw(0, false, 0);
     gfx_present(CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
+    uint32_t next = timer_ticks() + 500;
+    int shown_active = 0;
     for (;;) {
         bool login = false;
         while (keyboard_poll(&ke)) if (ke.pressed && (ke.key == KEY_ENTER || ke.key == ' ')) login = true;
@@ -186,6 +194,17 @@ void welcome_screen(void) {
             if (click && nh == 2) { shell_show_shutdown(); return; }
             if (nh != hot) { hot = nh; welcome_draw(hot, false, 0); gfx_present(nh ? CURSOR_HAND : CURSOR_ARROW, ms.x, ms.y); }
             else gfx_move_cursor(nh ? CURSOR_HAND : CURSOR_ARROW, ms.x, ms.y);
+        }
+        /* While no USB report has arrived, the text on this screen is the only
+         * place the counters can be read, so keep it up to date; and redraw
+         * once when they start working, to take the notice away. */
+        int active = usb_input_active();
+        bool idle_usb = usb_has_input() && !active;
+        if (active != shown_active || (idle_usb && (int32_t)(timer_ticks() - next) >= 0)) {
+            shown_active = active;
+            next = timer_ticks() + 500;
+            welcome_draw(hot, false, 0);
+            gfx_present(hot ? CURSOR_HAND : CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
         }
         if (login) break;
         task_yield(); hlt();
