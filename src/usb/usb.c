@@ -66,6 +66,19 @@ int usb_input_active(void) {
         if ((d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->seen) return 1;
     return 0;
 }
+const char *usb_device_summary(void) {
+    static char out[256];
+    int len = 0;
+    out[0] = 0;
+    for (usb_dev_t *d = devices; d; d = d->next) {
+        const char *k = d->kind == USB_KIND_KEYBOARD ? "kbd" : d->kind == USB_KIND_MOUSE ? "mouse"
+                      : d->kind == USB_KIND_STORAGE ? "disk" : d->cls == 9 ? "hub" : "dev";
+        int n = snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d%s", len ? ", " : "", k,
+                         d->addr, (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->seen ? "*" : "");
+        if (n > 0 && len + n < (int)sizeof out) len += n;
+    }
+    return out;
+}
 
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len)
 {
@@ -329,6 +342,7 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     d->root_port = root_port; d->route = route;
     d->vendor = (uint16_t)(dev[8] | (dev[9] << 8));
     d->product = (uint16_t)(dev[10] | (dev[11] << 8));
+    d->bcdusb = (uint16_t)(dev[2] | (dev[3] << 8));
     d->cls = dev[4]; d->subcls = dev[5]; d->proto = dev[6];
     d->id = next_id++;
 
@@ -341,6 +355,7 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     if (get_descriptor(h, addr, low, 2, 0, cfg, total) < 9) { klog("usb: address %d: configuration read failed", addr); kfree(d); return; }
     int iface = 0;
     parse_config(d, cfg, total, &iface);
+    d->iface = iface;
 
     if (h->control(h, addr, low, 0x00, 9, 1, 0, NULL, 0) < 0) {      /* SET_CONFIGURATION(1) */
         klog("usb: address %d: SET_CONFIGURATION failed", addr);
@@ -381,9 +396,20 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
  * something connected, and enumerate whatever appears there. */
 static void hub_attach(usb_dev_t *hub)
 {
-    uint8_t hd[8];
-    if (usb_control(hub, 0xA0, 6, 0x2900, 0, hd, sizeof hd) < 3) {
+    uint8_t hd[16];
+    int ss = hub->bcdusb >= 0x0300;
+    int dtype = ss ? 0x2B : 0x29;                          /* SuperSpeed or USB 2 hub descriptor */
+    int hlen = ss ? 12 : 8;
+    int hn = 0;
+    for (int try = 0; try < 3 && hn < 3; try++) {
+        hn = usb_control(hub, 0xA0, 6, (uint16_t)(dtype << 8), 0, hd, hlen);
+        if (hn >= 3) break;
+        uint32_t t0 = timer_ticks();
+        while ((int32_t)(timer_ticks() - t0) < 20) task_yield();
+    }
+    if (hn < 3) {
         klog("usb: hub at address %d: no hub descriptor", hub->addr);
+        usb_diag("hub %d: no descriptor", hub->addr);
         return;
     }
     int ports = hd[2];
@@ -404,7 +430,7 @@ static void hub_attach(usb_dev_t *hub)
         if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) continue;
         if (!(st[0] & 1)) continue;
         bool low = (st[1] & 0x02) != 0;                               /* port status bit 9 */
-        int speed = (st[1] & 0x04) ? 3 : low ? 2 : 1;                 /* high, low, full */
+        int speed = ss ? 4 : (st[1] & 0x04) ? 3 : low ? 2 : 1;        /* SuperSpeed, high, low, full */
         char where[24];
         snprintf(where, sizeof where, "hub %d port %d", hub->addr, p);
         enumerate_one(hub->hcd, low, where, hub->root_port, (hub->route << 4) | p,
@@ -453,10 +479,23 @@ void usb_poll(void)
 {
     for (usb_dev_t *d = devices; d; d = d->next) {
         if (d->kind != USB_KIND_KEYBOARD && d->kind != USB_KIND_MOUSE) continue;
+        int len = d->kind == USB_KIND_KEYBOARD ? 8 : 4;
         uint8_t rep[8];
         memset(rep, 0, sizeof rep);
-        int n = usb_in(d, d->ep_int, d->maxpkt_int, &d->toggle_int, rep, d->kind == USB_KIND_KEYBOARD ? 8 : 4, 3);
-        if (n > 0) hid_report(d, rep, n);
+        int n = d->use_control > 0 ? -2 : usb_in(d, d->ep_int, d->maxpkt_int, &d->toggle_int, rep, len, 3);
+        if (n > 0) { hid_report(d, rep, n); d->miss = 0; continue; }
+        if (d->use_control < 0) continue;
+        /* Some controllers/device combinations never deliver the interrupt
+         * report. Boot HID devices also answer GET_REPORT(Input), so use that
+         * after a few empty interrupt polls. */
+        if (++d->miss >= 8) {
+            int c = usb_control(d, 0xA1, 1, 0x0100, (uint16_t)d->iface, rep, len);
+            int first = d->use_control == 0;
+            d->use_control = c > 0 ? 1 : -1;
+            d->miss = 0;
+            if (c > 0) hid_report(d, rep, c);
+            else if (first) usb_diag("%s@%d GET_REPORT failed", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr);
+        }
     }
 }
 
@@ -528,6 +567,7 @@ int usb_count(void) { return 0; }
 const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition"; }
 int usb_has_input(void) { return 0; }
 int usb_input_active(void) { return 0; }
+const char *usb_device_summary(void) { return ""; }
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) { (void)pd; (void)ok; (void)ports; (void)connected; }
 void usb_diag(const char *fmt, ...) { (void)fmt; }
 const char *usb_diag_text(void) { return ""; }

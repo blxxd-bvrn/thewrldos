@@ -18,11 +18,15 @@ struct usb_dev {
     int addr;
     bool low_speed;
     uint16_t vendor, product;
+    uint16_t bcdusb;                           /* USB version from the device descriptor */
     uint8_t cls, subcls, proto;
     int kind;
     int ep_in, ep_out, ep_int;                 /* endpoint numbers, 0 = none */
     uint16_t maxpkt_in, maxpkt_out, maxpkt_int;
     uint8_t toggle_in, toggle_out, toggle_int;
+    int iface;                                 /* the HID interface number */
+    int miss;                                  /* interrupt polls with no report */
+    int use_control;                           /* fall back to GET_REPORT */
     uint8_t report[16];                        /* last HID report, for key-up detection */
     bool seen;                                 /* has this device sent a report yet? */
     int root_port, route;                      /* where it sits, for xHCI's slot context */
@@ -61,6 +65,7 @@ usb_dev_t *usb_first(void);
 const char *usb_boot_summary(void);             /* controller list and device count, for the logon screen */
 int usb_has_input(void);                        /* a USB keyboard or mouse was enumerated */
 int usb_input_active(void);                     /* at least one HID report has arrived */
+const char *usb_device_summary(void);           /* "kbd@2, mouse@3*, hub@7" */
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected);
 void usb_diag(const char *fmt, ...);            /* last USB failures, shown on the log-on screen */
 const char *usb_diag_text(void);

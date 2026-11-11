@@ -143,8 +143,8 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
 #ifdef __x86_64__
         if (!usb_has_input()) {
             char line[512];
-            snprintf(line, sizeof line, "No USB keyboard or mouse was found. Controllers: %s.",
-                     usb_boot_summary());
+            snprintf(line, sizeof line, "No USB keyboard or mouse was found. Controllers: %s. Devices: %s.",
+                     usb_boot_summary(), usb_device_summary());
             int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
             int y = SCREEN_H - 190 + h + 6;
             const char *d = usb_diag_text();
@@ -154,8 +154,8 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
                       HEX(0xFFD070));
         } else if (!usb_input_active()) {
             char line[512];
-            snprintf(line, sizeof line, "USB keyboard/mouse enumerated but no reports yet. Controllers: %s.",
-                     usb_boot_summary());
+            snprintf(line, sizeof line, "USB keyboard/mouse enumerated but no reports yet. Controllers: %s. Devices: %s.",
+                     usb_boot_summary(), usb_device_summary());
             int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
             int y = SCREEN_H - 190 + h + 6;
             const char *d = usb_diag_text();
