@@ -534,7 +534,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Images:**
   - PNG: all colour types, transparency and interlacing.
   - GIF: first frame, with transparency.
-  - Baseline JPEG and BMP.
+  - Baseline and progressive JPEG (multiple scans, successive approximation), and BMP.
   - The Image Viewer uses the same decoders.
 - **Window:**
   - Back/Forward/Stop/Refresh/Home, an address bar with a padlock for HTTPS, and a status bar.
@@ -706,7 +706,7 @@ used to test every screen above, including a full install from a blank disk.
   - JavaScript works for ordinary pages, but big web apps (which need layout-accurate CSS,
     canvas, modules or web workers) mostly won't.
   - It doesn't load external stylesheets or web fonts.
-  - Unsupported images: WebP, SVG and progressive JPEG (the alt text is shown instead).
+  - Unsupported images: WebP and SVG (the alt text is shown instead).
   - Text is limited to what the bundled fonts cover. Liberation has Latin, Greek (including
     polytonic), Cyrillic, Hebrew, punctuation, arrows and common maths; Noto Naskh Arabic
     supplies Arabic. There is no CJK, emoji or Indic script, so those characters show as an

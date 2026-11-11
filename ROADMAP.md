@@ -119,7 +119,7 @@ Already working, and not on the list below:
 - No GPU or 3D, so a real Skia would have to use its software backend. Missing from the raster
   stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
   engine.
-- Missing codecs: WebP, SVG, progressive JPEG; audio/video beyond WAV.
+- Missing codecs: WebP and SVG; audio/video beyond WAV.
 
 ### 10. Services a browser engine expects
 

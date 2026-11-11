@@ -1,7 +1,8 @@
 /* Image decoders for the browser and Image Viewer: PNG (all colour types,
  * bit depths and Adam7 interlacing), GIF (first frame, transparency),
- * baseline JPEG (Huffman, any sampling factors, restart markers) and BMP.
- * Output canvases hold 0xAARRGGBB pixels; alpha is kept for blending. */
+ * baseline and progressive JPEG (Huffman, any sampling factors, restart
+ * markers) and BMP. Output canvases hold 0xAARRGGBB pixels; alpha is kept for
+ * blending. */
 #include "kernel.h"
 #include "gfx.h"
 #include "fs.h"
@@ -165,15 +166,21 @@ static canvas_t *gif_decode(const uint8_t *d, uint32_t n, char *err, int ecap) {
     return NULL;
 }
 
-/* ======================= JPEG (baseline) ======================= */
+/* ======================= JPEG ======================= */
+/* Baseline and progressive (the multiple-scan form). A progressive frame
+ * transmits the coefficients in several scans (DC first, AC first, then
+ * refinements); they are accumulated in a coefficient block per component and
+ * turned into pixels once every scan has been read. */
 typedef struct { uint8_t bits[17]; uint8_t vals[256]; int maxcode[18], valptr[17], mincode[17]; uint8_t look[256][2]; } jhuff_t;
-typedef struct { int id, h, v, tq, td, ta, bw, bh; int pred; uint8_t *data; } jcomp_t;
+typedef struct { int id, h, v, tq, td, ta, bw, bh, bwx, bhy, iw, ih; int pred; uint8_t *data; int16_t *coef; } jcomp_t;
 typedef struct {
     const uint8_t *d; uint32_t n, pos; uint32_t bitbuf; int bitcnt; bool marker;
     uint16_t q[4][64]; jhuff_t hd[4], ha[4];
     int w, h, ncomp, hmax, vmax, mcux, mcuy, restart;
     jcomp_t c[4];
     bool progressive;
+    int sc[4], nsc;                        /* components of the scan being read */
+    int Ss, Se, Ah, Al, eobrun;
 } jpeg_t;
 static const uint8_t zz[64] = { 0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28,
     35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63 };
@@ -240,6 +247,7 @@ static void idct8x8(const int *in, uint8_t *out, int stride) {
         out[y * stride + x] = val < 0 ? 0 : val > 255 ? 255 : val;
     }
 }
+/* One baseline block: dequantised into natural order. */
 static bool decode_block(jpeg_t *j, jcomp_t *c, int *blk) {
     memset(blk, 0, 64 * sizeof(int));
     int t = decode_huff(j, &j->hd[c->td]);
@@ -256,18 +264,157 @@ static bool decode_block(jpeg_t *j, jcomp_t *c, int *blk) {
     }
     return true;
 }
+/* One progressive block of the scan being read. Coefficients are kept
+ * dequantised later, so only the transmitted value is stored here. */
+static void prog_block(jpeg_t *j, jcomp_t *c, int16_t *blk)
+{
+    if (j->Ss == 0) {
+        if (j->Ah == 0) {                                    /* DC first */
+            int t = decode_huff(j, &j->hd[c->td]);
+            int diff = t ? extend(getbits(j, t), t) : 0;
+            c->pred += diff;
+            blk[0] = (int16_t)(c->pred << j->Al);
+        } else {                                             /* DC refinement */
+            if (getbits(j, 1)) blk[0] |= (int16_t)(1 << j->Al);
+        }
+        return;
+    }
+    if (j->Ah == 0) {                                        /* AC first */
+        if (j->eobrun > 0) { j->eobrun--; return; }
+        for (int k = j->Ss; k <= j->Se; k++) {
+            int rs = decode_huff(j, &j->ha[c->ta]), r = rs >> 4, s = rs & 15;
+            if (!s) {
+                if (r < 15) {
+                    j->eobrun = (1 << r) - 1;
+                    if (r) j->eobrun += getbits(j, r);
+                    break;
+                }
+                k += 15;
+                continue;
+            }
+            k += r;
+            if (k > j->Se) break;                            /* corrupt: stop this block */
+            blk[zz[k]] = (int16_t)(extend(getbits(j, s), s) << j->Al);
+        }
+        return;
+    }
+    /* AC refinement: correct the coefficients already sent, then add the new
+     * ones this scan carries. An end-of-band run stops the symbol loop, but
+     * the block still carries correction bits for its remaining non-zero
+     * coefficients; blocks inside the run carry only those bits. */
+    int k = j->Ss;
+    if (!j->eobrun) {
+        for (; k <= j->Se; k++) {
+            int rs = decode_huff(j, &j->ha[c->ta]), r = rs >> 4, s = rs & 15;
+            if (s) {
+                s = getbits(j, 1) ? (1 << j->Al) : -(1 << j->Al);
+            } else if (r != 15) {
+                j->eobrun = 1 << r;
+                if (r) j->eobrun += getbits(j, r);
+                break;
+            }
+            while (k <= j->Se) {                             /* skip zeros, correct non-zeros */
+                if (blk[zz[k]] != 0) {
+                    if (getbits(j, 1) && (blk[zz[k]] & (1 << j->Al)) == 0)
+                        blk[zz[k]] += (int16_t)(blk[zz[k]] > 0 ? (1 << j->Al) : -(1 << j->Al));
+                } else {
+                    if (--r < 0) break;
+                }
+                k++;
+            }
+            if (s && k <= j->Se) blk[zz[k]] = (int16_t)s;
+        }
+    }
+    if (j->eobrun > 0) {
+        for (; k <= j->Se; k++)                              /* correction bits only */
+            if (blk[zz[k]] != 0 && getbits(j, 1) && (blk[zz[k]] & (1 << j->Al)) == 0)
+                blk[zz[k]] += (int16_t)(blk[zz[k]] > 0 ? (1 << j->Al) : -(1 << j->Al));
+        j->eobrun--;
+    }
+}
+static int16_t *prog_coef(jcomp_t *c, int bx, int by) { return c->coef + ((size_t)by * c->bwx + bx) * 64; }
+
+/* Read one scan's entropy-coded data. A scan with one component is laid out
+ * block by block; one with several is laid out in MCUs like a baseline frame. */
+static void prog_scan(jpeg_t *j)
+{
+    j->bitcnt = 0; j->bitbuf = 0; j->marker = false;      /* a scan starts byte-aligned */
+    j->eobrun = 0;
+    for (int i = 0; i < j->nsc; i++) j->c[j->sc[i]].pred = 0;
+    int mcus = 0;
+    if (j->nsc == 1) {
+        jcomp_t *c = &j->c[j->sc[0]];
+        for (int by = 0; by < c->ih; by++) for (int bx = 0; bx < c->iw; bx++) {
+            if (j->restart && mcus && mcus % j->restart == 0) {
+                j->bitcnt = j->bitbuf = 0; j->marker = false;
+                while (j->pos + 1 < j->n && !(j->d[j->pos] == 0xFF && j->d[j->pos + 1] >= 0xD0 && j->d[j->pos + 1] <= 0xD7)) j->pos++;
+                j->pos += 2;
+                j->eobrun = 0;
+                for (int i = 0; i < j->nsc; i++) j->c[j->sc[i]].pred = 0;
+            }
+            prog_block(j, c, prog_coef(c, bx, by));
+            mcus++;
+        }
+        return;
+    }
+    for (int my = 0; my < j->mcuy; my++) for (int mx = 0; mx < j->mcux; mx++) {
+        if (j->restart && mcus && mcus % j->restart == 0) {
+            j->bitcnt = j->bitbuf = 0; j->marker = false;
+            while (j->pos + 1 < j->n && !(j->d[j->pos] == 0xFF && j->d[j->pos + 1] >= 0xD0 && j->d[j->pos + 1] <= 0xD7)) j->pos++;
+            j->pos += 2;
+            j->eobrun = 0;
+            for (int i = 0; i < j->nsc; i++) j->c[j->sc[i]].pred = 0;
+        }
+        for (int i = 0; i < j->nsc; i++) {
+            jcomp_t *c = &j->c[j->sc[i]];
+            for (int by = 0; by < c->v; by++) for (int bx = 0; bx < c->h; bx++)
+                prog_block(j, c, prog_coef(c, mx * c->h + bx, my * c->v + by));
+        }
+        mcus++;
+    }
+}
+/* Turn the component planes (or the progressive coefficients) into a canvas. */
+static canvas_t *jpeg_output(jpeg_t *j)
+{
+    if (j->progressive) {
+        for (int k = 0; k < j->ncomp; k++) {
+            jcomp_t *c = &j->c[k];
+            if (!c->coef) continue;
+            int blk[64];
+            for (int by = 0; by < c->ih; by++) for (int bx = 0; bx < c->iw; bx++) {
+                int16_t *cf = prog_coef(c, bx, by);
+                for (int k = 0; k < 64; k++) blk[zz[k]] = cf[zz[k]] * j->q[c->tq][k];
+                idct8x8(blk, c->data + (by * 8) * c->bw + bx * 8, c->bw);
+            }
+        }
+    }
+    canvas_t *img = new_img(j->w, j->h);
+    if (img) for (int y = 0; y < j->h; y++) for (int x = 0; x < j->w; x++) {
+        jcomp_t *c0 = &j->c[0];
+        int Y = c0->data[(y * c0->v / j->vmax) * c0->bw + x * c0->h / j->hmax];
+        if (j->ncomp == 1) { img->px[y * img->stride + x] = RGB(Y, Y, Y); continue; }
+        jcomp_t *c1 = &j->c[1], *c2 = &j->c[2];
+        int cb = c1->data[(y * c1->v / j->vmax) * c1->bw + x * c1->h / j->hmax] - 128;
+        int cr = c2->data[(y * c2->v / j->vmax) * c2->bw + x * c2->h / j->hmax] - 128;
+        int r = Y + ((91881 * cr) >> 16), g = Y - ((22554 * cb + 46802 * cr) >> 16), b = Y + ((116130 * cb) >> 16);
+        img->px[y * img->stride + x] = RGB(CLAMP(r, 0, 255), CLAMP(g, 0, 255), CLAMP(b, 0, 255));
+    }
+    return img;
+}
 static canvas_t *jpeg_decode(const uint8_t *d, uint32_t n, char *err, int ecap) {
     static bool inited; if (!inited) { idct_init(); inited = true; }
     jpeg_t *j = kzalloc(sizeof *j);
     j->d = d; j->n = n; j->pos = 2;
     canvas_t *img = NULL;
-    while (j->pos + 4 <= n) {
+    bool frame = false, coefs = false;
+    while (j->pos + 2 <= n) {
         if (d[j->pos] != 0xFF) { j->pos++; continue; }
         uint8_t m = d[j->pos + 1];
         if (m == 0xFF) { j->pos++; continue; }
         j->pos += 2;
         if (m == 0xD8 || (m >= 0xD0 && m <= 0xD7)) continue;
-        if (m == 0xD9) break;
+        if (m == 0xD9) { if (j->progressive && coefs) img = jpeg_output(j); break; }
+        if (j->pos + 2 > n) break;
         uint32_t len = (d[j->pos] << 8) | d[j->pos + 1];
         const uint8_t *s = d + j->pos + 2;
         if (j->pos + len > n) break;
@@ -286,53 +433,80 @@ static canvas_t *jpeg_decode(const uint8_t *d, uint32_t n, char *err, int ecap) 
                 huff_build(t);
             }
         } else if (m == 0xC0 || m == 0xC1 || m == 0xC2) {
-            if (m == 0xC2) { j->progressive = true; break; }
+            j->progressive = (m == 0xC2);
             j->h = (s[1] << 8) | s[2]; j->w = (s[3] << 8) | s[4]; j->ncomp = s[5];
             if (j->ncomp != 1 && j->ncomp != 3) break;
             for (int i = 0; i < j->ncomp; i++) { j->c[i].id = s[6 + i * 3]; j->c[i].h = s[7 + i * 3] >> 4; j->c[i].v = s[7 + i * 3] & 15; j->c[i].tq = s[8 + i * 3] & 3;
                 j->hmax = MAX(j->hmax, j->c[i].h); j->vmax = MAX(j->vmax, j->c[i].v); }
+            frame = true;
+            j->mcux = (j->w + 8 * j->hmax - 1) / (8 * j->hmax); j->mcuy = (j->h + 8 * j->vmax - 1) / (8 * j->vmax);
+            for (int k = 0; k < j->ncomp; k++) {
+                jcomp_t *c = &j->c[k];
+                c->bw = j->mcux * c->h * 8; c->bh = j->mcuy * c->v * 8;
+                c->bwx = j->mcux * c->h; c->bhy = j->mcuy * c->v;
+                /* A scan carrying one component codes only the blocks that
+                 * cover the component itself, without the MCU padding. */
+                c->iw = (j->w * c->h + 8 * j->hmax - 1) / (8 * j->hmax);
+                c->ih = (j->h * c->v + 8 * j->vmax - 1) / (8 * j->vmax);
+                c->data = kmalloc((size_t)c->bw * c->bh);
+                if (j->progressive) {
+                    c->coef = kzalloc((size_t)c->bwx * c->bhy * 64 * sizeof(int16_t));
+                    if (c->coef) coefs = true;
+                }
+            }
         } else if (m == 0xDD) j->restart = (s[0] << 8) | s[1];
         else if (m == 0xDA) {
-            if (!j->w) break;
-            int ns = s[0];
-            for (int i = 0; i < ns; i++) for (int k = 0; k < j->ncomp; k++) if (j->c[k].id == s[1 + i * 2]) { j->c[k].td = s[2 + i * 2] >> 4; j->c[k].ta = s[2 + i * 2] & 15; }
+            if (!frame) break;
+            j->nsc = s[0];
+            if (j->nsc < 1 || j->nsc > j->ncomp) break;
+            for (int i = 0; i < j->nsc; i++) {
+                j->sc[i] = 0;
+                for (int k = 0; k < j->ncomp; k++) if (j->c[k].id == s[1 + i * 2]) { j->sc[i] = k; j->c[k].td = s[2 + i * 2] >> 4; j->c[k].ta = s[2 + i * 2] & 15; }
+            }
+            j->Ss = s[1 + j->nsc * 2];
+            j->Se = s[2 + j->nsc * 2];
+            j->Ah = s[3 + j->nsc * 2] >> 4;
+            j->Al = s[3 + j->nsc * 2] & 15;
             j->pos += len;
-            j->mcux = (j->w + 8 * j->hmax - 1) / (8 * j->hmax); j->mcuy = (j->h + 8 * j->vmax - 1) / (8 * j->vmax);
-            for (int k = 0; k < j->ncomp; k++) { jcomp_t *c = &j->c[k]; c->bw = j->mcux * c->h * 8; c->bh = j->mcuy * c->v * 8; c->data = kmalloc(c->bw * c->bh); }
-            int blk[64], mcus = 0;
-            for (int my = 0; my < j->mcuy; my++) for (int mx = 0; mx < j->mcux; mx++) {
-                if (j->restart && mcus && mcus % j->restart == 0) {
-                    j->bitcnt = 0; j->bitbuf = 0; j->marker = false;
-                    while (j->pos + 1 < n && !(d[j->pos] == 0xFF && d[j->pos + 1] >= 0xD0 && d[j->pos + 1] <= 0xD7)) j->pos++;
-                    j->pos += 2;
-                    for (int k = 0; k < j->ncomp; k++) j->c[k].pred = 0;
+            if (j->progressive) {
+                if (!coefs) break;
+                prog_scan(j);
+                /* Step over the entropy-coded bytes to the next real marker;
+                 * stuffed 0xFF 0x00 and restart markers are part of the data. */
+                while (j->pos + 1 < n) {
+                    if (d[j->pos] != 0xFF) { j->pos++; continue; }
+                    uint8_t nx = d[j->pos + 1];
+                    if (nx == 0xFF) { j->pos++; continue; }
+                    if (nx == 0 || (nx >= 0xD0 && nx <= 0xD7)) { j->pos += 2; continue; }
+                    break;
                 }
-                for (int k = 0; k < j->ncomp; k++) {
-                    jcomp_t *c = &j->c[k];
-                    for (int by = 0; by < c->v; by++) for (int bx = 0; bx < c->h; bx++) {
-                        decode_block(j, c, blk);
-                        idct8x8(blk, c->data + ((my * c->v + by) * 8) * c->bw + (mx * c->h + bx) * 8, c->bw);
+                continue;
+            } else {
+                int blk[64], mcus = 0;
+                for (int my = 0; my < j->mcuy; my++) for (int mx = 0; mx < j->mcux; mx++) {
+                    if (j->restart && mcus && mcus % j->restart == 0) {
+                        j->bitcnt = 0; j->bitbuf = 0; j->marker = false;
+                        while (j->pos + 1 < n && !(d[j->pos] == 0xFF && d[j->pos + 1] >= 0xD0 && d[j->pos + 1] <= 0xD7)) j->pos++;
+                        j->pos += 2;
+                        for (int k = 0; k < j->ncomp; k++) j->c[k].pred = 0;
                     }
+                    for (int k = 0; k < j->ncomp; k++) {
+                        jcomp_t *c = &j->c[k];
+                        for (int by = 0; by < c->v; by++) for (int bx = 0; bx < c->h; bx++) {
+                            decode_block(j, c, blk);
+                            idct8x8(blk, c->data + ((my * c->v + by) * 8) * c->bw + (mx * c->h + bx) * 8, c->bw);
+                        }
+                    }
+                    mcus++;
                 }
-                mcus++;
+                img = jpeg_output(j);
             }
-            img = new_img(j->w, j->h);
-            if (img) for (int y = 0; y < j->h; y++) for (int x = 0; x < j->w; x++) {
-                jcomp_t *c0 = &j->c[0];
-                int Y = c0->data[(y * c0->v / j->vmax) * c0->bw + x * c0->h / j->hmax];
-                if (j->ncomp == 1) { img->px[y * img->stride + x] = RGB(Y, Y, Y); continue; }
-                jcomp_t *c1 = &j->c[1], *c2 = &j->c[2];
-                int cb = c1->data[(y * c1->v / j->vmax) * c1->bw + x * c1->h / j->hmax] - 128;
-                int cr = c2->data[(y * c2->v / j->vmax) * c2->bw + x * c2->h / j->hmax] - 128;
-                int r = Y + ((91881 * cr) >> 16), g = Y - ((22554 * cb + 46802 * cr) >> 16), b = Y + ((116130 * cb) >> 16);
-                img->px[y * img->stride + x] = RGB(CLAMP(r, 0, 255), CLAMP(g, 0, 255), CLAMP(b, 0, 255));
-            }
-            for (int k = 0; k < j->ncomp; k++) kfree(j->c[k].data);
-            break;
+            if (!j->progressive) break;
         }
         j->pos += len;
     }
-    if (!img) snprintf(err, ecap, j->progressive ? "progressive JPEG is not supported" : "unsupported JPEG");
+    for (int k = 0; k < j->ncomp; k++) { kfree(j->c[k].data); kfree(j->c[k].coef); }
+    if (!img) snprintf(err, ecap, j->progressive ? "incomplete progressive JPEG" : "unsupported JPEG");
     kfree(j);
     return img;
 }
