@@ -68,6 +68,7 @@ void usb_diag(const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     vsnprintf(b, sizeof b, fmt, ap);
     va_end(ap);
+    for (int i = 0; i < ndiag; i++) if (!strcmp(diag[i], b)) return;   /* already said */
     if (ndiag < 4) { strlcpy(diag[ndiag], b, sizeof diag[ndiag]); ndiag++; }
     else {
         for (int i = 1; i < 4; i++) memcpy(diag[i - 1], diag[i], sizeof diag[i]);
@@ -871,7 +872,10 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_po
         return;
     }
     if (!device_attach(h, addr, low, dev, where, root_port, route, hub_addr, hub_port, speed)) {
-        usb_diag("%s: no driver", where);
+        /* Name what it is, so a device this kernel cannot use is still visible
+         * in the log-on screen's list of last failures. */
+        usb_diag("%s: %04x:%04x class %d/%d no driver", where,
+                 dev[8] | (dev[9] << 8), dev[10] | (dev[11] << 8), dev[4], dev[5]);
         if (h->del_device) h->del_device(h, addr);
     }
 }

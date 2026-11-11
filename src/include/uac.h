@@ -21,6 +21,7 @@ typedef struct {
     int frame_bytes;        /* bytes per sample (bSubframeSize) */
     int clock, link;        /* class 2: clock source to set, terminal it feeds */
     bool class2;            /* the rate is set on the clock source, not the format */
+    bool assumed;           /* the format was not readable: assumed 48 kHz stereo 16-bit */
 } uac_fmt_t;
 
 /* true when the configuration has an audio control interface and a streaming

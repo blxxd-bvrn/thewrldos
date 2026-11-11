@@ -94,8 +94,22 @@ int main(void)
         check("mono parses", uac_parse(mono, sizeof mono, &f), 1);
         check("mono channels", f.channels, 1);
     }
+    {   /* a stream with no format descriptor we read: assume 48 kHz stereo 16-bit */
+        static const unsigned char nofmt[] = {
+            9, 2, 0x36, 0, 2, 1, 0, 0x80, 50,
+            9, 4, 0, 0, 0, 1, 1, 0, 0,
+            9, 0x24, 1, 0x00, 0x01, 0x14, 0x00, 1, 1,
+            9, 4, 1, 1, 1, 1, 2, 0, 0,
+            7, 0x24, 1, 1, 0, 0x01, 0x00,
+            9, 5, 0x01, 1, 0xC0, 0x00, 1, 0, 0
+        };
+        check("no format still parses", uac_parse(nofmt, sizeof nofmt, &f), 1);
+        check("no format is assumed", f.assumed, 1);
+        check("no format channels", f.channels, 2);
+        check("no format is class 2", f.class2, 1);
+    }
 
     if (fails) { printf("%d check(s) failed\n", fails); return 1; }
-    printf("all 26 checks passed\n");
+    printf("all 30 checks passed\n");
     return 0;
 }

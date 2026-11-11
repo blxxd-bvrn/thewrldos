@@ -63,6 +63,35 @@ static bool alt_format(const uint8_t *cfg, int len, int start, uac_fmt_t *o)
     return true;
 }
 
+/* When a streaming interface has an isochronous OUT endpoint but no format
+ * descriptor this parser understands, still try it as 48 kHz stereo 16-bit:
+ * a device is better used with an assumed format than not at all. */
+static bool alt_loose(const uint8_t *cfg, int len, int start, uac_fmt_t *o)
+{
+    o->ep = 0;
+    o->link = 0;
+    for (int i = start; i + 2 <= len && cfg[i] >= 2 && i + cfg[i] <= len; i += cfg[i]) {
+        const uint8_t *p = cfg + i;
+        if (p[1] == 4 && i != start) break;
+        if (p[1] == 0x24 && p[2] == 1 && p[0] >= 4 && !o->link) o->link = p[3];
+        else if (p[1] == 5 && p[0] >= 7) {
+            int a = p[2];
+            if ((p[3] & 3) == 1 && !(a & 0x80) && !o->ep) {
+                o->ep = a & 0x0F;
+                o->maxpkt = p[4] | (p[5] << 8);
+                o->interval = p[6];
+            }
+        }
+    }
+    if (!o->ep) return false;
+    o->channels = 2;
+    o->frame_bytes = 2;
+    o->rate = 0;
+    o->class2 = true;
+    o->assumed = true;
+    return true;
+}
+
 /* The clock a class 2 stream takes its rate from: the clock of the output
  * terminal it is linked to, else the first terminal's, else the first clock
  * source. */
@@ -96,6 +125,17 @@ bool uac_parse(const uint8_t *cfg, int len, uac_fmt_t *o)
         one.stream = p[2];
         one.alt = p[3];
         *o = one;
+    }
+    if (o->ac >= 0 && o->stream < 0) {          /* a stream we could not read: assume the usual */
+        for (int i = 0; i + 2 <= len && cfg[i] >= 2 && i + cfg[i] <= len; i += cfg[i]) {
+            const uint8_t *p = cfg + i;
+            if (p[1] != 4 || p[0] < 9 || p[5] != 1 || p[6] != 2 || p[4] == 0) continue;
+            uac_fmt_t one = *o;
+            if (!alt_loose(cfg, len, i, &one)) continue;
+            one.stream = p[2];
+            one.alt = p[3];
+            *o = one;
+        }
     }
     if (o->ac < 0 || o->stream < 0 || !o->ep) return false;
     if (o->class2) o->clock = clock_of(cfg, len, o->link);

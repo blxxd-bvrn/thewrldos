@@ -801,9 +801,8 @@ const char *audio_summary(void)
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n && len + 30 < (int)sizeof out; i++) {
         if (devs[i].cls != 0x04) continue;
-        if (devs[i].sub != 0x03 && devs[i].sub != 0x01) continue;
         len += snprintf(out + len, sizeof out - len, ", %04x:%04x %s", devs[i].vendor, devs[i].device,
-                        devs[i].sub == 0x03 ? "HDA" : "AC97");
+                        devs[i].sub == 0x03 ? "HDA" : devs[i].sub == 0x01 ? "AC97" : "audio");
     }
     if (hda_why[0]) snprintf(out + len, sizeof out - len, " (%s)", hda_why);
     return out;

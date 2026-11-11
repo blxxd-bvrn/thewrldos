@@ -74,18 +74,26 @@ bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len
     uac_fmt_t f;
     if (!uac_parse(cfg, len, &f)) {
         klog("usb-audio: %04x:%04x: no playback stream in the configuration", tmpl->vendor, tmpl->product);
+        usb_diag("audio %04x:%04x: no playback stream", tmpl->vendor, tmpl->product);
         return false;
     }
     int ac = f.ac, stream = f.stream, alt = f.alt, ep = f.ep, maxpkt = f.maxpkt;
     int interval = f.interval, rate = f.rate, ch = f.channels, fb = f.frame_bytes;
+    if (f.assumed)
+        klog("usb-audio: %04x:%04x: format not readable, assuming 48 kHz stereo 16-bit",
+             tmpl->vendor, tmpl->product);
     if (ch != 2 || fb != 2) {
         klog("usb-audio: %d channels of %d bytes is not a format the mixer has", ch, fb);
+        usb_diag("audio %04x:%04x: %dch %dB", tmpl->vendor, tmpl->product, ch, fb);
         return false;
     }
     if (f.class2) {                                     /* class 2: set the clock source */
-        rate = ua_uac2_rate(tmpl, ac, f.clock, 48000);
-        if (!rate) {
+        int r2 = ua_uac2_rate(tmpl, ac, f.clock, 48000);
+        if (r2) rate = r2;
+        else if (f.assumed) rate = 48000;               /* nothing to ask: use the mixer's rate */
+        else {
             klog("usb-audio: the device has no clock source that takes a sample rate");
+            usb_diag("audio %04x:%04x: no clock source", tmpl->vendor, tmpl->product);
             return false;
         }
     }
