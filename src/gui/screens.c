@@ -152,6 +152,17 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
             draw_text(c, FONT_UI, 30, y,
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
+        } else if (!usb_input_active()) {
+            char line[512];
+            snprintf(line, sizeof line, "USB keyboard/mouse enumerated but no reports yet. Controllers: %s.",
+                     usb_boot_summary());
+            int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
+            int y = SCREEN_H - 190 + h + 6;
+            const char *d = usb_diag_text();
+            if (*d) y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, d, HEX(0xFFD070), 2) + 4;
+            draw_text(c, FONT_UI, 30, y,
+                      "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
+                      HEX(0xFFD070));
         }
 #endif
     }

@@ -107,6 +107,7 @@ typedef struct xdev {
         bool configured;
         uint64_t armed;        /* an interrupt IN TRB waiting in the controller */
         int armed_len;
+        uint8_t *ibuf;         /* this endpoint's own report buffer */
     } ep[16];
     int max_dci;
     struct xdev *next;
@@ -332,8 +333,14 @@ static int xhci_configure(xhci_t *x, xdev_t *d, int epnum, bool in, int maxpkt, 
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)inctx, 0, TRB_CONFIGURE, 0, &code, NULL);
     kfree_aligned(inctx);
-    if (r < 0) { klog("xhci: configure endpoint %d failed (code %u)", epnum, code); return -1; }
+    if (r < 0) { klog("xhci: configure endpoint %d failed (code %u)", epnum, code); usb_diag("xHCI cfg ep %d code %u", epnum, code); return -1; }
     d->max_dci = entries;
+    if (!d->ep[epnum].ibuf) {
+        int sz = maxpkt > 0 ? maxpkt : 8;
+        if (sz > 4096) sz = 4096;
+        d->ep[epnum].ibuf = kmalloc((size_t)sz);
+        if (!d->ep[epnum].ibuf) return -1;
+    }
     d->ep[epnum].configured = true;
     d->ep[epnum].maxpkt = maxpkt;
     d->ep[epnum].dci = dci;
@@ -426,6 +433,8 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
 static int xhci_poll_in(xhci_t *x, xdev_t *d, int epnum, void *buf, int len)
 {
     int dci = epnum * 2 + 1;
+    if (!d->ep[epnum].ibuf) return -1;
+    if (len > d->ep[epnum].maxpkt) len = d->ep[epnum].maxpkt;
     uint32_t status, control;
     if (d->ep[epnum].armed && take_event(x, TRB_TRANSFER, d->ep[epnum].armed, &status, &control)) {
         if (TRB_EPC(control) == dci) {
@@ -435,12 +444,12 @@ static int xhci_poll_in(xhci_t *x, xdev_t *d, int epnum, void *buf, int len)
             if (code != CC_SUCCESS && code != CC_SHORT) return -1;
             if (got < 0) got = 0;
             if (got > len) got = len;
-            if (got) memcpy(buf, x->buf, got);
+            if (got) memcpy(buf, d->ep[epnum].ibuf, got);
             return got;
         }
     }
     if (!d->ep[epnum].armed) {
-        uint64_t trb = ring_push(&d->ep[epnum].ring, (uint64_t)(uintptr_t)x->buf, (uint32_t)len,
+        uint64_t trb = ring_push(&d->ep[epnum].ring, (uint64_t)(uintptr_t)d->ep[epnum].ibuf, (uint32_t)len,
                                  TRB_NORMAL, TRB_IOC | TRB_DIR);
         if (!trb) return -1;
         ring_doorbell(x, d->slot, dci);

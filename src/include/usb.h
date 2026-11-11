@@ -57,6 +57,7 @@ int usb_count(void);
 usb_dev_t *usb_first(void);
 const char *usb_boot_summary(void);             /* controller list and device count, for the logon screen */
 int usb_has_input(void);                        /* a USB keyboard or mouse was enumerated */
+int usb_input_active(void);                     /* at least one HID report has arrived */
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected);
 void usb_diag(const char *fmt, ...);            /* last USB failures, shown on the log-on screen */
 const char *usb_diag_text(void);
