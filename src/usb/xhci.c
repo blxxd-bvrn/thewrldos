@@ -637,15 +637,25 @@ void xhci_probe(void)
 {
     pci_dev_t *devs = NULL;
     int n = pci_list(&devs), found = 0;
-    for (int i = 0; i < n && !found; i++) {
+    for (int i = 0; i < n; i++) {
         pci_dev_t *pd = &devs[i];
         if (!(pd->cls == 0x0C && pd->sub == 0x03 && pd->prog == 0x30)) continue;
         xhci_t *x = kzalloc(sizeof *x);
         if (!x) return;
-        if (xhci_init(x, pd) < 0) { kfree(x); klog("usb: %04x:%04x xHCI controller did not start", pd->vendor, pd->device); continue; }
-        found = 1;
-        klog("usb: xHCI %04x:%04x at %08lx, %d ports, %d slots, %d-byte contexts",
-             pd->vendor, pd->device, (unsigned long)(uintptr_t)x->mmio, x->max_ports, x->max_slots, x->ctx);
+        if (xhci_init(x, pd) < 0) {
+            kfree(x);
+            usb_note_controller(pd, 0, 0, 0);
+            klog("usb: %04x:%04x xHCI controller did not start", pd->vendor, pd->device);
+            continue;
+        }
+        found++;
+        int conn = 0;
+        for (int p = 0; p < x->max_ports; p++)
+            if (r32(x, x->op + PORTSC(p)) & PORT_CCS) conn++;
+        usb_note_controller(pd, 1, x->max_ports, conn);
+        klog("usb: xHCI %04x:%04x at %08lx, %d ports (%d connected), %d slots, %d-byte contexts",
+             pd->vendor, pd->device, (unsigned long)(uintptr_t)x->mmio, x->max_ports, conn,
+             x->max_slots, x->ctx);
         usb_attach(&x->hcd);
     }
     if (!found) klog("usb: no xHCI controller found");

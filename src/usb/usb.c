@@ -14,8 +14,24 @@ int usb_unsupported;
 int usb_count(void) { int n = 0; for (usb_dev_t *d = devices; d; d = d->next) n++; return n; }
 usb_dev_t *usb_first(void) { return devices; }
 
-static char usb_summary[192];
+static char usb_summary[384];
 const char *usb_boot_summary(void) { return usb_summary; }
+
+typedef struct { uint8_t bus, dev, fn; int8_t ok; int16_t ports, conn; } ctrl_stat_t;
+static ctrl_stat_t cstats[24];
+static int ncstats;
+void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) {
+    if (ncstats >= (int)ARRAY_LEN(cstats)) return;
+    ctrl_stat_t *c = &cstats[ncstats++];
+    c->bus = pd->bus; c->dev = pd->dev; c->fn = pd->fn;
+    c->ok = (int8_t)ok; c->ports = (int16_t)ports; c->conn = (int16_t)connected;
+}
+static const ctrl_stat_t *cstat_find(const pci_dev_t *pd) {
+    for (int i = 0; i < ncstats; i++)
+        if (cstats[i].bus == pd->bus && cstats[i].dev == pd->dev && cstats[i].fn == pd->fn)
+            return &cstats[i];
+    return NULL;
+}
 int usb_has_input(void) {
     for (usb_dev_t *d = devices; d; d = d->next)
         if (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) return 1;
@@ -423,8 +439,6 @@ void usb_init(void)
     {   /* say what the machine actually has, so a missing driver is visible */
         pci_dev_t *devs = NULL;
         int n = pci_list(&devs);
-        int len = 0;
-        usb_summary[0] = 0;
         for (int i = 0; i < n; i++) {
             pci_dev_t *pd = &devs[i];
             if (pd->cls != 0x0C || pd->sub != 0x03) continue;
@@ -435,11 +449,7 @@ void usb_init(void)
             if (!ours) usb_unsupported++;
             klog("usb: %02x:%02x.%x %04x:%04x %s%s", pd->bus, pd->dev, pd->fn, pd->vendor, pd->device,
                  kind, ours ? "" : " (no driver for this controller yet)");
-            int k = snprintf(usb_summary + len, sizeof usb_summary - len, "%s%s %04x:%04x",
-                             len ? ", " : "", kind, pd->vendor, pd->device);
-            if (k > 0 && len + k < (int)sizeof usb_summary) len += k;
         }
-        if (!len) snprintf(usb_summary, sizeof usb_summary, "no USB controller found");
     }
     /* EHCI first: it owns the ports and hands full/low-speed ones to the
      * companion, whose probe comes next and enumerates them. */
@@ -447,8 +457,29 @@ void usb_init(void)
     ohci_probe();
     uhci_probe();
     xhci_probe();
-    {   /* append the result, so the logon screen can show why input is missing */
-        int len = (int)strlen(usb_summary);
+    {   /* build the one-line summary after the probes know the result */
+        pci_dev_t *devs = NULL;
+        int n = pci_list(&devs);
+        int len = 0;
+        usb_summary[0] = 0;
+        for (int i = 0; i < n; i++) {
+            pci_dev_t *pd = &devs[i];
+            if (pd->cls != 0x0C || pd->sub != 0x03) continue;
+            const char *kind = pd->prog == 0x00 ? "UHCI" : pd->prog == 0x10 ? "OHCI"
+                             : pd->prog == 0x20 ? "EHCI" : pd->prog == 0x30 ? "xHCI" : "USB";
+            const ctrl_stat_t *st = cstat_find(pd);
+            int k;
+            if (st)
+                k = snprintf(usb_summary + len, sizeof usb_summary - (size_t)len,
+                             "%s%s %04x:%04x %s %dp/%dc", len ? ", " : "", kind, pd->vendor, pd->device,
+                             st->ok ? "ok" : "FAILED", st->ports, st->conn);
+            else
+                k = snprintf(usb_summary + len, sizeof usb_summary - (size_t)len,
+                             "%s%s %04x:%04x", len ? ", " : "", kind, pd->vendor, pd->device);
+            if (k > 0 && len + k < (int)sizeof usb_summary) len += k;
+        }
+        if (!len) snprintf(usb_summary, sizeof usb_summary, "no USB controller found");
+        len = (int)strlen(usb_summary);
         snprintf(usb_summary + len, sizeof usb_summary - (size_t)len, "; %d device(s)", usb_count());
     }
     if (devices) {
@@ -463,5 +494,6 @@ void usb_poll(void) {}
 int usb_count(void) { return 0; }
 const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition"; }
 int usb_has_input(void) { return 0; }
+void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) { (void)pd; (void)ok; (void)ports; (void)connected; }
 int usb_unsupported;
 #endif
