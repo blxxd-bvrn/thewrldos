@@ -36,9 +36,11 @@
 #define CMD_RESET   (1u << 1)
 #define CMD_PSE     (1u << 4)
 #define CMD_ASE     (1u << 5)
+#define CMD_IAAD    (1u << 6)
 #define STS_HALT    (1u << 12)
 #define STS_PSS     (1u << 14)
 #define STS_ASS     (1u << 15)
+#define STS_IAA     (1u << 5)
 
 #define PORT_CONNECT (1u << 0)
 #define PORT_CSC     (1u << 1)
@@ -186,6 +188,12 @@ static int ehci_run_async(ehci_t *e, int first, int n, int timeout_ms) {
     eopw(e, USBCMD, eop(e, USBCMD) & ~CMD_ASE);
     t0 = timer_ticks();
     while ((eop(e, USBSTS) & STS_ASS) && (int32_t)(timer_ticks() - t0) < 20) task_yield();
+    /* ring the doorbell so the controller releases a cached queue head before
+     * the next transfer overwrites it */
+    eopw(e, USBCMD, eop(e, USBCMD) | CMD_IAAD);
+    t0 = timer_ticks();
+    while (!(eop(e, USBSTS) & STS_IAA) && (int32_t)(timer_ticks() - t0) < 20) task_yield();
+    eopw(e, USBSTS, STS_IAA);
     e->xfer->next = 1;
     e->async_head->next = (uint32_t)phys(e->xfer) | Q_NEXT_QH;
     if (r) return r;
