@@ -28,6 +28,10 @@ struct usb_dev {
     bool boot;                                 /* boot protocol: the fixed report, no report ID */
     bool polls;                                /* this interface moves the endpoint; a second
                                                 * interface on the same endpoint listens to it */
+    bool gone;                                 /* the device was unplugged: kept only if a disk
+                                                * still points at it */
+    int ports;                                 /* a hub's port count */
+    int hub_addr, hub_port;                    /* the hub port a device was found behind */
     hid_format_t fmt;                          /* the input report, from the report descriptor */
     bool irq_seen;                             /* the interrupt endpoint has delivered a report */
     int use_control;                           /* GET_REPORT stand-in: 0 untried, 1 in use, -1 refused */
@@ -43,6 +47,9 @@ struct usb_dev {
     uint32_t rep_next;                         /* when it repeats next */
     uint32_t rep_seen;                         /* when a report last confirmed it is still held */
     bool odd_report;                           /* a report of the wrong length was refused */
+    uint32_t odd_n;                            /* how many reports were refused, for the log */
+    uint32_t hub_next;                         /* when a hub's ports are asked again */
+    uint8_t hub_fail;                          /* port status reads that failed in a row */
     bool seen;                                 /* has this device sent a report yet? */
     bool acted;                                /* a report has moved the pointer or pressed a key */
     int root_port, route;                      /* where it sits, for xHCI's slot context */
@@ -64,6 +71,8 @@ struct usb_hcd {
                     uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms);
     /* reset a root port and report whether a device is attached, and its speed */
     bool (*port_reset)(usb_hcd_t *h, int port, bool *low_speed);
+    /* is something still connected to this root port? read only, no reset */
+    bool (*port_up)(usb_hcd_t *h, int port);
     /* a device appeared (root_port is 1-based, route is the hub path): xHCI has
      * to allocate a slot before endpoint 0 can be used. `hub_addr`/`hub_port`
      * are zero for a root device; `speed` is an xHCI speed code or 0 to derive
@@ -74,7 +83,13 @@ struct usb_hcd {
      * port count (and a high-speed hub's TT) before children can be reached.
      * `think_time` is the hub descriptor's 2-bit TT think time. May be NULL. */
     void (*hub_info)(usb_hcd_t *h, int addr, int ports, int think_time);
+    /* a device is gone: xHCI has to disable its slot and free its rings before
+     * the slot number can be used again. `addr` 0 means the device that was
+     * still being enumerated. May be NULL. */
+    void (*del_device)(usb_hcd_t *h, int addr);
     int ports;
+    uint32_t port_retry[32];                   /* when each root port is tried next */
+    uint8_t port_down[32];                     /* scans in a row that found it empty */
     void *priv;
 };
 

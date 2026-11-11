@@ -354,6 +354,16 @@ static bool ehci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     return true;
 }
 
+/* Is something still on this root port? A port the companion controller owns is
+ * its business, not ours. */
+static bool ehci_port_up(usb_hcd_t *h, int port)
+{
+    ehci_t *e = h->priv;
+    if (port < 0 || port >= e->ports) return false;
+    uint32_t v = eop(e, PORTSC(port));
+    return (v & PORT_CONNECT) && !(v & PORT_OWNER);
+}
+
 static int ehci_init(ehci_t *e, const pci_dev_t *pd)
 {
     bool is_io = false;
@@ -422,6 +432,7 @@ static int ehci_init(ehci_t *e, const pci_dev_t *pd)
     e->hcd.control = ehci_control;
     e->hcd.transfer = ehci_transfer;
     e->hcd.port_reset = ehci_port_reset;
+    e->hcd.port_up = ehci_port_up;
     e->hcd.ports = e->ports;
     e->hcd.priv = e;
     return 0;

@@ -61,6 +61,7 @@
 #define TRB_STATUS       4
 #define TRB_LINK         6
 #define TRB_ENABLE_SLOT  9
+#define TRB_DISABLE_SLOT 10
 #define TRB_ADDRESS      11
 #define TRB_CONFIGURE    12
 #define TRB_RESET_EP     14
@@ -640,6 +641,51 @@ static bool xhci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     return true;
 }
 
+/* Is something still on this root port? Reading PORTSC has no side effects. */
+static bool xhci_port_up(usb_hcd_t *h, int port)
+{
+    xhci_t *x = h->priv;
+    if (port < 0 || port >= x->max_ports) return false;
+    return (r32(x, x->op + PORTSC(port)) & PORT_CCS) != 0;
+}
+
+/* Give a slot back: stop it, forget its events, and free its device context. */
+static void xhci_slot_free(xhci_t *x, int slot)
+{
+    xhci_cmd(x, slot, 0, 0, TRB_DISABLE_SLOT, 0, NULL, NULL);
+    for (int dci = 0; dci < 32; dci++) pend_purge(x, slot, dci);
+    if (slot > 0 && slot <= x->max_slots && x->dcbaa[slot]) {
+        kfree_aligned((void *)(uintptr_t)x->dcbaa[slot]);
+        x->dcbaa[slot] = 0;
+    }
+}
+
+/* The core let go of a device: stop its slot and give every ring back, so the
+ * slot number and the memory can be used by the device plugged in next. */
+static void xhci_del_device(usb_hcd_t *h, int addr)
+{
+    xhci_t *x = h->priv;
+    xdev_t *d;
+    if (addr == 0) {                                          /* still being enumerated */
+        d = x->pending;
+        if (!d) return;
+        x->pending = NULL;
+    } else {
+        xdev_t **pp = &x->devs;
+        while (*pp && (*pp)->addr != addr) pp = &(*pp)->next;
+        d = *pp;
+        if (!d) return;
+        *pp = d->next;
+    }
+    xhci_slot_free(x, d->slot);
+    for (int i = 0; i < 16; i++) {
+        if (d->ep[i].ring.trb) kfree_aligned(d->ep[i].ring.trb);
+        kfree(d->ep[i].ibuf);
+    }
+    if (d->ep0.trb) kfree_aligned(d->ep0.trb);
+    kfree(d);
+}
+
 /* The core found a device: give it a slot, and let endpoint 0 answer at address 0. */
 static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low,
                             int hub_addr, int hub_port, int speed)
@@ -652,10 +698,10 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low,
         return false;
     }
     uint32_t *devctx = ctx_alloc(x, 32);
-    if (!devctx) return false;
+    if (!devctx) { xhci_slot_free(x, slot); return false; }
     x->dcbaa[slot] = (uint64_t)(uintptr_t)devctx;
     xdev_t *d = kzalloc(sizeof *d);
-    if (!d) return false;
+    if (!d) { xhci_slot_free(x, slot); return false; }
     d->slot = slot;
     d->hw_addr = slot;                                        /* the controller usually assigns the slot ID */
     d->root_port = root_port;
@@ -666,13 +712,16 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low,
     d->speed = speed ? speed : (route ? (low ? 2 : 1)
               : (x->port_speed[root_port - 1] ? x->port_speed[root_port - 1] : 1));
     ring_init(&d->ep0, 32, true);
-    if (!d->ep0.n) { kfree(d); return false; }
+    if (!d->ep0.n) { kfree(d); xhci_slot_free(x, slot); return false; }
     x->pending = d;
     int ep0 = d->speed >= 4 ? 512 : d->speed == 2 ? 8 : 64;
     if (xhci_address(x, d, 0, true, ep0) < 0) {
         klog("xhci: slot %d could not be addressed", slot);
         usb_diag("xHCI slot %d address failed", slot);
         x->pending = NULL;
+        if (d->ep0.trb) kfree_aligned(d->ep0.trb);
+        kfree(d);
+        xhci_slot_free(x, slot);
         return false;
     }
     d->bsr = true;
@@ -780,8 +829,10 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     x->hcd.control = xhci_control;
     x->hcd.transfer = xhci_transfer;
     x->hcd.port_reset = xhci_port_reset;
+    x->hcd.port_up = xhci_port_up;
     x->hcd.new_device = xhci_new_device;
     x->hcd.hub_info = xhci_hub_info;
+    x->hcd.del_device = xhci_del_device;
     x->hcd.ports = x->max_ports;
     x->hcd.priv = x;
     return 0;

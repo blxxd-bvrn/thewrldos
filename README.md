@@ -375,7 +375,15 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Enumeration:** port reset and enable, `GET_DESCRIPTOR`, `SET_ADDRESS` (on xHCI the address
   lives in the slot context), full configuration parsing (interfaces and endpoints) and
   `SET_CONFIGURATION`, plus one level of **hub**: the hub's ports are powered and reset and the
-  devices behind them enumerated too, with the xHCI route string filled in.
+  devices behind them enumerated too, with the xHCI route string filled in. Devices are
+  **hot-pluggable**: the buses are rescanned every half second, a root port whose connection bit
+  has cleared in two scans running has its device (and everything behind its hub) dropped, and a
+  port that has something on it but no device is reset and enumerated. A hub's ports are asked
+  the same way; a hub that stops answering is left alone for five seconds instead of stalling
+  input. A removed xHCI device's slot is disabled and its rings and context freed, so both the
+  slot and the USB address can be used again; addresses are the lowest free ones, found by
+  scanning the live devices. A removed USB disk keeps its block-device slot (the block layer has
+  no unregister) but fails its reads, so a stale handle never reads freed memory.
 - **HID** (`hid.c`): every HID interface of a device becomes its own keyboard or mouse, so a
   keyboard with a media-key interface, or a wireless receiver that carries both a keyboard and a
   mouse, works. The report descriptor is read to find the buttons, X, Y and wheel (any width,
@@ -384,19 +392,24 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   interface. Absolute pointers (tablets) are not driven. Reports are translated to PS/2 set 1
   scancodes and packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock,
   speed, button swap) works unchanged; a held key repeats in software, because a USB keyboard
-  does not repeat by itself. A report whose length does not fit the format is refused, so
-  another interface's bytes cannot be read as keys or buttons: a boot keyboard report is eight
-  bytes, and a boot mouse report three or four. Two interfaces of one device may name the same
-  endpoint; the first moves it, and the others listen to the same reports, which a report ID or
-  the boot report's length assigns to the right one. Two interfaces of the same kind that cannot
-  be told apart that way are not both attached. A keyboard is asked for a report every half
-  second, so a held key keeps saying it is held; the repeat stops, and the key is let go, after
-  three seconds in which no report confirmed it. A device whose interrupt endpoint has never
-  delivered anything after a second is polled with `GET_REPORT` instead, asked for exactly the
-  report length its descriptor gives (asking for more can make a real device stall). Its answer
-  is the current report, so one identical to the last report taken is a movement already
-  counted: the buttons are applied, the movement is not. The interrupt endpoint is trusted alone
-  as soon as it delivers a report of its own.
+  does not repeat by itself. A boot report has a fixed length — a keyboard's eight bytes (nine
+  if it still starts with a report ID), a mouse's three or four — and a report of any other
+  length is refused, so another interface's bytes cannot be read as keys or buttons. A
+  report-protocol format is read at the offsets its descriptor gives, so a padded report is
+  still its device's (only the named bits are read); when the reports carry a report ID, both
+  the ID and the length must match the descriptor. Two interfaces of one device may name the
+  same endpoint: the first moves it and the rest listen, and every report is routed to the one
+  keyboard and the one mouse whose format it fits (a report ID or a boot report's length
+  decides; when both fit only loosely the length still does — eight bytes or more is a
+  keyboard's report, four or fewer a mouse's — and otherwise the endpoint's owner), so a
+  receiver's keyboard and mouse both work on one pipe and neither is fed the other's bytes. A
+  keyboard is asked for a report every half second, so a held key keeps saying it is held; the
+  repeat stops, and the key is let go, after three seconds in which no report confirmed it. A
+  device whose interrupt endpoint has never delivered anything after a second is polled with
+  `GET_REPORT` instead, asked for exactly the report length its descriptor gives (asking for
+  more can make a real device stall). Its answer is the current report, so one identical to the
+  last report taken is a movement already counted: the buttons are applied, the movement is
+  not. The interrupt endpoint is trusted alone as soon as it delivers a report of its own.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.
@@ -408,16 +421,18 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   keyboards and multi-interface devices are checked against the descriptor parser on the build
   machine (`make check-hid`), since QEMU has no such devices. A USB disk reads and writes
   sectors back unchanged. With more than one controller in the same machine, each enumerates
-  its own devices. EHCI handles high-speed devices itself and hands full/low-speed ports to the
+  its own devices. Unplugging and replugging a keyboard, a mouse, or a hub's device is detected
+  and re-enumerated on all four controllers (the boot screen comes back with the devices'
+  reports). EHCI handles high-speed devices itself and hands full/low-speed ports to the
   companion; it does not implement split transactions, so a full-speed device behind a
-  high-speed hub is not seen, and isochronous transfers and hotplug after boot are not
-  implemented.
+  high-speed hub is not seen, and isochronous transfers are not implemented.
 - If no USB keyboard or mouse is enumerated, or one is found but never sends a report, the log-on
   screen names every controller it found, the devices it enumerated and the last failures, and
   keeps a live line per device — its address, interface and endpoint, vendor and product,
-  interrupt polls, reports they gave, `GET_REPORT` answers, and the key and bytes of its last
-  report — so a machine with a dead port, a stuck endpoint or a report read the wrong way can
-  report what is actually there.
+  interrupt polls, reports they gave, `GET_REPORT` answers, the key or buttons and bytes of its
+  last report, and how many reports were refused as another interface's format — so a machine
+  with a dead port, a stuck endpoint or a report read the wrong way can report what is actually
+  there.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
@@ -686,7 +701,8 @@ used to test every screen above, including a full install from a blank disk.
   - USB runs on **xHCI** (USB 3.x), **EHCI** (USB 2.0), **UHCI** and **OHCI** (USB 1.1)
     controllers. EHCI owns the high-speed ports and hands full/low-speed ones to the companion;
     full-speed devices behind a high-speed hub (split transactions) are not supported, nor are
-    isochronous devices (USB audio and video); the buses are scanned once, at boot.
+    isochronous devices (USB audio and video). Devices can be plugged in after boot, but a USB
+    disk removed while running keeps its block-device slot until the next boot.
   - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
     shadows or canvas, and CSS layout is still the small subset XplorerLite implements.
   - Sound is playback only (no recording).

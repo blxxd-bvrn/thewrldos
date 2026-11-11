@@ -49,4 +49,13 @@ bool hid_decode_mouse(const hid_format_t *f, const uint8_t *p, int n,
 /* the keys held down, in the 8-byte boot keyboard layout (modifiers, 0, six usages) */
 bool hid_decode_keys(const hid_format_t *f, const uint8_t *p, int n, uint8_t out[8]);
 
+/* Which interface a report belongs to. Two interfaces of one device can name
+ * the same endpoint, and then every report is offered to both; this says whose
+ * format it is in. `boot` is the interface's protocol (a boot report is the
+ * fixed one, with no report ID), `kind` is HID_REPORT_KEYBOARD or
+ * HID_REPORT_MOUSE, and the answer is that same value, or 0 when the report is
+ * not of this interface's format. */
+enum { HID_REPORT_NONE = 0, HID_REPORT_KEYBOARD = 1, HID_REPORT_MOUSE = 2 };
+int hid_report_kind(const hid_format_t *f, bool boot, int kind, const uint8_t *p, int n);
+
 #endif

@@ -9,10 +9,9 @@
 
 static usb_dev_t *devices;
 static int next_id = 1;
-static int next_addr = 2;                       /* USB addresses start at 2 */
 int usb_unsupported;
 
-int usb_count(void) { int n = 0; for (usb_dev_t *d = devices; d; d = d->next) n++; return n; }
+int usb_count(void) { int n = 0; for (usb_dev_t *d = devices; d; d = d->next) if (!d->gone) n++; return n; }
 usb_dev_t *usb_first(void) { return devices; }
 
 static char usb_summary[384];
@@ -78,6 +77,7 @@ const char *usb_device_summary(void) {
     int len = 0;
     out[0] = 0;
     for (usb_dev_t *d = devices; d; d = d->next) {
+        if (d->gone) continue;                 /* an unplugged disk keeps its slot only */
         const char *k = d->kind == USB_KIND_KEYBOARD ? "kbd" : d->kind == USB_KIND_MOUSE ? "mouse"
                       : d->kind == USB_KIND_STORAGE ? "disk" : d->cls == 9 ? "hub" : "dev";
         bool hid = d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE;
@@ -122,6 +122,8 @@ const char *usb_live_text(void) {
             for (int i = 0; i < d->last_len && i < 8 && len + 4 < (int)sizeof out; i++)
                 len += snprintf(out + len, sizeof out - (size_t)len, " %02x", d->last_rep[i]);
         }
+        if (d->odd_n && len + 12 < (int)sizeof out)
+            len += snprintf(out + len, sizeof out - (size_t)len, " x%u", (unsigned)d->odd_n);
     }
     return out;
 }
@@ -226,6 +228,7 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
     memcpy(r, rep, (size_t)MIN(n, 8));
     if (n < 3 || r[2] == 0x01) return;                  /* too many keys at once: nothing changed */
     if (n < 8) {
+        d->odd_n++;
         if (!d->odd_report) {
             d->odd_report = true;
             klog("usb: kbd at address %d: %d-byte report, not a keyboard's", d->addr, n);
@@ -270,6 +273,18 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
     memcpy(d->report, r, 8);
 }
 
+/* A report that is not this interface's format: counted, and said once, so a
+ * machine where one interface is being fed another's reports shows it. */
+static void hid_report_odd(usb_dev_t *d, int n)
+{
+    d->odd_n++;
+    if (d->odd_report) return;
+    d->odd_report = true;
+    klog("usb: %s at address %d: %d-byte report, not its format",
+         d->kind == USB_KIND_KEYBOARD ? "keyboard" : "mouse", d->addr, n);
+    usb_diag("%s@%d got %d-byte report", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr, n);
+}
+
 /* One input report, as the device sent it. `stale` marks an answer that may be
  * a repeat of the last one: a mouse's buttons are still right, but its movement
  * has already been counted. */
@@ -297,11 +312,7 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
              * keyboard's report reaching this endpoint is eight, and reading it
              * as a mouse would press buttons out of its modifier byte and move
              * the pointer by its key usages. */
-            if (!d->odd_report) {
-                d->odd_report = true;
-                klog("usb: mouse at address %d: %d-byte report, not a boot mouse's", d->addr, n);
-                usb_diag("mouse@%d got %d-byte report", d->addr, n);
-            }
+            hid_report_odd(d, n);
             return;
         }
         btn = rep[0] & 7; dx = (int8_t)rep[1]; dy = (int8_t)rep[2];
@@ -329,17 +340,55 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
     mouse_inject(dx, -dy, btn & 7, -CLAMP(wheel, -8, 8));
 }
 
-/* One report from an endpoint, offered to every interface that shares it. A
- * report ID, or a boot report's length, says which one it belongs to; the
- * others refuse it as not their format. */
+/* One report from an endpoint that more than one interface named. Every such
+ * interface is offered it, but it is delivered to only the one whose format it
+ * is in: a keyboard's eight bytes are not a mouse's four, and a report ID names
+ * its interface outright. A report that fits no interface is still given to the
+ * endpoint's owner, which is where it came from; its own decoder decides. */
+static int hid_report_fit(const usb_dev_t *d, const uint8_t *rep, int n)
+{
+    int kind = d->kind == USB_KIND_KEYBOARD ? HID_REPORT_KEYBOARD : HID_REPORT_MOUSE;
+    if (hid_report_kind(&d->fmt, d->boot, kind, rep, n) == HID_REPORT_NONE) return 0;
+    if (d->boot) return 2;                     /* a boot report's length is exact */
+    int len = kind == HID_REPORT_KEYBOARD ? d->fmt.keys.len : d->fmt.mouse.len;
+    int have = d->fmt.ids ? n - 1 : n;
+    return len && have == len ? 2 : 1;         /* padded reports still fit, but loosely */
+}
+
 static void hid_report_shared(usb_dev_t *owner, const uint8_t *rep, int n, bool stale)
 {
-    hid_report(owner, rep, n, stale);
+    usb_dev_t *pick[2] = { NULL, NULL };       /* the keyboard, the mouse */
+    int score[2] = { 0, 0 };
     for (usb_dev_t *e = devices; e; e = e->next) {
-        if (e == owner || e->polls || e->hcd != owner->hcd || e->addr != owner->addr ||
-            e->ep_int != owner->ep_int) continue;
-        hid_report(e, rep, n, stale);
+        if (e->gone || (e->kind != USB_KIND_KEYBOARD && e->kind != USB_KIND_MOUSE)) continue;
+        if (e->hcd != owner->hcd || e->addr != owner->addr || e->ep_int != owner->ep_int) continue;
+        int k = e->kind == USB_KIND_KEYBOARD ? 0 : 1;
+        int fit = hid_report_fit(e, rep, n);
+        if (!fit) continue;
+        if (fit > score[k] || (fit == score[k] && e == owner)) { pick[k] = e; score[k] = fit; }
     }
+    if (pick[0] && pick[1]) {
+        /* One report cannot be both kinds when one interface's format is an
+         * exact fit for it: that is whose report it is. Otherwise a length
+         * still tells them apart in the common case — a key report is eight
+         * bytes or more, a mouse's four or fewer — and past that the endpoint's
+         * owner settles it. */
+        if (score[0] != score[1]) {
+            if (score[0] > score[1]) pick[1] = NULL;
+            else pick[0] = NULL;
+        } else if (score[0] == 1 && n >= 8) {
+            pick[1] = NULL;
+        } else if (score[0] == 1 && n <= 4) {
+            pick[0] = NULL;
+        } else if (owner != pick[1]) {
+            pick[1] = NULL;
+        } else {
+            pick[0] = NULL;
+        }
+    }
+    if (pick[0]) hid_report(pick[0], rep, n, stale);
+    else if (pick[1]) hid_report(pick[1], rep, n, stale);
+    else hid_report(owner, rep, n, stale);
 }
 
 /* ---------------- mass storage: bulk-only transport ---------------- */
@@ -356,8 +405,8 @@ typedef struct {
     uint32_t tag, blocks, bsize;
 } stor_t;
 
-static int stor_cmd(usb_dev_t *d, uint8_t lun, const uint8_t *cdb, int cdblen,
-                    void *buf, uint32_t len, bool in)
+static int stor_cmd_once(usb_dev_t *d, uint8_t lun, const uint8_t *cdb, int cdblen,
+                         void *buf, uint32_t len, bool in)
 {
     if (!d->ep_in || !d->ep_out) return -1;
     d->toggle_in = d->toggle_out = 0;                    /* the BOT resets both at each command */
@@ -389,15 +438,33 @@ static int stor_cmd(usb_dev_t *d, uint8_t lun, const uint8_t *cdb, int cdblen,
     if (r < (int)sizeof csw) return -1;
     if (csw.sig != 0x53425355 || csw.tag != tag || csw.status) {
         klog("usb-storage: command %02x failed (status %d)", cdb[0], csw.status);
-        return -1;
+        return csw.sig == 0x53425355 && csw.tag == tag ? -2 : -1;
     }
     return 0;
+}
+
+/* A device that has just been plugged in (or just appeared behind a hub) can
+ * answer its first command with CHECK CONDITION: the medium is there but the
+ * device has not settled yet. That is a failure the device expects to be
+ * retried, so a command the device itself refused is sent again a moment
+ * later; one that never answered is not. */
+static int stor_cmd(usb_dev_t *d, uint8_t lun, const uint8_t *cdb, int cdblen,
+                    void *buf, uint32_t len, bool in)
+{
+    for (int attempt = 0; attempt < 3; attempt++) {
+        int r = stor_cmd_once(d, lun, cdb, cdblen, buf, len, in);
+        if (r != -2) return r;
+        uint32_t t0 = timer_ticks();
+        while ((int32_t)(timer_ticks() - t0) < 50) task_yield();
+    }
+    return -1;
 }
 
 static bool stor_read(blkdev_t *b, uint64_t blk, uint32_t n, void *buf)
 {
     stor_t *s = b->priv;
     usb_dev_t *d = s->dev;
+    if (d->gone) return false;                   /* unplugged: its address may belong to another device */
     uint64_t lba = blk * 512 / s->bsize;
     uint32_t cnt = (uint32_t)((uint64_t)n * 512 / s->bsize);
     if (lba + cnt > s->blocks) return false;
@@ -409,6 +476,7 @@ static bool stor_write(blkdev_t *b, uint64_t blk, uint32_t n, const void *buf)
 {
     stor_t *s = b->priv;
     usb_dev_t *d = s->dev;
+    if (d->gone) return false;
     uint64_t lba = blk * 512 / s->bsize;
     uint32_t cnt = (uint32_t)((uint64_t)n * 512 / s->bsize);
     if (lba + cnt > s->blocks) return false;
@@ -419,6 +487,7 @@ static bool stor_write(blkdev_t *b, uint64_t blk, uint32_t n, const void *buf)
 static bool stor_flush(blkdev_t *b)
 {
     stor_t *s = b->priv;
+    if (s->dev->gone) return false;
     uint8_t cdb[10] = { 0x35, 0, 0, 0, 0, 0, 0, 0, 0, 0 };   /* SYNCHRONIZE CACHE(10) */
     return stor_cmd(s->dev, s->lun, cdb, 10, NULL, 0, false) == 0;
 }
@@ -456,6 +525,10 @@ static void stor_attach(usb_dev_t *d, int iface)
 }
 
 /* ---------------- enumeration ---------------- */
+static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route,
+                          int hub_addr, int hub_port, int speed);
+static void hub_port_scan(usb_dev_t *hub, int p);
+static void drop_addr(usb_hcd_t *h, int addr);
 /* The class, and the bulk and interrupt endpoints, of the interface a storage
  * or hub driver will use: the first one of the device's class. */
 static void parse_config(usb_dev_t *d, const uint8_t *cfg, int len, int *iface_out)
@@ -493,10 +566,15 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
     d->iface = hi->num; d->ep_int = hi->ep; d->maxpkt_int = hi->maxpkt ? hi->maxpkt : 8;
 
     int rlen = hi->rlen ? hi->rlen : 256;
-    if (rlen > 1024) rlen = 1024;
+    if (rlen > 2048) rlen = 2048;
     uint8_t *rd = kzalloc((size_t)rlen);
     int n = rd ? usb_control(d, 0x81, 6, 0x2200, hi->num, rd, rlen) : 0;
     if (n > 0) hid_parse_format(&d->fmt, rd, n);
+    else {
+        klog("usb: %04x:%04x at address %d: interface %d: no report descriptor (%d of %d)",
+             d->vendor, d->product, d->addr, hi->num, n, rlen);
+        usb_diag("iface %d: no report descriptor", hi->num);
+    }
     kfree(rd);
 
     bool boot_kbd = hi->subcls == 1 && hi->proto == 1, boot_mouse = hi->subcls == 1 && hi->proto == 2;
@@ -518,30 +596,18 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
     }
 
     /* Two interfaces of one device can name the same endpoint, and only one of
-     * them can move it. The other is attached as a listener: every report the
-     * owner reads is offered to it too, so neither interface is starved. That
-     * is safe only when a report says which interface it belongs to. A report
-     * ID does; so does a boot report's length (a keyboard's eight bytes, a
-     * mouse's three or four), which is why two boot devices of the same kind
-     * are not shared. Without either, the second interface is refused rather
-     * than fed the first one's reports. */
+     * them can move it. The first owns it; the others listen, and every report
+     * the owner reads is offered to each of them. Each report is delivered to
+     * the interface whose format it is in (a key report from a mouse report, a
+     * report ID from another), so an interface is never fed the other's bytes,
+     * and a device with a keyboard and a mouse on one pipe keeps both. */
     d->polls = true;
     usb_dev_t *owner = NULL;
     for (usb_dev_t *e = devices; e; e = e->next) {
-        if (e->hcd != d->hcd || e->addr != d->addr || e->ep_int != d->ep_int) continue;
+        if (e->gone || e->hcd != d->hcd || e->addr != d->addr || e->ep_int != d->ep_int) continue;
         if (!owner || e->polls) owner = e;
     }
     if (owner) {
-        bool by_id = d->fmt.ids && owner->fmt.ids;
-        bool by_len = (d->kind == USB_KIND_KEYBOARD) != (owner->kind == USB_KIND_KEYBOARD) &&
-                      (d->boot || owner->boot);
-        if (!by_id && !by_len) {
-            klog("usb: %04x:%04x at address %d: interface %d shares endpoint %d with interface %d, ignored",
-                 d->vendor, d->product, d->addr, hi->num, hi->ep, owner->iface);
-            usb_diag("share ep%d dev %d", hi->ep, d->addr);
-            kfree(d);
-            return 0;
-        }
         d->polls = false;
         klog("usb: %04x:%04x at address %d: interface %d listens on endpoint %d, shared with interface %d",
              d->vendor, d->product, d->addr, hi->num, hi->ep, owner->iface);
@@ -559,13 +625,14 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
     return 1;
 }
 
-static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, const char *where,
-                          int root_port, int route)
+static bool device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, const char *where,
+                          int root_port, int route, int hub_addr, int hub_port)
 {
     usb_dev_t *d = kzalloc(sizeof *d);
-    if (!d) return;
+    if (!d) return false;
     d->hcd = h; d->addr = addr; d->low_speed = low;
     d->root_port = root_port; d->route = route;
+    d->hub_addr = hub_addr; d->hub_port = hub_port;
     d->vendor = (uint16_t)(dev[8] | (dev[9] << 8));
     d->product = (uint16_t)(dev[10] | (dev[11] << 8));
     d->bcdusb = (uint16_t)(dev[2] | (dev[3] << 8));
@@ -573,13 +640,13 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     d->id = next_id++;
 
     uint8_t cfg9[9];
-    if (get_descriptor(h, addr, low, 2, 0, cfg9, 9) < 9) { klog("usb: address %d: no configuration", addr); kfree(d); return; }
+    if (get_descriptor(h, addr, low, 2, 0, cfg9, 9) < 9) { klog("usb: address %d: no configuration", addr); kfree(d); return false; }
     int total = cfg9[2] | (cfg9[3] << 8);
     if (total < 9) total = 9;
-    if (total > 1024) total = 1024;
+    if (total > 2048) total = 2048;
     uint8_t *cfg = kzalloc((size_t)total);
-    if (!cfg) { kfree(d); return; }
-    if (get_descriptor(h, addr, low, 2, 0, cfg, total) < 9) { klog("usb: address %d: configuration read failed", addr); kfree(cfg); kfree(d); return; }
+    if (!cfg) { kfree(d); return false; }
+    if (get_descriptor(h, addr, low, 2, 0, cfg, total) < 9) { klog("usb: address %d: configuration read failed", addr); kfree(cfg); kfree(d); return false; }
     int iface = 0;
     parse_config(d, cfg, total, &iface);
     d->iface = iface;
@@ -590,7 +657,7 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     if (h->control(h, addr, low, 0x00, 9, 1, 0, NULL, 0) < 0) {      /* SET_CONFIGURATION(1) */
         klog("usb: address %d: SET_CONFIGURATION failed", addr);
         kfree(d);
-        return;
+        return false;
     }
 
     if (nhid) {                                                      /* HID: one device per interface */
@@ -599,6 +666,7 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
         if (!made)
             klog("usb: %04x:%04x at address %d (%s): HID, but not a keyboard or mouse", d->vendor, d->product, addr, where);
         kfree(d);
+        return made > 0;
     } else if (d->cls == 8) {                                        /* mass storage */
         snprintf(d->name, sizeof d->name, "usb-storage");
         d->next = devices; devices = d;                              /* visible to the storage driver */
@@ -611,7 +679,9 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     } else {
         klog("usb: %04x:%04x class %d at address %d (%s): no driver", d->vendor, d->product, d->cls, addr, where);
         kfree(d);
+        return false;
     }
+    return true;
 }
 
 /* A hub is not a device we use directly: power every port, reset the ones with
@@ -640,28 +710,51 @@ static void hub_attach(usb_dev_t *hub)
     if (hub->hcd->hub_info)
         hub->hcd->hub_info(hub->hcd, hub->addr, ports, ss ? 0 : (hd[3] >> 5) & 3);
     if (ports > 8) ports = 8;
+    hub->ports = ports;
+    hub->hub_next = timer_ticks() + 1000;
     for (int p = 1; p <= ports; p++) {
         usb_control(hub, 0x23, 3, 8, (uint16_t)p, NULL, 0);           /* SET_FEATURE(PORT_POWER) */
         uint32_t t0 = timer_ticks();
         while ((int32_t)(timer_ticks() - t0) < 50) task_yield();
-        uint8_t st[4];
-        if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) continue;
-        if (!(st[0] & 1)) continue;                                   /* nothing plugged in */
-        usb_control(hub, 0x23, 3, 4, (uint16_t)p, NULL, 0);            /* SET_FEATURE(PORT_RESET) */
-        t0 = timer_ticks();
-        while ((int32_t)(timer_ticks() - t0) < 40) task_yield();
-        usb_control(hub, 0x23, 1, 20, (uint16_t)p, NULL, 0);           /* CLEAR_FEATURE(C_PORT_RESET) */
-        t0 = timer_ticks();
-        while ((int32_t)(timer_ticks() - t0) < 20) task_yield();
-        if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) continue;
-        if (!(st[0] & 1)) continue;
-        bool low = (st[1] & 0x02) != 0;                               /* port status bit 9 */
-        int speed = ss ? 4 : (st[1] & 0x04) ? 3 : low ? 2 : 1;        /* SuperSpeed, high, low, full */
-        char where[24];
-        snprintf(where, sizeof where, "hub %d port %d", hub->addr, p);
-        enumerate_one(hub->hcd, low, where, hub->root_port, (hub->route << 4) | p,
-                      hub->addr, p, speed);
+        hub_port_scan(hub, p);
     }
+}
+
+/* Enumerate what is on one hub port, if anything. */
+static void hub_port_scan(usb_dev_t *hub, int p)
+{
+    uint8_t st[4];
+    if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) return;   /* GET_STATUS */
+    if (!(st[0] & 1)) return;                                    /* nothing plugged in */
+    usb_control(hub, 0x23, 3, 4, (uint16_t)p, NULL, 0);           /* SET_FEATURE(PORT_RESET) */
+    uint32_t t0 = timer_ticks();
+    while ((int32_t)(timer_ticks() - t0) < 40) task_yield();
+    usb_control(hub, 0x23, 1, 20, (uint16_t)p, NULL, 0);          /* CLEAR_FEATURE(C_PORT_RESET) */
+    t0 = timer_ticks();
+    while ((int32_t)(timer_ticks() - t0) < 20) task_yield();
+    if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) return;
+    if (!(st[0] & 1)) return;
+    bool ss = hub->bcdusb >= 0x0300;
+    bool low = (st[1] & 0x02) != 0;                              /* port status bit 9 */
+    int speed = ss ? 4 : (st[1] & 0x04) ? 3 : low ? 2 : 1;       /* SuperSpeed, high, low, full */
+    char where[24];
+    snprintf(where, sizeof where, "hub %d port %d", hub->addr, p);
+    enumerate_one(hub->hcd, low, where, hub->root_port, (hub->route << 4) | p,
+                  hub->addr, p, speed);
+}
+
+/* The lowest address no live device uses. Addresses are per bus, but a number
+ * used on one controller is not offered on another either: nothing is lost by
+ * that, and it keeps a device's address and its slot from ever colliding. */
+static int usb_free_addr(void)
+{
+    for (int a = 2; a < 128; a++) {
+        bool used = false;
+        for (usb_dev_t *d = devices; d && !used; d = d->next)
+            if (!d->gone && d->addr == a) used = true;
+        if (!used) return a;
+    }
+    return 0;
 }
 
 /* Read one device's descriptors and give it an address. `where` names the port
@@ -677,26 +770,196 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_po
         return;
     }
     uint8_t d8[8];
-    if (get_descriptor(h, 0, low, 1, 0, d8, 8) < 8) { klog("usb: %s: no device descriptor", where); usb_diag("%s: no descriptor", where); return; }
-    int addr = next_addr;
-    if (addr < 2 || addr > 127) { klog("usb: out of device addresses"); return; }
-    if (h->control(h, 0, low, 0x00, 5, (uint16_t)addr, 0, NULL, 0) < 0) { klog("usb: %s: SET_ADDRESS failed", where); usb_diag("%s: SET_ADDRESS failed", where); return; }
-    next_addr++;
+    if (get_descriptor(h, 0, low, 1, 0, d8, 8) < 8) {
+        klog("usb: %s: no device descriptor", where);
+        usb_diag("%s: no descriptor", where);
+        if (h->del_device) h->del_device(h, 0);
+        return;
+    }
+    int addr = usb_free_addr();
+    if (!addr) { klog("usb: out of device addresses"); if (h->del_device) h->del_device(h, 0); return; }
+    if (h->control(h, 0, low, 0x00, 5, (uint16_t)addr, 0, NULL, 0) < 0) {
+        klog("usb: %s: SET_ADDRESS failed", where);
+        usb_diag("%s: SET_ADDRESS failed", where);
+        if (h->del_device) h->del_device(h, 0);
+        return;
+    }
     t0 = timer_ticks();
     while ((int32_t)(timer_ticks() - t0) < 10) task_yield();
     uint8_t dev[18];
-    if (get_descriptor(h, addr, low, 1, 0, dev, 18) < 18) { klog("usb: address %d: descriptor read failed", addr); usb_diag("%s: descriptor failed", where); return; }
-    device_attach(h, addr, low, dev, where, root_port, route);
+    if (get_descriptor(h, addr, low, 1, 0, dev, 18) < 18) {
+        klog("usb: address %d: descriptor read failed", addr);
+        usb_diag("%s: descriptor failed", where);
+        if (h->del_device) h->del_device(h, addr);
+        return;
+    }
+    if (!device_attach(h, addr, low, dev, where, root_port, route, hub_addr, hub_port)) {
+        usb_diag("%s: no driver", where);
+        if (h->del_device) h->del_device(h, addr);
+    }
 }
+
+static usb_hcd_t *hcds[8];
+static int nhcds;
 
 void usb_attach(usb_hcd_t *h)
 {
-    for (int port = 0; port < h->ports; port++) {
+    if (nhcds < (int)ARRAY_LEN(hcds)) {
+        bool known = false;
+        for (int i = 0; i < nhcds; i++) if (hcds[i] == h) known = true;
+        if (!known) hcds[nhcds++] = h;
+    }
+    for (int port = 0; port < h->ports && port < 32; port++) {
         bool low = false;
         if (!h->port_reset || !h->port_reset(h, port, &low)) continue;
         char where[24];
         snprintf(where, sizeof where, "%s port %d", h->name, port + 1);
         enumerate_one(h, low, where, port + 1, 0, 0, 0, 0);
+    }
+}
+
+/* ---------------- hotplug ---------------- */
+/* Forget one device: every interface of it, and the controller's slot. A disk
+ * is left in the list, with its block-device slot, so anything still holding
+ * the disk reads a failed transfer instead of freed memory. */
+static void drop_addr(usb_hcd_t *h, int addr)
+{
+    usb_dev_t **pp = &devices;
+    while (*pp) {
+        usb_dev_t *d = *pp;
+        if (d->gone || d->hcd != h || d->addr != addr) { pp = &d->next; continue; }
+        if (d->kind == USB_KIND_STORAGE) {
+            d->gone = true;
+            pp = &d->next;
+            continue;
+        }
+        *pp = d->next;
+        kfree(d);
+    }
+    if (h->del_device) h->del_device(h, addr);
+}
+
+/* A device behind a hub has a route built from one four-bit port number per
+ * tier, so a device under `parent` is found by shifting its route right. */
+static bool route_under(int route, int parent)
+{
+    while (route) { if (route == parent) return true; route >>= 4; }
+    return false;
+}
+
+/* Is anything (a device or a hub with devices on it) at this root port? */
+static bool root_in_use(usb_hcd_t *h, int port)
+{
+    for (usb_dev_t *d = devices; d; d = d->next)
+        if (!d->gone && d->hcd == h && d->root_port == port) return true;
+    return false;
+}
+
+static bool hub_port_in_use(usb_dev_t *hub, int p)
+{
+    for (usb_dev_t *d = devices; d; d = d->next)
+        if (!d->gone && d->hcd == hub->hcd && d->hub_addr == hub->addr && d->hub_port == p) return true;
+    return false;
+}
+
+/* The deepest device goes first, so a hub is never freed before the devices it
+ * was carrying. */
+static usb_dev_t *deepest(usb_hcd_t *h, int root_port, bool whole_root, int parent_route)
+{
+    usb_dev_t *worst = NULL;
+    for (usb_dev_t *d = devices; d; d = d->next) {
+        if (d->gone || d->hcd != h) continue;
+        if (whole_root ? d->root_port != root_port : !route_under(d->route, parent_route)) continue;
+        if (!worst || d->route > worst->route) worst = d;
+    }
+    return worst;
+}
+
+static void drop_root(usb_hcd_t *h, int root_port)
+{
+    for (int guard = 0; guard < 64; guard++) {
+        usb_dev_t *worst = deepest(h, root_port, true, 0);
+        if (!worst) return;
+        drop_addr(h, worst->addr);
+    }
+}
+
+static void drop_hub_port(usb_dev_t *hub, int p)
+{
+    int target = (hub->route << 4) | p;
+    for (int guard = 0; guard < 64; guard++) {
+        usb_dev_t *worst = deepest(hub->hcd, 0, false, target);
+        if (!worst) return;
+        drop_addr(hub->hcd, worst->addr);
+    }
+}
+
+/* Look for devices that have gone and for new ones on every root port and hub
+ * port. Nothing here resets a port that still has a working device on it. */
+static void usb_rescan(void)
+{
+    uint32_t now = timer_ticks();
+    for (int i = 0; i < nhcds; i++) {
+        usb_hcd_t *h = hcds[i];
+        if (!h->port_up) continue;
+        for (int p = 0; p < h->ports && p < 32; p++) {
+            bool up = h->port_up(h, p);
+            bool used = root_in_use(h, p + 1);
+            if (up) h->port_down[p] = 0;
+            if (used && !up) {
+                if (++h->port_down[p] < 2) continue;      /* one reading may be a glitch */
+                klog("usb: %s port %d: device removed", h->name, p + 1);
+                usb_diag("%s p%d removed", h->name, p + 1);
+                drop_root(h, p + 1);
+                h->port_down[p] = 0;
+                h->port_retry[p] = now + 500;
+            } else if (!used && up && (int32_t)(now - h->port_retry[p]) >= 0) {
+                h->port_retry[p] = now + 1000;
+                bool low = false;
+                if (!h->port_reset || !h->port_reset(h, p, &low)) continue;
+                char where[24];
+                snprintf(where, sizeof where, "%s port %d", h->name, p + 1);
+                klog("usb: %s: device connected", where);
+                enumerate_one(h, low, where, p + 1, 0, 0, 0, 0);
+                /* Something is plugged in but did not answer: ask again in a
+                 * few seconds rather than once a second for ever. */
+                if (!root_in_use(h, p + 1)) h->port_retry[p] = now + 5000;
+            }
+        }
+    }
+    /* A hub's own ports, one hub at a time; a hub that stops answering is left
+     * alone for a while rather than stalling input every half second. */
+    usb_dev_t *hubs[8];
+    int nh = 0;
+    for (usb_dev_t *d = devices; d && nh < (int)ARRAY_LEN(hubs); d = d->next)
+        if (!d->gone && d->cls == 9 && d->ports > 0) hubs[nh++] = d;
+    for (int i = 0; i < nh; i++) {
+        usb_dev_t *hub = hubs[i];
+        /* An earlier hub may have lost this one (a nested hub unplugged), and
+         * then the pointer is stale. */
+        bool live = false;
+        for (usb_dev_t *d = devices; d && !live; d = d->next) if (d == hub) live = true;
+        if (!live) continue;
+        if ((int32_t)(now - hub->hub_next) < 0) continue;
+        hub->hub_next = now + 1000;
+        for (int p = 1; p <= hub->ports && p <= 8; p++) {
+            uint8_t st[4];
+            if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) {
+                if (++hub->hub_fail >= 2) { hub->hub_next = now + 5000; break; }
+                continue;
+            }
+            hub->hub_fail = 0;
+            bool conn = (st[0] & 1) != 0;
+            bool used = hub_port_in_use(hub, p);
+            if (used && !conn) {
+                klog("usb: hub %d port %d: device removed", hub->addr, p);
+                usb_diag("hub %d p%d removed", hub->addr, p);
+                drop_hub_port(hub, p);
+            } else if (!used && conn) {
+                klog("usb: hub %d port %d: device connected", hub->addr, p);
+                hub_port_scan(hub, p);
+            }
+        }
     }
 }
 
@@ -797,7 +1060,15 @@ void usb_poll(void)
 static void usb_task(void *arg)
 {
     (void)arg;
-    for (;;) { usb_poll(); task_sleep(8); }
+    uint32_t next = timer_ticks() + 500;
+    for (;;) {
+        usb_poll();
+        if ((int32_t)(timer_ticks() - next) >= 0) {
+            next = timer_ticks() + 500;
+            usb_rescan();
+        }
+        task_sleep(8);
+    }
 }
 
 void usb_init(void)
@@ -849,7 +1120,7 @@ void usb_init(void)
         len = (int)strlen(usb_summary);
         snprintf(usb_summary + len, sizeof usb_summary - (size_t)len, "; %d device(s)", usb_count());
     }
-    if (devices) {
+    if (nhcds) {
         task_create("usbd", usb_task, NULL, 8192);
         klog("usb: %d device(s)", usb_count());
     }

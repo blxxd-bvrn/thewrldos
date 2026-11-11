@@ -115,8 +115,10 @@ int main(void)
         check("boot mouse btn", btn, 5);
         check("boot mouse wheel", wheel, -1);
         check("boot mouse too short", hid_decode_mouse(&f, r, 2, &dx, &dy, &btn, &wheel), 0);
+        check("boot mouse takes its own report", hid_report_kind(&f, 1, HID_REPORT_MOUSE, r, 4), HID_REPORT_MOUSE);
         const uint8_t kbd[8] = { 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 };   /* a keyboard's report */
-        check("boot mouse refuses a keyboard report", hid_decode_mouse(&f, kbd, 8, &dx, &dy, &btn, &wheel), 0);
+        check("boot mouse refuses a keyboard report", hid_report_kind(&f, 1, HID_REPORT_MOUSE, kbd, 8), 0);
+        check("boot keyboard refuses a mouse report", hid_report_kind(&f, 1, HID_REPORT_KEYBOARD, r, 4), 0);
     }
 
     hid_parse_format(&f, wide_mouse, sizeof wide_mouse);
@@ -138,6 +140,11 @@ int main(void)
         check("wide dy", dy, 1000);
         check("wide btn", btn, 2);
         check("wide wheel", wheel, 1);
+        const uint8_t idr[9] = { 0x02, 0x02,0x00, 0xD4,0xFE, 0xE8,0x03, 0x01, 0x00 };
+        check("wide report kind", hid_report_kind(&f, 0, HID_REPORT_MOUSE, idr, 9), HID_REPORT_MOUSE);
+        const uint8_t other[9] = { 0x03, 0x02,0x00, 0xD4,0xFE, 0xE8,0x03, 0x01, 0x00 };
+        check("wide other id refused", hid_report_kind(&f, 0, HID_REPORT_MOUSE, other, 9), 0);
+        check("wide wrong length refused", hid_report_kind(&f, 0, HID_REPORT_MOUSE, idr, 8), 0);
     }
 
     hid_parse_format(&f, packed_mouse, sizeof packed_mouse);
@@ -181,9 +188,10 @@ int main(void)
         const uint8_t over[8] = { 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01 };
         check("kbd rollover is refused", hid_decode_keys(&f, over, 8, out), 0);
         const uint8_t shortr[4] = { 0x00, 0x04, 0x00, 0x00 };      /* some other device's report */
-        check("kbd short report is refused", hid_decode_keys(&f, shortr, 4, out), 0);
+        check("kbd short report is not a key report", hid_report_kind(&f, 0, HID_REPORT_KEYBOARD, shortr, 4), 0);
         const uint8_t longer[9] = { 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-        check("kbd long report is refused", hid_decode_keys(&f, longer, 9, out), 0);
+        check("kbd padded report is still its own", hid_report_kind(&f, 0, HID_REPORT_KEYBOARD, longer, 9), HID_REPORT_KEYBOARD);
+        check("kbd report kind", hid_report_kind(&f, 0, HID_REPORT_KEYBOARD, r, 8), HID_REPORT_KEYBOARD);
     }
 
     hid_parse_format(&f, nkro_kbd, sizeof nkro_kbd);

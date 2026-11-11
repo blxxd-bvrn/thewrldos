@@ -320,6 +320,15 @@ static bool ohci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     return true;
 }
 
+/* Is something still on this root port? Reading the status has no side
+ * effects; the change bits are cleared by a write in port_reset alone. */
+static bool ohci_port_up(usb_hcd_t *h, int port)
+{
+    ohci_t *o = h->priv;
+    if (port < 0 || port >= o->ports) return false;
+    return (or32(o, HC_RH_PORT(port)) & RH_PS_CCS) != 0;
+}
+
 static int ohci_init(ohci_t *o, const pci_dev_t *pd)
 {
     bool is_io = false;
@@ -383,6 +392,7 @@ static int ohci_init(ohci_t *o, const pci_dev_t *pd)
     o->hcd.control = ohci_control;
     o->hcd.transfer = ohci_transfer;
     o->hcd.port_reset = ohci_port_reset;
+    o->hcd.port_up = ohci_port_up;
     o->hcd.ports = o->ports;
     o->hcd.priv = o;
     return 0;

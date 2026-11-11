@@ -93,11 +93,13 @@ Already working, and not on the list below:
 
 - The host stack (`src/usb`) speaks **xHCI** (USB 3.x), **EHCI** (USB 2.0), **UHCI** and
   **OHCI** (USB 1.1): control, interrupt and bulk transfers, enumeration through hubs,
+  hotplug (the buses are rescanned twice a second, at root ports and hub ports),
   HID keyboards and mice (boot protocol, or the device's own report format, with `GET_REPORT`
   for a device whose interrupt endpoint never delivers), and bulk-only mass storage.
 - Missing: split transactions (a full/low-speed device behind a high-speed hub); isochronous
-  transfers (USB audio, video and MIDI); hotplug after boot (the buses are scanned once); and
-  multiple configurations or alternate settings.
+  transfers (USB audio, video and MIDI); unregistering a removed USB disk from the block layer
+  (it keeps its slot and fails its reads instead); and multiple configurations or alternate
+  settings.
 - Needed by a browser only for input and storage, but a PC needs at least one of xHCI, EHCI,
   UHCI or OHCI for both.
 

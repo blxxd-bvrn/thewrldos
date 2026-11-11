@@ -139,7 +139,14 @@ static int uhci_run(uhci_t *u, int base, int ntds, int timeout_ms)
         td_t *td = &u->tds[base + i];
         if (td->status & TD_ACTIVE) continue;            /* never reached */
         if (td->status & TD_ERRORS) {
-            klog("uhci: TD %d failed (status %08x, token %08x)", base + i, td->status, td->token);
+            /* A device that has just been unplugged fails every poll until the
+             * rescan notices; say so once in a while, not on every frame. */
+            static uint32_t last;
+            uint32_t now = timer_ticks();
+            if (!last || (int32_t)(now - last) >= 2000) {
+                klog("uhci: TD %d failed (status %08x, token %08x)", base + i, td->status, td->token);
+                last = now;
+            }
             return -1;
         }
         len += (td->status & TD_ACTLEN) + 1;
@@ -245,6 +252,14 @@ static bool uhci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     return true;
 }
 
+/* Is something still on this root port? The connection bit is read only. */
+static bool uhci_port_up(usb_hcd_t *h, int port)
+{
+    uhci_t *u = h->priv;
+    if (port < 0 || port >= 2) return false;
+    return (ureg16(u, UHCI_PORT + port * 2) & PORT_CCS) != 0;
+}
+
 static int uhci_init(uhci_t *u, const pci_dev_t *pd)
 {
     bool is_io = false;
@@ -280,6 +295,7 @@ static int uhci_init(uhci_t *u, const pci_dev_t *pd)
     u->hcd.control = uhci_control;
     u->hcd.transfer = uhci_transfer;
     u->hcd.port_reset = uhci_port_reset;
+    u->hcd.port_up = uhci_port_up;
     u->hcd.ports = 2;
     u->hcd.priv = u;
     return 0;
