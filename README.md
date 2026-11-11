@@ -282,6 +282,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       controller is on the PCI bus at all, the mixer also presents a software HDA controller (one
       codec, an audio function group, a DAC and a speaker pin) whose stream is fed into the USB
       device's packets, so the system keeps an HDA playback path even without HDA hardware.
+      The Sound page lists every playback endpoint the controller reports - line output, speakers,
+      headphones, S/PDIF or HDMI/DP output - next to the USB device. Picking a pin switches that
+      card's output enable; the software controller's virtual jacks play through the USB device.
     - The log-on screen names the sound device it found, or the audio controllers it could not
       use and why (`check-audio` checks the descriptor parser on the build machine).
     - Output is 48 kHz 16-bit stereo (44.1 kHz on the ES1370, Sound Blaster 16, and a USB device

@@ -9,6 +9,10 @@ void audio_init(void);
 bool audio_present(void);
 const char *audio_device_name(void);
 const char *audio_controller_name(void);    /* HDA (virtual) when the kernel emulates one */
+int audio_device_count(void);               /* playback endpoints the Sound page lists */
+const char *audio_device_entry(int i);
+int audio_device_active(void);
+void audio_device_select(int i);            /* makes endpoint i the default */
 void audio_diag(char *buf, int cap);        /* device, codec route, whether playback advances */
 int audio_play(const sound_t *s);           /* voice number, or -1 */
 void audio_stop_all(void);

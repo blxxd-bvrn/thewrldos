@@ -36,6 +36,16 @@ static int next_fill;
 int audio_volume = 80;
 bool audio_muted;
 
+/* Playback endpoints shown by the Sound page: the card's own output pins, the
+ * USB device, and (on a soft HDA controller) the virtual jacks. */
+#define MAX_EP 10
+#define MAX_PINS 8
+static struct { int nid, devtype; bool digital; } hda_pins[MAX_PINS];
+static int hda_npins, hda_cad;
+static struct { char name[56]; int kind, pin, devtype; } eps[MAX_EP];
+static int neps, ep_sel;
+enum { EP_CARD, EP_HDA, EP_USB, EP_VJACK };
+
 typedef struct { const sound_t *s; uint32_t pos; bool active; } voice_t;
 static voice_t voices[NVOICE];
 void audio_disable(const char *why);
@@ -155,6 +165,8 @@ static const char *pin_kind(int devtype) {
  * Returns the number of DACs found (0 when this group has no analog output). */
 static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_out)
 {
+    hda_npins = 0;
+    hda_cad = cad;
     hda_cmd(cad, afg, VERB(0x705, 0));                      /* power D0 */
     for (int t = 0; t < 20 && ((hda_cmd(cad, afg, VERB(0xF05, 0)) >> 4) & 0xF) != 0; t++) sleep_ms(5);
     uint32_t afg_amp = param(cad, afg, 0x12);
@@ -198,6 +210,7 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_o
             hda_cmd(cad, nid, VERB(0x707, 0x40 | (devtype == 2 ? 0x80 : 0)));   /* output enable (+ headphone amp) */
             if (pcaps & (1 << 16)) hda_cmd(cad, nid, VERB(0x70C, 2));        /* external amplifier (EAPD) on */
             diag("pin %d (%s%s) -> DAC %d\n", nid, pin_kind(devtype), conn == 1 ? ", reported unconnected" : "", d);
+            if (hda_npins < MAX_PINS) { hda_pins[hda_npins].nid = nid; hda_pins[hda_npins].devtype = devtype; hda_pins[hda_npins].digital = false; hda_npins++; }
         }
     }
     if (!ndacs)   /* no pin path: use the first analog DAC anyway */
@@ -228,6 +241,7 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_o
             for (int j = 0; j < plen; j++) amp_unmute(cad, path[j], afg_amp);
             hda_cmd(cad, nid, VERB(0x707, 0x40));                /* output enable */
             diag("pin %d (%s) -> digital DAC %d\n", nid, pin_kind(devtype), d);
+            if (hda_npins < MAX_PINS) { hda_pins[hda_npins].nid = nid; hda_pins[hda_npins].devtype = devtype; hda_pins[hda_npins].digital = true; hda_npins++; }
         }
     if (!ndacs)   /* a display converter with no pin */
         for (int i = 0; i < wcount; i++)
@@ -764,6 +778,61 @@ static void vhda_stop(void)
     klog("hda: virtual controller gone");
 }
 
+static const char *pin_label(int devtype, bool digital)
+{
+    if (digital) return "HDMI/DP output";
+    switch (devtype & 15) {
+    case 0: return "Line output";
+    case 1: return "Speakers";
+    case 2: return "Headphones";
+    case 4: return "S/PDIF output";
+    case 5: return "Digital output";
+    default: return pin_kind(devtype);
+    }
+}
+static void ep_add(const char *name, int kind, int pin, int devtype)
+{
+    if (neps >= MAX_EP || !name || !name[0]) return;
+    strlcpy(eps[neps].name, name, sizeof eps[neps].name);
+    eps[neps].kind = kind; eps[neps].pin = pin; eps[neps].devtype = devtype;
+    neps++;
+}
+/* Rebuild the playback endpoint list whenever the output or the USB device
+ * changes: the card's pins, the USB device, and the soft controller's jacks. */
+static void eps_build(void)
+{
+    neps = 0;
+    if (dev == DEV_USB) ep_add(devname, EP_USB, 0, 0);
+    if (dev == DEV_HDA || (dev == DEV_USB && card_found))
+        for (int i = 0; i < hda_npins; i++)
+            ep_add(pin_label(hda_pins[i].devtype, hda_pins[i].digital), EP_HDA, hda_pins[i].nid, hda_pins[i].devtype);
+    if (dev == DEV_USB) {
+        if (vhda.on) {
+            ep_add("Line output (virtual)", EP_VJACK, 3, 0);
+            ep_add("Speakers (virtual)", EP_VJACK, 4, 1);
+            ep_add("Headphones (virtual)", EP_VJACK, 5, 2);
+        }
+    } else if (dev != DEV_HDA && dev != DEV_NONE) {
+        ep_add(devname, EP_CARD, 0, 0);
+    }
+    if (!neps) ep_add(devname, EP_CARD, 0, 0);
+    if (ep_sel < 0 || ep_sel >= neps) ep_sel = 0;
+}
+int audio_device_count(void) { return neps; }
+const char *audio_device_entry(int i) { return i >= 0 && i < neps ? eps[i].name : ""; }
+int audio_device_active(void) { return ep_sel < neps ? ep_sel : 0; }
+void audio_device_select(int i)
+{
+    if (i < 0 || i >= neps) return;
+    ep_sel = i;
+    if (dev == DEV_HDA)
+        for (int k = 0; k < neps; k++)
+            if (eps[k].kind == EP_HDA)
+                hda_cmd(hda_cad, eps[k].pin, VERB(0x707, k == i ? (0x40u | (eps[k].devtype == 2 ? 0x80u : 0)) : 0));
+    if (vhda.on && eps[i].kind == EP_VJACK) vhda.pin = eps[i].pin;
+    klog("audio: playback device is %s", eps[i].name);
+}
+
 static bool usb_card;
 static int usb_card_rate;
 static char usb_card_name[64];
@@ -775,7 +844,7 @@ void audio_usb_ready(int rate, const char *name)
     usb_card = true;
     usb_card_rate = rate;
     strlcpy(usb_card_name, name, sizeof usb_card_name);
-    if (dev == DEV_USB) { if (probed && !card_found) vhda_start(rate); return; }
+    if (dev == DEV_USB) { if (probed && !card_found) vhda_start(rate); eps_build(); return; }
     if (dev) {                                /* a card was playing: keep it for later */
         dev_other = dev;
         other_rate = out_rate;
@@ -787,6 +856,7 @@ void audio_usb_ready(int rate, const char *name)
     timer_tick_hook = NULL;                   /* the packets pace the mixer */
     klog("audio: output is %s, %d Hz", name, rate);
     if (probed && !card_found) vhda_start(rate);
+    eps_build();
 }
 void audio_usb_gone(void)
 {
@@ -806,6 +876,7 @@ void audio_usb_gone(void)
         vhda_stop();
         klog("audio: the USB audio device was unplugged; no sound device now");
     }
+    eps_build();
 }
 int audio_usb_pull(int16_t *out, int frames)
 {
@@ -858,6 +929,7 @@ void audio_init(void) {
     if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI, Sound Blaster 16 or USB audio)"); return; }
     if (dev == DEV_USB && !card_found) vhda_start(out_rate);
     else vhda_stop();
+    eps_build();
     next_fill = 0;
     { uint64_t a = rdtsc(); sleep_ms(20); tsc_per_ms = (rdtsc() - a) / 20; budget_start = rdtsc(); }
     if (dev != DEV_USB) {
@@ -897,17 +969,26 @@ const char *audio_summary(void)
     return out;
 }
 /* what the driver found and whether the card is really playing (for the "sndinfo" command) */
+static int put_devices(char *buf, int cap, int off)
+{
+    if (neps <= 1) return off;
+    off += snprintf(buf + off, cap - off, "Playback devices (%d):\n", neps);
+    for (int i = 0; i < neps && off + 80 < cap; i++)
+        off += snprintf(buf + off, cap - off, "  %c %s%s\n", i == ep_sel ? '*' : ' ', eps[i].name, i == ep_sel ? "  (selected)" : "");
+    return off;
+}
 void audio_diag(char *buf, int cap) {
     if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16, USB audio).\n"); return; }
     if (dev == DEV_USB) {
         char u[160], v[200], hdr[96];
         usb_audio_diag(u, sizeof u);
         if (name_has_rate(devname)) snprintf(hdr, sizeof hdr, "%s", devname);
-        else snprintf(hdr, sizeof hdr, "%s, %u Hz", devname, out_rate);
-        if (vhda.on) snprintf(v, sizeof v, "HDA controller: virtual (software), codec %d, AFG %d, DAC %d -> pin %d speaker, %d Hz\n%u frames through the stream\n",
-                              vhda.codec, vhda.afg, vhda.dac, vhda.pin, vhda.rate, vhda.frames);
+        else snprintf(hdr, sizeof hdr, "%s, %d Hz", devname, out_rate);
+        if (vhda.on) snprintf(v, sizeof v, "HDA controller: virtual (software), codec %d, AFG %d, DAC %d, pin %d\n%u frames through the stream\n", vhda.codec, vhda.afg, vhda.dac, vhda.pin, vhda.frames);
         else v[0] = 0;
-        snprintf(buf, cap, "%s\n%s%sVolume %d%s\n", hdr, v, u, audio_volume,
+        int len = snprintf(buf, cap, "%s\n", hdr);
+        len = put_devices(buf, cap, len);
+        snprintf(buf + len, cap - len, "%s%sVolume %d%s\n", v, u, audio_volume,
                  audio_muted ? " (muted)" : "");
         return;
     }
@@ -924,14 +1005,17 @@ void audio_diag(char *buf, int cap) {
     if (dev == DEV_HDA) hda_regs(r1, sizeof r1);
     else if (dev == DEV_ES1370 || dev == DEV_ES1371) snprintf(r1, sizeof r1, "CTRL %08x STATUS %08x SCTRL %08x frame %08x\n%u end-of-count acks, %u restarts\n", inl(es_io + ES_CTRL), inl(es_io + ES_STATUS), inl(es_io + ES_SCTRL), es_raw, es_acks, es_restarts);
     const char *st = a < 0 || b < 0 ? "UNREADABLE (using the timer estimate)" : a != b ? "advancing" : "NOT advancing (the card is not playing)";
-    snprintf(buf, cap, "%s, %u Hz\n%s%s%sPlayback position: %s (buffer %d -> %d)\n%u underruns, %u unusable position readings\nVolume %d%s\n",
-             devname, out_rate, dev == DEV_HDA ? hda_diag : "", r0, r1, st, a, b, underruns, bad_positions, audio_volume, audio_muted ? " (muted)" : "");
+    int len = snprintf(buf, cap, "%s, %d Hz\n", devname, out_rate);
+    len = put_devices(buf, cap, len);
+    snprintf(buf + len, cap - len, "%s%s%sPlayback position: %s (buffer %d -> %d)\n%u underruns, %u unusable position readings\nVolume %d%s\n",
+             dev == DEV_HDA ? hda_diag : "", r0, r1, st, a, b, underruns, bad_positions, audio_volume, audio_muted ? " (muted)" : "");
 }
 bool audio_present(void) { return dev != DEV_NONE; }
-const char *audio_device_name(void) { return devname; }
+const char *audio_device_name(void) { return neps ? eps[ep_sel].name : devname; }
 const char *audio_controller_name(void) {
     if (vhda.on) return "HDA (virtual)";
-    switch (dev) {
+    int d = dev == DEV_USB && dev_other ? dev_other : dev;
+    switch (d) {
     case DEV_HDA: return "HDA";
     case DEV_AC97: return "AC'97";
     case DEV_ES1370: case DEV_ES1371: return "AudioPCI";
