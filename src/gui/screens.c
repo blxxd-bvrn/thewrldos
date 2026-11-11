@@ -153,7 +153,7 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
         } else if (!usb_input_active()) {
-            char line[512];
+            char line[1024];
             snprintf(line, sizeof line, "USB keyboard/mouse enumerated, but no input has arrived yet. Controllers: %s. Devices: %s.",
                      usb_boot_summary(), usb_device_summary());
             int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
@@ -163,7 +163,7 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
             /* live, so a photo shows how far each device has got */
             const char *l = usb_live_text();
             if (*l) {
-                snprintf(line, sizeof line, "%s (i = interrupt polls, r = reports from them, g = GET_REPORT answers)", l);
+                snprintf(line, sizeof line, "%s (i = interrupt polls, r = reports from them, g = GET_REPORT answers, lk = key the last report holds, rp = its bytes)", l);
                 y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, line, HEX(0xFFD070), 2) + 4;
             }
             draw_text(c, FONT_UI, 30, y,
@@ -176,6 +176,7 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
 void welcome_screen(void) {
     mouse_state_t ms; key_event_t ke;
     int hot = 0, prev = 0;
+    usb_input_reset();
     welcome_draw(0, false, 0);
     gfx_present(CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
     uint32_t next = timer_ticks() + 500;
@@ -223,6 +224,8 @@ static void desaturate_screen(void) {
 }
 static void final_screen(const char *msg, bool reboot) {
     canvas_t *c = &screen;
+    /* from here on the desktop loop is gone on purpose */
+    gfx_ready_for_watchdog = false;
     welcome_bg(c, false);
     draw_globe(c, SCREEN_W / 2 - 210, SCREEN_H / 2 - 92, 96, -36);
     draw_wordmark(c, SCREEN_W / 2 - 104, SCREEN_H / 2 - 74, WORDMARK_MEDIUM, WHITE);
@@ -267,6 +270,7 @@ static int dialog_loop(const char *title, int kind) {
     mouse_state_t ms; key_event_t ke;
     bool redraw = true;
     while (result == -2) {
+        gui_heartbeat = timer_ticks();               /* this loop is the desktop now */
         if (redraw) {
             memcpy(screen.px, bg->px, SCREEN_W * SCREEN_H * 4);
             canvas_t *c = &screen;
@@ -318,7 +322,11 @@ void shell_show_shutdown(void) {
         gfx_clear(&screen, BLACK); gfx_present(CURSOR_ARROW, -100, -100);
         mouse_state_t ms; key_event_t ke;
         task_sleep(300); while (keyboard_poll(&ke)) {} mouse_poll(&ms);
-        for (;;) { if (keyboard_poll(&ke) || mouse_poll(&ms)) break; hlt(); }
+        for (;;) {
+            gui_heartbeat = timer_ticks();           /* asleep on purpose, not hung */
+            if (keyboard_poll(&ke) || mouse_poll(&ms)) break;
+            hlt();
+        }
         wm_redraw_all();
     } else if (r == 1) final_screen("Shutting down...", false);
     else if (r == 2) final_screen("Restarting...", true);

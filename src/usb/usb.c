@@ -67,6 +67,12 @@ int usb_input_active(void) {
         if ((d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->acted) return 1;
     return 0;
 }
+/* The log-on screen starts a new session: whether input worked before it was
+ * shown (a mouse click in the last one) says nothing about this one. */
+void usb_input_reset(void) {
+    for (usb_dev_t *d = devices; d; d = d->next)
+        if (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) d->acted = false;
+}
 const char *usb_device_summary(void) {
     static char out[256];
     int len = 0;
@@ -74,26 +80,43 @@ const char *usb_device_summary(void) {
     for (usb_dev_t *d = devices; d; d = d->next) {
         const char *k = d->kind == USB_KIND_KEYBOARD ? "kbd" : d->kind == USB_KIND_MOUSE ? "mouse"
                       : d->kind == USB_KIND_STORAGE ? "disk" : d->cls == 9 ? "hub" : "dev";
-        int n = snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d%s", len ? ", " : "", k,
-                         d->addr, (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->acted ? "*" : "");
+        bool hid = d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE;
+        int n = hid
+              ? snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d.%d%s", len ? ", " : "", k,
+                         d->addr, d->iface, d->acted ? "*" : "")
+              : snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d", len ? ", " : "", k, d->addr);
         if (n > 0 && len + n < (int)sizeof out) len += n;
     }
     return out;
 }
 
-/* How far each HID device has got: interrupt polls and the reports they gave,
- * then GET_REPORT answers. A device that never moves past polls has an endpoint
- * the controller cannot reach; one that answers GET_REPORT is still usable. */
+/* How far each HID device has got: the interface and endpoint it uses, its
+ * vendor and product, interrupt polls and the reports they gave, GET_REPORT
+ * answers, the key the last report holds and that report's bytes. A device that
+ * never moves past polls has an endpoint the controller cannot reach; one that
+ * answers GET_REPORT is still usable; one whose last report holds a key nobody
+ * pressed is the one to look at. */
 const char *usb_live_text(void) {
-    static char out[512];
+    static char out[1024];
     int len = 0;
     out[0] = 0;
     for (usb_dev_t *d = devices; d; d = d->next) {
         if (d->kind != USB_KIND_KEYBOARD && d->kind != USB_KIND_MOUSE) continue;
-        int n = snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d i%u r%u g%u",
-                         len ? ", " : "", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr,
-                         (unsigned)d->irq_polls, (unsigned)d->irq_reports, (unsigned)d->ctl_reports);
+        int key = 0;
+        if (d->kind == USB_KIND_KEYBOARD)
+            for (int i = 2; i < 8; i++) if (d->report[i]) { key = d->report[i]; break; }
+        int n = snprintf(out + len, sizeof out - (size_t)len,
+                         "%s%s@%d.%d %04x:%04x e%d i%u r%u g%u lk%02x",
+                         len ? ", " : "", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse",
+                         d->addr, d->iface, d->vendor, d->product, d->ep_int,
+                         (unsigned)d->irq_polls, (unsigned)d->irq_reports, (unsigned)d->ctl_reports, key);
         if (n > 0 && len + n < (int)sizeof out) len += n;
+        if (d->last_len > 0 && len + 4 < (int)sizeof out) {
+            n = snprintf(out + len, sizeof out - (size_t)len, " rp");
+            if (n > 0) len += n;
+            for (int i = 0; i < d->last_len && i < 8 && len + 4 < (int)sizeof out; i++)
+                len += snprintf(out + len, sizeof out - (size_t)len, " %02x", d->last_rep[i]);
+        }
     }
     return out;
 }
@@ -181,19 +204,30 @@ static void hid_send_usage(uint8_t usage, bool release)
  * keys are down, so the repeat is ours. Modifiers and the lock keys do not. */
 #define HID_REPEAT_DELAY 500
 #define HID_REPEAT_RATE  33
+#define HID_REPEAT_HOLD 3000                    /* silence after which a held key is let go */
 static bool hid_repeats(uint8_t u)
 {
     return u >= 0x04 && u < 0xE0 && u != 0x39 && u != 0x47 && u != 0x53 && hid_scan[u];
 }
 
 /* `rep` is in the boot keyboard layout: modifier bits, a reserved byte, and up
- * to six usages that are held down. */
+ * to six usages that are held down. A boot keyboard report is eight bytes; a
+ * shorter one is something else that reached this endpoint, and taking it as a
+ * keyboard would invent keys out of its bytes. */
 static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
 {
     uint8_t r[8];
     memset(r, 0, sizeof r);
     memcpy(r, rep, (size_t)MIN(n, 8));
     if (n < 3 || r[2] == 0x01) return;                  /* too many keys at once: nothing changed */
+    if (n < 8) {
+        if (!d->odd_report) {
+            d->odd_report = true;
+            klog("usb: kbd at address %d: %d-byte report, not a keyboard's", d->addr, n);
+            usb_diag("kbd@%d got %d-byte report", d->addr, n);
+        }
+        return;
+    }
     for (int i = 0; i < 8; i++) if (r[i]) d->acted = true;
     for (int i = 0; i < 8; i++) {
         uint8_t bit = (uint8_t)(1u << i);
@@ -216,7 +250,17 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
         for (int j = 2; j < 8; j++) if (d->report[j] == u) seen = true;
         if (seen) continue;
         hid_send_usage(u, false);
-        if (hid_repeats(u)) { d->rep_usage = u; d->rep_next = timer_ticks() + HID_REPEAT_DELAY; }
+        if (hid_repeats(u)) {
+            d->rep_usage = u;
+            d->rep_next = timer_ticks() + HID_REPEAT_DELAY;
+            d->rep_seen = timer_ticks();
+        }
+    }
+    /* A keyboard with an idle rate resends its report while a key is held, so
+     * the repeat can be confirmed; a device that has gone quiet is not holding
+     * anything down, whatever the last report said. */
+    if (d->rep_usage) {
+        for (int i = 2; i < 8; i++) if (r[i] == d->rep_usage) d->rep_seen = timer_ticks();
     }
     memcpy(d->report, r, 8);
 }
@@ -239,7 +283,7 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
     if (d->boot) {
         if (d->kind == USB_KIND_KEYBOARD) {
             /* a keyboard that kept its report ID despite the boot protocol */
-            if (d->fmt.ids && n == 9) { rep++; n--; }
+            if (n == 9 && rep[0]) { rep++; n--; }
             hid_keyboard_report(d, rep, n);
             return;
         }
@@ -418,6 +462,19 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
     d->cls = 3; d->subcls = hi->subcls; d->proto = hi->proto;
     d->iface = hi->num; d->ep_int = hi->ep; d->maxpkt_int = hi->maxpkt ? hi->maxpkt : 8;
 
+    /* Two interfaces of one device cannot share an endpoint; if a configuration
+     * says they do, only the first one can own it. The other would otherwise
+     * take the reports of the interface that really uses it. */
+    for (usb_dev_t *e = devices; e; e = e->next) {
+        if (e->hcd == d->hcd && e->addr == d->addr && e->ep_int == d->ep_int) {
+            klog("usb: %04x:%04x at address %d: interface %d shares endpoint %d with interface %d, ignored",
+                 d->vendor, d->product, d->addr, hi->num, hi->ep, e->iface);
+            usb_diag("share ep%d dev %d", hi->ep, d->addr);
+            kfree(d);
+            return 0;
+        }
+    }
+
     int rlen = hi->rlen ? hi->rlen : 256;
     if (rlen > 1024) rlen = 1024;
     uint8_t *rd = kzalloc((size_t)rlen);
@@ -442,7 +499,11 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
         kfree(d);
         return 0;
     }
-    usb_control(d, 0x21, 0x0A, 0, hi->num, NULL, 0);                 /* SET_IDLE(0): report on change only */
+    /* A keyboard is asked for a report every half second, so one that is held
+     * down keeps saying so; a keyboard that stops answering has nothing held,
+     * and its repeat must not run for ever. A mouse keeps report-on-change, or
+     * an idle resend of its last movement would be counted twice. */
+    usb_control(d, 0x21, 0x0A, d->kind == USB_KIND_KEYBOARD ? (125 << 8) : 0, hi->num, NULL, 0);
 
     d->next = devices; devices = d;
     klog("usb: %s %04x:%04x at address %d (%s%s, interface %d, %s protocol, %d-byte packets)",
@@ -650,9 +711,17 @@ void usb_poll(void)
 {
     for (usb_dev_t *d = devices; d; d = d->next) {
         if (d->kind != USB_KIND_KEYBOARD && d->kind != USB_KIND_MOUSE) continue;
-        if (d->rep_usage && (int32_t)(timer_ticks() - d->rep_next) >= 0) {
-            hid_send_usage(d->rep_usage, false);
-            d->rep_next = timer_ticks() + HID_REPEAT_RATE;
+        if (d->rep_usage) {
+            uint32_t now = timer_ticks();
+            if ((int32_t)(now - d->rep_seen) > HID_REPEAT_HOLD) {
+                /* Nothing has confirmed the key is still down for seconds: the
+                 * device stopped answering, and its key-up will never arrive. */
+                hid_send_usage(d->rep_usage, true);
+                d->rep_usage = 0;
+            } else if ((int32_t)(now - d->rep_next) >= 0) {
+                hid_send_usage(d->rep_usage, false);
+                d->rep_next = now + HID_REPEAT_RATE;
+            }
         }
         /* One transfer per poll, one packet long: an interrupt IN delivers a
          * whole report, and a short one must be taken as it is. */
@@ -747,6 +816,7 @@ int usb_has_input(void) { return 0; }
 int usb_input_active(void) { return 0; }
 const char *usb_device_summary(void) { return ""; }
 const char *usb_live_text(void) { return ""; }
+void usb_input_reset(void) { }
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) { (void)pd; (void)ok; (void)ports; (void)connected; }
 void usb_diag(const char *fmt, ...) { (void)fmt; }
 const char *usb_diag_text(void) { return ""; }

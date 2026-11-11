@@ -384,12 +384,16 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   interface. Absolute pointers (tablets) are not driven. Reports are translated to PS/2 set 1
   scancodes and packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock,
   speed, button swap) works unchanged; a held key repeats in software, because a USB keyboard
-  does not repeat by itself. A device whose interrupt endpoint has never delivered anything
-  after a second is polled with `GET_REPORT` instead, asked for exactly the report length its
-  descriptor gives (asking for more can make a real device stall). Its answer is the current
-  report, so one identical to the last report taken is a movement already counted: the buttons
-  are applied, the movement is not. The interrupt endpoint is trusted alone as soon as it
-  delivers a report of its own.
+  does not repeat by itself. A report shorter than the format the descriptor describes is
+  refused, so another interface's bytes cannot be read as keys; two interfaces of one device
+  cannot share an endpoint, and the second one that claims it is ignored. A keyboard is asked
+  for a report every half second, so a held key keeps saying it is held; the repeat stops, and
+  the key is let go, after three seconds in which no report confirmed it. A device whose
+  interrupt endpoint has never delivered anything after a second is polled with `GET_REPORT`
+  instead, asked for exactly the report length its descriptor gives (asking for more can make a
+  real device stall). Its answer is the current report, so one identical to the last report
+  taken is a movement already counted: the buttons are applied, the movement is not. The
+  interrupt endpoint is trusted alone as soon as it delivers a report of its own.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.
@@ -407,8 +411,10 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   implemented.
 - If no USB keyboard or mouse is enumerated, or one is found but never sends a report, the log-on
   screen names every controller it found, the devices it enumerated and the last failures, and
-  keeps a live line per device — interrupt polls, reports they gave and `GET_REPORT` answers —
-  so a machine with a dead port or a stuck endpoint can report what is actually there.
+  keeps a live line per device — its address, interface and endpoint, vendor and product,
+  interrupt polls, reports they gave, `GET_REPORT` answers, and the key and bytes of its last
+  report — so a machine with a dead port, a stuck endpoint or a report read the wrong way can
+  report what is actually there.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):

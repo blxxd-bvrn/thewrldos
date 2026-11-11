@@ -99,6 +99,7 @@ extern window_t *wm_active;
 extern int wm_mouse_x, wm_mouse_y;
 extern uint32_t wm_dblclick_ms;
 extern bool wm_need_redraw;
+extern bool gfx_ready_for_watchdog;
 typedef void (*wm_deferred_fn)(void *);
 void wm_defer(wm_deferred_fn fn, void *arg);   /* run on GUI thread */
 

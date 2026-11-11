@@ -178,6 +178,8 @@ int main(void)
         check("kbd key 2", out[4], 0x00);
         const uint8_t over[8] = { 0x00, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01 };
         check("kbd rollover is refused", hid_decode_keys(&f, over, 8, out), 0);
+        const uint8_t shortr[4] = { 0x00, 0x04, 0x00, 0x00 };      /* some other device's report */
+        check("kbd short report is refused", hid_decode_keys(&f, shortr, 4, out), 0);
     }
 
     hid_parse_format(&f, nkro_kbd, sizeof nkro_kbd);

@@ -234,6 +234,9 @@ bool hid_decode_keys(const hid_format_t *f, const uint8_t *p, int n, uint8_t out
 {
     for (int i = 0; i < 8; i++) out[i] = 0;
     if (!f->keys.present) return false;
+    /* A report shorter than the keyboard report the descriptor describes is
+     * not that report; reading it would turn other bytes into key usages. */
+    if (f->keys.len && n < f->keys.len) return false;
     int nkeys = 0;
     if (f->keys.mod_off >= 0) out[0] = (uint8_t)hid_field(p, n, f->keys.mod_off, 8, false);
     for (int i = 0; i < f->keys.key_count; i++) {

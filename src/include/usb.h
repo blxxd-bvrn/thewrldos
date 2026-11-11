@@ -38,6 +38,8 @@ struct usb_dev {
     uint8_t report[16];                        /* last HID report, for key-up detection */
     uint8_t rep_usage;                         /* the key that is auto-repeating, 0 = none */
     uint32_t rep_next;                         /* when it repeats next */
+    uint32_t rep_seen;                         /* when a report last confirmed it is still held */
+    bool odd_report;                           /* a report of the wrong length was refused */
     bool seen;                                 /* has this device sent a report yet? */
     bool acted;                                /* a report has moved the pointer or pressed a key */
     int root_port, route;                      /* where it sits, for xHCI's slot context */
@@ -80,6 +82,7 @@ usb_dev_t *usb_first(void);
 const char *usb_boot_summary(void);             /* controller list and device count, for the logon screen */
 int usb_has_input(void);                        /* a USB keyboard or mouse was enumerated */
 int usb_input_active(void);                     /* a USB report moved the pointer or pressed a key */
+void usb_input_reset(void);                     /* the log-on screen asks for a fresh verdict */
 const char *usb_device_summary(void);           /* "kbd@2, mouse@3*, hub@7" */
 const char *usb_live_text(void);                /* per-device interrupt/GET_REPORT counters */
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected);
