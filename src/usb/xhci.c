@@ -97,6 +97,7 @@ typedef struct {
 
 typedef struct xdev {
     int slot, addr, speed, root_port, route;
+    int hw_addr;               /* the address the controller assigned (normally the slot) */
     bool bsr;                  /* endpoint 0 answers, the address is still 0 */
     int ep0_maxpkt;
     ring_t ep0;
@@ -285,9 +286,9 @@ static int xhci_cmd(xhci_t *x, int slot, uint64_t param, uint32_t status, uint32
     if (!addr) return -1;
     ring_doorbell(x, 0, 0);
     uint32_t code = 0; int got_slot = 0;
-    if (!evt_wait(x, TRB_CMD_COMPLETE, addr, 1000, &code, &got_slot, NULL)) {
+    if (!evt_wait(x, TRB_CMD_COMPLETE, addr, 5000, &code, &got_slot, NULL)) {
         klog("xhci: command %u timed out", type);
-        usb_diag("xHCI cmd %u timeout", type);
+        usb_diag("xHCI cmd %u to sts %x", type, r32(x, x->op + USBSTS));
         return -1;
     }
     if (code_out) *code_out = code;
@@ -300,12 +301,20 @@ static int xhci_address(xhci_t *x, xdev_t *d, int addr, bool bsr, int maxpkt)
     uint32_t *in = ctx_alloc(x, 32);
     if (!in) return -1;
     in[1] = 0x3;                                             /* add slot and EP0 */
-    fill_slot(x, ictx_slot(x, in), d, 1, addr);
+    fill_slot(x, ictx_slot(x, in), d, 1, 0);                 /* the controller assigns the address */
     fill_ep(x, ictx_ep(x, in, 1), EP_CTL, ring_dequeue(&d->ep0), maxpkt, 0);
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)in, 0, TRB_ADDRESS, bsr ? TRB_BSR : 0, &code, NULL);
     kfree_aligned(in);
-    if (r < 0) { klog("xhci: address device failed (code %u, slot %d)", code, d->slot); return -1; }
+    if (r < 0) { klog("xhci: address device failed (code %u, slot %d)", code, d->slot); usb_diag("xHCI addr sp %d mp %d", d->speed, maxpkt); return -1; }
+    {   /* the device address the controller wrote into the output slot context */
+        uint32_t *out = (uint32_t *)(uintptr_t)x->dcbaa[d->slot];
+        if (out) {
+            int ha = (int)(out[3] & 0xFF);
+            if (ha) d->hw_addr = ha;
+        }
+    }
+    (void)addr;
     return 0;
 }
 
@@ -318,7 +327,7 @@ static int xhci_configure(xhci_t *x, xdev_t *d, int epnum, bool in, int maxpkt, 
     if (!inctx) return -1;
     inctx[1] = 0x1 | (1u << dci);
     int entries = d->max_dci > dci ? d->max_dci : dci;
-    fill_slot(x, ictx_slot(x, inctx), d, entries, d->addr);
+    fill_slot(x, ictx_slot(x, inctx), d, entries, d->hw_addr ? d->hw_addr : d->slot);
     fill_ep(x, ictx_ep(x, inctx, dci), eptype, ring_dequeue(&d->ep[epnum].ring), maxpkt, 6);
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)inctx, 0, TRB_CONFIGURE, 0, &code, NULL);
@@ -513,13 +522,14 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low)
     xdev_t *d = kzalloc(sizeof *d);
     if (!d) return false;
     d->slot = slot;
+    d->hw_addr = slot;                                        /* the controller usually assigns the slot ID */
     d->root_port = root_port;
     d->route = route;
     d->speed = route ? (low ? 2 : 1) : (x->port_speed[root_port - 1] ? x->port_speed[root_port - 1] : 1);
     ring_init(&d->ep0, 32, true);
     if (!d->ep0.n) { kfree(d); return false; }
     x->pending = d;
-    int ep0 = d->speed >= 4 ? 512 : d->speed == 3 ? 64 : 8;
+    int ep0 = d->speed >= 4 ? 512 : d->speed == 2 ? 8 : 64;
     if (xhci_address(x, d, 0, true, ep0) < 0) {
         klog("xhci: slot %d could not be addressed", slot);
         usb_diag("xHCI slot %d address failed", slot);
