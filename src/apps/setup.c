@@ -670,7 +670,7 @@ static void obg_render(void) {
     draw_wordmark(c, 92, 12, WORDMARK_SMALL, WHITE);
 }
 static void oobe_left(canvas_t *c, int step, int pct, const char *eta) {
-    static const char *steps[] = { "Collecting information", "Dynamic Update", "Preparing installation", "Installing " OS_NAME, "Finalizing installation" };
+    static const char *steps[] = { "Collecting information", "Dynamic Update", "Preparing installation", ("Installing " OS_NAME), "Finalizing installation" };
     int y = 100;
     for (int i = 0; i < 5; i++) {
         uint32_t col = i == step ? WHITE : i < step ? HEX(0xC8D8FF) : HEX(0x8AA4E8);
