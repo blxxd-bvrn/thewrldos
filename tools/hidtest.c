@@ -115,6 +115,8 @@ int main(void)
         check("boot mouse btn", btn, 5);
         check("boot mouse wheel", wheel, -1);
         check("boot mouse too short", hid_decode_mouse(&f, r, 2, &dx, &dy, &btn, &wheel), 0);
+        const uint8_t kbd[8] = { 0x02, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00 };   /* a keyboard's report */
+        check("boot mouse refuses a keyboard report", hid_decode_mouse(&f, kbd, 8, &dx, &dy, &btn, &wheel), 0);
     }
 
     hid_parse_format(&f, wide_mouse, sizeof wide_mouse);
@@ -180,6 +182,8 @@ int main(void)
         check("kbd rollover is refused", hid_decode_keys(&f, over, 8, out), 0);
         const uint8_t shortr[4] = { 0x00, 0x04, 0x00, 0x00 };      /* some other device's report */
         check("kbd short report is refused", hid_decode_keys(&f, shortr, 4, out), 0);
+        const uint8_t longer[9] = { 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+        check("kbd long report is refused", hid_decode_keys(&f, longer, 9, out), 0);
     }
 
     hid_parse_format(&f, nkro_kbd, sizeof nkro_kbd);

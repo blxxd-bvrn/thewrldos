@@ -215,6 +215,11 @@ bool hid_decode_mouse(const hid_format_t *f, const uint8_t *p, int n,
 {
     const int need_x = f->mouse.x_off + f->mouse.x_bits, need_y = f->mouse.y_off + f->mouse.y_bits;
     if (!f->mouse.present || n * 8 < need_x || n * 8 < need_y) return false;
+    /* Without a report ID the whole report is the mouse's, so one longer than
+     * the descriptor describes is another interface's report that reached this
+     * endpoint (a keyboard's eight bytes, say). Its bytes are not movement, and
+     * reading them would press buttons out of a modifier byte. */
+    if (!f->ids && f->mouse.len && n > f->mouse.len) return false;
     *dx = hid_field(p, n, f->mouse.x_off, f->mouse.x_bits, true);
     *dy = hid_field(p, n, f->mouse.y_off, f->mouse.y_bits, true);
     *buttons = f->mouse.btn_bits ? hid_field(p, n, f->mouse.btn_off, f->mouse.btn_bits, false) : 0;
@@ -235,8 +240,10 @@ bool hid_decode_keys(const hid_format_t *f, const uint8_t *p, int n, uint8_t out
     for (int i = 0; i < 8; i++) out[i] = 0;
     if (!f->keys.present) return false;
     /* A report shorter than the keyboard report the descriptor describes is
-     * not that report; reading it would turn other bytes into key usages. */
+     * not that report; reading it would turn other bytes into key usages. One
+     * longer is another interface's report, and reads the same way. */
     if (f->keys.len && n < f->keys.len) return false;
+    if (!f->ids && f->keys.len && n > f->keys.len) return false;
     int nkeys = 0;
     if (f->keys.mod_off >= 0) out[0] = (uint8_t)hid_field(p, n, f->keys.mod_off, 8, false);
     for (int i = 0; i < f->keys.key_count; i++) {
