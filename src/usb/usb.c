@@ -385,8 +385,8 @@ void usb_attach(usb_hcd_t *h)
     for (int port = 0; port < h->ports; port++) {
         bool low = false;
         if (!h->port_reset || !h->port_reset(h, port, &low)) continue;
-        char where[16];
-        snprintf(where, sizeof where, "port %d", port + 1);
+        char where[24];
+        snprintf(where, sizeof where, "%s port %d", h->name, port + 1);
         enumerate_one(h, low, where, port + 1, 0);
     }
 }
@@ -420,12 +420,17 @@ void usb_init(void)
             if (pd->cls != 0x0C || pd->sub != 0x03) continue;
             const char *kind = pd->prog == 0x00 ? "UHCI" : pd->prog == 0x10 ? "OHCI"
                              : pd->prog == 0x20 ? "EHCI" : pd->prog == 0x30 ? "xHCI" : "USB";
-            bool ours = pd->prog == 0x00 || pd->prog == 0x30;   /* UHCI or xHCI */
+            bool ours = pd->prog == 0x00 || pd->prog == 0x10 ||
+                        pd->prog == 0x20 || pd->prog == 0x30;
             if (!ours) usb_unsupported++;
             klog("usb: %02x:%02x.%x %04x:%04x %s%s", pd->bus, pd->dev, pd->fn, pd->vendor, pd->device,
                  kind, ours ? "" : " (no driver for this controller yet)");
         }
     }
+    /* EHCI first: it owns the ports and hands full/low-speed ones to the
+     * companion, whose probe comes next and enumerates them. */
+    ehci_probe();
+    ohci_probe();
     uhci_probe();
     xhci_probe();
     if (devices) {

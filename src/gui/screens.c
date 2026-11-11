@@ -142,7 +142,7 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
         extern int usb_unsupported; extern int usb_count(void);
         if (usb_unsupported && !usb_count())
             draw_text(c, FONT_UI_BOLD, 30, SCREEN_H - 84,
-                      "USB input has no driver on this computer yet (EHCI/OHCI); a PS/2 keyboard still works.", HEX(0xFFD070));
+                      "USB input has no driver on this computer; a PS/2 keyboard still works.", HEX(0xFFD070));
     }
 }
 void welcome_screen(void) {

@@ -91,13 +91,14 @@ Already working, and not on the list below:
 
 ### 8. USB
 
-- The host stack (`src/usb`) speaks **xHCI** (USB 3.x, the controller every recent machine has)
-  and **UHCI** (USB 1.1): control, interrupt and bulk transfers, enumeration through hubs,
+- The host stack (`src/usb`) speaks **xHCI** (USB 3.x), **EHCI** (USB 2.0), **UHCI** and
+  **OHCI** (USB 1.1): control, interrupt and bulk transfers, enumeration through hubs,
   boot-protocol HID keyboards and mice, and bulk-only mass storage.
-- Missing: EHCI and OHCI (machines whose ports are USB 2.0-only); isochronous transfers (USB
-  audio, video and MIDI); hotplug after boot (the buses are scanned once); and multiple
-  configurations or alternate settings.
-- Needed by a browser only for input and storage, but a modern PC needs xHCI for both.
+- Missing: split transactions (a full/low-speed device behind a high-speed hub); isochronous
+  transfers (USB audio, video and MIDI); hotplug after boot (the buses are scanned once); and
+  multiple configurations or alternate settings.
+- Needed by a browser only for input and storage, but a PC needs at least one of xHCI, EHCI,
+  UHCI or OHCI for both.
 
 ### 9. Graphics and text
 
@@ -125,7 +126,7 @@ Already working, and not on the list below:
 - 512 MB minimum and about 3.75 GB maximum, 64-bit edition only; WebKit wants 1-2 GB per
   process.
 - The installed partition is loaded into RAM at boot, so its size is bounded by RAM.
-- No Wi-Fi; USB needs xHCI or UHCI, and wired IPv4 Ethernet only.
+- No Wi-Fi; USB needs xHCI, EHCI, UHCI or OHCI, and wired IPv4 Ethernet only.
 - An unimplemented system call returns `ENOSYS`, is logged once, and the program dies.
 - The Linux ABI is covered by the test programs in `samples/linux`: `hello.c`, `threads.c`,
   `ipc.c`, `procs.c` and `socket.c`.

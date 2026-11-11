@@ -133,7 +133,8 @@ is a hybrid image: a PC-BIOS core and an x86-64 EFI System Partition (`EFI/BOOT/
 UEFI firmware must be 64-bit (the usual kind); a 32-bit-only EFI machine cannot boot it. To install,
 attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **NVMe**, or **SCSI**
 (VMware/VirtualBox **LSI Logic** and **LSI Logic SAS**, **VMware Paravirtual**, **virtio-scsi**), a
-**virtio-blk** disk in QEMU/KVM/Proxmox, or a **USB** disk behind a UHCI (USB 1.1) controller.
+**virtio-blk** disk in QEMU/KVM/Proxmox, or a **USB** disk behind a UHCI, OHCI, EHCI or xHCI
+controller.
 USB keyboards and mice work the same way, including through a hub. BusLogic adapters are not supported.
 For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
 **SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
@@ -363,11 +364,14 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   the rest of the way to WPE WebKit.
 
 ### USB (`src/usb`)
-- **Host controllers:** **xHCI** (`xhci.c`, USB 3.x — what every machine has had for the last
-  decade) and **UHCI** (`uhci.c`, USB 1.1 on PIIX/ICH chipsets and older VMs). Both are driven by
-  polling: xHCI through command, event and per-endpoint TRB rings with device contexts and slots;
-  UHCI through a frame list of queue heads and transfer descriptors. Every controller found is
-  enumerated, and more than one can be active at once.
+- **Host controllers:** all four kinds a PC uses. **xHCI** (`xhci.c`, USB 3.x, what every
+  machine has had for the last decade), **EHCI** (`ehci.c`, USB 2.0 high speed),
+  **UHCI** (`uhci.c`, USB 1.1 on PIIX/ICH chipsets) and **OHCI** (`ohci.c`, USB 1.1 on
+  non-Intel chipsets and add-in cards). They are all driven by polling: xHCI through command,
+  event and per-endpoint TRB rings; EHCI through queue heads and qTDs on the asynchronous and
+  periodic schedules; UHCI through a frame list of queue heads and transfer descriptors; OHCI
+  through endpoint descriptor queues on its control, bulk and periodic lists. Every controller
+  found is enumerated, and several can be active at once.
 - **Enumeration:** port reset and enable, `GET_DESCRIPTOR`, `SET_ADDRESS` (on xHCI the address
   lives in the slot context), full configuration parsing (interfaces and endpoints) and
   `SET_CONFIGURATION`, plus one level of **hub**: the hub's ports are powered and reset and the
@@ -378,12 +382,14 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.
-- Tested in QEMU: `-device qemu-xhci -device usb-kbd -device usb-mouse` and the same with
-  `-device usb-storage`; with both controllers in one machine, each enumerates its own devices.
-  With the PS/2 keyboard and mouse bypassed, a USB keyboard logs in and a USB mouse moves and
-  clicks, and a USB disk reads and writes sectors back unchanged. Not yet: EHCI/OHCI (USB 2.0
-  and 1.0-only motherboards), isochronous transfers, hotplug after boot, and more than one
-  configuration per device.
+- Tested in QEMU with each controller: `qemu-xhci`, `usb-ehci`, `piix3-usb-uhci` and
+  `pci-ohci`, with a USB keyboard, mouse and disk. With the PS/2 keyboard and mouse bypassed, a
+  USB keyboard logs in and a USB mouse moves and clicks on all four. A USB disk reads and writes
+  sectors back unchanged. With more than one controller in the same machine, each enumerates
+  its own devices. EHCI handles high-speed devices itself and hands full/low-speed ports to the
+  companion; it does not implement split transactions, so a full-speed device behind a
+  high-speed hub is not seen, and isochronous transfers and hotplug after boot are not
+  implemented.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
@@ -604,7 +610,7 @@ used to test every screen above, including a full install from a blank disk.
 - **Storage:**
   - The live CD runs from RAM.
   - An installed system keeps `C:` on an NTFS or FAT32 partition of an IDE, SATA, NVMe, SCSI or
-    virtio disk, or of a USB disk on a UHCI controller. BusLogic and the LSI 53C895A (QEMU's
+    virtio disk, or of a USB disk on any of the supported USB controllers. BusLogic and the LSI 53C895A (QEMU's
     `-drive if=scsi` default) are not supported. Hyper-V's synthetic SCSI is not supported either,
     so use a generation 1 VM's IDE disk.
   - Disks with 4 KB sectors (4Kn) can't be installed to: a BIOS can't start from them.
@@ -642,9 +648,10 @@ used to test every screen above, including a full install from a blank disk.
   - Pipes hold at most 64 KiB; network sockets are IPv4 only, with no loopback interface and no
     IP fragmentation (a UDP datagram tops out at 1472 bytes).
 - **Hardware and design:**
-  - USB runs on **xHCI** (USB 3.x) and **UHCI** (USB 1.1) controllers. EHCI (USB 2.0-only) and
-    OHCI are not implemented, nor are isochronous devices (USB audio and video); the buses are
-    scanned once, at boot.
+  - USB runs on **xHCI** (USB 3.x), **EHCI** (USB 2.0), **UHCI** and **OHCI** (USB 1.1)
+    controllers. EHCI owns the high-speed ports and hands full/low-speed ones to the companion;
+    full-speed devices behind a high-speed hub (split transactions) are not supported, nor are
+    isochronous devices (USB audio and video); the buses are scanned once, at boot.
   - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.
@@ -662,6 +669,7 @@ src/arch           boot stub, interrupt/context-switch assembly, linker script: 
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    FAT reader, inflate, DMG, persistence
 src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
+src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
                    script itemisation (text.c), globe + wordmark, themes, window manager,
                    widgets, desktop, screens

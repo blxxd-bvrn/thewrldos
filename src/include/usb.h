@@ -1,7 +1,8 @@
 /* USB: a small host stack for the 64-bit edition. A host controller driver
- * (UHCI) moves transfers; this layer enumerates devices, then hands each one to
- * a class driver: HID boot keyboards and mice feed the PS/2 input queues, and
- * mass storage registers a SCSI disk in the block layer. */
+ * (UHCI, OHCI, EHCI or xHCI) moves transfers; this layer enumerates devices,
+ * then hands each one to a class driver: HID boot keyboards and mice feed the
+ * PS/2 input queues, and mass storage registers a SCSI disk in the block
+ * layer. */
 #ifndef USB_H
 #define USB_H
 #include "kernel.h"
@@ -62,6 +63,8 @@ int usb_out(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, const void *
 
 /* host controllers */
 void uhci_probe(void);
+void ohci_probe(void);
+void ehci_probe(void);
 void xhci_probe(void);
 
 #endif
