@@ -257,6 +257,9 @@ static int ohci_transfer(usb_hcd_t *h, int addr, bool low, int ep, bool in,
         ohci_link(o, o->ed_int, TD_INT, 1, 2);
         int r = ohci_wait(o, TD_INT, 1, timeout_ms);
         ohci_unlink(o, o->ed_int, 2);
+        /* a report that arrived while the list was being taken down was still
+         * answered, so it has to be kept */
+        if (r == -2) r = ohci_wait(o, TD_INT, 1, 0);
         if (r == -1) return -1;
         if (r == -2) return -2;
         int got = td_actual(&o->td[TD_INT], (uint32_t)(uintptr_t)buf, len);

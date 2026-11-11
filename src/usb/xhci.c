@@ -63,11 +63,15 @@
 #define TRB_ENABLE_SLOT  9
 #define TRB_ADDRESS      11
 #define TRB_CONFIGURE    12
+#define TRB_RESET_EP     14
+#define TRB_STOP_EP      15
+#define TRB_SET_DEQ      16
 #define TRB_CMD_COMPLETE 33
 #define TRB_TRANSFER     32
 
 #define TRB_CYCLE  (1u << 0)
 #define TRB_TC     (1u << 1)
+#define TRB_ISP    (1u << 2)
 #define TRB_IOC    (1u << 5)
 #define TRB_IDT    (1u << 6)
 #define TRB_DIR    (1u << 16)
@@ -79,6 +83,7 @@
 #define TRB_EPC(c)  (((c) >> 16) & 0x1F)
 
 #define CC_SUCCESS 1
+#define CC_STALL   6
 #define CC_SHORT   13
 
 #define EP_CTL      4
@@ -108,7 +113,8 @@ typedef struct xdev {
         bool configured;
         uint64_t armed;        /* an interrupt IN TRB waiting in the controller */
         int armed_len;
-        uint8_t *ibuf;         /* this endpoint's own report buffer */
+        int errors;            /* failed interrupt transfers in a row */
+        uint8_t *ibuf;         /* this endpoint's own report buffer, one packet long */
     } ep[16];
     int max_dci;
     struct xdev *next;
@@ -195,11 +201,42 @@ static bool evt_pop(xhci_t *x, uint64_t *param, uint32_t *status, uint32_t *cont
 
 /* Completions for other endpoints are kept here until their owner asks; the
  * event ring is shared by every device on the controller. */
+static void pend_drop(xhci_t *x, int i)
+{
+    for (int j = i; j + 1 < x->npend; j++) {
+        x->pendp[j] = x->pendp[j + 1];
+        x->pends[j] = x->pends[j + 1];
+        x->pendc[j] = x->pendc[j + 1];
+    }
+    x->npend--;
+}
 static void pend_put(xhci_t *x, uint64_t p, uint32_t s, uint32_t c)
 {
-    if (x->npend >= 64) return;
+    if (x->npend >= 64) pend_drop(x, 0);                      /* the oldest is the least likely to be wanted */
     x->pendp[x->npend] = p; x->pends[x->npend] = s; x->pendc[x->npend] = c;
     x->npend++;
+}
+/* forget what is stashed for an endpoint that is being restarted */
+static void pend_purge(xhci_t *x, int slot, int dci)
+{
+    for (int i = x->npend - 1; i >= 0; i--)
+        if (((x->pendc[i] >> 10) & 0x3F) == TRB_TRANSFER &&
+            (int)((x->pendc[i] >> 24) & 0xFF) == slot && (int)TRB_EPC(x->pendc[i]) == dci)
+            pend_drop(x, i);
+}
+/* a stashed transfer event for either TRB that ended in an error */
+static bool pend_take_error(xhci_t *x, uint64_t a, uint64_t b, uint32_t *code)
+{
+    for (int i = 0; i < x->npend; i++) {
+        if (((x->pendc[i] >> 10) & 0x3F) != TRB_TRANSFER) continue;
+        if (!x->pendp[i] || (x->pendp[i] != a && x->pendp[i] != b)) continue;
+        uint32_t cc = TRB_CODE(x->pends[i]);
+        if (cc == CC_SUCCESS || cc == CC_SHORT) continue;
+        *code = cc;
+        pend_drop(x, i);
+        return true;
+    }
+    return false;
 }
 static bool pend_take(xhci_t *x, uint32_t type, uint64_t match, uint32_t *status, uint32_t *control)
 {
@@ -207,12 +244,7 @@ static bool pend_take(xhci_t *x, uint32_t type, uint64_t match, uint32_t *status
         if (((x->pendc[i] >> 10) & 0x3F) == type && (match == 0 || x->pendp[i] == match)) {
             *status = x->pends[i];
             *control = x->pendc[i];
-            for (int j = i; j + 1 < x->npend; j++) {
-                x->pendp[j] = x->pendp[j + 1];
-                x->pends[j] = x->pends[j + 1];
-                x->pendc[j] = x->pendc[j + 1];
-            }
-            x->npend--;
+            pend_drop(x, i);
             return true;
         }
     }
@@ -224,12 +256,16 @@ static bool take_event(xhci_t *x, uint32_t type, uint64_t match, uint32_t *statu
     if (pend_take(x, type, match, status, control)) return true;
     uint64_t param; uint32_t s, c;
     while (evt_pop(x, &param, &s, &c)) {
-        if (((c >> 10) & 0x3F) == type && (match == 0 || param == match)) {
+        uint32_t t = (c >> 10) & 0x3F;
+        if (t == type && (match == 0 || param == match)) {
             *status = s;
             *control = c;
             return true;
         }
-        pend_put(x, param, s, c);
+        /* Only a completion has someone waiting for it. Port changes and
+         * controller notices would otherwise sit in the stash until it is
+         * full, and the next report that needed stashing would be lost. */
+        if (t == TRB_TRANSFER || t == TRB_CMD_COMPLETE) pend_put(x, param, s, c);
     }
     return false;
 }
@@ -273,14 +309,16 @@ static void fill_slot(xhci_t *x, uint32_t *s, xdev_t *d, int entries, int addr)
     s[3] = (uint32_t)addr;
 }
 /* `dequeue` is a ring pointer with the DCS bit in bit 0 */
-static void fill_ep(xhci_t *x, uint32_t *e, int type, uint64_t dequeue, int maxpkt, int interval)
+/* `esit` is the most a periodic endpoint moves per service interval; the
+ * controller reserves bus time from it, and schedules nothing for zero. */
+static void fill_ep(xhci_t *x, uint32_t *e, int type, uint64_t dequeue, int maxpkt, int interval, int esit)
 {
     (void)x;
     e[0] = (uint32_t)(interval & 0xFF) << 16;
     e[1] = (uint32_t)type << 3 | (3u << 1) | ((uint32_t)maxpkt << 16);
     e[2] = (uint32_t)(dequeue & 0xFFFFFFF0ull) | (uint32_t)(dequeue & 1);
     e[3] = (uint32_t)(dequeue >> 32);
-    e[4] = 8;
+    e[4] = (uint32_t)(esit ? esit : 8) | ((uint32_t)esit << 16);     /* average TRB length, max ESIT payload */
 }
 
 static int xhci_cmd(xhci_t *x, int slot, uint64_t param, uint32_t status, uint32_t type,
@@ -306,7 +344,7 @@ static int xhci_address(xhci_t *x, xdev_t *d, int addr, bool bsr, int maxpkt)
     if (!in) return -1;
     in[1] = 0x3;                                             /* add slot and EP0 */
     fill_slot(x, ictx_slot(x, in), d, 1, 0);                 /* the controller assigns the address */
-    fill_ep(x, ictx_ep(x, in, 1), EP_CTL, ring_dequeue(&d->ep0), maxpkt, 0);
+    fill_ep(x, ictx_ep(x, in, 1), EP_CTL, ring_dequeue(&d->ep0), maxpkt, 0, 0);
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)in, 0, TRB_ADDRESS, bsr ? TRB_BSR : 0, &code, NULL);
     kfree_aligned(in);
@@ -332,7 +370,8 @@ static int xhci_configure(xhci_t *x, xdev_t *d, int epnum, bool in, int maxpkt, 
     inctx[1] = 0x1 | (1u << dci);
     int entries = d->max_dci > dci ? d->max_dci : dci;
     fill_slot(x, ictx_slot(x, inctx), d, entries, d->hw_addr ? d->hw_addr : d->slot);
-    fill_ep(x, ictx_ep(x, inctx, dci), eptype, ring_dequeue(&d->ep[epnum].ring), maxpkt, 6);
+    fill_ep(x, ictx_ep(x, inctx, dci), eptype, ring_dequeue(&d->ep[epnum].ring), maxpkt, 6,
+            eptype == EP_INT_IN ? maxpkt : 0);
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)inctx, 0, TRB_CONFIGURE, 0, &code, NULL);
     kfree_aligned(inctx);
@@ -392,7 +431,8 @@ static void xhci_hub_info(usb_hcd_t *h, int addr, int ports, int think_time)
 static int xhci_run_trb(xhci_t *x, xdev_t *d, int epnum, int dci, uint64_t param, uint32_t status,
                         bool in, int timeout_ms, uint32_t *left)
 {
-    uint64_t addr = ring_push(&d->ep[epnum].ring, param, status, TRB_NORMAL, TRB_IOC | (in ? TRB_DIR : 0));
+    (void)in;                                                /* a Normal TRB has no direction bit: the endpoint has it */
+    uint64_t addr = ring_push(&d->ep[epnum].ring, param, status, TRB_NORMAL, TRB_IOC);
     if (!addr) return -1;
     ring_doorbell(x, d->slot, dci);
     uint32_t code = 0;
@@ -402,6 +442,16 @@ static int xhci_run_trb(xhci_t *x, xdev_t *d, int epnum, int dci, uint64_t param
         return -1;
     }
     return 0;
+}
+
+/* An error leaves an endpoint halted, and a transfer that timed out is still
+ * queued on it. Either way nothing moves on it again until it is reset (or
+ * stopped) and told where its ring carries on. */
+static void xhci_ep_restart(xhci_t *x, xdev_t *d, int dci, ring_t *r, bool halted)
+{
+    xhci_cmd(x, d->slot, 0, 0, halted ? TRB_RESET_EP : TRB_STOP_EP, (uint32_t)dci << 16, NULL, NULL);
+    pend_purge(x, d->slot, dci);
+    xhci_cmd(x, d->slot, ring_dequeue(r), 0, TRB_SET_DEQ, (uint32_t)dci << 16, NULL, NULL);
 }
 
 static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t req,
@@ -429,28 +479,45 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
     setup[6] = (uint8_t)len;   setup[7] = (uint8_t)(len >> 8);
     bool in = (type & 0x80) != 0;
     uint8_t *data = x->buf + 64;
-    if (!in && len) memcpy(data, buf, len);
+    if (len) { if (in) memset(data, 0, (size_t)len); else memcpy(data, buf, len); }
 
+    /* the setup stage says whether a data stage follows, and which way it runs */
+    uint32_t trt = len ? (in ? 3u : 2u) << 16 : 0;
     uint64_t setup_val; memcpy(&setup_val, setup, 8);
-    uint64_t first = ring_push(&d->ep0, setup_val, 8, TRB_SETUP, TRB_IDT);
+    uint64_t first = ring_push(&d->ep0, setup_val, 8, TRB_SETUP, TRB_IDT | trt);
     if (!first) return -1;
-    if (len && !ring_push(&d->ep0, (uint64_t)(uintptr_t)data, (uint32_t)len, TRB_DATA, in ? TRB_DIR : 0)) return -1;
+    /* an IN data stage reports for itself, so a short answer gives its real length */
+    uint64_t mid = 0;
+    if (len) {
+        mid = ring_push(&d->ep0, (uint64_t)(uintptr_t)data, (uint32_t)len, TRB_DATA,
+                        in ? TRB_DIR | TRB_ISP | TRB_IOC : 0);
+        if (!mid) return -1;
+    }
     /* the status stage runs the other way from the data stage, and interrupts */
-    uint64_t last = ring_push(&d->ep0, 0, 0, TRB_STATUS, TRB_IOC | (in ? 0 : TRB_DIR));
+    uint64_t last = ring_push(&d->ep0, 0, 0, TRB_STATUS, TRB_IOC | (in && len ? 0 : TRB_DIR));
     if (!last) return -1;
     ring_doorbell(x, d->slot, 1);
 
-    uint32_t code = 0, left = 0;
-    if (!evt_wait(x, TRB_TRANSFER, last, 2000, &code, NULL, &left)) {
-        klog("xhci: control %02x/%02x on slot %d timed out", type, req, d->slot);
-        usb_diag("xHCI ctl %02x/%02x dev %d%s timeout", type, req, d->addr, d->tt_port ? " hub" : "");
+    uint32_t code = 0, left = 0, s, c;
+    bool done = false;
+    uint32_t t0 = timer_ticks();
+    while ((int32_t)(timer_ticks() - t0) < 2000) {
+        if (take_event(x, TRB_TRANSFER, last, &s, &c)) { code = TRB_CODE(s); done = true; break; }
+        /* an error ends the transfer at the stage it happened in */
+        if (pend_take_error(x, first, mid, &code)) { done = true; break; }
+    }
+    if (!done || (code != CC_SUCCESS && code != CC_SHORT)) {
+        if (done) {
+            klog("xhci: control %02x/%02x on slot %d failed (code %u)", type, req, d->slot, code);
+            usb_diag("xHCI ctl %02x/%02x dev %d%s code %u", type, req, d->addr, d->tt_port ? " hub" : "", code);
+        } else {
+            klog("xhci: control %02x/%02x on slot %d timed out", type, req, d->slot);
+            usb_diag("xHCI ctl %02x/%02x dev %d%s timeout", type, req, d->addr, d->tt_port ? " hub" : "");
+        }
+        xhci_ep_restart(x, d, 1, &d->ep0, done);
         return -1;
     }
-    if (code != CC_SUCCESS && code != CC_SHORT) {
-        klog("xhci: control %02x/%02x on slot %d failed (code %u)", type, req, d->slot, code);
-        usb_diag("xHCI ctl %02x/%02x dev %d%s code %u", type, req, d->addr, d->tt_port ? " hub" : "", code);
-        return -1;
-    }
+    if (mid && in && pend_take(x, TRB_TRANSFER, mid, &s, &c)) left = s & TRB_LEN;
     int got = len - (int)left;
     if (got < 0) got = 0;
     if (in && len) memcpy(buf, data, got);
@@ -467,28 +534,38 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
 static int xhci_poll_in(xhci_t *x, xdev_t *d, int epnum, void *buf, int len)
 {
     int dci = epnum * 2 + 1;
-    if (!d->ep[epnum].ibuf) return -1;
-    if (len > d->ep[epnum].maxpkt) len = d->ep[epnum].maxpkt;
+    if (!d->ep[epnum].ibuf || d->ep[epnum].errors >= 8) return -1;
     uint32_t status, control;
     if (d->ep[epnum].armed && take_event(x, TRB_TRANSFER, d->ep[epnum].armed, &status, &control)) {
-        if (TRB_EPC(control) == dci) {
-            uint32_t code = TRB_CODE(status);
-            int got = d->ep[epnum].armed_len - (int)(status & TRB_LEN);
-            d->ep[epnum].armed = 0;
-            if (code != CC_SUCCESS && code != CC_SHORT) return -1;
-            if (got < 0) got = 0;
-            if (got > len) got = len;
-            if (got) memcpy(buf, d->ep[epnum].ibuf, got);
-            return got;
+        uint32_t code = TRB_CODE(status);
+        int got = d->ep[epnum].armed_len - (int)(status & TRB_LEN);
+        d->ep[epnum].armed = 0;
+        if (code != CC_SUCCESS && code != CC_SHORT) {
+            if (!d->ep[epnum].errors++) {
+                klog("xhci: interrupt endpoint %d on slot %d failed (code %u)", epnum, d->slot, code);
+                usb_diag("xHCI int dev %d ep %d code %u", d->addr, epnum, code);
+            }
+            xhci_ep_restart(x, d, dci, &d->ep[epnum].ring, true);
+            if (code == CC_STALL)                            /* CLEAR_FEATURE(ENDPOINT_HALT) */
+                xhci_control(&x->hcd, d->addr, false, 0x02, 1, 0, (uint16_t)(0x80 | epnum), NULL, 0);
+            return -1;
         }
+        d->ep[epnum].errors = 0;
+        if (got < 0) got = 0;
+        if (got > len) got = len;
+        if (got) memcpy(buf, d->ep[epnum].ibuf, got);
+        return got;
     }
     if (!d->ep[epnum].armed) {
-        uint64_t trb = ring_push(&d->ep[epnum].ring, (uint64_t)(uintptr_t)d->ep[epnum].ibuf, (uint32_t)len,
-                                 TRB_NORMAL, TRB_IOC | TRB_DIR);
+        /* Always a whole packet: a buffer shorter than what the device sends is
+         * a babble error, and that halts the endpoint. */
+        int room = d->ep[epnum].maxpkt;
+        uint64_t trb = ring_push(&d->ep[epnum].ring, (uint64_t)(uintptr_t)d->ep[epnum].ibuf, (uint32_t)room,
+                                 TRB_NORMAL, TRB_IOC);
         if (!trb) return -1;
         ring_doorbell(x, d->slot, dci);
         d->ep[epnum].armed = trb;
-        d->ep[epnum].armed_len = len;
+        d->ep[epnum].armed_len = room;
     }
     return -2;
 }

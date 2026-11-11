@@ -99,25 +99,38 @@ static void uhci_link(uhci_t *u, int base, int n)
  * stops at that descriptor), so a descriptor marked SPD that finished while
  * everything before it finished means the transfer is over. Returns the bytes
  * the device moved, -2 if nothing happened in timeout_ms, -1 on an error. */
+static bool uhci_chain_done(uhci_t *u, int base, int ntds)
+{
+    bool active = false;
+    for (int i = 0; i < ntds; i++) if (u->tds[base + i].status & TD_ACTIVE) active = true;
+    if (!active) return true;
+    for (int i = ntds - 1; i >= 0; i--) {                /* a finished SPD descriptor ends it */
+        if ((u->tds[base + i].status & (TD_ACTIVE | TD_SPD)) != TD_SPD) continue;
+        bool prev = true;
+        for (int j = 0; j < i; j++) if (u->tds[base + j].status & TD_ACTIVE) prev = false;
+        if (prev) return true;
+    }
+    return false;
+}
+
 static int uhci_run(uhci_t *u, int base, int ntds, int timeout_ms)
 {
     u->qh->element = (uint32_t)(uintptr_t)&u->tds[base];
     uint32_t t0 = timer_ticks();
-    int done = 0;
+    bool done = false;
     for (;;) {
-        bool active = false;
-        for (int i = 0; i < ntds; i++) if (u->tds[base + i].status & TD_ACTIVE) active = true;
-        if (!active) { done = 1; break; }
-        for (int i = ntds - 1; i >= 0; i--) {            /* a finished SPD descriptor ends it */
-            if ((u->tds[base + i].status & (TD_ACTIVE | TD_SPD)) != TD_SPD) continue;
-            bool prev = true;
-            for (int j = 0; j < i; j++) if (u->tds[base + j].status & TD_ACTIVE) prev = false;
-            if (prev) { done = 1; break; }
-        }
-        if (done) break;
+        if (uhci_chain_done(u, base, ntds)) { done = true; break; }
         if ((int32_t)(timer_ticks() - t0) >= timeout_ms) break;
     }
     u->qh->element = 1;
+    if (!done) {
+        /* The controller may have been in the middle of the transfer when it
+         * was taken away: the device was answered, so the answer must not be
+         * thrown away. Give that frame time to finish and look once more. */
+        t0 = timer_ticks();
+        while ((int32_t)(timer_ticks() - t0) < 2) task_yield();
+        done = uhci_chain_done(u, base, ntds);
+    }
     uwreg16(u, UHCI_STS, STS_MASK);
     if (!done) return -2;
 

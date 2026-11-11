@@ -185,15 +185,19 @@ static int ehci_run_async(ehci_t *e, int first, int n, int timeout_ms) {
         klog("ehci: async timeout cmd %08x sts %08x qh %08x tok %08x qtd %08x tok %08x",
              eop(e, USBCMD), eop(e, USBSTS), e->xfer->info1, e->xfer->token,
              e->qtds[first].token, e->qtds[first + n - 1].token);
-    eopw(e, USBCMD, eop(e, USBCMD) & ~CMD_ASE);
-    t0 = timer_ticks();
-    while ((eop(e, USBSTS) & STS_ASS) && (int32_t)(timer_ticks() - t0) < 20) task_yield();
-    /* ring the doorbell so the controller releases a cached queue head before
-     * the next transfer overwrites it */
+    /* Take the queue head out of the list and ring the doorbell while the
+     * schedule is still running: that is the only time the controller answers
+     * it, and the answer means it has let go of the queue head, so the next
+     * transfer can reuse it. Rung with the schedule off, the doorbell stays
+     * pending and goes off in the middle of the next transfer instead. */
+    e->async_head->next = (uint32_t)phys(e->async_head) | Q_NEXT_QH;
     eopw(e, USBCMD, eop(e, USBCMD) | CMD_IAAD);
     t0 = timer_ticks();
     while (!(eop(e, USBSTS) & STS_IAA) && (int32_t)(timer_ticks() - t0) < 20) task_yield();
     eopw(e, USBSTS, STS_IAA);
+    eopw(e, USBCMD, eop(e, USBCMD) & ~(CMD_ASE | CMD_IAAD));
+    t0 = timer_ticks();
+    while ((eop(e, USBSTS) & STS_ASS) && (int32_t)(timer_ticks() - t0) < 20) task_yield();
     e->xfer->next = 1;
     e->async_head->next = (uint32_t)phys(e->xfer) | Q_NEXT_QH;
     if (r) return r;
@@ -288,6 +292,12 @@ static int ehci_transfer(usb_hcd_t *h, int addr, bool low, int ep, bool in,
         t0 = timer_ticks();
         while ((eop(e, USBSTS) & STS_PSS) && (int32_t)(timer_ticks() - t0) < 20) task_yield();
         for (int i = 0; i < 1024; i++) e->periodic[i] = 1;
+        if (!done) {
+            /* a report that arrived while the schedule was stopping was still
+             * answered, so it has to be kept */
+            uint32_t tok = e->intr->token;
+            if (!(tok & QTD_ACTIVE)) done = (tok & QTD_ERRORS) ? -1 : 1;
+        }
         if (done <= 0) return done < 0 ? -1 : -2;
         int got = qtd_actual(&e->iqtd[0], e->iqlen, e->intr->token);
         if (got > len) got = len;
