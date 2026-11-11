@@ -96,7 +96,7 @@ void wm_focus(window_t *w) {
     if (!w || !wm_alive(w)) { set_active(NULL); return; }
     window_t *m = modal_child(w);
     if (m) { if (w->state == WS_MINIMIZED) w->state = WS_NORMAL; raise(w); w = m; }
-    if (w->state == WS_MINIMIZED) { w->state = w->restore.w && (w->flags & WF_RESIZABLE) && w->anim == 2 ? WS_MAXIMIZED : WS_NORMAL; w->anim = 0; }
+    if (w->state == WS_MINIMIZED) { w->state = w->restore.w && (w->flags & WF_RESIZABLE) && w->anim == 2 ? WS_MAXIMIZED : WS_NORMAL; w->anim = 0; w->dirty = true; }
     w->flags &= ~WF_HIDDEN;
     raise(w);
     set_active(w);
@@ -169,6 +169,7 @@ void wm_minimize(window_t *w) {
     if (w->flags & WF_NO_MIN) return;
     w->anim = w->state == WS_MAXIMIZED ? 2 : 1;
     w->state = WS_MINIMIZED;
+    w->dirty = false;                 /* a minimized window is not painted */
     if (wm_active == w) { wm_active = NULL; focus_topmost(); }
     wm_need_redraw = true;
 }
@@ -686,7 +687,9 @@ void wm_run(void) {
             activity = true;
             if (!wm_need_redraw && (ox != wm_mouse_x || oy != wm_mouse_y || ob != ms.buttons)) {
                 bool any_dirty = false;
-                for (int i = 0; i < nwin; i++) if (wins[i]->dirty) any_dirty = true;
+                for (int i = 0; i < nwin; i++)
+                    if (wins[i]->dirty && wins[i]->state != WS_MINIMIZED && !(wins[i]->flags & WF_HIDDEN))
+                        any_dirty = true;
                 if (!any_dirty) gfx_move_cursor(current_cursor(), wm_mouse_x, wm_mouse_y);
             }
         }
@@ -699,7 +702,12 @@ void wm_run(void) {
         if (now - last_tick >= 250) { last_tick = now; shell_tick(); }
         for (int i = 0; i < nwin; i++) {
             window_t *w = wins[i];
-            if (w->dirty && w->state != WS_MINIMIZED) run_paint(w);
+            if (!w->dirty) continue;
+            /* A minimized or hidden window is never painted, so its dirty flag
+             * is cleared rather than left set: a flag that stays set keeps the
+             * pointer from being moved without a full repaint. */
+            if (w->state == WS_MINIMIZED || (w->flags & WF_HIDDEN)) { w->dirty = false; continue; }
+            run_paint(w);
         }
         if (ndying) reap_windows();
         if (wm_need_redraw) compose();
