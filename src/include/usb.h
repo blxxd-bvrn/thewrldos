@@ -31,6 +31,7 @@ struct usb_dev {
                                                 * interface on the same endpoint listens to it */
     bool gone;                                 /* the device was unplugged: kept only if a disk
                                                 * still points at it */
+    struct blkdev *disk;                       /* the block device a storage interface made */
     int ports;                                 /* a hub's port count */
     uint8_t port_tries[8];                     /* scans in a row that found no driver */
     int hub_addr, hub_port;                    /* the hub port a device was found behind */

@@ -22,6 +22,22 @@ void blk_commit(blkdev_t *d) {
     char b[128]; blk_describe(d, b, sizeof b);
     klog("disk %d: %s", d->index, b);
 }
+/* A disk that is gone leaves the list, so it is no longer numbered or opened;
+ * its memory stays because a mounted volume (or an open handle) may still hold
+ * the pointer, and every read of it now fails instead of touching the device. */
+void blk_unregister(blkdev_t *d) {
+    if (!d || d->dead) return;
+    for (int i = 0; i < ndisks; i++) {
+        if (disks[i] != d) continue;
+        for (int j = i; j + 1 < ndisks; j++) { disks[j] = disks[j + 1]; disks[j]->index = j; }
+        ndisks--;
+        disks[ndisks] = NULL;
+        d->dead = true;
+        d->index = -1;
+        klog("disk: \"%s\" removed", d->model);
+        return;
+    }
+}
 void storage_init(void) {
     if (probed) return;
     probed = true;
@@ -57,7 +73,7 @@ static bool native_io(blkdev_t *d, uint64_t blk, uint32_t n, uint8_t *p, bool wr
 }
 static uint8_t *scratch;                 /* one native block, for disks with 4 KiB sectors */
 static bool io(blkdev_t *d, uint32_t lba, uint32_t count, uint8_t *p, bool wr) {
-    if (!d || lba + count > d->sectors || lba + count < lba) return false;
+    if (!d || d->dead || lba + count > d->sectors || lba + count < lba) return false;
     uint32_t spb = d->bsize / 512;
     if (spb <= 1) return native_io(d, lba, count, p, wr);
     if (!scratch) scratch = kmalloc_aligned(4096, 4096);

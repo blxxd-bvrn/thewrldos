@@ -383,10 +383,11 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   few seconds. A hub's ports are asked the same way; a hub that stops answering is left alone for
   five seconds instead of stalling input. A removed xHCI device's slot is disabled and its rings
   and context freed, so both the slot and the USB address can be used again; addresses are the
-  lowest free ones, found by scanning the live devices. A removed USB disk keeps its block-device
-  slot (the block layer has no unregister) but fails its reads, so a stale handle never reads freed
-  memory. Waits for a controller are spent halted rather than polling, so a transfer that is slow
-  or never answered does not burn the CPU.
+  lowest free ones, found by scanning the live devices. A removed USB disk leaves the block
+  layer (its number goes to the next disk), and its structures stay allocated so a mounted volume
+  that still holds it fails its reads instead of reading freed memory. Waits for a controller are
+  spent halted rather than polling, so a transfer that is slow or never answered does not burn the
+  CPU.
 - **HID** (`hid.c`): every HID interface of a device becomes its own keyboard or mouse, so a
   keyboard with a media-key interface, or a wireless receiver that carries both a keyboard and a
   mouse, works. The report descriptor is read to find the buttons, X, Y and wheel (any width,
@@ -710,8 +711,8 @@ used to test every screen above, including a full install from a blank disk.
   - USB runs on **xHCI** (USB 3.x), **EHCI** (USB 2.0), **UHCI** and **OHCI** (USB 1.1)
     controllers. EHCI owns the high-speed ports and hands full/low-speed ones to the companion;
     full-speed devices behind a high-speed hub (split transactions) are not supported, nor are
-    isochronous devices (USB audio and video). Devices can be plugged in after boot, but a USB
-    disk removed while running keeps its block-device slot until the next boot.
+    isochronous devices (USB audio and video). Devices (disks included) can be plugged in and
+    removed while the system runs.
   - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
     shadows or canvas, and CSS layout is still the small subset XplorerLite implements.
   - Sound is playback only (no recording).

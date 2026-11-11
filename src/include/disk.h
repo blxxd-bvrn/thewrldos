@@ -16,6 +16,7 @@ typedef struct {
 } blkops_t;
 struct blkdev {
     int index;                 /* Disk 0, 1, ... */
+    bool dead;                 /* unplugged: out of the list, its I/O fails */
     const blkops_t *ops;
     uint32_t sectors;          /* 512-byte sectors (clamped to 2 TiB) */
     uint32_t bsize;            /* native block size (512 or 4096) */
@@ -33,6 +34,7 @@ extern char blk_failed[160];               /* a disk that was found but did not 
 void storage_init(void);                    /* probe every controller (once; again re-probes) */
 blkdev_t *blk_register(void);               /* drivers: a zeroed slot, or NULL when full */
 void blk_commit(blkdev_t *d);               /* drivers: the disk is ready */
+void blk_unregister(blkdev_t *d);           /* drivers: the disk was unplugged */
 int blk_count(void);
 blkdev_t *blk_get(int i);
 bool blk_read(blkdev_t *d, uint32_t lba, uint32_t count, void *buf);

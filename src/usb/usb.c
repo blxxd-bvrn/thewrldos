@@ -584,6 +584,7 @@ static void stor_attach(usb_dev_t *d, int iface)
     b->driver = "usbstor";
     snprintf(b->model, sizeof b->model, "%.8s%.16s", (const char *)inquiry + 8, (const char *)inquiry + 16);
     d->kind = USB_KIND_STORAGE;
+    d->disk = b;
     blk_commit(b);
     klog("usb-storage: %s, %u blocks of %u bytes", b->model, s->blocks, bsize);
 }
@@ -901,6 +902,10 @@ static void drop_addr(usb_hcd_t *h, int addr)
         usb_dev_t *d = *pp;
         if (d->gone || d->hcd != h || d->addr != addr) { pp = &d->next; continue; }
         if (d->kind == USB_KIND_STORAGE) {
+            /* Its disk leaves the block layer, so it is no longer opened; the
+             * structures stay because a mounted volume may still hold them. */
+            blk_unregister(d->disk);
+            d->disk = NULL;
             d->gone = true;
             pp = &d->next;
             continue;
