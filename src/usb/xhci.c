@@ -482,14 +482,14 @@ static bool xhci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     while (!(r32(x, x->op + PORTSC(port)) & PORT_PRC) && (int32_t)(timer_ticks() - t0) < 200) task_yield();
     v = r32(x, x->op + PORTSC(port));
     if (!(v & PORT_PRC)) { klog("xhci: port %d reset did not finish", port + 1); return false; }
-    w32(x, x->op + PORTSC(port), v & ~PORT_PED);             /* change bits: write one to clear */
+    w32(x, x->op + PORTSC(port), v & ~(PORT_PED | PORT_PR)); /* clear change bits, PED and reset */
     v = r32(x, x->op + PORTSC(port));
     if (!(v & PORT_CCS)) return false;
     t0 = timer_ticks();
     while (!(v & PORT_PED) && (int32_t)(timer_ticks() - t0) < 100) { task_yield(); v = r32(x, x->op + PORTSC(port)); }
     if (!(v & PORT_PED)) { klog("xhci: port %d did not enable", port + 1); return false; }
     x->port_speed[port] = (uint8_t)((v >> 10) & 0xF);
-    w32(x, x->op + PORTSC(port), v & ~PORT_PED);             /* clear CSC/PEC/PRC */
+    w32(x, x->op + PORTSC(port), v & ~(PORT_PED | PORT_PR)); /* clear CSC/PEC/PRC */
     *low_speed = x->port_speed[port] == 2;
     return true;
 }
