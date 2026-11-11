@@ -103,7 +103,7 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools FORCE
+.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
@@ -279,6 +279,12 @@ check-tools:
 	  if command -v $$t >/dev/null 2>&1; then echo "  ok       $$t"; else echo "  MISSING  $$t"; fi; done
 	@if [ -f $(GRUBDIR)/boot.img ]; then echo "  ok       GRUB BIOS files ($(GRUBDIR))"; else echo "  MISSING  GRUB BIOS files (grub-pc-bin)"; fi
 	@if [ -f $(GRUBEFIDIR)/kernel.img ]; then echo "  ok       GRUB EFI files ($(GRUBEFIDIR))"; else echo "  MISSING  GRUB EFI files (grub-efi-amd64-bin)"; fi
+
+# the HID report-format code touches no hardware: check it on this machine
+check-hid:
+	@mkdir -p build64
+	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/hidtest tools/hidtest.c src/usb/hid.c
+	./build64/hidtest
 
 clean:
 	rm -rf build build64 wrldos.iso wrldos64.iso

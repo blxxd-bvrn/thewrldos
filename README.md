@@ -376,17 +376,25 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   lives in the slot context), full configuration parsing (interfaces and endpoints) and
   `SET_CONFIGURATION`, plus one level of **hub**: the hub's ports are powered and reset and the
   devices behind them enumerated too, with the xHCI route string filled in.
-- **HID:** boot-protocol keyboards and mice, plus report-protocol devices: the report
-  descriptor is read once to find where the buttons, X, Y and wheel sit, and a report ID prefix
-  is stripped when the device did not switch to boot protocol. Reports are translated to PS/2
-  set 1 scancodes and packet deltas, so the existing keyboard and mouse code (modifiers, Caps
-  Lock, speed, button swap) works unchanged.
+- **HID** (`hid.c`): every HID interface of a device becomes its own keyboard or mouse, so a
+  keyboard with a media-key interface, or a wireless receiver that carries both a keyboard and a
+  mouse, works. The report descriptor is read to find the buttons, X, Y and wheel (any width,
+  with or without a report ID), and a mouse is read in that format; a keyboard uses the boot
+  protocol, or its descriptor (a key array or an N-key rollover bitmap) when it has no boot
+  interface. Absolute pointers (tablets) are not driven. Reports are translated to PS/2 set 1
+  scancodes and packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock,
+  speed, button swap) works unchanged; a held key repeats in software, because a USB keyboard
+  does not repeat by itself.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.
 - Tested in QEMU with each controller: `qemu-xhci`, `usb-ehci`, `piix3-usb-uhci` and
-  `pci-ohci`, with a USB keyboard, mouse and disk. With the PS/2 keyboard and mouse bypassed, a
-  USB keyboard logs in and a USB mouse moves and clicks on all four. A USB disk reads and writes
+  `pci-ohci`, with a USB keyboard, mouse and disk. One script (log on with a mouse click, open
+  Command Prompt from the taskbar, type a line and edit it with the arrow, Home, End and Delete
+  keys) gives the same screen with USB devices on each of the four, and behind a hub on xHCI, as
+  it does with PS/2. Mice with a report ID, 16-bit or packed 12-bit axes, N-key rollover
+  keyboards and multi-interface devices are checked against the descriptor parser on the build
+  machine (`make check-hid`), since QEMU has no such devices. A USB disk reads and writes
   sectors back unchanged. With more than one controller in the same machine, each enumerates
   its own devices. EHCI handles high-speed devices itself and hands full/low-speed ports to the
   companion; it does not implement split transactions, so a full-speed device behind a

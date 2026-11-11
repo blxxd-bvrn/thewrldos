@@ -1,11 +1,11 @@
 /* USB: a small host stack for the 64-bit edition. A host controller driver
  * (UHCI, OHCI, EHCI or xHCI) moves transfers; this layer enumerates devices,
- * then hands each one to a class driver: HID boot keyboards and mice feed the
- * PS/2 input queues, and mass storage registers a SCSI disk in the block
- * layer. */
+ * then hands each one to a class driver: HID keyboards and mice feed the PS/2
+ * input queues, and mass storage registers a SCSI disk in the block layer. */
 #ifndef USB_H
 #define USB_H
 #include "kernel.h"
+#include "hid.h"
 
 typedef struct usb_hcd usb_hcd_t;
 typedef struct usb_dev usb_dev_t;
@@ -25,18 +25,16 @@ struct usb_dev {
     uint16_t maxpkt_in, maxpkt_out, maxpkt_int;
     uint8_t toggle_in, toggle_out, toggle_int;
     int iface;                                 /* the HID interface number */
-    int boot_ok;                               /* the device accepted SET_PROTOCOL(boot) */
-    struct {                                   /* the input report, from the report descriptor */
-        int id;                                /* report ID byte, 0 = none */
-        int btn_off, btn_bits;                 /* bit offsets and widths */
-        int x_off, x_bits, y_off, y_bits;
-        int w_off, w_bits;
-        int len;                               /* report bytes, without a report ID */
-        int sign;                              /* the axes have a signed logical range */
-    } hid;
-    int miss;                                  /* interrupt polls with no report */
-    int use_control;                           /* fall back to GET_REPORT */
+    bool boot;                                 /* boot protocol: the fixed report, no report ID */
+    hid_format_t fmt;                          /* the input report, from the report descriptor */
+    bool irq_seen;                             /* the interrupt endpoint has delivered a report */
+    int use_control;                           /* GET_REPORT stand-in: 0 untried, 1 in use, -1 refused */
+    uint32_t ctl_next;                         /* when it is asked next, 0 = not timed yet */
+    uint8_t ctl_rep[16];                       /* the last GET_REPORT answer, to spot a stale one */
+    int ctl_len;
     uint8_t report[16];                        /* last HID report, for key-up detection */
+    uint8_t rep_usage;                         /* the key that is auto-repeating, 0 = none */
+    uint32_t rep_next;                         /* when it repeats next */
     bool seen;                                 /* has this device sent a report yet? */
     int root_port, route;                      /* where it sits, for xHCI's slot context */
     int id;
