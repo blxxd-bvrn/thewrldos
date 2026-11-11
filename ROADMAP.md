@@ -95,7 +95,7 @@ Already working, and not on the list below:
   **OHCI** (USB 1.1): control, interrupt, bulk and (on xHCI) isochronous transfers, enumeration
   through hubs, hotplug (the buses are rescanned twice a second, at root ports and hub ports),
   HID keyboards and mice (boot protocol, or the device's own report format, with `GET_REPORT`
-  for a device whose interrupt endpoint never delivers), USB audio class 1 playback, and
+  for a device whose interrupt endpoint never delivers), USB audio class 1 and 2 playback, and
   bulk-only mass storage.
 - Missing: split transactions (a full/low-speed device behind a high-speed hub); isochronous
   transfers on EHCI/OHCI/UHCI; USB audio input, video and MIDI; multiple configurations or

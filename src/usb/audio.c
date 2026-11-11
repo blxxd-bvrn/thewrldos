@@ -9,6 +9,7 @@
 #ifdef __x86_64__
 #include "usb.h"
 #include "audio.h"
+#include "uac.h"
 
 #define UA_PKTS    64                     /* packets kept in flight (8 ms at HS) */
 #define UA_MAXPKT  1024
@@ -36,45 +37,16 @@ static int ua_log2(int v)
     return e;
 }
 
-/* One alternate setting of a streaming interface: its isochronous OUT endpoint
- * and its format type descriptor. The format descriptor's sample rates are
- * 24-bit little-endian values; 48 kHz is preferred because that is what the
- * mixer produces. */
-static bool ua_alt_format(const uint8_t *cfg, int len, int start,
-                          int *ep, int *maxpkt, int *interval, int *rate, int *ch, int *fb)
+static int ua_uac2_rate(usb_dev_t *d, int ac, int clock, int wanted)
 {
-    const uint8_t *freqs = NULL;
-    int nfreq = 0, ft = 0, nch = 0, sub = 0, bits = 0;
-    *ep = 0;
-    for (int i = start; i + 2 <= len && cfg[i] >= 2 && i + cfg[i] <= len; i += cfg[i]) {
-        const uint8_t *p = cfg + i;
-        if (p[1] == 4 && i != start) break;                     /* the next interface */
-        if (p[1] == 0x24 && p[0] >= 8 && p[2] == 2) {           /* AS format type */
-            ft = p[3]; nch = p[4]; sub = p[5]; bits = p[6]; nfreq = p[7];
-            if (ft == 1 && nfreq && i + 8 + nfreq * 3 <= len) freqs = p + 8;
-        } else if (p[1] == 5 && p[0] >= 7) {                    /* endpoint */
-            int a = p[2];
-            if ((p[3] & 3) == 1 && !(a & 0x80) && !*ep) {
-                *ep = a & 0x0F;
-                *maxpkt = p[4] | (p[5] << 8);
-                *interval = p[6];
-            }
-        }
-    }
-    if (!*ep || !freqs || ft != 1 || nch < 1 || sub < 1 || bits < 1) return false;
-    int want = 0;
-    for (int k = 0; k < nfreq; k++) {
-        int r = freqs[k * 3] | (freqs[k * 3 + 1] << 8) | (freqs[k * 3 + 2] << 16);
-        if (r == 48000) { want = r; break; }
-        if (!want || r == 44100) want = r;
-    }
-    if (!want) return false;
-    *rate = want;
-    *ch = nch;
-    /* bSubframeSize is the bytes each sample takes (bBitResolution is how many
-     * of them are used). */
-    *fb = sub;
-    return bits <= sub * 8;
+    uint32_t r = (uint32_t)wanted;
+    if (!clock) return 0;
+    if (usb_control(d, 0x21, 0x01, 0x0100, (uint16_t)(clock | (ac << 8)), &r, 4) == 4) return wanted;
+    uint32_t cur = 0;                                       /* not settable: use what it has */
+    if (usb_control(d, 0xA1, 0x01, 0x0100, (uint16_t)(clock | (ac << 8)), &cur, 4) == 4 &&
+        cur && cur != 0xFFFFFFFFu)
+        return (int)cur;
+    return 0;
 }
 
 /* A packet is one service interval: 1 ms on a full-speed bus, and 2^(bInterval-1)
@@ -99,24 +71,29 @@ bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len
         return false;
     }
     int addr = tmpl->addr, speed = tmpl->speed;
-    int ac = -1, stream = -1, alt = 0, ep = 0, maxpkt = 0, interval = 0, rate = 0, ch = 0, fb = 0;
-    for (int i = 0; i + 2 <= len && cfg[i] >= 2 && i + cfg[i] <= len; i += cfg[i]) {
-        const uint8_t *p = cfg + i;
-        if (p[1] != 4 || p[0] < 9 || p[5] != 1) continue;
-        if (p[6] == 1 && ac < 0) ac = p[2];
-        else if (p[6] == 2 && p[4] > 0 && stream < 0) {
-            int e, mp, in, r, c, f;
-            if (ua_alt_format(cfg, len, i, &e, &mp, &in, &r, &c, &f)) {
-                stream = p[2]; alt = p[3]; ep = e; maxpkt = mp; interval = in;
-                rate = r; ch = c; fb = f;
-            }
-        }
-    }
-    if (ac < 0 || stream < 0 || !ep) return false;
-    if (ch != 2 || fb != 2 || (rate != 48000 && rate != 44100)) {
-        klog("usb-audio: %d Hz, %d channels of %d bytes is not a format the mixer has", rate, ch, fb);
+    uac_fmt_t f;
+    if (!uac_parse(cfg, len, &f)) {
+        klog("usb-audio: %04x:%04x: no playback stream in the configuration", tmpl->vendor, tmpl->product);
         return false;
     }
+    int ac = f.ac, stream = f.stream, alt = f.alt, ep = f.ep, maxpkt = f.maxpkt;
+    int interval = f.interval, rate = f.rate, ch = f.channels, fb = f.frame_bytes;
+    if (ch != 2 || fb != 2) {
+        klog("usb-audio: %d channels of %d bytes is not a format the mixer has", ch, fb);
+        return false;
+    }
+    if (f.class2) {                                     /* class 2: set the clock source */
+        rate = ua_uac2_rate(tmpl, ac, f.clock, 48000);
+        if (!rate) {
+            klog("usb-audio: the device has no clock source that takes a sample rate");
+            return false;
+        }
+    }
+    if (rate != 48000 && rate != 44100) {
+        klog("usb-audio: %d Hz is not a rate the mixer has", rate);
+        return false;
+    }
+    bool class2 = f.class2;
     memset(&ua, 0, sizeof ua);
     ua.hi_speed = speed >= 3;
     /* The controller schedules periodic transfers in microframes: a full-speed
@@ -143,12 +120,14 @@ bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len
         kfree(ua.slots); ua.slots = NULL;
         return false;
     }
-    uint8_t fr[3] = { (uint8_t)rate, (uint8_t)(rate >> 8), (uint8_t)(rate >> 16) };
-    /* The sampling frequency control is addressed to the endpoint; a device
-     * that does not take it there sometimes takes it on the interface. */
-    int rr = usb_control(d, 0x22, 0x01, 0x0100, (uint16_t)(ep | (stream << 8)), fr, 3);
-    if (rr < 0) rr = usb_control(d, 0x21, 0x01, 0x0100, (uint16_t)stream, fr, 3);
-    if (rr < 0) klog("usb-audio: the device refused %d Hz, using what it has", rate);
+    if (!class2) {
+        uint8_t fr[3] = { (uint8_t)rate, (uint8_t)(rate >> 8), (uint8_t)(rate >> 16) };
+        /* The sampling frequency control is addressed to the endpoint; a device
+         * that does not take it there sometimes takes it on the interface. */
+        int rr = usb_control(d, 0x22, 0x01, 0x0100, (uint16_t)(ep | (stream << 8)), fr, 3);
+        if (rr < 0) rr = usb_control(d, 0x21, 0x01, 0x0100, (uint16_t)stream, fr, 3);
+        if (rr < 0) klog("usb-audio: the device refused %d Hz, using what it has", rate);
+    }
     if (h->iso_open(h, addr, ep, ua.maxpkt, ua.interval_exp) < 0) {
         klog("usb-audio: the isochronous endpoint would not open");
         kfree(ua.slots); ua.slots = NULL;

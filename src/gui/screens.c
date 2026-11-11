@@ -182,6 +182,10 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
         }
+        {   /* what the machine has for sound, so a photo of a silent one says why */
+            const char *a = audio_summary();
+            draw_text_wrapped(c, FONT_SMALL, 30, SCREEN_H - 212, c->w - 60, a, HEX(0xFFD070), 1);
+        }
 #endif
     }
 }

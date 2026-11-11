@@ -25,6 +25,7 @@ static uint32_t out_rate = 48000;            /* the mixer's (and the card's) sam
 
 enum { DEV_NONE, DEV_HDA, DEV_AC97, DEV_ES1370, DEV_ES1371, DEV_SB16, DEV_USB };
 static int dev;
+static char hda_why[96];                     /* why the HDA probe gave up (shown on the log-on screen) */
 static char devname[80] = "No sound device";
 static int16_t *ring;                     /* NBUF * BUFFRAMES stereo frames */
 static int next_fill;
@@ -163,7 +164,7 @@ static bool hda_init(pci_dev_t *p) {
     for (int i = 0; i < 1000 && !(R32(0x08) & 1); i++) spin(10);
     uint16_t codecs = 0;
     for (int t = 0; t < 10 && !(codecs = R16(0x0E)); t++) sleep_ms(10);   /* codecs report in within ~1 ms; allow 100 */
-    if (!codecs) { klog("hda: no codec found"); return false; }
+    if (!codecs) { strlcpy(hda_why, "HDA controller found, no codec answered", sizeof hda_why); klog("hda: no codec found"); return false; }
     R32(0x20) = 0;                                          /* no interrupts: we poll */
     /* CORB / RIRB rings */
     corb = kmalloc_aligned(1024, 128); memset(corb, 0, 1024);
@@ -191,13 +192,13 @@ static bool hda_init(pci_dev_t *p) {
         R8(0x4C) = 0; R8(0x5C) = 0; use_immediate = true; hda_dead = false;
         vid = param(cad, 0, 0x00);
     }
-    if (hda_dead || !vid || vid == 0xFFFFFFFF) { klog("hda: codec %d does not answer", cad); return false; }
+    if (hda_dead || !vid || vid == 0xFFFFFFFF) { strlcpy(hda_why, "HDA codec does not answer", sizeof hda_why); klog("hda: codec %d does not answer", cad); return false; }
     diag("codec %d: %08x, %s commands\n", cad, vid, use_immediate ? "immediate" : "CORB/RIRB");
     /* find the audio function group */
     uint32_t sub = param(cad, 0, 0x04);
     int afg = 0;
     for (int n = (sub >> 16) & 0xFF, k = 0; k < (int)(sub & 0xFF); k++, n++) if ((param(cad, n, 0x05) & 0xFF) == 1) { afg = n; break; }
-    if (!afg) { klog("hda: codec %d has no audio function group", cad); return false; }
+    if (!afg) { strlcpy(hda_why, "HDA codec has no audio function group", sizeof hda_why); klog("hda: codec %d has no audio function group", cad); return false; }
     hda_cmd(cad, afg, VERB(0x705, 0));                      /* power D0 */
     for (int t = 0; t < 20 && ((hda_cmd(cad, afg, VERB(0xF05, 0)) >> 4) & 0xF) != 0; t++) sleep_ms(5);
     uint32_t afg_amp = param(cad, afg, 0x12);
@@ -247,7 +248,7 @@ static bool hda_init(pci_dev_t *p) {
     }
     if (!ndacs)   /* no pin path: use the first analog DAC anyway */
         for (int i = 0; i < wcount; i++) if (wg[i].type == 0 && !(wg[i].caps & (1 << 9))) { dacs[ndacs++] = wstart + i; amp_unmute(cad, wstart + i, afg_amp); break; }
-    if (!ndacs) { klog("hda: no output converter found"); return false; }
+    if (!ndacs) { strlcpy(hda_why, "HDA codec has no output converter", sizeof hda_why); klog("hda: no output converter found"); return false; }
     /* output stream 1 -> every DAC used */
     for (int k = 0; k < ndacs; k++) {
         hda_cmd(cad, dacs[k], VERB(0x706, 1 << 4));         /* stream 1, channel 0 */
@@ -255,7 +256,7 @@ static bool hda_init(pci_dev_t *p) {
     }
     uint16_t gcap = R16(0x00);
     int iss = (gcap >> 8) & 0xF, oss = (gcap >> 12) & 0xF;
-    if (!oss) { klog("hda: no output streams"); return false; }
+    if (!oss) { strlcpy(hda_why, "HDA controller has no output streams", sizeof hda_why); klog("hda: no output streams"); return false; }
     sd = 0x80 + iss * 0x20;
     R8(sd) = 0;                                              /* stop */
     R8(sd) |= 1; for (int i = 0; i < 1000 && !(R8(sd) & 1); i++) spin(1);
@@ -747,6 +748,26 @@ void audio_init(void) {
         uint32_t f = irq_save(); refill(); irq_restore(f);
         timer_tick_hook = audio_tick;                   /* USB audio is paced by its packets */
     }
+}
+/* One line for the log-on screen: the sound device that is playing, or the
+ * audio hardware that was found and why it is not. */
+const char *audio_summary(void)
+{
+    static char out[240];
+    if (dev) {
+        snprintf(out, sizeof out, "Sound: %s, %u Hz", devname, out_rate);
+        return out;
+    }
+    int len = snprintf(out, sizeof out, "Sound: no device");
+    pci_dev_t *devs; int n = pci_list(&devs);
+    for (int i = 0; i < n && len + 30 < (int)sizeof out; i++) {
+        if (devs[i].cls != 0x04) continue;
+        if (devs[i].sub != 0x03 && devs[i].sub != 0x01) continue;
+        len += snprintf(out + len, sizeof out - len, ", %04x:%04x %s", devs[i].vendor, devs[i].device,
+                        devs[i].sub == 0x03 ? "HDA" : "AC97");
+    }
+    if (hda_why[0]) snprintf(out + len, sizeof out - len, " (%s)", hda_why);
+    return out;
 }
 /* what the driver found and whether the card is really playing (for the "sndinfo" command) */
 void audio_diag(char *buf, int cap) {

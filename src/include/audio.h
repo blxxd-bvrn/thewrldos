@@ -28,6 +28,7 @@ void audio_wait(uint32_t max_ms);           /* until everything has finished pla
 /* a USB audio device became the output (called by the USB audio driver) */
 void audio_usb_ready(int rate, const char *name);
 void audio_usb_gone(void);                  /* the USB device was unplugged */
+const char *audio_summary(void);            /* one line for the log-on screen */
 /* pull mixed audio for the USB isochronous stream; 48 kHz, stereo interleaved */
 int audio_usb_pull(int16_t *out, int frames);
 #endif
