@@ -99,7 +99,8 @@ static int get_descriptor(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_
     return h->control(h, addr, low, 0x80, 6, (uint16_t)((type << 8) | index), 0, buf, len);
 }
 
-static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route);
+static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route,
+                          int hub_addr, int hub_port, int speed);
 static void hub_attach(usb_dev_t *hub);
 
 /* ---------------- HID ---------------- */
@@ -403,20 +404,23 @@ static void hub_attach(usb_dev_t *hub)
         if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) continue;
         if (!(st[0] & 1)) continue;
         bool low = (st[1] & 0x02) != 0;                               /* port status bit 9 */
+        int speed = (st[1] & 0x04) ? 3 : low ? 2 : 1;                 /* high, low, full */
         char where[24];
         snprintf(where, sizeof where, "hub %d port %d", hub->addr, p);
-        enumerate_one(hub->hcd, low, where, hub->root_port, (hub->route << 4) | p);
+        enumerate_one(hub->hcd, low, where, hub->root_port, (hub->route << 4) | p,
+                      hub->addr, p, speed);
     }
 }
 
 /* Read one device's descriptors and give it an address. `where` names the port
  * or hub port in the log. */
-static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route)
+static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route,
+                          int hub_addr, int hub_port, int speed)
 {
     uint32_t t0 = timer_ticks();
     while ((int32_t)(timer_ticks() - t0) < 30) task_yield();
     /* xHCI needs a slot (and endpoint 0) before it can move anything */
-    if (h->new_device && !h->new_device(h, root_port, route, low)) {
+    if (h->new_device && !h->new_device(h, root_port, route, low, hub_addr, hub_port, speed)) {
         klog("usb: %s: could not prepare the device", where);
         return;
     }
@@ -440,7 +444,7 @@ void usb_attach(usb_hcd_t *h)
         if (!h->port_reset || !h->port_reset(h, port, &low)) continue;
         char where[24];
         snprintf(where, sizeof where, "%s port %d", h->name, port + 1);
-        enumerate_one(h, low, where, port + 1, 0);
+        enumerate_one(h, low, where, port + 1, 0, 0, 0, 0);
     }
 }
 

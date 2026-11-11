@@ -45,8 +45,11 @@ struct usb_hcd {
     /* reset a root port and report whether a device is attached, and its speed */
     bool (*port_reset)(usb_hcd_t *h, int port, bool *low_speed);
     /* a device appeared (root_port is 1-based, route is the hub path): xHCI has
-     * to allocate a slot before endpoint 0 can be used. May be NULL. */
-    bool (*new_device)(usb_hcd_t *h, int root_port, int route, bool low_speed);
+     * to allocate a slot before endpoint 0 can be used. `hub_addr`/`hub_port`
+     * are zero for a root device; `speed` is an xHCI speed code or 0 to derive
+     * it from the root port. May be NULL. */
+    bool (*new_device)(usb_hcd_t *h, int root_port, int route, bool low_speed,
+                       int hub_addr, int hub_port, int speed);
     int ports;
     void *priv;
 };

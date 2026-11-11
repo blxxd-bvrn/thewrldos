@@ -98,6 +98,7 @@ typedef struct {
 typedef struct xdev {
     int slot, addr, speed, root_port, route;
     int hw_addr;               /* the address the controller assigned (normally the slot) */
+    int tt_slot, tt_port;      /* high-speed hub slot and port for a full/low-speed child */
     bool bsr;                  /* endpoint 0 answers, the address is still 0 */
     int ep0_maxpkt;
     ring_t ep0;
@@ -267,6 +268,8 @@ static void fill_slot(xhci_t *x, uint32_t *s, xdev_t *d, int entries, int addr)
     (void)x;
     s[0] = (uint32_t)(d->route & 0xFFFFF) | ((uint32_t)d->speed << 20) | ((uint32_t)entries << 27);
     s[1] = (uint32_t)d->root_port << 16;
+    if (d->tt_slot && (d->speed == 1 || d->speed == 2))
+        s[2] = (uint32_t)(d->tt_slot & 0xFF) | ((uint32_t)d->tt_port << 8);
     s[3] = (uint32_t)addr;
 }
 /* `dequeue` is a ring pointer with the DCS bit in bit 0 */
@@ -516,7 +519,8 @@ static bool xhci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
 }
 
 /* The core found a device: give it a slot, and let endpoint 0 answer at address 0. */
-static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low)
+static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low,
+                            int hub_addr, int hub_port, int speed)
 {
     xhci_t *x = h->priv;
     if (root_port < 1 || root_port > x->max_ports) return false;
@@ -534,7 +538,11 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low)
     d->hw_addr = slot;                                        /* the controller usually assigns the slot ID */
     d->root_port = root_port;
     d->route = route;
-    d->speed = route ? (low ? 2 : 1) : (x->port_speed[root_port - 1] ? x->port_speed[root_port - 1] : 1);
+    xdev_t *hub = hub_addr ? dev_by_addr(x, hub_addr) : NULL;
+    d->tt_slot = (hub && hub->speed == 3) ? hub->slot : 0;   /* a high-speed hub's TT */
+    d->tt_port = hub_port;
+    d->speed = speed ? speed : (route ? (low ? 2 : 1)
+              : (x->port_speed[root_port - 1] ? x->port_speed[root_port - 1] : 1));
     ring_init(&d->ep0, 32, true);
     if (!d->ep0.n) { kfree(d); return false; }
     x->pending = d;
