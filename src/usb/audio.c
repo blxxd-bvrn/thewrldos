@@ -147,11 +147,9 @@ bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len
     ua.ep = ep;
     ua.started = true;
     char name[64];
-    /* The mixer treats this as the machine's own line-out, so name it that way
-     * in the UI; sndinfo still reports the USB device behind it. */
-    snprintf(name, sizeof name, "Speakers (PC jack)");
-    klog("usb-audio: %s is %s USB audio at address %d (%d Hz stereo), %d bytes every %s",
-         name, ua.hi_speed ? "high speed" : "full speed", addr, rate, ua.pkt_bytes,
+    snprintf(name, sizeof name, "USB audio (%s, %d Hz stereo)",
+             ua.hi_speed ? "high speed" : "full speed", rate);
+    klog("usb-audio: %s at address %d, %d bytes every %s", name, addr, ua.pkt_bytes,
          ua.hi_speed ? "125 us" : "ms");
     audio_usb_ready(rate, name);
     return true;

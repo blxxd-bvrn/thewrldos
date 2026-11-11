@@ -278,9 +278,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       format descriptor's list in class 1, on the clock source entity in class 2), and the
       isochronous OUT endpoint is kept fed with one packet per service interval (1 ms on a
       full-speed bus, 125 us on a high-speed one). A USB audio device becomes the output when it
-      is plugged in, and the card it took over from comes back when it is unplugged. The mixer
-      presents it as the machine's own line-out ("Speakers (PC jack)"); `sndinfo` still reports
-      the USB device and its descriptors.
+      is plugged in, and the card it took over from comes back when it is unplugged.
     - The log-on screen names the sound device it found, or the audio controllers it could not
       use and why (`check-audio` checks the descriptor parser on the build machine).
     - Output is 48 kHz 16-bit stereo (44.1 kHz on the ES1370, Sound Blaster 16, and a USB device
