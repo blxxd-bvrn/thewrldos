@@ -172,7 +172,7 @@ static uint64_t ring_push(ring_t *r, uint64_t param, uint32_t status, uint32_t t
 }
 
 /* the dequeue pointer for a context: address plus the current cycle state */
-static uint64_t ring_dequeue(ring_t *r) { return r->phys + (uint64_t)r->idx * sizeof(trb_t) | (uint64_t)(r->ccs & 1); }
+static uint64_t ring_dequeue(ring_t *r) { return (r->phys + (uint64_t)r->idx * sizeof(trb_t)) | (uint64_t)(r->ccs & 1); }
 
 static bool evt_pop(xhci_t *x, uint64_t *param, uint32_t *status, uint32_t *control)
 {

@@ -566,7 +566,7 @@ static int gsub_context3(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos,
     const uint8_t *d = f->data;
     uint32_t p;
     uint16_t records;
-    int back[33], input[33];
+    int input[33];
     int nb = 0, ni = 0, na = 0;
     if (chained) {
         p = sub + 2;
@@ -576,7 +576,6 @@ static int gsub_context3(const ttf_face_t *f, uint32_t sub, gbuf_t *b, int pos,
         for (int i = 0; i < nb; i++) {
             at = prev_glyph(f, b, flag, set, at);
             if (at < 0 || coverage_index(f, sub + rd16(d + p + (uint32_t)i * 2), b->g[at].gid) < 0) return 0;
-            back[i] = at;
         }
         p += (uint32_t)nb * 2;
         ni = rd16(d + p); p += 2;
