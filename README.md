@@ -426,6 +426,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   and the other structural pseudo-classes), parsed by Lexbor and matched on XplorerLite's tree,
   with the cascade by specificity and source order; simple `@media` queries are answered for an
   880-pixel-wide window. `querySelector()` uses the same matcher.
+- **Software rasterisation:** `border-radius`, linear gradients (`linear-gradient(90deg, …)`) and
+  radial gradients (`radial-gradient(…)`) are filled through the kernel's own path engine
+  (`src/gui/raster.c`), not a rectangle approximation.
 - **HTML:** a forgiving parser with entities. Documents are decoded to UTF-8 (Windows-1252
   input is converted), so text is stored and drawn exactly as written.
 - **CSS:** simple selectors (tag, `.class`, `#id`) and `style` attributes, for colour,
@@ -494,6 +497,10 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     mark-to-mark positioning), so ligatures, Arabic joining forms and diacritics are placed by
     the font itself. Arabic falls back to the bundled **Noto Naskh Arabic** when Liberation has
     no glyph.
+  - **Software rasteriser** (`src/gui/raster.c`): path fills and strokes with eight scanline
+    samples per pixel, round joins and caps, nonzero and even-odd rules, path construction
+    through move/line/quadratic/cubic commands, linear and radial gradients, and clipping to
+    the canvas. XplorerLite uses it for rounded boxes, gradient backgrounds and CSS borders.
   - **Bidirectional text** (`src/gui/text.c`): the UAX #9 algorithm (explicit embeddings, weak
     types, brackets, neutrals, implicit levels) plus script itemisation, so a line mixing
     Arabic, Hebrew, Latin and numbers comes out in the right visual order.
@@ -652,6 +659,8 @@ used to test every screen above, including a full install from a blank disk.
     controllers. EHCI owns the high-speed ports and hands full/low-speed ones to the companion;
     full-speed devices behind a high-speed hub (split transactions) are not supported, nor are
     isochronous devices (USB audio and video); the buses are scanned once, at boot.
+  - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
+    shadows or canvas, and CSS layout is still the small subset XplorerLite implements.
   - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.
@@ -671,8 +680,8 @@ src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 
 src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
-                   script itemisation (text.c), globe + wordmark, themes, window manager,
-                   widgets, desktop, screens
+                   script itemisation (text.c), the software path rasteriser (raster.c),
+                   globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup,
                    browser (html.c, imgdec.c, dom.c, adblock.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)

@@ -110,7 +110,12 @@ Already working, and not on the list below:
 - Missing from the text stack: Indic shaping (syllable reordering, GSUB beyond the generic
   engine), CJK and emoji coverage (the fonts have none), and the FreeType/HarfBuzz/ICU APIs
   themselves for Linux programs, which have no font stack at all.
-- No GPU or 3D, so Skia has to use its software backend.
+- The GUI also has its own **software rasteriser** (`src/gui/raster.c`): path fills and strokes,
+  anti-aliasing, round joins, linear and radial gradients and clipping, used by XplorerLite for
+  `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
+- No GPU or 3D, so a real Skia would have to use its software backend. Missing from the raster
+  stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
+  engine.
 - Missing codecs: WebP, SVG, progressive JPEG; audio/video beyond WAV.
 
 ### 10. Services a browser engine expects
@@ -145,12 +150,14 @@ Already working, and not on the list below:
    mark positioning, right-to-left layout and bidi (`src/gui/ttf.c`, `text.c`), with Noto Naskh
    Arabic as the Arabic fallback. FreeType, HarfBuzz and ICU themselves are not used: for the
    scripts the image ships, the same work is done without a 30 MB dependency.
-8. [ ] **Skia (software backend)** - rasterisation.
+8. [x] **Software rasterisation** - the GUI's own path engine (`src/gui/raster.c`): anti-aliased
+   fills and strokes, round joins, linear/radial gradients and clipping, used by XplorerLite for
+   `border-radius` and gradient backgrounds. Skia itself is not used.
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.
 10. [ ] **`/proc`, `/sys`, honest `prctl`** - introspection and sandboxing.
 
-Milestones 1-7 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
-`fs.c` and `src/gui/ttf.c`/`text.c`.
+Milestones 1-8 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
+`fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.
 
 The shell and XplorerLite get their text from the same engine as the desktop: TrueType,
 OpenType shaping and bidi, so Arabic and Hebrew reach the screen without a library dependency.

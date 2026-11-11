@@ -20,7 +20,11 @@ void arena_free(arena_t *a);
 #define ST_ITALIC   0x020
 #define ST_UNDER    0x040
 #define ST_SIZE     0x080
-typedef struct { uint16_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 block, 2 inline */ int8_t align; bool bold, italic, under; int8_t size; } css_t;
+#define ST_RADIUS   0x100
+#define ST_GRAD     0x200
+#define ST_BORDER   0x400
+typedef struct { uint16_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 block, 2 inline */ int8_t align; bool bold, italic, under; int8_t size;
+                 int16_t radius; uint32_t bg2; int8_t grad, grad_dir; int16_t border; uint32_t border_color; } css_t;
 
 typedef struct node {
     uint8_t type;                 /* 0 element, 1 text */
@@ -61,7 +65,8 @@ int utf8_normalise(const uint8_t *s, uint32_t n, char *out);   /* returns length
 
 /* ---------------- page model (shared by browser.c and dom.c) ---------------- */
 enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE };
-typedef struct { uint8_t kind; uint8_t under; int16_t font; int x, y, w, h, asc; uint32_t color; const char *text; int len; int link, idx; node_t *node; } item_t;
+typedef struct { uint8_t kind; uint8_t under; int16_t font; int x, y, w, h, asc; uint32_t color; const char *text; int len; int link, idx; node_t *node;
+                 int16_t radius; uint32_t color2; uint8_t grad, grad_dir; int16_t border; uint32_t border_color; } item_t;
 typedef struct { char *url; canvas_t *img, *scaled; int state; /* 0 pending, 1 ok, 2 failed */ char *alt; } pimg_t;
 enum { C_TEXT, C_PASSWORD, C_SUBMIT, C_BUTTON, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT, C_TEXTAREA, C_RESET };
 typedef struct { int type, form; node_t *node; char name[64]; char value[512]; char label[64]; bool checked; int sel, nopts; char **opts, **optvals; rect_t r; } ctrl_t;

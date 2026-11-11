@@ -5,6 +5,7 @@
  * Ads and trackers are filtered by adblock.c. */
 #include "kernel.h"
 #include "gfx.h"
+#include "raster.h"
 #include "theme.h"
 #include "wm.h"
 #include "apps.h"
@@ -439,7 +440,11 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     if (al) L->align = !strcasecmp(al, "center") || !strcasecmp(al, "middle") ? 1 : !strcasecmp(al, "right") ? 2 : 0;
     if (n->css.set & ST_ALIGN) L->align = n->css.align;
     int bg_item = -1, y0 = L->y;
-    if ((n->css.set & ST_BG) && strcmp(t, "body")) { item_t *it = add_item(p, IT_RECT); it->x = L->x0 - indent; it->y = L->y; it->w = L->w + indent + rindent; it->color = n->css.bg; bg_item = p->nitems - 1; L->line_start = p->nitems; }
+    if ((n->css.set & ST_BG) && strcmp(t, "body")) { item_t *it = add_item(p, IT_RECT); it->x = L->x0 - indent; it->y = L->y; it->w = L->w + indent + rindent; it->color = n->css.bg; bg_item = p->nitems - 1; L->line_start = p->nitems;
+        if (n->css.set & ST_RADIUS) it->radius = n->css.radius;
+        if (n->css.set & ST_GRAD) { it->grad = (uint8_t)n->css.grad; it->grad_dir = (uint8_t)n->css.grad_dir; it->color2 = n->css.bg2; }
+        if (n->css.set & ST_BORDER) { it->border = n->css.border; it->border_color = n->css.border_color; }
+    }
     int save_counter = list_counter;
     if (!strcmp(t, "ol")) list_counter = attr_int(n, "start", 1);
     if (!strcmp(t, "li")) {
@@ -1273,7 +1278,45 @@ static void paint_content(browser_t *b, canvas_t *c, rect_t v) {
             if (it->under || hot) hline(c, x, y + it->asc + 2, it->w, hot ? HEX(0xE04000) : it->color);
             break;
         }
-        case IT_RECT: fill_rect(c, x, y, it->w, it->h, it->color); break;
+        case IT_RECT:
+            if (it->grad || it->radius > 0 || it->border > 0) {
+                static raster_path_t *rp;
+                if (!rp) rp = raster_path_new();
+                if (rp) {
+                    raster_reset(rp);
+                    if (it->radius > 0) raster_add_round_rect(rp, x, y, it->w, it->h, it->radius);
+                    else raster_add_rect(rp, x, y, it->w, it->h);
+                    if (it->grad == 1) {
+                        if (it->grad_dir == 1)
+                            raster_fill_gradient(c, rp, x, y, x + it->w, y, it->color, it->color2, false, false);
+                        else if (it->grad_dir == 2)
+                            raster_fill_gradient(c, rp, x, y, x + it->w, y + it->h, it->color, it->color2, false, false);
+                        else
+                            raster_fill_gradient(c, rp, x, y, x, y + it->h, it->color, it->color2, false, false);
+                    } else if (it->grad == 2) {
+                        int rad = MIN(it->w, it->h) / 2;
+                        if (rad < 1) rad = 1;
+                        raster_fill_gradient(c, rp, x + it->w / 2, y + it->h / 2,
+                                             x + it->w / 2, y + it->h / 2 + rad,
+                                             it->color, it->color2, true, false);
+                    } else {
+                        raster_fill(c, rp, it->color, false);
+                    }
+                    if (it->border > 0) {
+                        raster_path_t *bp = raster_path_new();
+                        if (bp) {
+                            int b = it->border / 2;
+                            int rr = it->radius > b ? it->radius - b : 0;
+                            raster_add_round_rect(bp, x + b, y + b, it->w - 2 * b, it->h - 2 * b, rr);
+                            raster_stroke(c, bp, it->border, it->border_color);
+                            raster_path_free(bp);
+                        }
+                    }
+                    break;
+                }
+            }
+            fill_rect(c, x, y, it->w, it->h, it->color);
+            break;
         case IT_FRAME: draw_rect(c, x, y, it->w, it->h, it->color); break;
         case IT_HLINE: hline(c, x, y, it->w, HEX(0xA0A0A0)); hline(c, x, y + 1, it->w, HEX(0xF0F0F0)); break;
         case IT_IMG: draw_img(c, &p->imgs[it->idx], x, y, it->w, it->h); if (it->link >= 0 && it->link == b->hover_link) draw_rect(c, x, y, it->w, it->h, HEX(0xE04000)); break;

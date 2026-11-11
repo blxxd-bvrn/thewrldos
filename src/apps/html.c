@@ -88,6 +88,61 @@ bool parse_color(const char *s, uint32_t *out) {
     if (k && isxdigit(w[0]) && strlen(w) == 6) { *out = 0xFF000000u | strtoul(w, NULL, 16); return true; }   /* bgcolor="ffffff" */
     return false;
 }
+static const char *css_token_end(const char *p, const char *end) {
+    int depth = 0;
+    while (p < end) {
+        if (*p == '(') depth++;
+        else if (*p == ')') { if (depth) depth--; }
+        else if (*p == ',' && !depth) break;
+        p++;
+    }
+    return p;
+}
+
+/* linear-gradient(to right, #123456, #abcdef) and radial-gradient(...):
+ * the two-colour form a page uses for banners and buttons. */
+static int parse_gradient(const char *s, css_t *c) {
+    while (*s == ' ') s++;
+    int kind = !strncasecmp(s, "linear-gradient", 15) ? 1
+             : !strncasecmp(s, "radial-gradient", 15) ? 2 : 0;
+    if (!kind) return 0;
+    const char *p = strchr(s, '(');
+    if (!p) return 0;
+    p++;
+    const char *end = strrchr(p, ')');
+    if (!end) end = p + strlen(p);
+    const char *t = css_token_end(p, end);
+    char tok[96];
+    int n = (int)(t - p); if (n > 95) n = 95;
+    memcpy(tok, p, n); tok[n] = 0;
+    for (char *q = tok; *q; q++) *q = (char)tolower(*q);
+    for (char *q = tok + strlen(tok); q > tok && q[-1] == ' '; q--) q[-1] = 0;
+
+    uint32_t first, second;
+    int dir = 0;
+    if (!parse_color(tok, &first)) {                   /* a direction, then the first colour */
+        if (strstr(tok, "right") || strstr(tok, "left") || strstr(tok, "90deg") || strstr(tok, "270deg")) dir = 1;
+        else if (strstr(tok, "diagonal") || strstr(tok, "45deg") || strstr(tok, "135deg")) dir = 2;
+        p = t;
+        if (p < end && *p == ',') p++;
+        t = css_token_end(p, end);
+        n = (int)(t - p); if (n > 95) n = 95;
+        memcpy(tok, p, n); tok[n] = 0;
+        if (!parse_color(tok, &first)) return 0;
+    }
+    p = t;
+    if (p < end && *p == ',') p++;
+    t = css_token_end(p, end);
+    n = (int)(t - p); if (n > 95) n = 95;
+    memcpy(tok, p, n); tok[n] = 0;
+    if (!parse_color(tok, &second)) return 0;
+    c->bg = first; c->bg2 = second;
+    c->grad = (int8_t)kind;
+    c->grad_dir = (int8_t)dir;
+    c->set |= ST_BG | ST_GRAD;
+    return 1;
+}
+
 static void css_decls(const char *s, int n, css_t *c) {
     char buf[1024]; n = MIN(n, 1023); memcpy(buf, s, n); buf[n] = 0;
     for (char *d = strtok(buf, ";"); d; d = strtok(NULL, ";")) {
@@ -100,7 +155,19 @@ static void css_decls(const char *s, int n, css_t *c) {
         bool imp = strstr(v, "!important") != NULL;
         (void)imp;
         if (!strcmp(k, "color")) { if (parse_color(v, &c->color)) c->set |= ST_COLOR; }
-        else if (!strcmp(k, "background-color") || !strcmp(k, "background")) { if (parse_color(v, &c->bg)) c->set |= ST_BG; }
+        else if (!strcmp(k, "background") || !strcmp(k, "background-image")) {
+            if (!parse_gradient(v, c) && !strcmp(k, "background") && parse_color(v, &c->bg)) c->set |= ST_BG;
+        }
+        else if (!strcmp(k, "background-color")) { if (parse_color(v, &c->bg)) c->set |= ST_BG; }
+        else if (!strcmp(k, "border-radius")) { c->set |= ST_RADIUS; c->radius = (int16_t)CLAMP(atoi(v), 0, 512); }
+        else if (!strcmp(k, "border")) {
+            c->set |= ST_BORDER;
+            c->border = (int16_t)CLAMP(atoi(v), 0, 32);
+            c->border_color = BLACK;
+            const char *h = strchr(v, '#');
+            uint32_t bc;
+            if (h && parse_color(h, &bc)) c->border_color = bc;
+        }
         else if (!strcmp(k, "display")) { c->set |= ST_DISPLAY; c->display = !strncmp(v, "none", 4) ? 0 : !strncmp(v, "inline", 6) ? 2 : 1; }
         else if (!strcmp(k, "visibility")) { if (!strncmp(v, "hidden", 6)) { c->set |= ST_DISPLAY; c->display = 0; } }
         else if (!strcmp(k, "text-align")) { c->set |= ST_ALIGN; c->align = !strncmp(v, "center", 6) ? 1 : !strncmp(v, "right", 5) ? 2 : 0; }
@@ -127,6 +194,9 @@ static void css_merge(css_t *dst, const css_t *src) {
     if (src->set & ST_ITALIC) dst->italic = src->italic;
     if (src->set & ST_UNDER) dst->under = src->under;
     if (src->set & ST_SIZE) dst->size = src->size;
+    if (src->set & ST_RADIUS) dst->radius = src->radius;
+    if (src->set & ST_GRAD) { dst->bg2 = src->bg2; dst->grad = src->grad; dst->grad_dir = src->grad_dir; }
+    if (src->set & ST_BORDER) { dst->border = src->border; dst->border_color = src->border_color; }
     dst->set |= src->set;
 }
 /* ---------------- tree building (Lexbor's HTML5 parser) ---------------- */
