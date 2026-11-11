@@ -26,6 +26,8 @@ struct usb_dev {
     uint8_t toggle_in, toggle_out, toggle_int;
     int iface;                                 /* the HID interface number */
     bool boot;                                 /* boot protocol: the fixed report, no report ID */
+    bool polls;                                /* this interface moves the endpoint; a second
+                                                * interface on the same endpoint listens to it */
     hid_format_t fmt;                          /* the input report, from the report descriptor */
     bool irq_seen;                             /* the interrupt endpoint has delivered a report */
     int use_control;                           /* GET_REPORT stand-in: 0 untried, 1 in use, -1 refused */
@@ -36,6 +38,7 @@ struct usb_dev {
     uint32_t irq_polls, irq_reports;           /* counters for the log-on screen */
     uint32_t ctl_polls, ctl_reports;
     uint8_t report[16];                        /* last HID report, for key-up detection */
+    uint8_t last_btn;                          /* buttons in the last mouse report, for the log */
     uint8_t rep_usage;                         /* the key that is auto-repeating, 0 = none */
     uint32_t rep_next;                         /* when it repeats next */
     uint32_t rep_seen;                         /* when a report last confirmed it is still held */

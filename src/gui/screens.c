@@ -163,7 +163,7 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
             /* live, so a photo shows how far each device has got */
             const char *l = usb_live_text();
             if (*l) {
-                snprintf(line, sizeof line, "%s (i = interrupt polls, r = reports from them, g = GET_REPORT answers, lk = key the last report holds, rp = its bytes)", l);
+                snprintf(line, sizeof line, "%s (i = interrupt polls, r = reports from them, g = GET_REPORT answers, lk = key or bt = buttons in the last report, n = its length, rp = its bytes, ~ = a second interface on the same endpoint)", l);
                 y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, line, HEX(0xFFD070), 2) + 4;
             }
             draw_text(c, FONT_UI, 30, y,

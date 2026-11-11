@@ -384,16 +384,19 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   interface. Absolute pointers (tablets) are not driven. Reports are translated to PS/2 set 1
   scancodes and packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock,
   speed, button swap) works unchanged; a held key repeats in software, because a USB keyboard
-  does not repeat by itself. A report shorter than the format the descriptor describes is
-  refused, so another interface's bytes cannot be read as keys; two interfaces of one device
-  cannot share an endpoint, and the second one that claims it is ignored. A keyboard is asked
-  for a report every half second, so a held key keeps saying it is held; the repeat stops, and
-  the key is let go, after three seconds in which no report confirmed it. A device whose
-  interrupt endpoint has never delivered anything after a second is polled with `GET_REPORT`
-  instead, asked for exactly the report length its descriptor gives (asking for more can make a
-  real device stall). Its answer is the current report, so one identical to the last report
-  taken is a movement already counted: the buttons are applied, the movement is not. The
-  interrupt endpoint is trusted alone as soon as it delivers a report of its own.
+  does not repeat by itself. A report whose length does not fit the format is refused, so
+  another interface's bytes cannot be read as keys or buttons: a boot keyboard report is eight
+  bytes, and a boot mouse report three or four. Two interfaces of one device may name the same
+  endpoint; the first moves it, and the others listen to the same reports, which a report ID or
+  the boot report's length assigns to the right one. Two interfaces of the same kind that cannot
+  be told apart that way are not both attached. A keyboard is asked for a report every half
+  second, so a held key keeps saying it is held; the repeat stops, and the key is let go, after
+  three seconds in which no report confirmed it. A device whose interrupt endpoint has never
+  delivered anything after a second is polled with `GET_REPORT` instead, asked for exactly the
+  report length its descriptor gives (asking for more can make a real device stall). Its answer
+  is the current report, so one identical to the last report taken is a movement already
+  counted: the buttons are applied, the movement is not. The interrupt endpoint is trusted alone
+  as soon as it delivers a report of its own.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.

@@ -92,10 +92,11 @@ const char *usb_device_summary(void) {
 
 /* How far each HID device has got: the interface and endpoint it uses, its
  * vendor and product, interrupt polls and the reports they gave, GET_REPORT
- * answers, the key the last report holds and that report's bytes. A device that
- * never moves past polls has an endpoint the controller cannot reach; one that
- * answers GET_REPORT is still usable; one whose last report holds a key nobody
- * pressed is the one to look at. */
+ * answers, the key or buttons its last report holds, that report's length and
+ * its bytes. A device that never moves past polls has an endpoint the
+ * controller cannot reach; one that answers GET_REPORT is still usable; one
+ * whose last report holds a key or a button nobody pressed is the one to look
+ * at. */
 const char *usb_live_text(void) {
     static char out[1024];
     int len = 0;
@@ -105,11 +106,15 @@ const char *usb_live_text(void) {
         int key = 0;
         if (d->kind == USB_KIND_KEYBOARD)
             for (int i = 2; i < 8; i++) if (d->report[i]) { key = d->report[i]; break; }
+        char held[16];
+        if (d->kind == USB_KIND_KEYBOARD) snprintf(held, sizeof held, "lk%02x", key);
+        else snprintf(held, sizeof held, "bt%x", d->last_btn);
         int n = snprintf(out + len, sizeof out - (size_t)len,
-                         "%s%s@%d.%d %04x:%04x e%d i%u r%u g%u lk%02x",
+                         "%s%s@%d.%d%c %04x:%04x e%d i%u r%u g%u %s n%u",
                          len ? ", " : "", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse",
-                         d->addr, d->iface, d->vendor, d->product, d->ep_int,
-                         (unsigned)d->irq_polls, (unsigned)d->irq_reports, (unsigned)d->ctl_reports, key);
+                         d->addr, d->iface, d->polls ? ' ' : '~', d->vendor, d->product, d->ep_int,
+                         (unsigned)d->irq_polls, (unsigned)d->irq_reports, (unsigned)d->ctl_reports,
+                         held, (unsigned)d->last_len);
         if (n > 0 && len + n < (int)sizeof out) len += n;
         if (d->last_len > 0 && len + 4 < (int)sizeof out) {
             n = snprintf(out + len, sizeof out - (size_t)len, " rp");
@@ -287,7 +292,18 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
             hid_keyboard_report(d, rep, n);
             return;
         }
-        if (n < 3) return;
+        if (n != 3 && n != 4) {
+            /* A boot mouse report is three bytes, or four with a wheel. A
+             * keyboard's report reaching this endpoint is eight, and reading it
+             * as a mouse would press buttons out of its modifier byte and move
+             * the pointer by its key usages. */
+            if (!d->odd_report) {
+                d->odd_report = true;
+                klog("usb: mouse at address %d: %d-byte report, not a boot mouse's", d->addr, n);
+                usb_diag("mouse@%d got %d-byte report", d->addr, n);
+            }
+            return;
+        }
         btn = rep[0] & 7; dx = (int8_t)rep[1]; dy = (int8_t)rep[2];
         if (n >= 4) { int8_t w = (int8_t)rep[3]; if (w >= -8 && w <= 8) wheel = w; }
         mouse = true;
@@ -306,10 +322,24 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
     }
     if (!mouse) return;
     if (stale) dx = dy = wheel = 0;
+    d->last_btn = (uint8_t)(btn & 7);
     if (dx || dy || (btn & 7) || wheel) d->acted = true;
     /* HID counts Y downwards and the wheel away from the user; the mouse code
      * takes PS/2 packets, which count both the other way. */
     mouse_inject(dx, -dy, btn & 7, -CLAMP(wheel, -8, 8));
+}
+
+/* One report from an endpoint, offered to every interface that shares it. A
+ * report ID, or a boot report's length, says which one it belongs to; the
+ * others refuse it as not their format. */
+static void hid_report_shared(usb_dev_t *owner, const uint8_t *rep, int n, bool stale)
+{
+    hid_report(owner, rep, n, stale);
+    for (usb_dev_t *e = devices; e; e = e->next) {
+        if (e == owner || e->polls || e->hcd != owner->hcd || e->addr != owner->addr ||
+            e->ep_int != owner->ep_int) continue;
+        hid_report(e, rep, n, stale);
+    }
 }
 
 /* ---------------- mass storage: bulk-only transport ---------------- */
@@ -462,19 +492,6 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
     d->cls = 3; d->subcls = hi->subcls; d->proto = hi->proto;
     d->iface = hi->num; d->ep_int = hi->ep; d->maxpkt_int = hi->maxpkt ? hi->maxpkt : 8;
 
-    /* Two interfaces of one device cannot share an endpoint; if a configuration
-     * says they do, only the first one can own it. The other would otherwise
-     * take the reports of the interface that really uses it. */
-    for (usb_dev_t *e = devices; e; e = e->next) {
-        if (e->hcd == d->hcd && e->addr == d->addr && e->ep_int == d->ep_int) {
-            klog("usb: %04x:%04x at address %d: interface %d shares endpoint %d with interface %d, ignored",
-                 d->vendor, d->product, d->addr, hi->num, hi->ep, e->iface);
-            usb_diag("share ep%d dev %d", hi->ep, d->addr);
-            kfree(d);
-            return 0;
-        }
-    }
-
     int rlen = hi->rlen ? hi->rlen : 256;
     if (rlen > 1024) rlen = 1024;
     uint8_t *rd = kzalloc((size_t)rlen);
@@ -498,6 +515,36 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
     } else {
         kfree(d);
         return 0;
+    }
+
+    /* Two interfaces of one device can name the same endpoint, and only one of
+     * them can move it. The other is attached as a listener: every report the
+     * owner reads is offered to it too, so neither interface is starved. That
+     * is safe only when a report says which interface it belongs to. A report
+     * ID does; so does a boot report's length (a keyboard's eight bytes, a
+     * mouse's three or four), which is why two boot devices of the same kind
+     * are not shared. Without either, the second interface is refused rather
+     * than fed the first one's reports. */
+    d->polls = true;
+    usb_dev_t *owner = NULL;
+    for (usb_dev_t *e = devices; e; e = e->next) {
+        if (e->hcd != d->hcd || e->addr != d->addr || e->ep_int != d->ep_int) continue;
+        if (!owner || e->polls) owner = e;
+    }
+    if (owner) {
+        bool by_id = d->fmt.ids && owner->fmt.ids;
+        bool by_len = (d->kind == USB_KIND_KEYBOARD) != (owner->kind == USB_KIND_KEYBOARD) &&
+                      (d->boot || owner->boot);
+        if (!by_id && !by_len) {
+            klog("usb: %04x:%04x at address %d: interface %d shares endpoint %d with interface %d, ignored",
+                 d->vendor, d->product, d->addr, hi->num, hi->ep, owner->iface);
+            usb_diag("share ep%d dev %d", hi->ep, d->addr);
+            kfree(d);
+            return 0;
+        }
+        d->polls = false;
+        klog("usb: %04x:%04x at address %d: interface %d listens on endpoint %d, shared with interface %d",
+             d->vendor, d->product, d->addr, hi->num, hi->ep, owner->iface);
     }
     /* A keyboard is asked for a report every half second, so one that is held
      * down keeps saying so; a keyboard that stops answering has nothing held,
@@ -704,7 +751,7 @@ static void hid_control_poll(usb_dev_t *d)
     /* A mouse keeps answering with the same report until it moves, and an
      * interrupt report may already have delivered that one. */
     bool stale = d->last_len && c == d->last_len && !memcmp(rep, d->last_rep, (size_t)c);
-    hid_report(d, rep, c, stale);
+    hid_report_shared(d, rep, c, stale);
 }
 
 void usb_poll(void)
@@ -725,6 +772,7 @@ void usb_poll(void)
         }
         /* One transfer per poll, one packet long: an interrupt IN delivers a
          * whole report, and a short one must be taken as it is. */
+        if (!d->polls) continue;               /* another interface moves this endpoint */
         uint8_t rep[64];
         memset(rep, 0, sizeof rep);
         int len = MIN((int)d->maxpkt_int, (int)sizeof rep);
@@ -734,7 +782,7 @@ void usb_poll(void)
         if (n > 0) {
             d->irq_reports++;
             d->irq_seen = true;
-            hid_report(d, rep, n, false);
+            hid_report_shared(d, rep, n, false);
             continue;
         }
         if (d->irq_seen || d->use_control < 0) continue;
