@@ -145,8 +145,11 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
             char line[512];
             snprintf(line, sizeof line, "No USB keyboard or mouse was found. Controllers: %s.",
                      usb_boot_summary());
-            int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 180, c->w - 60, line, HEX(0xFFD070), 2);
-            draw_text(c, FONT_UI, 30, SCREEN_H - 180 + h + 6,
+            int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
+            int y = SCREEN_H - 190 + h + 6;
+            const char *d = usb_diag_text();
+            if (*d) y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, d, HEX(0xFFD070), 2) + 4;
+            draw_text(c, FONT_UI, 30, y,
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
         }

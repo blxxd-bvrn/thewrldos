@@ -287,6 +287,7 @@ static int xhci_cmd(xhci_t *x, int slot, uint64_t param, uint32_t status, uint32
     uint32_t code = 0; int got_slot = 0;
     if (!evt_wait(x, TRB_CMD_COMPLETE, addr, 1000, &code, &got_slot, NULL)) {
         klog("xhci: command %u timed out", type);
+        usb_diag("xHCI cmd %u timeout", type);
         return -1;
     }
     if (code_out) *code_out = code;
@@ -392,10 +393,12 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
     uint32_t code = 0, left = 0;
     if (!evt_wait(x, TRB_TRANSFER, last, 2000, &code, NULL, &left)) {
         klog("xhci: control %02x/%02x on slot %d timed out", type, req, d->slot);
+        usb_diag("xHCI ctl %02x/%02x timeout", type, req);
         return -1;
     }
     if (code != CC_SUCCESS && code != CC_SHORT) {
         klog("xhci: control %02x/%02x on slot %d failed (code %u)", type, req, d->slot, code);
+        usb_diag("xHCI ctl %02x/%02x code %u", type, req, code);
         return -1;
     }
     int got = len - (int)left;
@@ -474,20 +477,20 @@ static bool xhci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     if (!(v & PORT_PP)) {
         /* PED is write-one-to-clear: never write a set PED back */
         w32(x, x->op + PORTSC(port), (v & ~(PORT_PED | PORT_CHANGE)) | PORT_PP);
-        uwait(20);
+        uwait(100);
         v = r32(x, x->op + PORTSC(port));
     }
     w32(x, x->op + PORTSC(port), (v & ~(PORT_PED | PORT_CHANGE)) | PORT_PR);
     uint32_t t0 = timer_ticks();
     while (!(r32(x, x->op + PORTSC(port)) & PORT_PRC) && (int32_t)(timer_ticks() - t0) < 200) task_yield();
     v = r32(x, x->op + PORTSC(port));
-    if (!(v & PORT_PRC)) { klog("xhci: port %d reset did not finish", port + 1); return false; }
+    if (!(v & PORT_PRC)) { klog("xhci: port %d reset did not finish", port + 1); usb_diag("xHCI p%d no PRC", port + 1); return false; }
     w32(x, x->op + PORTSC(port), v & ~(PORT_PED | PORT_PR)); /* clear change bits, PED and reset */
     v = r32(x, x->op + PORTSC(port));
     if (!(v & PORT_CCS)) return false;
     t0 = timer_ticks();
     while (!(v & PORT_PED) && (int32_t)(timer_ticks() - t0) < 100) { task_yield(); v = r32(x, x->op + PORTSC(port)); }
-    if (!(v & PORT_PED)) { klog("xhci: port %d did not enable", port + 1); return false; }
+    if (!(v & PORT_PED)) { klog("xhci: port %d did not enable", port + 1); usb_diag("xHCI p%d no PED", port + 1); return false; }
     x->port_speed[port] = (uint8_t)((v >> 10) & 0xF);
     w32(x, x->op + PORTSC(port), v & ~(PORT_PED | PORT_PR)); /* clear CSC/PEC/PRC */
     *low_speed = x->port_speed[port] == 2;
@@ -519,6 +522,7 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low)
     int ep0 = d->speed >= 4 ? 512 : d->speed == 3 ? 64 : 8;
     if (xhci_address(x, d, 0, true, ep0) < 0) {
         klog("xhci: slot %d could not be addressed", slot);
+        usb_diag("xHCI slot %d address failed", slot);
         x->pending = NULL;
         return false;
     }
@@ -590,7 +594,7 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     /* Some controllers require scratchpad buffers before they will run.
      * DCBAA[0] points at the array of page pointers. */
     uint32_t hcs2 = r32(x, HCSPARAMS2);
-    int nsp = (int)((((hcs2 >> 27) & 0x1F) << 5) | ((hcs2 >> 21) & 0x1F));
+    int nsp = (int)((((hcs2 >> 21) & 0x1F) << 5) | ((hcs2 >> 27) & 0x1F));
     if (nsp > 0) {
         uint64_t *sp = kmalloc_aligned((size_t)nsp * 8, 64);
         if (!sp) { klog("usb: xHCI needs %d scratchpad buffers and there is no memory", nsp); return -1; }
@@ -620,7 +624,7 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
             if (!(v & PORT_PP))
                 w32(x, x->op + PORTSC(p), (v & ~(PORT_PED | PORT_CHANGE)) | PORT_PP);
         }
-        uwait(50);
+        uwait(100);
     }
 
     x->hcd.name = "xHCI";

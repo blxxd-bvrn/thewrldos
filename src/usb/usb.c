@@ -32,6 +32,30 @@ static const ctrl_stat_t *cstat_find(const pci_dev_t *pd) {
             return &cstats[i];
     return NULL;
 }
+
+/* A short ring of the last USB failures, for the log-on screen. */
+static char diag[4][96];
+static int ndiag;
+void usb_diag(const char *fmt, ...) {
+    char b[96];
+    va_list ap; va_start(ap, fmt);
+    vsnprintf(b, sizeof b, fmt, ap);
+    va_end(ap);
+    if (ndiag < 4) { strlcpy(diag[ndiag], b, sizeof diag[ndiag]); ndiag++; }
+    else {
+        for (int i = 1; i < 4; i++) memcpy(diag[i - 1], diag[i], sizeof diag[i]);
+        strlcpy(diag[3], b, sizeof diag[3]);
+    }
+}
+const char *usb_diag_text(void) {
+    static char out[384];
+    out[0] = 0;
+    for (int i = 0; i < ndiag; i++) {
+        if (i) strlcat(out, "; ", sizeof out);
+        strlcat(out, diag[i], sizeof out);
+    }
+    return out;
+}
 int usb_has_input(void) {
     for (usb_dev_t *d = devices; d; d = d->next)
         if (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) return 1;
@@ -392,15 +416,15 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_po
         return;
     }
     uint8_t d8[8];
-    if (get_descriptor(h, 0, low, 1, 0, d8, 8) < 8) { klog("usb: %s: no device descriptor", where); return; }
+    if (get_descriptor(h, 0, low, 1, 0, d8, 8) < 8) { klog("usb: %s: no device descriptor", where); usb_diag("%s: no descriptor", where); return; }
     int addr = next_addr;
     if (addr < 2 || addr > 127) { klog("usb: out of device addresses"); return; }
-    if (h->control(h, 0, low, 0x00, 5, (uint16_t)addr, 0, NULL, 0) < 0) { klog("usb: %s: SET_ADDRESS failed", where); return; }
+    if (h->control(h, 0, low, 0x00, 5, (uint16_t)addr, 0, NULL, 0) < 0) { klog("usb: %s: SET_ADDRESS failed", where); usb_diag("%s: SET_ADDRESS failed", where); return; }
     next_addr++;
     t0 = timer_ticks();
     while ((int32_t)(timer_ticks() - t0) < 10) task_yield();
     uint8_t dev[18];
-    if (get_descriptor(h, addr, low, 1, 0, dev, 18) < 18) { klog("usb: address %d: descriptor read failed", addr); return; }
+    if (get_descriptor(h, addr, low, 1, 0, dev, 18) < 18) { klog("usb: address %d: descriptor read failed", addr); usb_diag("%s: descriptor failed", where); return; }
     device_attach(h, addr, low, dev, where, root_port, route);
 }
 
@@ -495,5 +519,7 @@ int usb_count(void) { return 0; }
 const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition"; }
 int usb_has_input(void) { return 0; }
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) { (void)pd; (void)ok; (void)ports; (void)connected; }
+void usb_diag(const char *fmt, ...) { (void)fmt; }
+const char *usb_diag_text(void) { return ""; }
 int usb_unsupported;
 #endif
