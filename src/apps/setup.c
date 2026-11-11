@@ -93,7 +93,7 @@ static int ts_key_timeout(uint32_t ms) {
     while ((int32_t)(timer_ticks() - end) < 0) {
         while (mouse_poll(&m)) {}
         while (keyboard_poll(&e)) if (e.pressed) { int k = e.key ? e.key : (uint8_t)e.ch; return k < 0x100 ? tolower(k) : k; }
-        hlt();
+        task_yield(); hlt();
     }
     return 0;
 }
