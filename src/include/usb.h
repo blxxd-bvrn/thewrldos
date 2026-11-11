@@ -48,6 +48,7 @@ struct usb_dev {
     uint32_t rep_seen;                         /* when a report last confirmed it is still held */
     bool odd_report;                           /* a report of the wrong length was refused */
     uint32_t odd_n;                            /* how many reports were refused, for the log */
+    uint16_t btn_presses;                      /* mouse button-down changes, for the log */
     uint32_t hub_next;                         /* when a hub's ports are asked again */
     uint8_t hub_fail;                          /* port status reads that failed in a row */
     bool seen;                                 /* has this device sent a report yet? */
@@ -103,6 +104,7 @@ int usb_input_active(void);                     /* a USB report moved the pointe
 void usb_input_reset(void);                     /* the log-on screen asks for a fresh verdict */
 const char *usb_device_summary(void);           /* "kbd@2, mouse@3*, hub@7" */
 const char *usb_live_text(void);                /* per-device interrupt/GET_REPORT counters */
+const char *usb_event_text(void);               /* the last few key/mouse events, with their interface */
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected);
 void usb_diag(const char *fmt, ...);            /* last USB failures, shown on the log-on screen */
 const char *usb_diag_text(void);

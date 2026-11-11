@@ -426,13 +426,15 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   reports). EHCI handles high-speed devices itself and hands full/low-speed ports to the
   companion; it does not implement split transactions, so a full-speed device behind a
   high-speed hub is not seen, and isochronous transfers are not implemented.
-- If no USB keyboard or mouse is enumerated, or one is found but never sends a report, the log-on
-  screen names every controller it found, the devices it enumerated and the last failures, and
-  keeps a live line per device — its address, interface and endpoint, vendor and product,
-  interrupt polls, reports they gave, `GET_REPORT` answers, the key or buttons and bytes of its
-  last report, and how many reports were refused as another interface's format — so a machine
-  with a dead port, a stuck endpoint or a report read the wrong way can report what is actually
-  there.
+- The log-on screen always names every controller it found, the devices it enumerated and the
+  last failures, and keeps a live line per device — its address, interface and endpoint, whether
+  it uses the boot protocol or its own report format (and the length and report ID of that
+  format), vendor and product, interrupt polls, reports they gave, `GET_REPORT` answers, the key
+  or buttons and bytes of its last report, and how many reports were refused as another
+  interface's format. Below it is the last few input events, each named with the interface that
+  produced it (`kbd@10.0 04+` is a key press, `mouse@10.2 b1 3,-2` a move with the left button),
+  so a photo of the screen says which device moved the pointer or pressed a button nobody
+  touched, and what bytes it sent.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):

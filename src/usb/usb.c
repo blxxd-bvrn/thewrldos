@@ -17,6 +17,33 @@ usb_dev_t *usb_first(void) { return devices; }
 static char usb_summary[384];
 const char *usb_boot_summary(void) { return usb_summary; }
 
+/* The last few input events, with the interface that produced them. On a
+ * machine with no serial port the log-on screen is the only place a report can
+ * be seen, so a photo of it says which device moved the pointer or pressed a
+ * button nobody touched. */
+#define USB_EVENTS 5
+static char usb_event[USB_EVENTS][44];
+static int usb_nevents, usb_evnext;
+static void note_event(const char *s)
+{
+    snprintf(usb_event[usb_evnext], sizeof usb_event[0], "%s", s);
+    usb_evnext = (usb_evnext + 1) % USB_EVENTS;
+    if (usb_nevents < USB_EVENTS) usb_nevents++;
+}
+const char *usb_event_text(void)
+{
+    static char out[260];
+    int len = 0;
+    out[0] = 0;
+    int start = (usb_evnext - usb_nevents + USB_EVENTS) % USB_EVENTS;
+    for (int i = 0; i < usb_nevents; i++) {
+        int n = snprintf(out + len, sizeof out - (size_t)len, "%s%s", len ? " | " : "",
+                         usb_event[(start + i) % USB_EVENTS]);
+        if (n > 0 && len + n < (int)sizeof out) len += n;
+    }
+    return out;
+}
+
 typedef struct { uint8_t bus, dev, fn; int8_t ok; int16_t ports, conn; } ctrl_stat_t;
 static ctrl_stat_t cstats[24];
 static int ncstats;
@@ -109,10 +136,23 @@ const char *usb_live_text(void) {
         char held[16];
         if (d->kind == USB_KIND_KEYBOARD) snprintf(held, sizeof held, "lk%02x", key);
         else snprintf(held, sizeof held, "bt%x", d->last_btn);
+        /* Its protocol and the report length its descriptor gave: a boot
+         * interface has a fixed report, a report-protocol one says what it
+         * expects, and `k-`/`m-` says the descriptor was not read or had no
+         * such field. */
+        char pf[28];
+        bool keys = d->kind == USB_KIND_KEYBOARD;
+        int flen = keys ? (d->fmt.keys.present ? d->fmt.keys.len : -1)
+                        : (d->fmt.mouse.present ? d->fmt.mouse.len : -1);
+        int fid = keys ? d->fmt.keys.id : d->fmt.mouse.id;
+        if (d->boot) snprintf(pf, sizeof pf, " boot");
+        else if (flen < 0) snprintf(pf, sizeof pf, " rep %c-", keys ? 'k' : 'm');
+        else if (d->fmt.ids) snprintf(pf, sizeof pf, " rep %c%d id%d", keys ? 'k' : 'm', flen, fid);
+        else snprintf(pf, sizeof pf, " rep %c%d", keys ? 'k' : 'm', flen);
         int n = snprintf(out + len, sizeof out - (size_t)len,
-                         "%s%s@%d.%d%c %04x:%04x e%d i%u r%u g%u %s n%u",
+                         "%s%s@%d.%d%c%s %04x:%04x e%d i%u r%u g%u %s n%u",
                          len ? ", " : "", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse",
-                         d->addr, d->iface, d->polls ? ' ' : '~', d->vendor, d->product, d->ep_int,
+                         d->addr, d->iface, d->polls ? ' ' : '~', pf, d->vendor, d->product, d->ep_int,
                          (unsigned)d->irq_polls, (unsigned)d->irq_reports, (unsigned)d->ctl_reports,
                          held, (unsigned)d->last_len);
         if (n > 0 && len + n < (int)sizeof out) len += n;
@@ -124,6 +164,8 @@ const char *usb_live_text(void) {
         }
         if (d->odd_n && len + 12 < (int)sizeof out)
             len += snprintf(out + len, sizeof out - (size_t)len, " x%u", (unsigned)d->odd_n);
+        if (d->btn_presses && len + 12 < (int)sizeof out)
+            len += snprintf(out + len, sizeof out - (size_t)len, " bp%u", (unsigned)d->btn_presses);
     }
     return out;
 }
@@ -240,7 +282,12 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
     for (int i = 0; i < 8; i++) {
         uint8_t bit = (uint8_t)(1u << i);
         bool was = (d->report[0] & bit) != 0, now = (r[0] & bit) != 0;
-        if (now != was) hid_send_usage((uint8_t)(0xE0 + i), !now);
+        if (now != was) {
+            char ev[52];
+            snprintf(ev, sizeof ev, "%us kbd@%d.%d %02x%c", (unsigned)(timer_ticks() / 1000), d->addr, d->iface, 0xE0 + i, now ? '+' : '-');
+            note_event(ev);
+            hid_send_usage((uint8_t)(0xE0 + i), !now);
+        }
     }
     for (int j = 2; j < 8; j++) {                       /* keys that came up */
         uint8_t u = d->report[j];
@@ -248,6 +295,11 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
         bool still = false;
         for (int i = 2; i < 8; i++) if (r[i] == u) still = true;
         if (still) continue;
+        {
+            char ev[52];
+            snprintf(ev, sizeof ev, "%us kbd@%d.%d %02x-", (unsigned)(timer_ticks() / 1000), d->addr, d->iface, u);
+            note_event(ev);
+        }
         hid_send_usage(u, true);
         if (u == d->rep_usage) d->rep_usage = 0;
     }
@@ -257,6 +309,11 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
         bool seen = false;
         for (int j = 2; j < 8; j++) if (d->report[j] == u) seen = true;
         if (seen) continue;
+        {
+            char ev[52];
+            snprintf(ev, sizeof ev, "%us kbd@%d.%d %02x+", (unsigned)(timer_ticks() / 1000), d->addr, d->iface, u);
+            note_event(ev);
+        }
         hid_send_usage(u, false);
         if (hid_repeats(u)) {
             d->rep_usage = u;
@@ -333,8 +390,15 @@ static void hid_report(usb_dev_t *d, const uint8_t *rep, int n, bool stale)
     }
     if (!mouse) return;
     if (stale) dx = dy = wheel = 0;
+    if ((btn & 7) && !(d->last_btn & 7)) d->btn_presses++;
     d->last_btn = (uint8_t)(btn & 7);
-    if (dx || dy || (btn & 7) || wheel) d->acted = true;
+    if (dx || dy || (btn & 7) || wheel) {
+        char ev[52];
+        snprintf(ev, sizeof ev, "%us mouse@%d.%d b%x %d,%d%s", (unsigned)(timer_ticks() / 1000),
+                 d->addr, d->iface, btn & 7, dx, dy, wheel ? " w" : "");
+        note_event(ev);
+        d->acted = true;
+    }
     /* HID counts Y downwards and the wheel away from the user; the mouse code
      * takes PS/2 packets, which count both the other way. */
     mouse_inject(dx, -dy, btn & 7, -CLAMP(wheel, -8, 8));

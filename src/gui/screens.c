@@ -152,9 +152,15 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
             draw_text(c, FONT_UI, 30, y,
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
-        } else if (!usb_input_active()) {
+        } else {
+            /* Shown whether or not input has arrived: when the pointer moves
+             * and clicks by itself, this is the only place that says which
+             * interface did it, and a photo of it is the whole bug report. */
             char line[1024];
-            snprintf(line, sizeof line, "USB keyboard/mouse enumerated, but no input has arrived yet. Controllers: %s. Devices: %s.",
+            snprintf(line, sizeof line,
+                     usb_input_active()
+                     ? "USB input is working. Controllers: %s. Devices: %s."
+                     : "USB keyboard/mouse enumerated, but no input has arrived yet. Controllers: %s. Devices: %s.",
                      usb_boot_summary(), usb_device_summary());
             int h = draw_text_wrapped(c, FONT_UI, 30, SCREEN_H - 190, c->w - 60, line, HEX(0xFFD070), 2);
             int y = SCREEN_H - 190 + h + 6;
@@ -163,7 +169,13 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
             /* live, so a photo shows how far each device has got */
             const char *l = usb_live_text();
             if (*l) {
-                snprintf(line, sizeof line, "%s (i = interrupt polls, r = reports from them, g = GET_REPORT answers, lk = key or bt = buttons in the last report, n = its length, rp = its bytes, ~ = a second interface on the same endpoint, x = reports refused as another interface's format)", l);
+                snprintf(line, sizeof line, "%s (boot/rep = its protocol, k/m = the report length its descriptor gives, id = its report ID, i = interrupt polls, r = reports from them, g = GET_REPORT answers, lk = key or bt = buttons in the last report, n = its length, rp = its bytes, bp = button presses, ~ = a second interface on the same endpoint, x = reports refused as another interface's format)", l);
+                y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, line, HEX(0xFFD070), 2) + 4;
+            }
+            /* what actually moved or clicked, and from which interface */
+            const char *e = usb_event_text();
+            if (*e) {
+                snprintf(line, sizeof line, "Last input: %s (usage 04 is 'a', 05 is 'b'; b = buttons, then dx,dy)", e);
                 y += draw_text_wrapped(c, FONT_SMALL, 30, y, c->w - 60, line, HEX(0xFFD070), 2) + 4;
             }
             draw_text(c, FONT_UI, 30, y,
