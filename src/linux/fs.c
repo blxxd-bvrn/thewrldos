@@ -50,7 +50,30 @@ static int classify(const char *a) {
     if (!strcmp(a, "/dev/zero")) return LP_DEV_ZERO;
     if (!strcmp(a, "/dev/urandom") || !strcmp(a, "/dev/random")) return LP_DEV_RANDOM;
     if (!strcmp(a, "/dev/tty") || !strcmp(a, "/dev/console") || !strcmp(a, "/dev/stdout") || !strcmp(a, "/dev/stderr") || !strcmp(a, "/dev/stdin")) return LP_DEV_TTY;
+    if (!strcmp(a, "/proc")) return LP_PROC_DIR;
+    if (!strcmp(a, "/proc/self")) return LP_PROC_SELF_DIR;
     if (!strcmp(a, "/proc/self/exe")) return LP_PROC_SELF_EXE;
+    if (!strcmp(a, "/proc/self/maps")) return LP_PROC_MAPS;
+    if (!strcmp(a, "/proc/self/stat")) return LP_PROC_STAT;
+    if (!strcmp(a, "/proc/self/status")) return LP_PROC_STATUS;
+    if (!strcmp(a, "/proc/self/cmdline")) return LP_PROC_CMDLINE;
+    if (!strcmp(a, "/proc/self/fd")) return LP_PROC_FD_DIR;
+    if (!strncmp(a, "/proc/self/fd/", 14)) return LP_PROC_SELF_FD;
+    if (!strcmp(a, "/proc/meminfo")) return LP_PROC_MEMINFO;
+    if (!strcmp(a, "/proc/cpuinfo")) return LP_PROC_CPUINFO;
+    if (!strcmp(a, "/proc/uptime")) return LP_PROC_UPTIME;
+    if (!strcmp(a, "/proc/version")) return LP_PROC_VERSION;
+    if (!strcmp(a, "/sys")) return LP_SYS;
+    if (!strcmp(a, "/sys/devices")) return LP_SYS_DEVICES;
+    if (!strcmp(a, "/sys/devices/system")) return LP_SYS_DEV_SYSTEM;
+    if (!strcmp(a, "/sys/devices/system/cpu")) return LP_SYS_CPU;
+    if (!strcmp(a, "/sys/kernel")) return LP_SYS_KERNEL;
+    if (!strcmp(a, "/sys/devices/system/cpu/online")) return LP_SYS_CPU_ONLINE;
+    if (!strcmp(a, "/sys/devices/system/cpu/possible")) return LP_SYS_CPU_POSSIBLE;
+    if (!strcmp(a, "/sys/devices/system/cpu/present")) return LP_SYS_CPU_PRESENT;
+    if (!strcmp(a, "/sys/kernel/osrelease")) return LP_SYS_OSRELEASE;
+    if (!strcmp(a, "/sys/kernel/ostype")) return LP_SYS_OSTYPE;
+    if (!strcmp(a, "/sys/kernel/version")) return LP_SYS_VERSION;
     return LP_FILE;
 }
 /* absolute Linux path -> WRLD path */
@@ -106,12 +129,162 @@ static int ustr(char *dst, uint64_t src, int cap) {
 
 /* ---------------- descriptors ---------------- */
 int lx_fd_alloc(lxproc_t *p, lxfile_t *f, int min) {
-    for (int i = MAX(min, 0); i < LX_MAXFD; i++) if (!p->fds[i]) { p->fds[i] = f; p->fdflags[i] = 0; return i; }
+    int lim = (int)MIN(p->rlim[7][0], (uint64_t)LX_MAXFD);      /* RLIMIT_NOFILE */
+    for (int i = MAX(min, 0); i < lim; i++) if (!p->fds[i]) { p->fds[i] = f; p->fdflags[i] = 0; return i; }
     return -EMFILE;
 }
 lxfile_t *lx_fd_get(lxproc_t *p, int fd) { return fd >= 0 && fd < LX_MAXFD ? p->fds[fd] : NULL; }
-void lx_file_put(lxfile_t *f) { if (f && --f->refs <= 0) { lx_ipc_release(f); kfree(f); } }
+void lx_file_put(lxfile_t *f) { if (f && --f->refs <= 0) { lx_ipc_release(f); kfree(f->pdata); kfree(f); } }
 static lxfile_t *file_new(int type) { lxfile_t *f = kzalloc(sizeof *f); f->type = type; f->refs = 1; return f; }
+
+/* ---------------- /proc contents ---------------- */
+typedef struct { char *b; int len, cap; } pbuf_t;
+static bool pb_need(pbuf_t *b, int n) {
+    if (b->len + n + 1 <= b->cap) return true;
+    int nc = b->cap * 2;
+    while (nc < b->len + n + 1) nc *= 2;
+    char *nb = kmalloc(nc);
+    if (!nb) return false;
+    memcpy(nb, b->b, b->len);
+    nb[b->len] = 0;
+    kfree(b->b);
+    b->b = nb; b->cap = nc;
+    return true;
+}
+static void pb_add(pbuf_t *b, const char *fmt, ...) {
+    char tmp[512];
+    va_list ap; va_start(ap, fmt);
+    int n = vsnprintf(tmp, sizeof tmp, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if (!pb_need(b, n)) return;
+    n = MIN(n, (int)sizeof tmp - 1);
+    memcpy(b->b + b->len, tmp, n);
+    b->len += n;
+    b->b[b->len] = 0;
+}
+static const char *proc_comm(lxproc_t *p, char *buf, int cap) {
+    const char *n = p->exe, *s = n;
+    for (const char *c = n; *c; c++) if (*c == '/' || *c == '\\') s = c + 1;
+    strlcpy(buf, *s ? s : "?", cap);
+    return buf;
+}
+static char *proc_text(lxproc_t *p, int kind, uint32_t *out)
+{
+    pbuf_t b = { kmalloc(4096), 0, 4096 };
+    if (!b.b) return NULL;
+    b.b[0] = 0;
+    char comm[64]; proc_comm(p, comm, sizeof comm);
+    switch (kind) {
+    case LP_PROC_MAPS: {
+        for (vma_t *v = p->vm->vmas; v; v = v->next) {
+            const char *name = (v->flags & VMF_STACK) ? "[stack]" : (v->flags & VMF_HEAP) ? "[heap]" : "";
+            pb_add(&b, "%016llx-%016llx %c%c%c%c %08llx %02x:%02x %-8u %s\n",
+                   (unsigned long long)v->start, (unsigned long long)v->end,
+                   (v->prot & VM_READ) ? 'r' : '-', (v->prot & VM_WRITE) ? 'w' : '-', (v->prot & VM_EXEC) ? 'x' : '-',
+                   (v->flags & VMF_SHARED) ? 's' : 'p', (unsigned long long)v->foff, 8, 1,
+                   v->fnode ? (unsigned)(((uintptr_t)v->fnode >> 4) & 0xFFFFFF) : 0u, name);
+        }
+        break;
+    }
+    case LP_PROC_STAT: {
+        uint64_t vsize = 0, rss = (uint64_t)p->vm->pages * PAGE;
+        for (vma_t *v = p->vm->vmas; v; v = v->next) vsize += v->end - v->start;
+        task_t *self = task_current();
+        lxthread_t *ct = lx_current();
+        unsigned long ut = (self && ct && ct->proc == p) ? self->cpu_ms / 10 : 0;
+        pb_add(&b, "%d (%s) R %d %d %d 0 -1 4194304 0 0 0 0 %lu 0 0 0 20 0 %d 0 0 %llu %llu 18446744073709551615 0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+               p->pid, comm, p->ppid, p->pid, p->pid, ut, p->threads ? p->threads : 1,
+               (unsigned long long)vsize, (unsigned long long)rss);
+        break;
+    }
+    case LP_PROC_STATUS: {
+        uint64_t vsize = 0;
+        for (vma_t *v = p->vm->vmas; v; v = v->next) vsize += v->end - v->start;
+        pb_add(&b, "Name:\t%s\nUmask:\t%04o\nState:\tR (running)\nTgid:\t%d\nPid:\t%d\nPPid:\t%d\nThreads:\t%d\n",
+               comm, p->umask, p->pid, p->pid, p->ppid, p->threads ? p->threads : 1);
+        pb_add(&b, "SigQ:\t0/0\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\nSigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\n");
+        pb_add(&b, "CapInh:\t0000000000000000\nCapPrm:\t0000000000000000\nCapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nCapAmb:\t0000000000000000\nNoNewPrivs:\t%d\nSeccomp:\t0\n",
+               p->no_new_privs ? 1 : 0);
+        pb_add(&b, "VmPeak:\t%8llu kB\nVmSize:\t%8llu kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t%8llu kB\nVmRSS:\t%8llu kB\n",
+               (unsigned long long)(vsize / 1024), (unsigned long long)(vsize / 1024),
+               (unsigned long long)((uint64_t)p->vm->pages * PAGE / 1024), (unsigned long long)((uint64_t)p->vm->pages * PAGE / 1024));
+        pb_add(&b, "RssAnon:\t       0 kB\nRssFile:\t       0 kB\nRssShmem:\t       0 kB\nVmData:\t       0 kB\nVmStk:\t       0 kB\nVmExe:\t       0 kB\nVmLib:\t       0 kB\nVmPTE:\t       0 kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\n");
+        break;
+    }
+    case LP_PROC_CMDLINE: {
+        int n = strlen(p->exe) + 1;
+        if (pb_need(&b, n)) { memcpy(b.b, p->exe, n - 1); b.b[n - 1] = 0; b.len = n; }
+        break;
+    }
+    case LP_PROC_MEMINFO: {
+        uint64_t totalkb = 256ull << 10;
+        pb_add(&b, "MemTotal:       %8llu kB\nMemFree:        %8llu kB\nMemAvailable:   %8llu kB\nBuffers:               0 kB\nCached:                0 kB\nSwapCached:            0 kB\nActive:                0 kB\nInactive:              0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\nDirty:                 0 kB\nWriteback:             0 kB\nAnonPages:             0 kB\nMapped:                0 kB\nShmem:                 0 kB\nSlab:                  0 kB\nSReclaimable:          0 kB\nSUnreclaim:            0 kB\nPageTables:            0 kB\n",
+               (unsigned long long)totalkb, (unsigned long long)MAX(0, totalkb - pmm_used_pages() * PAGE / 1024),
+               (unsigned long long)MAX(0, totalkb - pmm_used_pages() * PAGE / 1024));
+        break;
+    }
+    case LP_PROC_CPUINFO: {
+        char vendor[16] = "", brand[64] = "";
+        cpu_get_info(vendor, brand);
+        uint32_t eax = 0, ebx = 0, ecx = 0, edx = 0;
+        __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
+        pb_add(&b, "processor\t: 0\nvendor_id\t: %s\ncpu family\t: %u\nmodel\t\t: %u\nmodel name\t: %s\nstepping\t: %u\n",
+               vendor[0] ? vendor : "GenuineIntel", (eax >> 8) & 0xF, (eax >> 4) & 0xF, brand[0] ? brand : "Unknown", eax & 0xF);
+        pb_add(&b, "physical id\t: 0\nsiblings\t: 1\ncore id\t\t: 0\ncpu cores\t: 1\nflags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss syscall nx lm\n");
+        break;
+    }
+    case LP_PROC_UPTIME: {
+        uint32_t ms = timer_ticks();
+        uint32_t idle = idle_ticks;
+        pb_add(&b, "%u.%02u %u.%02u\n", ms / 1000, (ms % 1000) / 10, idle / 100, idle % 100);
+        break;
+    }
+    case LP_PROC_VERSION:
+        pb_add(&b, "Linux version 6.0.0-wrld (wrld@wrld) (gcc version 13.2.0) #1 SMP %s\n", OS_NAME);
+        break;
+    case LP_SYS_CPU_ONLINE: case LP_SYS_CPU_POSSIBLE: case LP_SYS_CPU_PRESENT:
+        pb_add(&b, "0\n");
+        break;
+    case LP_SYS_OSRELEASE:
+        pb_add(&b, "6.0.0-wrld\n");
+        break;
+    case LP_SYS_OSTYPE:
+        pb_add(&b, "Linux\n");
+        break;
+    case LP_SYS_VERSION:
+        pb_add(&b, "#1 SMP %s\n", OS_NAME);
+        break;
+    }
+    *out = b.len;
+    return b.b;
+}
+static char *proc_listing(lxproc_t *p, int kind, uint32_t *out)
+{
+    pbuf_t b = { kmalloc(1024), 0, 1024 };
+    if (!b.b) return NULL;
+    b.b[0] = 0;
+    if (kind == LP_PROC_DIR) {
+        pb_add(&b, "self 4\n%d 4\nmeminfo 8\ncpuinfo 8\nuptime 8\nversion 8\n", p->pid);
+    } else if (kind == LP_PROC_SELF_DIR) {
+        pb_add(&b, "fd 4\nmaps 8\nstat 8\nstatus 8\ncmdline 8\nexe 10\n");
+    } else if (kind == LP_SYS) {
+        pb_add(&b, "devices 4\nkernel 4\n");
+    } else if (kind == LP_SYS_DEVICES) {
+        pb_add(&b, "system 4\n");
+    } else if (kind == LP_SYS_DEV_SYSTEM) {
+        pb_add(&b, "cpu 4\n");
+    } else if (kind == LP_SYS_CPU) {
+        pb_add(&b, "online 8\npossible 8\npresent 8\n");
+    } else if (kind == LP_SYS_KERNEL) {
+        pb_add(&b, "osrelease 8\nostype 8\nversion 8\n");
+    } else {
+        for (int i = 0; i < LX_MAXFD; i++) if (p->fds[i]) pb_add(&b, "%d 10\n", i);
+    }
+    *out = b.len;
+    return b.b;
+}
+
 
 /* ---------------- stat ---------------- */
 typedef struct PACKED {
@@ -130,6 +303,11 @@ static int64_t node_time(vnode_t *n) {
 static void fill_stat(lstat_t *st, vnode_t *n, int kind) {
     memset(st, 0, sizeof *st);
     st->dev = 0x801; st->nlink = 1; st->uid = st->gid = 1000; st->blksize = 4096;
+    if (kind == LP_PROC_DIR || kind == LP_PROC_SELF_DIR || kind == LP_PROC_FD_DIR ||
+        (kind >= LP_SYS && kind <= LP_SYS_KERNEL)) { st->mode = 040555; st->nlink = 2; st->ino = 200 + kind; return; }
+    if (kind == LP_PROC_SELF_FD) { st->mode = 0120777; st->ino = 200 + kind; return; }
+    if ((kind >= LP_PROC_MAPS && kind <= LP_PROC_VERSION) ||
+        (kind >= LP_SYS_CPU_ONLINE && kind <= LP_SYS_VERSION)) { st->mode = 0100444; st->ino = 200 + kind; return; }
     if (kind != LP_FILE && kind != LP_PROC_SELF_EXE) { st->mode = 020666; st->rdev = 0x103; st->ino = 100 + kind; return; }
     st->ino = ((uintptr_t)n >> 4) & 0xFFFFFFFF;
     st->mode = n->dir ? 040755 : 0100755;
@@ -190,7 +368,29 @@ static int64_t do_open(lxproc_t *p, int dirfd, uint64_t upath, int flags, int mo
     else if (kind == LP_DEV_ZERO) f = file_new(FD_ZERO);
     else if (kind == LP_DEV_RANDOM) f = file_new(FD_RANDOM);
     else if (kind == LP_DEV_TTY) { f = file_new(FD_CONSOLE); f->con = p->con; }
-    else {
+    else if (kind == LP_PROC_SELF_FD) {                     /* opening an fd link is a dup */
+        int fd = atoi(labs + 14);
+        lxfile_t *src = lx_fd_get(p, fd);
+        if (!src) return -ENOENT;
+        src->refs++;
+        int nfd = lx_fd_alloc(p, src, 0);
+        if (nfd < 0) { lx_file_put(src); return nfd; }
+        if (flags & O_CLOEXEC) p->fdflags[nfd] = 1;
+        return nfd;
+    } else if (kind == LP_PROC_DIR || kind == LP_PROC_SELF_DIR || kind == LP_PROC_FD_DIR ||
+               (kind >= LP_SYS && kind <= LP_SYS_KERNEL)) {
+        if ((flags & O_ACCMODE) && !(flags & O_PATH)) return -EISDIR;
+        f = file_new(FD_DIR);
+        f->pdata = proc_listing(p, kind, &f->plen);
+        if (!f->pdata) { kfree(f); return -ENOMEM; }
+    } else if ((kind >= LP_PROC_MAPS && kind <= LP_PROC_VERSION) ||
+               (kind >= LP_SYS_CPU_ONLINE && kind <= LP_SYS_VERSION)) {
+        if (flags & O_DIRECTORY) return -ENOTDIR;
+        if ((flags & O_ACCMODE) && !(flags & O_PATH)) return -EACCES;
+        f = file_new(FD_FILE);
+        f->pdata = proc_text(p, kind, &f->plen);
+        if (!f->pdata) { kfree(f); return -ENOMEM; }
+    } else {
         if (!n) {
             if (!(flags & O_CREAT)) return -ENOENT;
             char w[512]; to_wrld(labs, w, sizeof w);
@@ -237,10 +437,11 @@ static int64_t file_read(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, int
     }
     case FD_DIR: return -EISDIR;
     case FD_FILE: {
-        uint64_t pos = at >= 0 ? (uint64_t)at : f->pos, size = f->node->size;
-        if (pos >= size) return 0;
+        const uint8_t *data = f->node ? f->node->data : (const uint8_t *)f->pdata;
+        uint64_t pos = at >= 0 ? (uint64_t)at : f->pos, size = f->node ? f->node->size : f->plen;
+        if (!data || pos >= size) return 0;
         uint64_t k = MIN(n, size - pos);
-        memcpy(dst, f->node->data + pos, k);
+        memcpy(dst, data + pos, k);
         if (at < 0) f->pos = pos + k;
         return k;
     }
@@ -257,10 +458,11 @@ static int64_t file_write(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, in
     case FD_CONSOLE: if (f->con && n) f->con->write(f->con, (const char *)src, n); return n;
     case FD_DIR: return -EISDIR;
     case FD_FILE: {
+        if (!f->node) return -EACCES;                       /* generated /proc files are read-only */
         if (!(f->oflags & O_ACCMODE)) return -EBADF;
         vnode_t *v = f->node;
         uint64_t pos = at >= 0 ? (uint64_t)at : ((f->oflags & O_APPEND) ? v->size : f->pos);
-        if (pos + n > 0x7FFFFFFF) return -EFBIG;
+        if (pos + n > 0x7FFFFFFF || pos + n > p->rlim[1][0]) return -EFBIG;   /* RLIMIT_FSIZE */
         uint64_t ns = MAX((uint64_t)v->size, pos + n);
         if (pos == v->size && at < 0) { if (!vfs_append_node(v, src, n)) return -ENOSPC; }
         else {
@@ -289,13 +491,32 @@ static int64_t getdents(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t cap) {
     uint64_t o = 0;
     for (;;) {
         const char *name; int type; uint64_t ino;
+        char nm[64];
         if (f->pos == 0) { name = "."; type = 4; ino = 1; }
         else if (f->pos == 1) { name = ".."; type = 4; ino = 2; }
         else {
-            vnode_t *c = f->node->child;
-            for (uint64_t i = 2; c && i < f->pos; i++) c = c->next;
-            if (!c) break;
-            name = c->name; type = c->dir ? 4 : 8; ino = ((uintptr_t)c >> 4) & 0xFFFFFFFF;
+            vnode_t *c = NULL;
+            if (f->node) {
+                c = f->node->child;
+                for (uint64_t i = 2; c && i < f->pos; i++) c = c->next;
+                if (!c) break;
+                name = c->name; type = c->dir ? 4 : 8; ino = ((uintptr_t)c >> 4) & 0xFFFFFFFF;
+            } else if (f->pdata && f->pos >= 2) {
+                const char *s = f->pdata;
+                for (uint64_t i = 2; s && i < f->pos; i++) {
+                    while (*s && *s != '\n') s++;
+                    if (*s) s++;
+                    else s = NULL;
+                }
+                if (!s || !*s) break;
+                const char *e = s; while (*e && *e != '\n') e++;
+                int l = MIN((int)(e - s), (int)sizeof nm - 1);
+                memcpy(nm, s, l); nm[l] = 0;
+                type = 8;
+                char *sp = strchr(nm, ' ');
+                if (sp) { *sp = 0; type = atoi(sp + 1); }
+                name = nm; ino = 0x200 + (uintptr_t)f->pos;
+            } else break;
         }
         uint64_t nl = strlen(name), rl = (19 + nl + 1 + 7) & ~7ull;
         if (o + rl > cap) { if (!o) return -EINVAL; break; }

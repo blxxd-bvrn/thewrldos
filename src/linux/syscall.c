@@ -379,14 +379,28 @@ int64_t lx_syscall(regs_t *r) {
     case 63: return sys_uname(a0);
     case 95: { uint32_t o = p->umask; p->umask = a0 & 0777; return o; }
     case 97: case 302: {                                              /* getrlimit, prlimit64 */
-        uint64_t res = nr == 97 ? a0 : a1, out = nr == 97 ? a1 : a3;
-        uint64_t lim[2] = { ~0ull, ~0ull };
-        if (res == 3) { lim[0] = STACK_SIZE; }                        /* RLIMIT_STACK */
-        else if (res == 7) { lim[0] = lim[1] = LX_MAXFD; }            /* RLIMIT_NOFILE */
+        uint64_t res = nr == 97 ? a0 : a1, out = nr == 97 ? a1 : a3, in = nr == 97 ? 0 : a2;
+        int pid = nr == 97 ? p->pid : (int)a0;
+        if (res > 15) return -EINVAL;
+        if (pid && pid != p->pid) return -EINVAL;                     /* only the caller's limits */
+        if (in) {
+            uint64_t nl[2];
+            if (!uin(nl, in, 16)) return -EFAULT;
+            if (nl[0] > nl[1]) return -EINVAL;
+            p->rlim[res][0] = nl[0]; p->rlim[res][1] = nl[1];
+        }
+        uint64_t lim[2] = { p->rlim[res][0], p->rlim[res][1] };
         if (out && !uout(out, lim, 16)) return -EFAULT;
         return 0;
     }
-    case 160: return 0;                                               /* setrlimit */
+    case 160: {                                                       /* setrlimit */
+        if (a0 > 15) return -EINVAL;
+        uint64_t nl[2];
+        if (!uin(nl, a1, 16)) return -EFAULT;
+        if (nl[0] > nl[1]) return -EINVAL;
+        p->rlim[a0][0] = nl[0]; p->rlim[a0][1] = nl[1];
+        return 0;
+    }
     case 99: {                                                        /* sysinfo */
         uint8_t si[112]; memset(si, 0, sizeof si);
         int64_t up = timer_ticks() / 1000; memcpy(si, &up, 8);
@@ -417,7 +431,29 @@ int64_t lx_syscall(regs_t *r) {
         for (uint64_t i = 0; i < a1; i++) { s ^= rdtsc() + i; s ^= s << 13; s ^= s >> 7; s ^= s << 17; d[i] = (uint8_t)(s >> 24); }
         return a1;
     }
-    case 157: return 0;                                               /* prctl */
+    case 157: {                                                       /* prctl */
+        switch ((int)a0) {
+        case 1: if (a1 > LX_NSIG) return -EINVAL; p->pdeathsig = (uint32_t)a1; return 0;   /* PR_SET_PDEATHSIG */
+        case 2: { uint32_t v = p->pdeathsig; return uout(a1, &v, 4) ? 0 : -EFAULT; }       /* PR_GET_PDEATHSIG */
+        case 3: { int32_t v = p->dumpable; return uout(a1, &v, 4) ? 0 : -EFAULT; }         /* PR_GET_DUMPABLE */
+        case 4: p->dumpable = a1 ? 1 : 0; return 0;                                        /* PR_SET_DUMPABLE */
+        case 13: return 0;                                                                /* PR_GET_TIMING */
+        case 14: return a1 == 0 ? 0 : -EINVAL;                                            /* PR_SET_TIMING: statistical only */
+        case 15: { char nm[16]; if (!uin(nm, a1, 16)) return -EFAULT; nm[15] = 0;          /* PR_SET_NAME */
+                   strlcpy(t->comm, nm, sizeof t->comm); return 0; }
+        case 16: { char nm[16]; memset(nm, 0, sizeof nm); strlcpy(nm, t->comm, sizeof nm); /* PR_GET_NAME */
+                   return uout(a1, nm, 16) ? 0 : -EFAULT; }
+        case 21: return 0;                                                                /* PR_GET_SECCOMP: none */
+        case 22: return -EINVAL;                                                          /* PR_SET_SECCOMP: not implemented */
+        case 29: return 0;                                                                /* PR_SET_TIMERSLACK (hint) */
+        case 30: return 50000;                                                            /* PR_GET_TIMERSLACK */
+        case 38: if (a1 != 1 || a2 || a3 || a4) return -EINVAL;                           /* PR_SET_NO_NEW_PRIVS */
+                 p->no_new_privs = true; return 0;
+        case 39: return p->no_new_privs ? 1 : 0;                                          /* PR_GET_NO_NEW_PRIVS */
+        case 40: return uout(a1, &t->clear_child_tid, 8) ? t->tid : -EFAULT;              /* PR_GET_TID_ADDRESS */
+        default: return -EINVAL;                                                          /* not implemented, honestly */
+        }
+    }
     case 62: return lx_signal_kill(p, (int)a0, (int)a1);              /* kill */
     case 200: return lx_signal_tkill(p, (int)a0, (int)a1);            /* tkill */
     case 234: return lx_signal_tgkill(p, (int)a0, (int)a1, (int)a2);  /* tgkill */

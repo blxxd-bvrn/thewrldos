@@ -123,11 +123,16 @@ Already working, and not on the list below:
 
 ### 10. Services a browser engine expects
 
-- `/proc` has only `/proc/self/exe`; it needs `/proc/self/{maps,stat,status,fd}`, `/proc/meminfo`
-  and `/proc/cpuinfo`.
-- No `/sys`, no enforced `rlimit`s.
-- No seccomp-bpf, namespaces or `CLONE_NEWUSER`; `prctl` returns success, so `NO_NEW_PRIVS` is
-  dishonest and the sandbox has to be disabled rather than faked.
+- `/proc` serves `/proc/self/{maps,stat,status,cmdline,fd}`, `/proc/self/exe` and
+  `/proc/{meminfo,cpuinfo,uptime,version}`, generated when a program opens them. `/proc/<pid>`
+  for another process is not implemented; only the caller's own view exists.
+- `/sys` has the minimal tree programs probe: `devices/system/cpu/{online,possible,present}` and
+  `kernel/{osrelease,ostype,version}`. There is no device tree, cgroup or power interface.
+- Limits are per process and inherited; `RLIMIT_NOFILE` and `RLIMIT_FSIZE` are enforced, the
+  other resources are stored and reported but not enforced.
+- No seccomp-bpf, namespaces or `CLONE_NEWUSER`. `prctl` is honest: thread names, parent-death
+  signals, dumpable, `NO_NEW_PRIVS` and the TID address work, while unsupported options
+  (including `PR_SET_SECCOMP`) return `EINVAL`, so a sandbox has to be disabled rather than faked.
 
 ### 11. Practical ceilings
 
@@ -137,7 +142,7 @@ Already working, and not on the list below:
 - No Wi-Fi; USB needs xHCI, EHCI, UHCI or OHCI, and wired IPv4 Ethernet only.
 - An unimplemented system call returns `ENOSYS`, is logged once, and the program dies.
 - The Linux ABI is covered by the test programs in `samples/linux`: `hello.c`, `threads.c`,
-  `ipc.c`, `procs.c` and `socket.c`.
+  `ipc.c`, `procs.c`, `socket.c` and `sysinfo.c`.
 
 ## Milestones
 
@@ -157,9 +162,12 @@ Already working, and not on the list below:
    fills and strokes, round joins, linear/radial gradients and clipping, used by XplorerLite for
    `border-radius` and gradient backgrounds. Skia itself is not used.
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.
-10. [ ] **`/proc`, `/sys`, honest `prctl`** - introspection and sandboxing.
+10. [x] **`/proc`, `/sys`, honest `prctl`** - `/proc/self/{maps,stat,status,cmdline,fd}`,
+   `/proc/{meminfo,cpuinfo,uptime,version}`, a minimal `/sys` CPU/kernel tree, per-process
+   rlimits (NOFILE and FSIZE enforced) and a `prctl` that returns `EINVAL` for what it does not
+   implement, including `PR_SET_SECCOMP`.
 
-Milestones 1-8 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
+Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
 `fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.
 
 The shell and XplorerLite get their text from the same engine as the desktop: TrueType,

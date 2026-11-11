@@ -340,14 +340,26 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Loading:** position-independent executables (the default on current distributions) and
   the dynamic loader they name, with a Linux start-up stack (argv, environment, auxv) (`proc.c`).
 - **Files:** `/` is `C:\Linux`, `/mnt/c` is `C:\`, `/lib`, `/bin` and so on follow the merged
-  `/usr` layout, and `/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/tty` and `/proc/self/exe`
-  are built in (`fs.c`).
+  `/usr` layout, and `/dev/null`, `/dev/zero`, `/dev/urandom` and `/dev/tty` are built in
+  (`fs.c`).
+- **`/proc`:** `/proc/self/{maps,stat,status,cmdline,fd}` (the fd directory lists descriptors,
+  `open()` on an fd link duplicates it, and `readlink` returns its path), `/proc/self/exe`, and
+  `/proc/{meminfo,cpuinfo,uptime,version}`, all generated per process when opened.
+- **`/sys`:** a small tree for the files programs probe: `devices/system/cpu/{online,possible,
+  present}` and `kernel/{osrelease,ostype,version}`.
+- **Limits and `prctl`:** rlimits are per process and inherited across `fork`/`execve`;
+  `RLIMIT_NOFILE` is enforced when descriptors are allocated and `RLIMIT_FSIZE` on writes.
+  `prctl` implements `PR_SET_NAME`/`GET_NAME`, `PR_SET_PDEATHSIG` (delivered when the parent
+  exits), `PR_SET_DUMPABLE`, `PR_SET_NO_NEW_PRIVS`/`GET_NO_NEW_PRIVS` and `PR_GET_TID_ADDRESS`;
+  unsupported options, including `PR_SET_SECCOMP`, return `EINVAL` instead of pretending to
+  work.
 - **System calls:** files, directories, mmap/brk/mprotect, time, thread-local storage, futexes,
   identity and limits (`syscall.c`); kernel code stays cooperative, and a program running in
   ring 3 is preempted by the timer.
 - Type the program's path in the Command Prompt, for example
   `C:/Linux/usr/bin/hello` or `C:/Linux/usr/local/bin/signals`. The 64-bit ISO carries test
-  programs from `samples/linux` (`hello`, `threads`, `ipc`, `procs`, `signals`, `socket`); they are
+  programs from `samples/linux` (`hello`, `threads`, `ipc`, `procs`, `signals`, `socket`,
+  `sysinfo`); they are
   built against **musl** as static PIE when `musl-gcc` is installed, so nothing else is needed, or
   against the build machine's glibc (copied in) when only gcc is available.
 - Threads: `clone()` with the flags glibc's `pthread_create` uses (new TLS, child TID cleared

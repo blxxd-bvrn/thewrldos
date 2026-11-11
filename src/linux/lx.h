@@ -30,6 +30,8 @@
 void *pmm_alloc(void);                         /* one zeroed 4 KiB page (identity-mapped), NULL if none */
 void pmm_free(void *p);
 uint32_t pmm_used_pages(void);
+uint32_t pmm_total_pages(void);
+uint32_t pmm_free_pages(void);
 
 /* ---- user address spaces ---- */
 enum { VM_READ = 1, VM_WRITE = 2, VM_EXEC = 4 };
@@ -75,6 +77,7 @@ typedef struct lxfile {
     void *obj;                                 /* src/linux/ipc.c state for pipes, sockets, ... */
     char path[256];                            /* Linux path it was opened as */
     char line[512]; int line_len, line_pos;    /* console input not yet read */
+    char *pdata; uint32_t plen;                /* generated /proc contents (node is NULL) */
 } lxfile_t;
 #define LX_MAXFD 256
 
@@ -99,6 +102,10 @@ typedef struct lxproc {
     int term_sig;                              /* signal that killed the process, 0 for a normal exit */
     bool exiting;
     uint32_t umask;
+    uint64_t rlim[16][2];                      /* rlimit soft/hard, RLIM_INFINITY by default */
+    bool no_new_privs;                         /* PR_SET_NO_NEW_PRIVS */
+    int dumpable;                              /* PR_SET_DUMPABLE, 1 at start */
+    uint32_t pdeathsig;                        /* PR_SET_PDEATHSIG */
     lxsigaction_t acts[LX_NSIG];                /* per-process dispositions, like Linux */
     uint64_t sig_pending;                      /* process-directed signals */
     uint32_t alarm_at; int alarm_sig;          /* alarm() and ITIMER_REAL */
@@ -108,6 +115,7 @@ typedef struct lxproc {
 typedef struct lxthread {
     lxproc_t *proc;
     int tid;
+    char comm[16];                             /* PR_SET_NAME */
     uint64_t fsbase;
     uint64_t clear_child_tid;                  /* set_tid_address / CLONE_CHILD_CLEARTID */
     uint64_t robust_list;
@@ -128,7 +136,13 @@ typedef struct lxthread {
 lxthread_t *lx_current(void);
 
 /* path translation: Linux path -> WRLD path (C:\Linux\..., C:\..., or a device) */
-enum { LP_FILE = 0, LP_DEV_NULL, LP_DEV_ZERO, LP_DEV_RANDOM, LP_DEV_TTY, LP_PROC_SELF_EXE, LP_PROC_SELF_FD };
+enum { LP_FILE = 0, LP_DEV_NULL, LP_DEV_ZERO, LP_DEV_RANDOM, LP_DEV_TTY, LP_PROC_SELF_EXE, LP_PROC_SELF_FD,
+       LP_PROC_DIR, LP_PROC_SELF_DIR, LP_PROC_FD_DIR,
+       LP_PROC_MAPS, LP_PROC_STAT, LP_PROC_STATUS, LP_PROC_CMDLINE,
+       LP_PROC_MEMINFO, LP_PROC_CPUINFO, LP_PROC_UPTIME, LP_PROC_VERSION,
+       LP_SYS, LP_SYS_DEVICES, LP_SYS_DEV_SYSTEM, LP_SYS_CPU, LP_SYS_KERNEL,
+       LP_SYS_CPU_ONLINE, LP_SYS_CPU_POSSIBLE, LP_SYS_CPU_PRESENT,
+       LP_SYS_OSRELEASE, LP_SYS_OSTYPE, LP_SYS_VERSION };
 int lx_path(lxproc_t *p, int dirfd, const char *upath, char *out, int cap);
 void lx_abspath(lxproc_t *p, const char *upath, char *out, int cap);
 

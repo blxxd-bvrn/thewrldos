@@ -77,6 +77,10 @@ static lxproc_t *proc_new(void) {
     if (!p->vm) { kfree(p); return NULL; }
     strcpy(p->cwd, "/");
     p->umask = 022;
+    p->dumpable = 1;
+    for (int i = 0; i < 16; i++) p->rlim[i][0] = p->rlim[i][1] = ~0ull;
+    p->rlim[3][0] = p->rlim[3][1] = STACK_SIZE;
+    p->rlim[7][0] = p->rlim[7][1] = LX_MAXFD;
     return p;
 }
 
@@ -91,6 +95,7 @@ static void lx_thread_start(void *arg) {
 static task_t *thread_new(lxproc_t *p, const char *name, const regs_t *regs, uint64_t fsbase) {
     lxthread_t *th = kzalloc(sizeof *th);
     th->proc = p;
+    strlcpy(th->comm, name, sizeof th->comm);
     th->start_regs = *regs;
     th->fsbase = fsbase;
     task_t *t = task_create(name, lx_thread_start, th, 64 * 1024);
@@ -237,6 +242,8 @@ int64_t lx_fork(regs_t *r) {
     if (!c->vm) { kfree(c); return -ENOMEM; }
     c->con = p->con; c->umask = p->umask; c->ppid = p->pid;
     memcpy(c->acts, p->acts, sizeof c->acts);        /* fork inherits the dispositions */
+    memcpy(c->rlim, p->rlim, sizeof c->rlim);
+    c->no_new_privs = p->no_new_privs; c->dumpable = p->dumpable; c->pdeathsig = p->pdeathsig;
     strlcpy(c->cwd, p->cwd, sizeof c->cwd);
     strlcpy(c->exe, p->exe, sizeof c->exe);
     for (int i = 0; i < LX_MAXFD; i++) {
@@ -394,6 +401,16 @@ int64_t lx_wait4(lxproc_t *p, int pid, uint64_t ustatus, int options, uint64_t u
 
 static void proc_free(lxproc_t *p) {
     int status = p->term_sig ? (p->term_sig & 0x7F) : ((p->exit_code & 0xFF) << 8);
+    /* children that asked for a signal when their parent dies (PR_SET_PDEATHSIG) */
+    for (task_t *o = task_list(); o;) {
+        task_t *nx = o->next;
+        if (o->lx && LX(o)->proc != p && LX(o)->proc->ppid == p->pid) {
+            lxproc_t *c = LX(o)->proc;
+            c->ppid = 1;
+            if (c->pdeathsig) { int sig = (int)c->pdeathsig; c->pdeathsig = 0; lx_signal_kill(c, c->pid, sig); }
+        }
+        o = nx;
+    }
     for (int i = 0; i < LX_MAXFD; i++) if (p->fds[i]) { lx_file_put(p->fds[i]); p->fds[i] = NULL; }
     record_zombie(p);
     lx_signal_child_exit(p, p->pid, status);

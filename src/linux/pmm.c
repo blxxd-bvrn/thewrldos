@@ -33,4 +33,6 @@ void pmm_free(void *p) {
     used--;
 }
 uint32_t pmm_used_pages(void) { return used; }
+uint32_t pmm_total_pages(void) { return total; }
+uint32_t pmm_free_pages(void) { return total - used; }
 #endif
