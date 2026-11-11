@@ -56,6 +56,7 @@ void usb_poll(void);                            /* poll HID devices for reports 
 int usb_count(void);
 usb_dev_t *usb_first(void);
 const char *usb_boot_summary(void);             /* controller list and device count, for the logon screen */
+int usb_has_input(void);                        /* a USB keyboard or mouse was enumerated */
 extern int usb_unsupported;                    /* USB controllers this kernel has no driver for */
 void usb_attach(usb_hcd_t *h);                  /* a controller enumerates its root ports */
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len);

@@ -16,6 +16,11 @@ usb_dev_t *usb_first(void) { return devices; }
 
 static char usb_summary[192];
 const char *usb_boot_summary(void) { return usb_summary; }
+int usb_has_input(void) {
+    for (usb_dev_t *d = devices; d; d = d->next)
+        if (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) return 1;
+    return 0;
+}
 
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len)
 {
@@ -457,5 +462,6 @@ void usb_init(void) {}                          /* USB needs the 64-bit edition 
 void usb_poll(void) {}
 int usb_count(void) { return 0; }
 const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition"; }
+int usb_has_input(void) { return 0; }
 int usb_unsupported;
 #endif

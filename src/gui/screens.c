@@ -141,11 +141,11 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
     draw_text(c, FONT_UI, SCREEN_W - text_width(FONT_UI, hint) - 30, SCREEN_H - 44, hint, WHITE);
     {   /* no usable input device is the one failure a user cannot click away */
 #ifdef __x86_64__
-        if (!usb_count()) {
+        if (!usb_has_input()) {
             char line[240];
-            snprintf(line, sizeof line, "No USB input device was found (%s).", usb_boot_summary());
-            draw_text(c, FONT_UI_BOLD, 30, SCREEN_H - 104, line, HEX(0xFFD070));
-            draw_text(c, FONT_UI, 30, SCREEN_H - 84,
+            snprintf(line, sizeof line, "No USB keyboard or mouse was found (%s).", usb_boot_summary());
+            draw_text(c, FONT_UI_BOLD, 30, SCREEN_H - 124, line, HEX(0xFFD070));
+            draw_text(c, FONT_UI, 30, SCREEN_H - 104,
                       "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
                       HEX(0xFFD070));
         }

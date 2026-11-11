@@ -390,6 +390,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   companion; it does not implement split transactions, so a full-speed device behind a
   high-speed hub is not seen, and isochronous transfers and hotplug after boot are not
   implemented.
+- If no USB keyboard or mouse is enumerated, the log-on screen names every controller it found
+  and how many devices it saw, so a machine with a dead port can report what is actually there.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):
