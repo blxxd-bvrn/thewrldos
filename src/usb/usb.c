@@ -593,6 +593,7 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_po
                           int hub_addr, int hub_port, int speed);
 static void hub_port_scan(usb_dev_t *hub, int p);
 static void drop_addr(usb_hcd_t *h, int addr);
+static bool root_in_use(usb_hcd_t *h, int port);
 /* The class, and the bulk and interrupt endpoints, of the interface a storage
  * or hub driver will use: the first one of the device's class. */
 static void parse_config(usb_dev_t *d, const uint8_t *cfg, int len, int *iface_out)
@@ -883,6 +884,9 @@ void usb_attach(usb_hcd_t *h)
         char where[24];
         snprintf(where, sizeof where, "%s port %d", h->name, port + 1);
         enumerate_one(h, low, where, port + 1, 0, 0, 0, 0);
+        /* A device with no driver, or one that did not answer, is not tried
+         * again for ever: the rescan gives it two more chances. */
+        if (!root_in_use(h, port + 1)) h->port_fail[port] = 1;
     }
 }
 
@@ -974,6 +978,7 @@ static void usb_rescan(void)
             bool up = h->port_up(h, p);
             bool used = root_in_use(h, p + 1);
             if (up) h->port_down[p] = 0;
+            else h->port_fail[p] = 0;                 /* nothing on it: a new device may come */
             if (used && !up) {
                 if (++h->port_down[p] < 2) continue;      /* one reading may be a glitch */
                 klog("usb: %s port %d: device removed", h->name, p + 1);
@@ -981,7 +986,7 @@ static void usb_rescan(void)
                 drop_root(h, p + 1);
                 h->port_down[p] = 0;
                 h->port_retry[p] = now + 500;
-            } else if (!used && up && (int32_t)(now - h->port_retry[p]) >= 0) {
+            } else if (!used && up && h->port_fail[p] < 3 && (int32_t)(now - h->port_retry[p]) >= 0) {
                 h->port_retry[p] = now + 1000;
                 bool low = false;
                 if (!h->port_reset || !h->port_reset(h, p, &low)) continue;
@@ -989,9 +994,15 @@ static void usb_rescan(void)
                 snprintf(where, sizeof where, "%s port %d", h->name, p + 1);
                 klog("usb: %s: device connected", where);
                 enumerate_one(h, low, where, p + 1, 0, 0, 0, 0);
-                /* Something is plugged in but did not answer: ask again in a
-                 * few seconds rather than once a second for ever. */
-                if (!root_in_use(h, p + 1)) h->port_retry[p] = now + 5000;
+                if (root_in_use(h, p + 1)) h->port_fail[p] = 0;
+                else {
+                    /* Something is plugged in but did not answer, or has no
+                     * driver: resetting its port again every few seconds only
+                     * burns the CPU and disturbs it. Three tries, then leave it
+                     * alone until it is unplugged (which clears the count). */
+                    h->port_fail[p]++;
+                    h->port_retry[p] = now + 5000;
+                }
             }
         }
     }
@@ -1019,13 +1030,16 @@ static void usb_rescan(void)
             hub->hub_fail = 0;
             bool conn = (st[0] & 1) != 0;
             bool used = hub_port_in_use(hub, p);
+            if (!conn) hub->port_tries[p - 1] = 0;
             if (used && !conn) {
                 klog("usb: hub %d port %d: device removed", hub->addr, p);
                 usb_diag("hub %d p%d removed", hub->addr, p);
                 drop_hub_port(hub, p);
-            } else if (!used && conn) {
+            } else if (!used && conn && hub->port_tries[p - 1] < 2) {
                 klog("usb: hub %d port %d: device connected", hub->addr, p);
                 hub_port_scan(hub, p);
+                if (hub_port_in_use(hub, p)) hub->port_tries[p - 1] = 0;
+                else hub->port_tries[p - 1]++;            /* no driver, or it did not answer */
             }
         }
     }

@@ -121,6 +121,7 @@ static int uhci_run(uhci_t *u, int base, int ntds, int timeout_ms)
     for (;;) {
         if (uhci_chain_done(u, base, ntds)) { done = true; break; }
         if ((int32_t)(timer_ticks() - t0) >= timeout_ms) break;
+        task_yield();                    /* the frame list does the work, not us */
     }
     u->qh->element = 1;
     if (!done) {

@@ -286,6 +286,10 @@ static bool evt_wait(xhci_t *x, uint32_t type, uint64_t match, int timeout_ms,
             return true;
         }
         if ((int32_t)(timer_ticks() - t0) >= timeout_ms) return false;
+        /* The controller answers out of its own memory; waiting for that is not
+         * work, so let the other tasks (and the idle loop) have the CPU. A
+         * register that is polled in a tight loop burns it for nothing. */
+        task_yield();
     }
 }
 
@@ -510,6 +514,7 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
         if (take_event(x, TRB_TRANSFER, last, &s, &c)) { code = TRB_CODE(s); done = true; break; }
         /* an error ends the transfer at the stage it happened in */
         if (pend_take_error(x, first, mid, &code)) { done = true; break; }
+        task_yield();                       /* waiting is not work */
     }
     if (!done || (code != CC_SUCCESS && code != CC_SHORT)) {
         if (done) {

@@ -378,12 +378,15 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   devices behind them enumerated too, with the xHCI route string filled in. Devices are
   **hot-pluggable**: the buses are rescanned every half second, a root port whose connection bit
   has cleared in two scans running has its device (and everything behind its hub) dropped, and a
-  port that has something on it but no device is reset and enumerated. A hub's ports are asked
-  the same way; a hub that stops answering is left alone for five seconds instead of stalling
-  input. A removed xHCI device's slot is disabled and its rings and context freed, so both the
-  slot and the USB address can be used again; addresses are the lowest free ones, found by
-  scanning the live devices. A removed USB disk keeps its block-device slot (the block layer has
-  no unregister) but fails its reads, so a stale handle never reads freed memory.
+  port that has something on it but no device is reset and enumerated — three times, and then
+  left alone until it is unplugged, so a device this kernel has no driver for is not reset every
+  few seconds. A hub's ports are asked the same way; a hub that stops answering is left alone for
+  five seconds instead of stalling input. A removed xHCI device's slot is disabled and its rings
+  and context freed, so both the slot and the USB address can be used again; addresses are the
+  lowest free ones, found by scanning the live devices. A removed USB disk keeps its block-device
+  slot (the block layer has no unregister) but fails its reads, so a stale handle never reads freed
+  memory. Waits for a controller are spent halted rather than polling, so a transfer that is slow
+  or never answered does not burn the CPU.
 - **HID** (`hid.c`): every HID interface of a device becomes its own keyboard or mouse, so a
   keyboard with a media-key interface, or a wireless receiver that carries both a keyboard and a
   mouse, works. The report descriptor is read to find the buttons, X, Y and wheel (any width,

@@ -32,6 +32,7 @@ struct usb_dev {
     bool gone;                                 /* the device was unplugged: kept only if a disk
                                                 * still points at it */
     int ports;                                 /* a hub's port count */
+    uint8_t port_tries[8];                     /* scans in a row that found no driver */
     int hub_addr, hub_port;                    /* the hub port a device was found behind */
     hid_format_t fmt;                          /* the input report, from the report descriptor */
     bool irq_seen;                             /* the interrupt endpoint has delivered a report */
@@ -92,6 +93,7 @@ struct usb_hcd {
     int ports;
     uint32_t port_retry[32];                   /* when each root port is tried next */
     uint8_t port_down[32];                     /* scans in a row that found it empty */
+    uint8_t port_fail[32];                     /* enumerations in a row that found no driver */
     void *priv;
 };
 
