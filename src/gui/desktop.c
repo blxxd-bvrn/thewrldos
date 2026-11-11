@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "wm.h"
 #include "apps.h"
+#include "fs.h"
 #include "usb.h"
 
 int wallpaper_id = 0;
@@ -12,13 +13,15 @@ char user_name[32] = "User";
 char computer_name[32] = "WRLD-PC";
 int user_picture = ICON_USER_FLOWER;
 bool show_clock = true, show_seconds = false, clock_24h = false;
-const char *wallpaper_names[] = { "Meadow", "Azure", "Sunset", "Aurora", "Dunes", "(None)" };
-int wallpaper_count = 6;
 static canvas_t *wallpaper;
 static bool startmenu_open, allprog_open;
 static int sm_hot = -1, ap_hot = -1, tb_hot = -1;
 
-/* ---------------- procedural wallpapers (original artwork) ---------------- */
+/* ---------------- wallpapers ----------------
+ * The photographs live in C:\WRLD\Wallpapers and are decoded by the same
+ * decoder the browser uses. The screen-sized copy is rebuilt only when the
+ * choice or the resolution changes; the decoded source is kept for the theme
+ * thumbnails, which are painted on every frame. */
 static int isin(int a) {   /* a: 0..1023 = 0..2pi, returns -256..256 */
     a &= 1023;
     int neg = a >= 512; if (neg) a -= 512;
@@ -28,113 +31,92 @@ static int isin(int a) {   /* a: 0..1023 = 0..2pi, returns -256..256 */
     return neg ? -v : v;
 }
 int ext_isin(int a) { return isin(a); }
-static uint32_t hash2(int x, int y, int seed) { uint32_t h = x * 374761393u + y * 668265263u + seed * 2246822519u; h = (h ^ (h >> 13)) * 1274126177u; return h ^ (h >> 16); }
-static int vnoise(int x, int y, int scale, int seed) {   /* 0..255 */
-    int gx = x / scale, gy = y / scale, fx = (x % scale) * 256 / scale, fy = (y % scale) * 256 / scale;
-    fx = fx * fx * (768 - 2 * fx) / 65536; fy = fy * fy * (768 - 2 * fy) / 65536;
-    int a = hash2(gx, gy, seed) & 255, b = hash2(gx + 1, gy, seed) & 255, c = hash2(gx, gy + 1, seed) & 255, d = hash2(gx + 1, gy + 1, seed) & 255;
-    int ab = a + (b - a) * fx / 256, cd = c + (d - c) * fx / 256;
-    return ab + (cd - ab) * fy / 256;
-}
-static int fbm(int x, int y, int seed) { return (vnoise(x, y, 160, seed) * 8 + vnoise(x, y, 64, seed + 1) * 4 + vnoise(x, y, 24, seed + 2) * 2 + vnoise(x, y, 10, seed + 3)) / 15; }
 
-static void render_meadow(canvas_t *c, int pal) {
-    int W = c->w, H = c->h;
-    uint32_t sky_top = pal ? HEX(0x1E3C8C) : HEX(0x1F62D8), sky_bot = pal ? HEX(0xF89A5A) : HEX(0x9CCBFF);
+static const char *wallpaper_files[] = {
+    "C:\\WRLD\\Wallpapers\\Blue shoal.jpg",
+    "C:\\WRLD\\Wallpapers\\Home planet.jpg",
+    "C:\\WRLD\\Wallpapers\\We carry the world.jpg",
+    "C:\\WRLD\\Wallpapers\\Bubble city.jpg",
+    "C:\\WRLD\\Wallpapers\\Kelp forest.jpg",
+    "C:\\WRLD\\Wallpapers\\Northern lights.jpg",
+    "C:\\WRLD\\Wallpapers\\Aurora sky.jpg",
+    "C:\\WRLD\\Wallpapers\\City lights.jpg",
+    "C:\\WRLD\\Wallpapers\\Summer leaves.jpg",
+};
+const char *wallpaper_names[] = { "Blue shoal", "Home planet", "We carry the world", "Bubble city",
+                                  "Kelp forest", "Northern lights", "Aurora sky", "City lights",
+                                  "Summer leaves", "(None)" };
+int wallpaper_count = ARRAY_LEN(wallpaper_names);
+
+static uint32_t wall_mix(uint32_t a, uint32_t b, int w)
+{
+    int ar = (a >> 16) & 255, ag = (a >> 8) & 255, ab = a & 255;
+    int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
+    return RGB(ar + (((br - ar) * w) >> 8), ag + (((bg - ag) * w) >> 8), ab + (((bb - ab) * w) >> 8));
+}
+/* cover the destination, bilinear from the source; the photo is cropped to the
+ * screen's shape rather than stretched */
+static void wall_scale(canvas_t *dst, canvas_t *src)
+{
+    int W = dst->w, H = dst->h, sw = src->w, sh = src->h;
+    if (W <= 0 || H <= 0 || sw < 2 || sh < 2) { gfx_clear(dst, HEX(0x202020)); return; }
+    int cw, ch, ox, oy;
+    if ((int64_t)sw * H > (int64_t)sh * W) { ch = sh; cw = (int)((int64_t)sh * W / H); ox = (sw - cw) / 2; oy = 0; }
+    else { cw = sw; ch = (int)((int64_t)sw * H / W); ox = 0; oy = (sh - ch) / 2; }
     for (int y = 0; y < H; y++) {
-        uint32_t row = mix(sky_top, sky_bot, y * 255 / (H * 2 / 3));
-        if (y > H * 2 / 3) row = sky_bot;
-        uint32_t *p = c->px + y * c->stride;
-        for (int x = 0; x < W; x++) p[x] = row;
-        if (y < H * 7 / 10) {
-            for (int x = 0; x < W; x++) {
-                int n = fbm(x + 400, y * 2 + 200, pal ? 77 : 11);
-                int a = (n - 128) * 3; if (y > H / 2) a = a * (H * 7 / 10 - y) / (H / 5);
-                if (a > 0) p[x] = mix(p[x], pal ? HEX(0xFFD4B0) : WHITE, MIN(a, 230));
-            }
-        }
-    }
-    /* rolling hills */
-    uint32_t g1t = pal ? HEX(0x6A4A7A) : HEX(0x7FCB3E), g1b = pal ? HEX(0x2A1A3A) : HEX(0x2F8A1C);
-    uint32_t g2t = pal ? HEX(0x4A305A) : HEX(0x5DB52C), g2b = pal ? HEX(0x1A0E26) : HEX(0x1D6A10);
-    for (int x = 0; x < W; x++) {
-        int h1 = H * 62 / 100 + isin(x * 1024 / (W * 3 / 2) + 700) * H / 9 / 256 + isin(x * 1024 / 380 + 90) * 8 / 256;
-        int h2 = H * 76 / 100 + isin(x * 1024 / W + 300) * H / 14 / 256 + isin(x * 1024 / 250) * 6 / 256;
-        for (int y = h1; y < H; y++) {
-            int t = (y - h1) * 255 / MAX(1, H - h1);
-            uint32_t col = mix(g1t, g1b, t);
-            int n = vnoise(x * 3, y * 6, 6, 5); col = mix(col, n > 128 ? lighten(col, 30) : darken(col, 25), ABSDIFF(n, 128) / 3);
-            if (y < h1 + 3) col = mix(col, WHITE, (3 - (y - h1)) * 30);
-            c->px[y * c->stride + x] = col;
-        }
-        for (int y = h2; y < H; y++) {
-            int t = (y - h2) * 255 / MAX(1, H - h2);
-            uint32_t col = mix(g2t, g2b, t);
-            int n = vnoise(x * 3, y * 7, 5, 9); col = mix(col, n > 128 ? lighten(col, 25) : darken(col, 25), ABSDIFF(n, 128) / 3);
-            if (y < h2 + 2) col = mix(col, lighten(g2t, 120), 120);
-            c->px[y * c->stride + x] = col;
-        }
-    }
-}
-static void render_azure(canvas_t *c) {
-    int W = c->w, H = c->h;
-    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) {
-        int d = (x - W / 4) * (x - W / 4) / 64 + (y - H / 5) * (y - H / 5) / 64;
-        uint32_t col = mix(HEX(0x5BA8F5), HEX(0x0A2A7A), MIN(255, d * 255 / (W * W / 120)));
-        int ray = isin(((x - W / 4) * 2048 / MAX(1, y + 200)) + 0) ;
-        if (ray > 200) col = mix(col, WHITE, (ray - 200) / 2);
-        c->px[y * c->stride + x] = col;
-    }
-    for (int k = 0; k < 4; k++) for (int x = 0; x < W; x++) {
-        int y0 = H * (55 + k * 9) / 100 + isin(x * 1024 / (W + k * 300) + k * 200) * (30 + k * 6) / 256;
-        for (int t = 0; t < 40; t++) { int y = y0 + t; if (y >= 0 && y < H) c->px[y * c->stride + x] = mix(c->px[y * c->stride + x], HEX(0xAEE0FF), (40 - t) * 2); }
-    }
-}
-static void render_aurora(canvas_t *c) {
-    int W = c->w, H = c->h;
-    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) c->px[y * c->stride + x] = mix(HEX(0x020814), HEX(0x0C2440), y * 255 / H);
-    for (int i = 0; i < 260; i++) { uint32_t h = hash2(i, 7, 3); int x = h % W, y = (h >> 12) % (H * 2 / 3); put_pixel(c, x, y, mix(HEX(0x8899AA), WHITE, (h >> 24))); }
-    for (int band = 0; band < 3; band++)
+        uint32_t fy = (uint32_t)(((uint64_t)y * ch << 8) / H);
+        int sy = oy + (fy >> 8), wy = fy & 255;
+        if (sy >= sh - 1) { sy = sh - 2; wy = 255; }
+        const uint32_t *r0 = src->px + sy * src->stride;
+        const uint32_t *r1 = r0 + src->stride;
         for (int x = 0; x < W; x++) {
-            int cy = H * (30 + band * 12) / 100 + isin(x * 1024 / (500 + band * 170) + band * 333) * (50 + band * 10) / 256;
-            int n = vnoise(x, band * 100, 40, 21 + band);
-            uint32_t col = band == 1 ? HEX(0x6BFFB0) : band == 2 ? HEX(0x40B0FF) : HEX(0x9AFF6A);
-            for (int t = -60; t < 120; t++) {
-                int y = cy + t; if (y < 0 || y >= H) continue;
-                int a = t < 0 ? (60 + t) * 2 : (120 - t);
-                a = a * n / 255;
-                c->px[y * c->stride + x] = mix(c->px[y * c->stride + x], col, MIN(200, a));
-            }
+            uint32_t fx = (uint32_t)(((uint64_t)x * cw << 8) / W);
+            int sx = ox + (fx >> 8), wx = fx & 255;
+            if (sx >= sw - 1) { sx = sw - 2; wx = 255; }
+            uint32_t top = wall_mix(r0[sx], r0[sx + 1], wx);
+            uint32_t bot = wall_mix(r1[sx], r1[sx + 1], wx);
+            dst->px[y * dst->stride + x] = wall_mix(top, bot, wy);
         }
-    for (int x = 0; x < W; x++) { int h = H * 85 / 100 + isin(x * 1024 / 300) * 10 / 256 + isin(x * 1024 / 77) * 4 / 256; for (int y = h; y < H; y++) c->px[y * c->stride + x] = HEX(0x02060C); }
-}
-static void render_dunes(canvas_t *c) {
-    int W = c->w, H = c->h;
-    for (int y = 0; y < H; y++) for (int x = 0; x < W; x++) c->px[y * c->stride + x] = mix(HEX(0x4A8FE0), HEX(0xF4E6C8), y * 255 / (H / 2) > 255 ? 255 : y * 255 / (H / 2));
-    fill_circle(c, W * 3 / 4, H / 4, 40, HEX(0xFFF6D8));
-    for (int k = 0; k < 4; k++) for (int x = 0; x < W; x++) {
-        int y0 = H * (50 + k * 12) / 100 + isin(x * 1024 / (600 - k * 90) + k * 170) * (40 - k * 5) / 256;
-        uint32_t top = mix(HEX(0xF0C080), HEX(0xC87830), k * 70), bot = darken(top, 90);
-        for (int y = y0; y < H; y++) c->px[y * c->stride + x] = mix(top, bot, MIN(255, (y - y0) * 4));
     }
+}
+static canvas_t *wall_src; static int wall_src_id = -1;
+static canvas_t *wall_out; static int wall_out_id = -1;
+static canvas_t *wall_source(int id)
+{
+    if (wall_src && wall_src_id == id) return wall_src;
+    if (wall_src) { canvas_free(wall_src); wall_src = NULL; wall_src_id = -1; }
+    vnode_t *n = vfs_resolve(wallpaper_files[id], NULL);
+    if (n && !n->dir && n->size) {
+        char err[64];
+        wall_src = image_decode(n->data, n->size, err, sizeof err);
+        if (wall_src) wall_src_id = id;
+    }
+    return wall_src;
 }
 void wallpaper_render(canvas_t *c, int id) {
-    switch (id) {
-    case 0: render_meadow(c, 0); break;
-    case 1: render_azure(c); break;
-    case 2: render_meadow(c, 1); break;
-    case 3: render_aurora(c); break;
-    case 4: render_dunes(c); break;
-    default: gfx_clear(c, desktop_color); break;
+    if (id < 0 || id >= wallpaper_count - 1) { gfx_clear(c, desktop_color); return; }
+    if (wall_out && wall_out_id == id && wall_out->w == c->w && wall_out->h == c->h) {
+        memcpy(c->px, wall_out->px, (size_t)c->w * c->h * 4);
+        return;
     }
+    canvas_t *src = wall_source(id);
+    if (!src) { gfx_clear(c, desktop_color); return; }
+    wall_scale(c, src);
+    /* remember this size: the theme thumbnails re-render the same 120x80 view
+     * on every frame */
+    if (!wall_out || wall_out->w != c->w || wall_out->h != c->h) {
+        if (wall_out) canvas_free(wall_out);
+        wall_out = canvas_new(c->w, c->h);
+    }
+    if (wall_out) { memcpy(wall_out->px, c->px, (size_t)c->w * c->h * 4); wall_out_id = id; }
 }
 void shell_wallpaper_changed(void) {
-    static int last_id = -1; static uint32_t last_col; static int last_h;
+    static int last_id = -1, last_w, last_h; static uint32_t last_col;
     if (wallpaper && (wallpaper->w != SCREEN_W || wallpaper->h != SCREEN_H)) { canvas_free(wallpaper); wallpaper = NULL; last_id = -1; }
     if (!wallpaper) wallpaper = canvas_new(SCREEN_W, SCREEN_H);
-    if (last_id == wallpaper_id && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color) && last_h == SCREEN_H) return;
+    if (last_id == wallpaper_id && last_w == SCREEN_W && last_h == SCREEN_H && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color)) return;
     wallpaper_render(wallpaper, wallpaper_id);
-    last_id = wallpaper_id; last_col = desktop_color; last_h = SCREEN_H;
+    last_id = wallpaper_id; last_col = desktop_color; last_w = SCREEN_W; last_h = SCREEN_H;
     wm_need_redraw = true;
 }
 

@@ -5,7 +5,7 @@
 Name=Plex
 Renderer=plex
 Description=Longhorn-era style: glossy sky-blue title bars, a blue taskbar and a blue Start menu.
-Wallpaper=Azure
+Wallpaper=Aurora sky
 
 [Metrics]
 title_h=26

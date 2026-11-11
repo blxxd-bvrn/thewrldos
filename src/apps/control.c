@@ -52,6 +52,7 @@ typedef struct {
     int dbl, speed; bool swap; uint32_t dbl_test_t; bool dbl_open;
     int tz; char keytest[64];
     int prog_sel, prog_scroll;
+    int wall_page;
     bool anim;
     window_t *win;
 } cp_t;
@@ -224,7 +225,7 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     theme_compute(id, hue, &T);
     canvas_t *pre = canvas_new(120, 80);
     gfx_clear(pre, id == THEME_OLIVE ? HEX(0x6E7F48) : id == THEME_SILVER ? HEX(0x8A90A8) : HEX(0x3A6EA5));
-    wallpaper_render(pre, id == THEME_CLASSIC ? 5 : 0);
+    wallpaper_render(pre, id == THEME_CLASSIC ? wallpaper_count - 1 : 0);
     draw_window_frame(pre, R(10, 8, 100, 56), "Window", -1, true, 0, -1, -1, 0);
     fill_rect(pre, 10 + T.border, 8 + T.title_h, 100 - 2 * T.border, 56 - T.title_h - T.border, T.face);
     if (T.classic) fill_rect(pre, 0, 70, 120, 10, T.face); else gradient_v(pre, 0, 70, 120, 10, T.tb_top, T.tb_bot);
@@ -313,9 +314,17 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         y += 64;
     }
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK); y += 22;
-    static canvas_t *thumbs[8];
-    for (int i = 0; i < wallpaper_count; i++) {
-        int x = ox + 24 + i * 100;
+    static canvas_t *thumbs[12];
+    int wper = 6, wpages = (wallpaper_count + wper - 1) / wper;
+    if (wpages > 1) {
+        if (ui_link(w, ox + 110, y + 88, FONT_UI, "Next page", W7_LINK)) c->wall_page = (c->wall_page + 1) % wpages;
+        char pb[32]; snprintf(pb, sizeof pb, "Page %d of %d", c->wall_page + 1, wpages);
+        draw_text(s, FONT_UI, ox + 24, y + 88, pb, W7_TEXT);
+    }
+    if (c->wall_page >= wpages) c->wall_page = 0;
+    for (int k = 0; k < wper && c->wall_page * wper + k < wallpaper_count; k++) {
+        int i = c->wall_page * wper + k;
+        int x = ox + 24 + k * 100;
         if (!thumbs[i]) {
             canvas_t *big = canvas_new(SCREEN_W / 4, SCREEN_H / 4);
             wallpaper_render(big, i);
@@ -323,12 +332,12 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         }
         bool sel = wallpaper_id == i;
         if (sel) { fill_rect(s, x - 3, y - 3, 92, 70, HEX(0xCCE4F8)); draw_rect(s, x - 3, y - 3, 92, 70, HEX(0x3399FF)); }
-        for (int j = 0; j < 64; j++) for (int k = 0; k < 86; k++) put_pixel(s, x + k, y + j, i == wallpaper_count - 1 ? desktop_color : thumbs[i]->px[(j * thumbs[i]->h / 64) * thumbs[i]->w + k * thumbs[i]->w / 86]);
+        for (int j = 0; j < 64; j++) for (int q = 0; q < 86; q++) put_pixel(s, x + q, y + j, i == wallpaper_count - 1 ? desktop_color : thumbs[i]->px[(j * thumbs[i]->h / 64) * thumbs[i]->w + q * thumbs[i]->w / 86]);
         draw_rect(s, x, y, 86, 64, HEX(0x808080));
         draw_text_centered(s, FONT_UI, R(x - 3, y + 67, 92, 16), wallpaper_names[i], BLACK);
         if (ui_click_area(w, R(x - 3, y - 3, 92, 86))) { wallpaper_id = i; shell_wallpaper_changed(); wm_need_redraw = true; }
     }
-    y += 92;
+    y += 92 + (wpages > 1 ? 20 : 0);
     if (wallpaper_id == wallpaper_count - 1) {
         draw_text(s, FONT_UI, ox + 20, y + 4, "Desktop colour:", BLACK);
         static const uint32_t cols[] = { 0x3A6EA5, 0x008080, 0x000000, 0x6E7F48, 0x5A4A7A, 0xA05030, 0x404858, 0xC0C0C0 };

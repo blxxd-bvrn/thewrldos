@@ -588,7 +588,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     Arabic, Hebrew, Latin and numbers comes out in the right visual order.
   - Text is UTF-8 from the parser to the screen, so the fonts' Latin, Greek, Cyrillic,
     punctuation, arrow and maths coverage all reaches the display.
-  - 64 original, procedurally drawn icons (48/32/16 px) and five procedural wallpapers.
+  - 64 original, procedurally drawn icons (48/32/16 px); the desktop wallpapers are the nine
+    photographs in `WRLD/Wallpapers`, decoded by the same image decoder as the browser.
 - **Branding:** a **globe logo** projected from a hand-drawn world map (`tools/globe.py`). It
   spins on the boot screen and is used for the Start button, About and Setup.
 - **Window manager:**
@@ -752,7 +753,8 @@ used to test every screen above, including a full install from a blank disk.
     itself needs about 16 MB.
   - Cooperative (not preemptive) scheduling, and programs run in ring 0.
 - **Names and artwork:** "Luna", "Olive Green", "Silver", "Classic", "Aero" and "Plex" name the
-  visual styles this project recreates. All artwork, icons, wallpapers and the globe logo are original.
+  visual styles this project recreates. The icons and the globe logo are original; the desktop
+  photographs live in `WRLD/Wallpapers`.
 
 ## Project layout
 
