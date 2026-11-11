@@ -103,14 +103,16 @@ static int wstart, wcount;
 static widget_t *W(int nid) { return nid >= wstart && nid < wstart + wcount ? &wg[nid - wstart] : NULL; }
 static int path[8], plen;
 static uint32_t afg_in_amp;                  /* the function group's default input amp caps */
-static bool find_dac(int cad, int nid, int depth) {
+/* `digital` picks a display-audio converter (HDMI/DP) instead of an analog one. */
+static bool find_dac_kind(int cad, int nid, int depth, bool digital) {
     widget_t *w = W(nid);
     if (!w || depth > 6) return false;
     path[depth] = nid; plen = depth + 1;
-    if (w->type == 0) return !(w->caps & (1 << 9));       /* analog audio output (DAC), not S/PDIF */
+    if (w->type == 0)                                     /* audio output converter */
+        return ((w->caps & (1 << 9)) != 0) == digital;
     if (w->type != 2 && w->type != 3 && w->type != 4) return false;   /* only mixers, selectors, pins lead to DACs */
     for (int i = 0; i < w->nconn; i++) {
-        if (find_dac(cad, w->conn[i], depth + 1)) {
+        if (find_dac_kind(cad, w->conn[i], depth + 1, digital)) {
             if (w->type != 2 && w->nconn > 1) hda_cmd(cad, nid, VERB(0x701, i));   /* select that input */
             if (w->type == 2 && (w->caps & (1 << 1))) {                           /* mixer input amp: that input at 0 dB, unmuted */
                 uint32_t ic = (w->caps & (1 << 3)) ? param(cad, nid, 0x0D) : afg_in_amp;
@@ -122,6 +124,7 @@ static bool find_dac(int cad, int nid, int depth) {
     }
     return false;
 }
+static bool find_dac(int cad, int nid, int depth) { return find_dac_kind(cad, nid, depth, false); }
 static void amp_unmute(int cad, int nid, uint32_t afg_ampcaps) {
     widget_t *w = W(nid);
     if (!w || !(w->caps & (1 << 2))) return;              /* no output amplifier */
@@ -146,7 +149,7 @@ static const char *pin_kind(int devtype) {
  * DACs. Jacks the codec reports as connected come first (line out, speaker,
  * headphones, then the rest); if it reports none, every output-capable pin.
  * Returns the number of DACs found (0 when this group has no analog output). */
-static int route_out(int cad, int afg, int *dacs, int *pins_out)
+static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_out)
 {
     hda_cmd(cad, afg, VERB(0x705, 0));                      /* power D0 */
     for (int t = 0; t < 20 && ((hda_cmd(cad, afg, VERB(0xF05, 0)) >> 4) & 0xF) != 0; t++) sleep_ms(5);
@@ -167,6 +170,7 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out)
         if (w->caps & (1 << 10)) hda_cmd(cad, nid, VERB(0x705, 0));   /* widgets with power control: D0 */
     }
     int ndacs = 0, pins = 0;
+    bool digital = false;
     for (int pass = 0; pass < 3; pass++) {
         if (pass == 2 && pins) break;
         for (int i = 0; i < wcount; i++) {
@@ -199,6 +203,37 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out)
                 amp_unmute(cad, wstart + i, afg_amp);
                 break;
             }
+    /* A display-audio codec (HDMI/DP) has only digital converters and pins. Use
+     * one when there is no analog output on this function group: a monitor's
+     * speakers or its headphone jack are the output then. */
+    if (!ndacs)
+        for (int i = 0; i < wcount && !ndacs; i++) {
+            widget_t *w = &wg[i]; int nid = wstart + i;
+            if (w->type != 4) continue;
+            uint32_t pcaps = param(cad, nid, 0x0C), cfg = hda_cmd(cad, nid, VERB(0xF1C, 0));
+            int devtype = (cfg >> 20) & 0xF;
+            if (!(pcaps & (1 << 4))) continue;
+            if (devtype != 4 && devtype != 5 && !(w->caps & (1 << 9))) continue;
+            plen = 0;
+            if (!find_dac_kind(cad, nid, 0, true)) continue;
+            int d = path[plen - 1], k;
+            for (k = 0; k < ndacs && dacs[k] != d; k++) {}
+            if (k == ndacs && ndacs < 8) dacs[ndacs++] = d;
+            pins++;
+            digital = true;
+            for (int j = 0; j < plen; j++) amp_unmute(cad, path[j], afg_amp);
+            hda_cmd(cad, nid, VERB(0x707, 0x40));                /* output enable */
+            diag("pin %d (%s) -> digital DAC %d\n", nid, pin_kind(devtype), d);
+        }
+    if (!ndacs)   /* a display converter with no pin */
+        for (int i = 0; i < wcount; i++)
+            if (wg[i].type == 0 && (wg[i].caps & (1 << 9))) {
+                dacs[ndacs++] = wstart + i;
+                amp_unmute(cad, wstart + i, afg_amp);
+                digital = true;
+                break;
+            }
+    if (digital_out) *digital_out = digital;
     *pins_out = pins;
     return ndacs;
 }
@@ -252,6 +287,7 @@ static bool hda_init(pci_dev_t *p) {
      * in it, and use the first that has an analog output converter: the first
      * codec is not necessarily the one the speakers are on. */
     int cad = -1, afg = 0, dacs[8], ndacs = 0, pins = 0;
+    bool chosen_digital = false;
     uint32_t vid = 0;
     bool queried = false;
     for (int c = 0; c < 15 && !ndacs; c++) {
@@ -269,8 +305,9 @@ static bool hda_init(pci_dev_t *p) {
         uint32_t sub = param(c, 0, 0x04);
         for (int n = (sub >> 16) & 0xFF, k = 0; k < (int)(sub & 0xFF); k++, n++) {
             if ((param(c, n, 0x05) & 0xFF) != 1) continue;   /* audio function group */
-            int nd = route_out(c, n, dacs, &pins);
-            if (nd) { ndacs = nd; cad = c; afg = n; vid = v; break; }
+            bool digital = false;
+            int nd = route_out(c, n, dacs, &pins, &digital);
+            if (nd) { ndacs = nd; cad = c; afg = n; vid = v; chosen_digital = digital; break; }
         }
     }
     if (!ndacs) {
@@ -319,7 +356,7 @@ static bool hda_init(pci_dev_t *p) {
     bool moving = l1 != l0 || p1 != p0;
     diag("start: LPIB %x -> %x, position buffer %x -> %x\n", l0, l1, p0, p1);
     diag("output stream %d (registers at 0x%x), DMA %s\n", iss + 1, sd, moving ? "running" : "NOT moving");
-    snprintf(devname, sizeof devname, "High Definition Audio (%04x:%04x, codec %08x)", p->vendor, p->device, vid);
+    snprintf(devname, sizeof devname, "%s (%04x:%04x, codec %08x)", chosen_digital ? "HDMI/DP audio" : "High Definition Audio", p->vendor, p->device, vid);
     klog("hda: %s, %d DAC(s), %d output pin(s)%s, DMA %s", devname, ndacs, pins, use_immediate ? ", immediate commands" : "", moving ? "running" : "not moving");
     return true;
 }
@@ -794,7 +831,10 @@ const char *audio_summary(void)
 {
     static char out[240];
     if (dev) {
-        snprintf(out, sizeof out, "Sound: %s, %u Hz", devname, out_rate);
+        int len = snprintf(out, sizeof out, "Sound: %s, %u Hz", devname, out_rate);
+        /* Also say what the onboard codec search found: a USB device can be
+         * playing while the line-out jack's codec is still missing. */
+        if (hda_why[0]) snprintf(out + len, sizeof out - len, " (onboard: %s)", hda_why);
         return out;
     }
     int len = snprintf(out, sizeof out, "Sound: no device");
