@@ -14,6 +14,9 @@ int usb_unsupported;
 int usb_count(void) { int n = 0; for (usb_dev_t *d = devices; d; d = d->next) n++; return n; }
 usb_dev_t *usb_first(void) { return devices; }
 
+static char usb_summary[192];
+const char *usb_boot_summary(void) { return usb_summary; }
+
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len)
 {
     return d->hcd->control(d->hcd, d->addr, d->low_speed, type, req, value, index, buf, len);
@@ -415,6 +418,8 @@ void usb_init(void)
     {   /* say what the machine actually has, so a missing driver is visible */
         pci_dev_t *devs = NULL;
         int n = pci_list(&devs);
+        int len = 0;
+        usb_summary[0] = 0;
         for (int i = 0; i < n; i++) {
             pci_dev_t *pd = &devs[i];
             if (pd->cls != 0x0C || pd->sub != 0x03) continue;
@@ -425,7 +430,11 @@ void usb_init(void)
             if (!ours) usb_unsupported++;
             klog("usb: %02x:%02x.%x %04x:%04x %s%s", pd->bus, pd->dev, pd->fn, pd->vendor, pd->device,
                  kind, ours ? "" : " (no driver for this controller yet)");
+            int k = snprintf(usb_summary + len, sizeof usb_summary - len, "%s%s %04x:%04x",
+                             len ? ", " : "", kind, pd->vendor, pd->device);
+            if (k > 0 && len + k < (int)sizeof usb_summary) len += k;
         }
+        if (!len) snprintf(usb_summary, sizeof usb_summary, "no USB controller found");
     }
     /* EHCI first: it owns the ports and hands full/low-speed ones to the
      * companion, whose probe comes next and enumerates them. */
@@ -433,6 +442,10 @@ void usb_init(void)
     ohci_probe();
     uhci_probe();
     xhci_probe();
+    {   /* append the result, so the logon screen can show why input is missing */
+        int len = (int)strlen(usb_summary);
+        snprintf(usb_summary + len, sizeof usb_summary - (size_t)len, "; %d device(s)", usb_count());
+    }
     if (devices) {
         task_create("usbd", usb_task, NULL, 8192);
         klog("usb: %d device(s)", usb_count());
@@ -443,5 +456,6 @@ void usb_init(void)
 void usb_init(void) {}                          /* USB needs the 64-bit edition */
 void usb_poll(void) {}
 int usb_count(void) { return 0; }
+const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition"; }
 int usb_unsupported;
 #endif

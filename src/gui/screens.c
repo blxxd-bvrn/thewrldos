@@ -7,6 +7,7 @@
 #include "disk.h"
 #include "audio.h"
 #include "fs.h"
+#include "usb.h"
 
 /* ---------------- boot screen ---------------- */
 static int boot_frame;
@@ -139,10 +140,16 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
     const char *hint = "After you log on, you can add or change accounts in Control Panel > User Accounts.";
     draw_text(c, FONT_UI, SCREEN_W - text_width(FONT_UI, hint) - 30, SCREEN_H - 44, hint, WHITE);
     {   /* no usable input device is the one failure a user cannot click away */
-        extern int usb_unsupported; extern int usb_count(void);
-        if (usb_unsupported && !usb_count())
-            draw_text(c, FONT_UI_BOLD, 30, SCREEN_H - 84,
-                      "USB input has no driver on this computer; a PS/2 keyboard still works.", HEX(0xFFD070));
+#ifdef __x86_64__
+        if (!usb_count()) {
+            char line[240];
+            snprintf(line, sizeof line, "No USB input device was found (%s).", usb_boot_summary());
+            draw_text(c, FONT_UI_BOLD, 30, SCREEN_H - 104, line, HEX(0xFFD070));
+            draw_text(c, FONT_UI, 30, SCREEN_H - 84,
+                      "A PS/2 keyboard and mouse still work; the serial log has the controllers and devices.",
+                      HEX(0xFFD070));
+        }
+#endif
     }
 }
 void welcome_screen(void) {

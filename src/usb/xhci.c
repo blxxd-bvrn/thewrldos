@@ -22,6 +22,7 @@
 /* ---------------- register offsets ---------------- */
 #define CAPLENGTH   0x00
 #define HCSPARAMS1  0x04
+#define HCSPARAMS2  0x08
 #define HCCPARAMS1  0x10
 #define DBOFF       0x14
 #define RTSOFF      0x18
@@ -400,7 +401,11 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
     int got = len - (int)left;
     if (got < 0) got = 0;
     if (in && len) memcpy(buf, data, got);
-    if (in && req == 6 && value == 0x0100 && got >= 8) d->ep0_maxpkt = ((uint8_t *)buf)[7];
+    if (in && req == 6 && value == 0x0100 && got >= 8) {
+        uint8_t m = ((const uint8_t *)buf)[7];
+        /* SuperSpeed descriptors give an exponent (9 = 512); USB 2 gives bytes */
+        d->ep0_maxpkt = d->speed >= 4 ? (m >= 1 && m <= 12 ? 1 << m : 512) : m;
+    }
     return in ? got : len;
 }
 
@@ -467,22 +472,24 @@ static bool xhci_port_reset(usb_hcd_t *h, int port, bool *low_speed)
     uint32_t v = r32(x, x->op + PORTSC(port));
     if (!(v & PORT_CCS)) return false;
     if (!(v & PORT_PP)) {
-        w32(x, x->op + PORTSC(port), v | PORT_PP);
+        /* PED is write-one-to-clear: never write a set PED back */
+        w32(x, x->op + PORTSC(port), (v & ~(PORT_PED | PORT_CHANGE)) | PORT_PP);
         uwait(20);
         v = r32(x, x->op + PORTSC(port));
     }
-    w32(x, x->op + PORTSC(port), (v & ~PORT_CHANGE) | PORT_PR);
+    w32(x, x->op + PORTSC(port), (v & ~(PORT_PED | PORT_CHANGE)) | PORT_PR);
     uint32_t t0 = timer_ticks();
     while (!(r32(x, x->op + PORTSC(port)) & PORT_PRC) && (int32_t)(timer_ticks() - t0) < 200) task_yield();
     v = r32(x, x->op + PORTSC(port));
     if (!(v & PORT_PRC)) { klog("xhci: port %d reset did not finish", port + 1); return false; }
-    w32(x, x->op + PORTSC(port), v | PORT_CHANGE);           /* write one to clear */
+    w32(x, x->op + PORTSC(port), v & ~PORT_PED);             /* change bits: write one to clear */
     v = r32(x, x->op + PORTSC(port));
     if (!(v & PORT_CCS)) return false;
     t0 = timer_ticks();
     while (!(v & PORT_PED) && (int32_t)(timer_ticks() - t0) < 100) { task_yield(); v = r32(x, x->op + PORTSC(port)); }
     if (!(v & PORT_PED)) { klog("xhci: port %d did not enable", port + 1); return false; }
     x->port_speed[port] = (uint8_t)((v >> 10) & 0xF);
+    w32(x, x->op + PORTSC(port), v & ~PORT_PED);             /* clear CSC/PEC/PRC */
     *low_speed = x->port_speed[port] == 2;
     return true;
 }
@@ -509,7 +516,8 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low)
     ring_init(&d->ep0, 32, true);
     if (!d->ep0.n) { kfree(d); return false; }
     x->pending = d;
-    if (xhci_address(x, d, 0, true, 8) < 0) {
+    int ep0 = d->speed >= 4 ? 512 : d->speed == 3 ? 64 : 8;
+    if (xhci_address(x, d, 0, true, ep0) < 0) {
         klog("xhci: slot %d could not be addressed", slot);
         x->pending = NULL;
         return false;
@@ -519,6 +527,27 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low)
 }
 
 /* ---------------- controller ---------------- */
+/* The firmware may still own the USB legacy support capability (and its SMI
+ * handlers). Take it over before resetting the controller. */
+static void xhci_handoff(xhci_t *x, uint32_t hcc1)
+{
+    uint32_t off = (hcc1 >> 16) & 0xFFFF;
+    for (int guard = 0; off && guard < 64; guard++) {
+        uint32_t cap = r32(x, off);
+        if ((cap & 0xFF) == 1) {                          /* USB Legacy Support */
+            if (cap & (1u << 16)) {
+                w32(x, off, (cap & ~0xE0u) | (1u << 17));
+                uint32_t t0 = timer_ticks();
+                while ((r32(x, off) & (1u << 16)) && (int32_t)(timer_ticks() - t0) < 100)
+                    task_yield();
+            }
+            w32(x, off + 4, 0);                           /* USBLEGCTLSTS: no SMI events */
+            break;
+        }
+        off = (cap >> 8) & 0xFF;
+    }
+}
+
 static int xhci_init(xhci_t *x, const pci_dev_t *pd)
 {
     bool is_io = false;
@@ -539,6 +568,7 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     x->rtsoff = r32(x, RTSOFF) & ~31u;
     if (!x->max_slots || !x->max_ports) return -1;
 
+    xhci_handoff(x, hcc1);
     w32(x, x->op + USBCMD, CMD_HCRST);
     uint32_t t0 = timer_ticks();
     while ((r32(x, x->op + USBCMD) & CMD_HCRST) && (int32_t)(timer_ticks() - t0) < 500) task_yield();
@@ -557,6 +587,23 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     x->erst[0].status = 64;                                   /* one segment of 64 events */
     memset(x->dcbaa, 0, (size_t)(x->max_slots + 1) * 8);
 
+    /* Some controllers require scratchpad buffers before they will run.
+     * DCBAA[0] points at the array of page pointers. */
+    uint32_t hcs2 = r32(x, HCSPARAMS2);
+    int nsp = (int)((((hcs2 >> 27) & 0x1F) << 5) | ((hcs2 >> 21) & 0x1F));
+    if (nsp > 0) {
+        uint64_t *sp = kmalloc_aligned((size_t)nsp * 8, 64);
+        if (!sp) { klog("usb: xHCI needs %d scratchpad buffers and there is no memory", nsp); return -1; }
+        for (int i = 0; i < nsp; i++) {
+            void *p = kmalloc_aligned(4096, 4096);
+            if (!p) { klog("usb: xHCI scratchpad allocation failed"); return -1; }
+            memset(p, 0, 4096);
+            sp[i] = (uint64_t)(uintptr_t)p;
+        }
+        x->dcbaa[0] = (uint64_t)(uintptr_t)sp;
+        klog("usb: xHCI %d scratchpad buffers", nsp);
+    }
+
     w64(x, x->op + CRCR, x->cmd.phys | 1);                    /* ring cycle state */
     w64(x, x->op + DCBAAP, (uint64_t)(uintptr_t)x->dcbaa);
     w32(x, x->op + CONFIG, (uint32_t)x->max_slots);
@@ -570,7 +617,8 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     if (hcc1 & (1u << 3)) {                                   /* ports have power control */
         for (int p = 0; p < x->max_ports; p++) {
             uint32_t v = r32(x, x->op + PORTSC(p));
-            if (!(v & PORT_PP)) w32(x, x->op + PORTSC(p), v | PORT_PP);
+            if (!(v & PORT_PP))
+                w32(x, x->op + PORTSC(p), (v & ~(PORT_PED | PORT_CHANGE)) | PORT_PP);
         }
         uwait(50);
     }
