@@ -106,7 +106,8 @@ const char *usb_device_summary(void) {
     for (usb_dev_t *d = devices; d; d = d->next) {
         if (d->gone) continue;                 /* an unplugged disk keeps its slot only */
         const char *k = d->kind == USB_KIND_KEYBOARD ? "kbd" : d->kind == USB_KIND_MOUSE ? "mouse"
-                      : d->kind == USB_KIND_STORAGE ? "disk" : d->cls == 9 ? "hub" : "dev";
+                      : d->kind == USB_KIND_STORAGE ? "disk" : d->kind == USB_KIND_AUDIO ? "audio"
+                      : d->cls == 9 ? "hub" : "dev";
         bool hid = d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE;
         int n = hid
               ? snprintf(out + len, sizeof out - (size_t)len, "%s%s@%d.%d%s", len ? ", " : "", k,
@@ -692,11 +693,11 @@ static int hid_attach(const usb_dev_t *tmpl, const hid_iface_t *hi, const char *
 }
 
 static bool device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, const char *where,
-                          int root_port, int route, int hub_addr, int hub_port)
+                          int root_port, int route, int hub_addr, int hub_port, int speed)
 {
     usb_dev_t *d = kzalloc(sizeof *d);
     if (!d) return false;
-    d->hcd = h; d->addr = addr; d->low_speed = low;
+    d->hcd = h; d->addr = addr; d->low_speed = low; d->speed = speed;
     d->root_port = root_port; d->route = route;
     d->hub_addr = hub_addr; d->hub_port = hub_port;
     d->vendor = (uint16_t)(dev[8] | (dev[9] << 8));
@@ -718,7 +719,6 @@ static bool device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     d->iface = iface;
     hid_iface_t hi[4];
     int nhid = (d->cls == 8 || d->cls == 9) ? 0 : hid_find_interfaces(cfg, total, hi, (int)ARRAY_LEN(hi));
-    kfree(cfg);
     d->nhid = (uint8_t)nhid;
     if (nhid > 1)
         klog("usb: %04x:%04x at address %d: %d HID interfaces, so their reports come from their endpoints",
@@ -726,11 +726,18 @@ static bool device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
 
     if (h->control(h, addr, low, 0x00, 9, 1, 0, NULL, 0) < 0) {      /* SET_CONFIGURATION(1) */
         klog("usb: address %d: SET_CONFIGURATION failed", addr);
+        kfree(cfg);
         kfree(d);
         return false;
     }
+    /* An audio device needs its configuration descriptor after the set, to find
+     * the streaming alternate setting it must select. */
+    bool audio = !nhid && d->cls != 8 && d->cls != 9 && usb_audio_attach(h, d, cfg, total);
+    kfree(cfg);
 
-    if (nhid) {                                                      /* HID: one device per interface */
+    if (audio) {
+        d->next = devices; devices = d;                              /* visible in the device list */
+    } else if (nhid) {                                               /* HID: one device per interface */
         int made = 0;
         for (int k = 0; k < nhid; k++) made += hid_attach(d, &hi[k], where);
         if (!made)
@@ -863,7 +870,7 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_po
         if (h->del_device) h->del_device(h, addr);
         return;
     }
-    if (!device_attach(h, addr, low, dev, where, root_port, route, hub_addr, hub_port)) {
+    if (!device_attach(h, addr, low, dev, where, root_port, route, hub_addr, hub_port, speed)) {
         usb_diag("%s: no driver", where);
         if (h->del_device) h->del_device(h, addr);
     }
@@ -910,6 +917,7 @@ static void drop_addr(usb_hcd_t *h, int addr)
             pp = &d->next;
             continue;
         }
+        if (d->kind == USB_KIND_AUDIO) usb_audio_detach(d);
         *pp = d->next;
         kfree(d);
     }
@@ -1158,6 +1166,7 @@ void usb_poll(void)
         d->ctl_next = now + (d->kind == USB_KIND_MOUSE ? HID_MOUSE_CTL_MS : HID_KBD_CTL_MS);
         hid_control_poll(d);
     }
+    usb_audio_poll();                          /* isochronous playback is kept fed from here */
 }
 
 static void usb_task(void *arg)

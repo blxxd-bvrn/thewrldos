@@ -22,8 +22,8 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
   with DHCP and DNS, and HTTPS with certificate checking.
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
 - **Sound:** drivers for Intel HD Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI
-  (ES1370, ES1371/ES1373) and Sound Blaster 16. A startup sound plays when you log on and a
-  shutdown sound plays before the computer turns off.
+  (ES1370, ES1371/ES1373), Sound Blaster 16 and USB audio (class 1). A startup sound plays when
+  you log on and a shutdown sound plays before the computer turns off.
 - **Graphics:** drivers for the Bochs/QEMU, VirtualBox and VMware display adapters, so the
   resolution can be changed at runtime (1024×768 up to 1920×1200 or more).
 - **Text:** scalable TrueType fonts (Liberation Sans and Mono, read from `C:\WRLD\Fonts`) with
@@ -271,8 +271,14 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       the sample rate converter); DAC2 loops over the ring.
     - **Sound Blaster 16:** DSP 4.x, 16-bit stereo auto-init ISA DMA from a buffer below
       16 MiB; the 8237 count register gives the position.
-    - Output is 48 kHz 16-bit stereo (44.1 kHz on the ES1370 and Sound Blaster 16), fed by a
-      ring of DMA buffers refilled from the timer interrupt.
+    - **USB audio (class 1):** the audio control and streaming interfaces are read from the
+      configuration, the streaming alternate setting is selected, the sample rate is set, and the
+      isochronous OUT endpoint is kept fed with one packet per service interval (1 ms on a
+      full-speed bus, 125 us on a high-speed one). A USB audio device becomes the output when it
+      is plugged in, and the card it took over from comes back when it is unplugged.
+    - Output is 48 kHz 16-bit stereo (44.1 kHz on the ES1370, Sound Blaster 16, and a USB device
+      that cannot do 48), fed by a ring of DMA buffers refilled from the timer interrupt. USB
+      audio is paced by its own packets instead of a card position.
     - A 4-voice mixer with volume and mute, and a WAV loader for 8/16/24-bit PCM at any sample
       rate and channel count.
   - PCI enumeration, CPUID, PC speaker.
@@ -710,8 +716,9 @@ used to test every screen above, including a full install from a blank disk.
 - **Hardware and design:**
   - USB runs on **xHCI** (USB 3.x), **EHCI** (USB 2.0), **UHCI** and **OHCI** (USB 1.1)
     controllers. EHCI owns the high-speed ports and hands full/low-speed ones to the companion;
-    full-speed devices behind a high-speed hub (split transactions) are not supported, nor are
-    isochronous devices (USB audio and video). Devices (disks included) can be plugged in and
+    full-speed devices behind a high-speed hub (split transactions) are not supported.
+    Isochronous audio (USB class 1 playback) works on xHCI only; USB video is not driven.
+    Devices (disks included) can be plugged in and
     removed while the system runs.
   - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
     shadows or canvas, and CSS layout is still the small subset XplorerLite implements.

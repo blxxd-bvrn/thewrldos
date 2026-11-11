@@ -59,6 +59,7 @@
 #define TRB_SETUP        2
 #define TRB_DATA         3
 #define TRB_STATUS       4
+#define TRB_ISOCH        5
 #define TRB_LINK         6
 #define TRB_ENABLE_SLOT  9
 #define TRB_DISABLE_SLOT 10
@@ -77,6 +78,7 @@
 #define TRB_IDT    (1u << 6)
 #define TRB_DIR    (1u << 16)
 #define TRB_BSR    (1u << 9)
+#define TRB_SIA    (1u << 31)            /* isochronous: schedule as soon as possible */
 #define T(t)       ((uint32_t)(t) << 10)
 
 #define TRB_LEN     0x00FFFFFFu
@@ -88,9 +90,11 @@
 #define CC_SHORT   13
 
 #define EP_CTL      4
+#define EP_ISOCH_OUT 1
 #define EP_BULK_OUT 2
 #define EP_BULK_IN  6
 #define EP_INT_IN   7
+#define EP_ISOCH_IN  5
 
 typedef struct { uint64_t param; uint32_t status; uint32_t control; } trb_t;
 
@@ -318,11 +322,12 @@ static void fill_slot(xhci_t *x, uint32_t *s, xdev_t *d, int entries, int addr)
 /* `dequeue` is a ring pointer with the DCS bit in bit 0 */
 /* `esit` is the most a periodic endpoint moves per service interval; the
  * controller reserves bus time from it, and schedules nothing for zero. */
-static void fill_ep(xhci_t *x, uint32_t *e, int type, uint64_t dequeue, int maxpkt, int interval, int esit)
+static void fill_ep(xhci_t *x, uint32_t *e, int type, uint64_t dequeue, int maxpkt, int interval, int esit,
+                    int cerr)
 {
     (void)x;
     e[0] = (uint32_t)(interval & 0xFF) << 16;
-    e[1] = (uint32_t)type << 3 | (3u << 1) | ((uint32_t)maxpkt << 16);
+    e[1] = (uint32_t)type << 3 | ((uint32_t)cerr << 1) | ((uint32_t)maxpkt << 16);
     e[2] = (uint32_t)(dequeue & 0xFFFFFFF0ull) | (uint32_t)(dequeue & 1);
     e[3] = (uint32_t)(dequeue >> 32);
     e[4] = (uint32_t)(esit ? esit : 8) | ((uint32_t)esit << 16);     /* average TRB length, max ESIT payload */
@@ -351,7 +356,7 @@ static int xhci_address(xhci_t *x, xdev_t *d, int addr, bool bsr, int maxpkt)
     if (!in) return -1;
     in[1] = 0x3;                                             /* add slot and EP0 */
     fill_slot(x, ictx_slot(x, in), d, 1, 0);                 /* the controller assigns the address */
-    fill_ep(x, ictx_ep(x, in, 1), EP_CTL, ring_dequeue(&d->ep0), maxpkt, 0, 0);
+    fill_ep(x, ictx_ep(x, in, 1), EP_CTL, ring_dequeue(&d->ep0), maxpkt, 0, 0, 3);
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)in, 0, TRB_ADDRESS, bsr ? TRB_BSR : 0, &code, NULL);
     kfree_aligned(in);
@@ -380,7 +385,8 @@ static int xhci_configure(xhci_t *x, xdev_t *d, int epnum, bool in, int maxpkt, 
     int entries = d->max_dci > dci ? d->max_dci : dci;
     fill_slot(x, ictx_slot(x, inctx), d, entries, d->hw_addr ? d->hw_addr : d->slot);
     fill_ep(x, ictx_ep(x, inctx, dci), eptype, ring_dequeue(&d->ep[epnum].ring), maxpkt, 6,
-            eptype == EP_INT_IN ? maxpkt : 0);
+            eptype == EP_INT_IN || eptype == EP_ISOCH_OUT ? maxpkt : 0,
+            eptype == EP_ISOCH_OUT ? 0 : 3);
     uint32_t code = 0;
     int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)inctx, 0, TRB_CONFIGURE, 0, &code, NULL);
     kfree_aligned(inctx);
@@ -396,6 +402,69 @@ static int xhci_configure(xhci_t *x, xdev_t *d, int epnum, bool in, int maxpkt, 
     d->ep[epnum].maxpkt = maxpkt;
     d->ep[epnum].dci = dci;
     return 0;
+}
+
+/* ---------------- isochronous playback ---------------- */
+static xdev_t *dev_by_addr(xhci_t *x, int addr);
+/* An isochronous OUT endpoint is opened once, and then a stream of packets is
+ * kept queued: one packet is one service interval of audio (1 ms on a
+ * full-speed bus, 125 us on a high-speed one), and the controller plays them
+ * in order. SIA lets it start the stream as soon as it can, and every packet
+ * after that follows in the next interval. The packets are the caller's
+ * buffers; they stay valid until their transfer event comes back. */
+static int xhci_iso_open(usb_hcd_t *h, int addr, int ep, int maxpkt, int interval_exp)
+{
+    xhci_t *x = h->priv;
+    xdev_t *d = dev_by_addr(x, addr);
+    if (!d || !ep || ep > 15) return -1;
+    int dci = ep * 2;                                    /* OUT */
+    ring_init(&d->ep[ep].ring, 128, true);
+    if (!d->ep[ep].ring.n) return -1;
+    uint32_t *inctx = ctx_alloc(x, dci + 2);
+    if (!inctx) return -1;
+    inctx[1] = 0x1 | (1u << dci);
+    int entries = d->max_dci > dci ? d->max_dci : dci;
+    fill_slot(x, ictx_slot(x, inctx), d, entries, d->hw_addr ? d->hw_addr : d->slot);
+    fill_ep(x, ictx_ep(x, inctx, dci), EP_ISOCH_OUT, ring_dequeue(&d->ep[ep].ring), maxpkt,
+            interval_exp, maxpkt, 0);
+    uint32_t code = 0;
+    int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)inctx, 0, TRB_CONFIGURE, 0, &code, NULL);
+    kfree_aligned(inctx);
+    if (r < 0) {
+        klog("xhci: configure isochronous endpoint %d failed (code %u)", ep, code);
+        usb_diag("xHCI iso ep %d code %u", ep, code);
+        return -1;
+    }
+    d->max_dci = entries;
+    d->ep[ep].configured = true;
+    d->ep[ep].maxpkt = maxpkt;
+    d->ep[ep].dci = dci;
+    d->ep[ep].armed = 0;
+    return 0;
+}
+
+static uint64_t xhci_iso_send(usb_hcd_t *h, int addr, int ep, const void *buf, int len)
+{
+    xhci_t *x = h->priv;
+    xdev_t *d = dev_by_addr(x, addr);
+    if (!d || !ep || ep > 15 || !d->ep[ep].configured) return 0;
+    uint64_t trb = ring_push(&d->ep[ep].ring, (uint64_t)(uintptr_t)buf, (uint32_t)len,
+                             TRB_ISOCH, TRB_IOC | TRB_SIA);
+    if (!trb) return 0;
+    ring_doorbell(x, d->slot, ep * 2);
+    return trb;
+}
+
+static int xhci_iso_done(usb_hcd_t *h, int addr, int ep, uint64_t trb)
+{
+    xhci_t *x = h->priv;
+    xdev_t *d = dev_by_addr(x, addr);
+    if (!d) return 1;
+    uint32_t status, control;
+    if (!take_event(x, TRB_TRANSFER, trb, &status, &control)) return 0;
+    uint32_t code = TRB_CODE(status);
+    if (code != CC_SUCCESS && code != CC_SHORT) return -1;
+    return 1;
 }
 
 /* ---------------- transfers ---------------- */
@@ -838,6 +907,9 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     x->hcd.new_device = xhci_new_device;
     x->hcd.hub_info = xhci_hub_info;
     x->hcd.del_device = xhci_del_device;
+    x->hcd.iso_open = xhci_iso_open;
+    x->hcd.iso_send = xhci_iso_send;
+    x->hcd.iso_done = xhci_iso_done;
     x->hcd.ports = x->max_ports;
     x->hcd.priv = x;
     return 0;

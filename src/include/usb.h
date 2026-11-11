@@ -10,13 +10,14 @@
 typedef struct usb_hcd usb_hcd_t;
 typedef struct usb_dev usb_dev_t;
 
-enum { USB_KIND_NONE = 0, USB_KIND_KEYBOARD, USB_KIND_MOUSE, USB_KIND_STORAGE };
+enum { USB_KIND_NONE = 0, USB_KIND_KEYBOARD, USB_KIND_MOUSE, USB_KIND_STORAGE, USB_KIND_AUDIO };
 
 /* one device on a bus, after enumeration */
 struct usb_dev {
     usb_hcd_t *hcd;
     int addr;
     bool low_speed;
+    int speed;                                 /* 1 full, 2 low, 3 high, 4 SuperSpeed; 0 unknown */
     uint16_t vendor, product;
     uint16_t bcdusb;                           /* USB version from the device descriptor */
     uint8_t cls, subcls, proto;
@@ -91,6 +92,13 @@ struct usb_hcd {
      * the slot number can be used again. `addr` 0 means the device that was
      * still being enumerated. May be NULL. */
     void (*del_device)(usb_hcd_t *h, int addr);
+    /* isochronous OUT (playback): open a stream on an endpoint, queue one
+     * service interval's packet, and find out whether it has been sent. The
+     * packet buffer must stay valid until the packet returns from iso_done.
+     * May be NULL (only xHCI implements them so far). */
+    int (*iso_open)(usb_hcd_t *h, int addr, int ep, int maxpkt, int interval_exp);
+    uint64_t (*iso_send)(usb_hcd_t *h, int addr, int ep, const void *buf, int len);
+    int (*iso_done)(usb_hcd_t *h, int addr, int ep, uint64_t trb);   /* 1 done, 0 pending */
     int ports;
     uint32_t port_retry[32];                   /* when each root port is tried next */
     uint8_t port_down[32];                     /* scans in a row that found it empty */
@@ -117,6 +125,12 @@ void usb_attach(usb_hcd_t *h);                  /* a controller enumerates its r
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len);
 int usb_in(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms);
 int usb_out(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, const void *buf, int len, int timeout_ms);
+
+/* usb audio: a UAC1 playback device, found while a configuration is parsed */
+bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len);
+void usb_audio_detach(usb_dev_t *d);
+void usb_audio_poll(void);                       /* send and reap isochronous packets */
+bool usb_audio_present(void);
 
 /* host controllers */
 void uhci_probe(void);

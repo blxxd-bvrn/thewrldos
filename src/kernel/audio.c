@@ -13,6 +13,7 @@
  * The output rate is 48 kHz, or 44.1 kHz on cards that cannot do 48. */
 #include "kernel.h"
 #include "audio.h"
+#include "usb.h"
 
 static uint32_t out_rate = 48000;            /* the mixer's (and the card's) sample rate */
 #define RATE out_rate
@@ -22,7 +23,7 @@ static uint32_t out_rate = 48000;            /* the mixer's (and the card's) sam
 #define LEAD 16                           /* buffers kept ahead of the hardware */
 #define NVOICE 4
 
-enum { DEV_NONE, DEV_HDA, DEV_AC97, DEV_ES1370, DEV_ES1371, DEV_SB16 };
+enum { DEV_NONE, DEV_HDA, DEV_AC97, DEV_ES1370, DEV_ES1371, DEV_SB16, DEV_USB };
 static int dev;
 static char devname[80] = "No sound device";
 static int16_t *ring;                     /* NBUF * BUFFRAMES stereo frames */
@@ -648,6 +649,62 @@ static void audio_tick(uint32_t t) {
 }
 
 static char off_reason[96];
+
+/* ---- USB audio ----
+ * The USB audio driver pulls mixed frames from here as it needs them for its
+ * isochronous packets, so the mixer is paced by the device itself rather than
+ * by a card position. */
+static bool usb_card;
+static int usb_card_rate;
+static char usb_card_name[64];
+static int dev_other;                         /* the card USB audio took over from */
+static int other_rate;
+static char other_name[64];
+void audio_usb_ready(int rate, const char *name)
+{
+    usb_card = true;
+    usb_card_rate = rate;
+    strlcpy(usb_card_name, name, sizeof usb_card_name);
+    if (dev == DEV_USB) return;
+    if (dev) {                                /* a card was playing: keep it for later */
+        dev_other = dev;
+        other_rate = out_rate;
+        strlcpy(other_name, devname, sizeof other_name);
+    }
+    dev = DEV_USB;
+    out_rate = rate;
+    strlcpy(devname, name, sizeof devname);
+    timer_tick_hook = NULL;                   /* the packets pace the mixer */
+    klog("audio: output is %s, %d Hz", name, rate);
+}
+void audio_usb_gone(void)
+{
+    usb_card = false;
+    if (dev != DEV_USB) return;
+    if (dev_other) {
+        dev = dev_other;
+        out_rate = other_rate;
+        strlcpy(devname, other_name, sizeof devname);
+        uint32_t f = irq_save(); refill(); irq_restore(f);
+        timer_tick_hook = audio_tick;
+        klog("audio: output is back to %s", devname);
+        dev_other = 0;
+    } else {
+        dev = DEV_NONE;
+        strlcpy(devname, "No sound device", sizeof devname);
+        klog("audio: the USB audio device was unplugged; no sound device now");
+    }
+}
+int audio_usb_pull(int16_t *out, int frames)
+{
+    if (frames <= 0 || !out) return 0;
+    if (frames > BUFFRAMES) frames = BUFFRAMES;
+    uint32_t f = irq_save();
+    mix_into(out, frames);
+    irq_restore(f);
+    return frames;
+}
+
 void audio_disable(const char *why) {
     timer_tick_hook = NULL;
     if (dev == DEV_ES1370 || dev == DEV_ES1371) outl(es_io + ES_CTRL, es_ctrl);   /* DAC2 off */
@@ -661,6 +718,10 @@ void audio_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     ring = kmalloc_aligned(NBUF * BUFBYTES, 128);
     memset(ring, 0, NBUF * BUFBYTES);
+    /* Probe the PCI cards even when a USB audio device is already playing, so
+     * that the card is there to go back to when the USB one is unplugged. */
+    bool usb_was = dev == DEV_USB;
+    if (usb_was) dev = DEV_NONE;
     for (int i = 0; i < n && !dev; i++) if (devs[i].cls == 0x04 && devs[i].sub == 0x03 && hda_init(&devs[i])) dev = DEV_HDA;
     for (int i = 0; i < n && !dev; i++) {
         pci_dev_t *d = &devs[i];
@@ -669,15 +730,33 @@ void audio_init(void) {
         else if (d->cls == 0x04 && d->sub == 0x01 && (d->vendor == 0x8086 || d->vendor == 0x10DE || d->vendor == 0x1022 || d->vendor == 0x1039) && ac97_init(d)) dev = DEV_AC97;
     }
     if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
-    if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI or Sound Blaster 16)"); return; }
+    if (usb_was) {                                      /* a USB device is the output */
+        if (dev) { dev_other = dev; other_rate = out_rate; strlcpy(other_name, devname, sizeof other_name); }
+        dev = DEV_USB;
+        out_rate = usb_card_rate;
+        strlcpy(devname, usb_card_name, sizeof devname);
+    } else if (!dev && usb_card) {
+        dev = DEV_USB;
+        out_rate = usb_card_rate;
+        strlcpy(devname, usb_card_name, sizeof devname);
+    }
+    if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI, Sound Blaster 16 or USB audio)"); return; }
     next_fill = 0;
     { uint64_t a = rdtsc(); sleep_ms(20); tsc_per_ms = (rdtsc() - a) / 20; budget_start = rdtsc(); }
-    { uint32_t f = irq_save(); refill(); irq_restore(f); }
-    timer_tick_hook = audio_tick;
+    if (dev != DEV_USB) {
+        uint32_t f = irq_save(); refill(); irq_restore(f);
+        timer_tick_hook = audio_tick;                   /* USB audio is paced by its packets */
+    }
 }
 /* what the driver found and whether the card is really playing (for the "sndinfo" command) */
 void audio_diag(char *buf, int cap) {
-    if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16).\n"); return; }
+    if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16, USB audio).\n"); return; }
+    if (dev == DEV_USB) {
+        snprintf(buf, cap, "%s, %u Hz\nUSB audio, isochronous playback %s\nVolume %d%s\n",
+                 devname, out_rate, usb_audio_present() ? "running" : "not running", audio_volume,
+                 audio_muted ? " (muted)" : "");
+        return;
+    }
     if (off_reason[0]) {
         snprintf(buf, cap, "%s\nSound is switched off: %s.\n%u end-of-count acks, %u restarts\n", devname, off_reason, es_acks, es_restarts);
         return;
