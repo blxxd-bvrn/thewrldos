@@ -25,6 +25,7 @@ struct usb_dev {
     uint16_t maxpkt_in, maxpkt_out, maxpkt_int;
     uint8_t toggle_in, toggle_out, toggle_int;
     int iface;                                 /* the HID interface number */
+    uint8_t nhid;                              /* HID interfaces the whole device has */
     bool boot;                                 /* boot protocol: the fixed report, no report ID */
     bool polls;                                /* this interface moves the endpoint; a second
                                                 * interface on the same endpoint listens to it */

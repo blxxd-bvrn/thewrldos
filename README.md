@@ -407,9 +407,13 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   repeat stops, and the key is let go, after three seconds in which no report confirmed it. A
   device whose interrupt endpoint has never delivered anything after a second is polled with
   `GET_REPORT` instead, asked for exactly the report length its descriptor gives (asking for
-  more can make a real device stall). Its answer is the current report, so one identical to the
-  last report taken is a movement already counted: the buttons are applied, the movement is
-  not. The interrupt endpoint is trusted alone as soon as it delivers a report of its own.
+  more can make a real device stall), and an answer of any other length is not that report and
+  is refused. A device with more than one HID interface is not asked this way: such a device can
+  answer every interface with the same report, and that report is then not the interface's — a
+  receiver answered a keyboard and a mouse interface with one vendor report, whose bytes read as
+  buttons nobody pressed. Their own endpoints deliver the real reports. An interface that has
+  delivered a report of its own is trusted alone, and an answer identical to the last report
+  taken is a movement already counted: the buttons are applied, the movement is not.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.

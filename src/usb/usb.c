@@ -717,6 +717,10 @@ static bool device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
     hid_iface_t hi[4];
     int nhid = (d->cls == 8 || d->cls == 9) ? 0 : hid_find_interfaces(cfg, total, hi, (int)ARRAY_LEN(hi));
     kfree(cfg);
+    d->nhid = (uint8_t)nhid;
+    if (nhid > 1)
+        klog("usb: %04x:%04x at address %d: %d HID interfaces, so their reports come from their endpoints",
+             d->vendor, d->product, addr, nhid);
 
     if (h->control(h, addr, low, 0x00, 9, 1, 0, NULL, 0) < 0) {      /* SET_CONFIGURATION(1) */
         klog("usb: address %d: SET_CONFIGURATION failed", addr);
@@ -1075,6 +1079,15 @@ static void hid_control_poll(usb_dev_t *d)
     d->ctl_fail = 0;
     d->use_control = 1;
     d->ctl_reports++;
+    /* The answer to "the report of this format" has to be that format's length.
+     * A shorter one is some other report (a vendor or stale one), and reading
+     * it would turn its bytes into keys or buttons. */
+    if (!d->boot && c != want) {
+        usb_diag("%s@%d GET_REPORT gave %d of %d bytes", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse",
+                 d->addr, c, want);
+        d->use_control = -1;
+        return;
+    }
     /* A mouse keeps answering with the same report until it moves, and an
      * interrupt report may already have delivered that one. */
     bool stale = d->last_len && c == d->last_len && !memcmp(rep, d->last_rep, (size_t)c);
@@ -1112,7 +1125,14 @@ void usb_poll(void)
             hid_report_shared(d, rep, n, false);
             continue;
         }
-        if (d->irq_seen || d->use_control < 0) continue;
+        /* GET_REPORT is the fallback for a device whose interrupt endpoint has
+         * delivered nothing: it asks the interface for its current report. A
+         * device with several HID interfaces can answer all of them with one
+         * report, and that answer is then not this interface's -- on a receiver
+         * with a keyboard and a mouse it is a vendor or stale report, and
+         * reading it presses buttons nobody pressed. Their endpoints deliver the
+         * real reports, so only a single-interface device is polled this way. */
+        if (d->irq_seen || d->use_control < 0 || d->nhid > 1) continue;
         uint32_t now = timer_ticks();
         if (!d->ctl_next) d->ctl_next = now + HID_SILENT_MS;
         if ((int32_t)(now - d->ctl_next) < 0) continue;
