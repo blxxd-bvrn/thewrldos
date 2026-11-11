@@ -376,9 +376,11 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   lives in the slot context), full configuration parsing (interfaces and endpoints) and
   `SET_CONFIGURATION`, plus one level of **hub**: the hub's ports are powered and reset and the
   devices behind them enumerated too, with the xHCI route string filled in.
-- **HID:** boot-protocol keyboards and mice. Reports are translated to PS/2 set 1 scancodes and
-  packet deltas, so the existing keyboard and mouse code (modifiers, Caps Lock, speed, button
-  swap) works unchanged.
+- **HID:** boot-protocol keyboards and mice, plus report-protocol devices: the report
+  descriptor is read once to find where the buttons, X, Y and wheel sit, and a report ID prefix
+  is stripped when the device did not switch to boot protocol. Reports are translated to PS/2
+  set 1 scancodes and packet deltas, so the existing keyboard and mouse code (modifiers, Caps
+  Lock, speed, button swap) works unchanged.
 - **Mass storage:** bulk-only transport with CBW/CSW and the SCSI commands `INQUIRY`,
   `READ CAPACITY(10)`, `READ(10)`, `WRITE(10)` and `SYNCHRONIZE CACHE(10)`. The disk registers in
   the block layer like any other, so Setup and the volume code see it as a normal disk.
@@ -390,8 +392,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   companion; it does not implement split transactions, so a full-speed device behind a
   high-speed hub is not seen, and isochronous transfers and hotplug after boot are not
   implemented.
-- If no USB keyboard or mouse is enumerated, the log-on screen names every controller it found
-  and how many devices it saw, so a machine with a dead port can report what is actually there.
+- If no USB keyboard or mouse is enumerated, or one is found but never sends a report, the log-on
+  screen names every controller it found, the devices it enumerated and the last failures, so a
+  machine with a dead port or a stuck endpoint can report what is actually there.
 
 ### Networking (`src/net`)
 - **Network cards** (all polled; the first one found is used):

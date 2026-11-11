@@ -25,6 +25,15 @@ struct usb_dev {
     uint16_t maxpkt_in, maxpkt_out, maxpkt_int;
     uint8_t toggle_in, toggle_out, toggle_int;
     int iface;                                 /* the HID interface number */
+    int boot_ok;                               /* the device accepted SET_PROTOCOL(boot) */
+    struct {                                   /* the input report, from the report descriptor */
+        int id;                                /* report ID byte, 0 = none */
+        int btn_off, btn_bits;                 /* bit offsets and widths */
+        int x_off, x_bits, y_off, y_bits;
+        int w_off, w_bits;
+        int len;                               /* report bytes, without a report ID */
+        int sign;                              /* the axes have a signed logical range */
+    } hid;
     int miss;                                  /* interrupt polls with no report */
     int use_control;                           /* fall back to GET_REPORT */
     uint8_t report[16];                        /* last HID report, for key-up detection */

@@ -157,6 +157,106 @@ static void hid_send_usage(uint8_t usage, bool release)
     if (sc && sc != 0xFF) keyboard_scancode((uint8_t)(sc | up));
 }
 
+/* A HID input report is a set of bit fields that the report descriptor
+ * describes, and a device may prefix each report with a report ID. Boot
+ * keyboards and mice are fixed, but a mouse that did not accept
+ * SET_PROTOCOL(boot) keeps its own layout, so read the descriptor once and
+ * remember where the buttons, axes and wheel actually are. */
+#define HID_MAX_USAGES 8
+
+static int hid_item_len(uint8_t b) { int s = b & 3; return s == 3 ? 4 : s; }
+
+static int hid_field(const uint8_t *p, int n, int off, int bits, bool sign)
+{
+    if (bits <= 0 || bits > 32) return 0;
+    uint32_t v = 0;
+    for (int i = 0; i < bits; i++) {
+        int b = off + i;
+        if ((b >> 3) >= n) break;
+        v |= (uint32_t)((p[b >> 3] >> (b & 7)) & 1) << i;
+    }
+    if (sign && bits < 32 && (v & (1u << (bits - 1)))) v |= ~((1u << bits) - 1u);
+    return (int)v;
+}
+
+static void hid_parse_report(usb_dev_t *d, const uint8_t *p, int n)
+{
+    int i = 0, bit = 0, id = 0, page = 0, rsize = 0, rcount = 0, lmin = 0;
+    uint32_t usages[HID_MAX_USAGES];
+    int nusage = 0;
+    uint32_t umin = 0, umax = 0;
+    bool urange = false;
+
+    while (i < n) {
+        uint8_t b = p[i];
+        if (b == 0) break;
+        if (b == 0xFE) {                                 /* long item */
+            if (i + 3 > n) break;
+            i += 3 + (p[i + 1] & 0xFF);
+            continue;
+        }
+        int sz = hid_item_len(b);
+        if (i + 1 + sz > n) break;
+        int val = 0;
+        for (int k = 0; k < sz; k++) val |= (int)p[i + 1 + k] << (8 * k);
+
+        switch (b & 0xFC) {
+        case 0x04: page = val & 0xFFFF; nusage = 0; urange = false; break;
+        case 0x08:
+            if (nusage < HID_MAX_USAGES)
+                usages[nusage++] = (uint32_t)(page << 16) | (uint32_t)(val & 0xFFFF);
+            break;
+        case 0x18: umin = (uint32_t)(page << 16) | (uint32_t)(val & 0xFFFF); urange = true; break;
+        case 0x28: umax = (uint32_t)(page << 16) | (uint32_t)(val & 0xFFFF); urange = true; break;
+        case 0x14:                                       /* Logical Minimum, signed */
+            if (sz == 1) lmin = (int8_t)val;
+            else if (sz == 2) lmin = (int16_t)val;
+            else lmin = val;
+            break;
+        case 0x74: rsize = val; break;
+        case 0x94: rcount = val; break;
+        case 0x84:                                       /* a new report starts here */
+            id = val;
+            bit = 0;
+            if (!d->hid.id) d->hid.id = val;
+            break;
+        case 0x80: {                                     /* Input */
+            int fields = rcount > 0 ? rcount : 1;
+            for (int f = 0; f < fields && rsize > 0; f++) {
+                uint32_t u = 0;
+                if (f < nusage) u = usages[f];
+                else if (urange) { u = umin + (uint32_t)f; if (u > umax) u = umax; }
+                else if (nusage) u = usages[nusage - 1];
+                int up = (int)(u >> 16), uid = (int)(u & 0xFFFF);
+                if (up == 0x01 && uid == 0x30) { d->hid.x_off = bit; d->hid.x_bits = rsize; d->hid.sign = lmin < 0; d->hid.id = id; }
+                else if (up == 0x01 && uid == 0x31) { d->hid.y_off = bit; d->hid.y_bits = rsize; d->hid.sign = lmin < 0; d->hid.id = id; }
+                else if (up == 0x01 && uid == 0x38) { d->hid.w_off = bit; d->hid.w_bits = rsize; }
+                else if (up == 0x09) { if (!d->hid.btn_bits) d->hid.btn_off = bit; d->hid.btn_bits += rsize; }
+                bit += rsize;
+            }
+            nusage = 0; urange = false;
+            break;
+        }
+        case 0x90: case 0xB0: case 0xA0: case 0xC0:       /* other main items */
+            nusage = 0; urange = false;
+            break;
+        }
+        i += 1 + sz;
+    }
+    int end = d->hid.x_off + d->hid.x_bits;
+    if (d->hid.y_off + d->hid.y_bits > end) end = d->hid.y_off + d->hid.y_bits;
+    if (d->hid.w_off + d->hid.w_bits > end) end = d->hid.w_off + d->hid.w_bits;
+    if (d->hid.btn_off + d->hid.btn_bits > end) end = d->hid.btn_off + d->hid.btn_bits;
+    d->hid.len = (end + 7) / 8;
+}
+
+static void hid_read_report_format(usb_dev_t *d)
+{
+    uint8_t buf[256];
+    int n = usb_control(d, 0x81, 6, 0x2200, (uint16_t)d->iface, buf, sizeof buf);
+    if (n > 0) hid_parse_report(d, buf, n);
+}
+
 static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
 {
     if (n < 8) return;
@@ -182,20 +282,48 @@ static void hid_keyboard_report(usb_dev_t *d, const uint8_t *rep, int n)
     memcpy(d->report, rep, 8);
 }
 
+/* Boot mice send buttons, X, Y and a wheel step. A report-protocol mouse can
+ * put those fields anywhere, so use the parsed layout when there is one. */
+static void hid_mouse_report(usb_dev_t *d, const uint8_t *rep, int n)
+{
+    extern void mouse_inject(int dx, int dy, int buttons, int wheel);
+    if (n < 1) return;
+    int dx = 0, dy = 0, btn = 0, wheel = 0;
+    if (d->hid.x_bits && d->hid.y_bits) {
+        dx = hid_field(rep, n, d->hid.x_off, d->hid.x_bits, d->hid.sign != 0);
+        dy = hid_field(rep, n, d->hid.y_off, d->hid.y_bits, d->hid.sign != 0);
+        if (d->hid.btn_bits) btn = hid_field(rep, n, d->hid.btn_off, d->hid.btn_bits, false) & 7;
+        if (d->hid.w_bits) {
+            int w = hid_field(rep, n, d->hid.w_off, d->hid.w_bits, true);
+            if (w > 8) w = 8;
+            if (w < -8) w = -8;
+            wheel = -w;
+        }
+    } else {
+        if (n < 3) return;
+        dx = (int8_t)rep[1];
+        dy = (int8_t)rep[2];
+        btn = rep[0] & 7;
+        if (n >= 4) { int8_t w = (int8_t)rep[3]; if (w >= -8 && w <= 8) wheel = -w; }
+    }
+    mouse_inject(dx, dy, btn, wheel);
+}
+
 static void hid_report(usb_dev_t *d, const uint8_t *rep, int n)
 {
     if (!d->seen) {
         d->seen = true;
         klog("usb: %s at address %d is sending reports", d->kind == USB_KIND_KEYBOARD ? "keyboard" : "mouse", d->addr);
     }
+    /* In report protocol a report ID byte comes first; boot protocol has none.
+     * A boot report is exactly the descriptor's report length, so one byte more
+     * than that (with the ID in front) is report protocol even if SET_PROTOCOL
+     * claimed success. */
+    int boot_len = d->kind == USB_KIND_KEYBOARD ? 8 : d->hid.len;
+    if (d->hid.id && n > 1 && rep[0] == d->hid.id &&
+        (!d->boot_ok || (boot_len > 0 && n == boot_len + 1))) { rep++; n--; }
     if (d->kind == USB_KIND_KEYBOARD) { hid_keyboard_report(d, rep, n); return; }
-    if (d->kind == USB_KIND_MOUSE) {
-        extern void mouse_inject(int dx, int dy, int buttons, int wheel);
-        if (n < 3) return;
-        int wheel = 0;
-        if (n >= 4) { int8_t w = (int8_t)rep[3]; if (w >= -8 && w <= 8) wheel = -w; }
-        mouse_inject((int8_t)rep[1], (int8_t)rep[2], rep[0] & 7, wheel);
-    }
+    if (d->kind == USB_KIND_MOUSE) hid_mouse_report(d, rep, n);
 }
 
 /* ---------------- mass storage: bulk-only transport ---------------- */
@@ -365,10 +493,14 @@ static void device_attach(usb_hcd_t *h, int addr, bool low, const uint8_t *dev, 
 
     const char *what = "device";
     if (d->cls == 3) {                                               /* HID */
-        usb_control(d, 0x21, 0x0B, 0, (uint16_t)iface, NULL, 0);     /* SET_PROTOCOL(boot) */
+        hid_read_report_format(d);
+        /* The boot protocol fixes the report, and has no report ID byte. */
+        d->boot_ok = usb_control(d, 0x21, 0x0B, 0, (uint16_t)iface, NULL, 0) >= 0;
         usb_control(d, 0x21, 0x0A, 0, (uint16_t)iface, NULL, 0);     /* SET_IDLE(0) */
         if (d->proto == 2) { d->kind = USB_KIND_MOUSE; what = "mouse"; }
         else { d->kind = USB_KIND_KEYBOARD; what = "keyboard"; }
+        if (d->hid.id && !d->boot_ok)
+            klog("usb: %s at address %d: report protocol, report ID %d", what, addr, d->hid.id);
         if (!d->ep_int) { klog("usb: %s at address %d has no interrupt endpoint", what, addr); kfree(d); return; }
     } else if (d->cls == 8) {                                        /* mass storage */
         what = "mass storage";
@@ -483,10 +615,16 @@ void usb_poll(void)
 {
     for (usb_dev_t *d = devices; d; d = d->next) {
         if (d->kind != USB_KIND_KEYBOARD && d->kind != USB_KIND_MOUSE) continue;
-        int len = d->kind == USB_KIND_KEYBOARD ? 8 : 4;
+        int len = 8;                 /* room for a 16-bit-axis report; a shorter one is fine */
         uint8_t rep[8];
         memset(rep, 0, sizeof rep);
-        int n = d->use_control > 0 ? -2 : usb_in(d, d->ep_int, d->maxpkt_int, &d->toggle_int, rep, len, 3);
+        /* One transfer per poll: an interrupt IN delivers a whole report, and a
+         * short one must be taken as it is. usb_in() would treat it as a partial
+         * transfer and re-arm from the middle of the next report. */
+        int n = -2;
+        if (d->use_control <= 0)
+            n = d->hcd->transfer(d->hcd, d->addr, d->low_speed, d->ep_int, true,
+                                 d->maxpkt_int, &d->toggle_int, rep, len, 3);
         if (n > 0) { hid_report(d, rep, n); d->miss = 0; continue; }
         if (d->use_control < 0) continue;
         /* Some controllers/device combinations never deliver the interrupt
