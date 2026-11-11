@@ -54,6 +54,10 @@ struct usb_hcd {
      * it from the root port. May be NULL. */
     bool (*new_device)(usb_hcd_t *h, int root_port, int route, bool low_speed,
                        int hub_addr, int hub_port, int speed);
+    /* a hub was identified: xHCI has to mark its slot as a hub and program the
+     * port count (and a high-speed hub's TT) before children can be reached.
+     * `think_time` is the hub descriptor's 2-bit TT think time. May be NULL. */
+    void (*hub_info)(usb_hcd_t *h, int addr, int ports, int think_time);
     int ports;
     void *priv;
 };

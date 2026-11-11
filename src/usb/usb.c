@@ -413,6 +413,10 @@ static void hub_attach(usb_dev_t *hub)
         return;
     }
     int ports = hd[2];
+    /* xHCI has to know this is a hub, and how many ports it has, before it can
+     * route a transfer to anything behind it. */
+    if (hub->hcd->hub_info)
+        hub->hcd->hub_info(hub->hcd, hub->addr, ports, ss ? 0 : (hd[3] >> 5) & 3);
     if (ports > 8) ports = 8;
     for (int p = 1; p <= ports; p++) {
         usb_control(hub, 0x23, 3, 8, (uint16_t)p, NULL, 0);           /* SET_FEATURE(PORT_POWER) */

@@ -358,6 +358,37 @@ static xdev_t *dev_by_addr(xhci_t *x, int addr)
     return NULL;
 }
 
+/* A hub's slot context must say that it is a hub, how many ports it has, and,
+ * for a high-speed hub, its TT think time. The controller uses the hub's slot
+ * when it routes a transfer downstream, so a device behind the hub cannot be
+ * reached until this has been programmed. */
+static void xhci_hub_info(usb_hcd_t *h, int addr, int ports, int think_time)
+{
+    xhci_t *x = h->priv;
+    xdev_t *d = dev_by_addr(x, addr);
+    if (!d) return;
+    uint32_t *out = (uint32_t *)(uintptr_t)x->dcbaa[d->slot];
+    if (!out) return;
+    if (ports < 1) ports = 1;
+    if (ports > 255) ports = 255;
+    uint32_t *in = ctx_alloc(x, 32);
+    if (!in) return;
+    in[1] = 0x1;                                            /* update the slot context */
+    uint32_t *s = ictx_slot(x, in);
+    memcpy(s, out, (size_t)x->ctx);
+    s[0] |= 1u << 26;                                       /* Hub */
+    if (d->speed != 3) s[0] &= ~(1u << 25);                 /* MTT only on a high-speed hub */
+    s[1] = (s[1] & 0x00FFFFFFu) | ((uint32_t)ports << 24);  /* Number of Ports */
+    if (d->speed == 3) s[2] = (s[2] & ~0x000F0000u) | ((uint32_t)(think_time & 3) << 16);
+    uint32_t code = 0;
+    int r = xhci_cmd(x, d->slot, (uint64_t)(uintptr_t)in, 0, TRB_CONFIGURE, 0, &code, NULL);
+    kfree_aligned(in);
+    if (r < 0) {
+        klog("xhci: hub %d slot update failed (code %u)", addr, code);
+        usb_diag("xHCI hub %d code %u", addr, code);
+    }
+}
+
 static int xhci_run_trb(xhci_t *x, xdev_t *d, int epnum, int dci, uint64_t param, uint32_t status,
                         bool in, int timeout_ms, uint32_t *left)
 {
@@ -412,12 +443,12 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
     uint32_t code = 0, left = 0;
     if (!evt_wait(x, TRB_TRANSFER, last, 2000, &code, NULL, &left)) {
         klog("xhci: control %02x/%02x on slot %d timed out", type, req, d->slot);
-        usb_diag("xHCI ctl %02x/%02x timeout", type, req);
+        usb_diag("xHCI ctl %02x/%02x dev %d%s timeout", type, req, d->addr, d->tt_port ? " hub" : "");
         return -1;
     }
     if (code != CC_SUCCESS && code != CC_SHORT) {
         klog("xhci: control %02x/%02x on slot %d failed (code %u)", type, req, d->slot, code);
-        usb_diag("xHCI ctl %02x/%02x code %u", type, req, code);
+        usb_diag("xHCI ctl %02x/%02x dev %d%s code %u", type, req, d->addr, d->tt_port ? " hub" : "", code);
         return -1;
     }
     int got = len - (int)left;
@@ -659,6 +690,7 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     x->hcd.transfer = xhci_transfer;
     x->hcd.port_reset = xhci_port_reset;
     x->hcd.new_device = xhci_new_device;
+    x->hcd.hub_info = xhci_hub_info;
     x->hcd.ports = x->max_ports;
     x->hcd.priv = x;
     return 0;
