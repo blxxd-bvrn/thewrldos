@@ -100,6 +100,7 @@ struct usb_hcd {
     uint64_t (*iso_send)(usb_hcd_t *h, int addr, int ep, const void *buf, int len);
     int (*iso_done)(usb_hcd_t *h, int addr, int ep, uint64_t trb);   /* 1 done, 0 pending */
     int ports;
+    int ctl_timeout;                           /* ms for a control transfer; 0 = the default */
     uint32_t port_retry[32];                   /* when each root port is tried next */
     uint8_t port_down[32];                     /* scans in a row that found it empty */
     uint8_t port_fail[32];                     /* enumerations in a row that found no driver */
@@ -123,6 +124,10 @@ const char *usb_diag_text(void);
 extern int usb_unsupported;                    /* USB controllers this kernel has no driver for */
 void usb_attach(usb_hcd_t *h);                  /* a controller enumerates its root ports */
 int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf, int len);
+/* the same, with a shorter wait for an answer: for a polled status read, where a
+ * device that does not answer must not hold up the input for seconds */
+int usb_control_t(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf,
+                  int len, int timeout_ms);
 int usb_in(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms);
 int usb_out(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, const void *buf, int len, int timeout_ms);
 

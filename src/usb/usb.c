@@ -176,6 +176,15 @@ int usb_control(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_
 {
     return d->hcd->control(d->hcd, d->addr, d->low_speed, type, req, value, index, buf, len);
 }
+int usb_control_t(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint16_t index, void *buf,
+                  int len, int timeout_ms)
+{
+    int was = d->hcd->ctl_timeout;
+    d->hcd->ctl_timeout = timeout_ms;
+    int r = d->hcd->control(d->hcd, d->addr, d->low_speed, type, req, value, index, buf, len);
+    d->hcd->ctl_timeout = was;
+    return r;
+}
 int usb_in(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms)
 {
     uint8_t *p = buf;
@@ -802,7 +811,7 @@ static void hub_attach(usb_dev_t *hub)
 static void hub_port_scan(usb_dev_t *hub, int p)
 {
     uint8_t st[4];
-    if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) return;   /* GET_STATUS */
+    if (usb_control_t(hub, 0xA3, 0, 0, (uint16_t)p, st, 4, 200) < 4) return;   /* GET_STATUS */
     if (!(st[0] & 1)) return;                                    /* nothing plugged in */
     usb_control(hub, 0x23, 3, 4, (uint16_t)p, NULL, 0);           /* SET_FEATURE(PORT_RESET) */
     uint32_t t0 = timer_ticks();
@@ -810,7 +819,7 @@ static void hub_port_scan(usb_dev_t *hub, int p)
     usb_control(hub, 0x23, 1, 20, (uint16_t)p, NULL, 0);          /* CLEAR_FEATURE(C_PORT_RESET) */
     t0 = timer_ticks();
     while ((int32_t)(timer_ticks() - t0) < 20) task_yield();
-    if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) return;
+    if (usb_control_t(hub, 0xA3, 0, 0, (uint16_t)p, st, 4, 200) < 4) return;
     if (!(st[0] & 1)) return;
     bool ss = hub->bcdusb >= 0x0300;
     bool low = (st[1] & 0x02) != 0;                              /* port status bit 9 */
@@ -1040,7 +1049,7 @@ static void usb_rescan(void)
         hub->hub_next = now + 1000;
         for (int p = 1; p <= hub->ports && p <= 8; p++) {
             uint8_t st[4];
-            if (usb_control(hub, 0xA3, 0, 0, (uint16_t)p, st, 4) < 4) {
+            if (usb_control_t(hub, 0xA3, 0, 0, (uint16_t)p, st, 4, 200) < 4) {
                 if (++hub->hub_fail >= 2) { hub->hub_next = now + 5000; break; }
                 continue;
             }
@@ -1099,7 +1108,7 @@ static void hid_control_poll(usb_dev_t *d)
     int id = d->boot ? 0 : d->kind == USB_KIND_MOUSE ? d->fmt.mouse.id : d->fmt.keys.id;
     int want = hid_report_len(d);
     d->ctl_polls++;
-    int c = usb_control(d, 0xA1, 1, (uint16_t)(0x0100 | id), (uint16_t)d->iface, rep, want);
+    int c = usb_control_t(d, 0xA1, 1, (uint16_t)(0x0100 | id), (uint16_t)d->iface, rep, want, 300);
     if (c <= 0) {
         if (++d->ctl_fail <= 2)
             usb_diag("%s@%d GET_REPORT failed (%d)", d->kind == USB_KIND_KEYBOARD ? "kbd" : "mouse", d->addr, c);
@@ -1178,10 +1187,14 @@ static void usb_task(void *arg)
     (void)arg;
     uint32_t next = timer_ticks() + 500;
     for (;;) {
+        uint32_t t0 = timer_ticks();
         usb_poll();
+        if ((int32_t)(timer_ticks() - t0) >= 150) usb_diag("usb: %u ms polling", timer_ticks() - t0);
         if ((int32_t)(timer_ticks() - next) >= 0) {
             next = timer_ticks() + 500;
+            t0 = timer_ticks();
             usb_rescan();
+            if ((int32_t)(timer_ticks() - t0) >= 150) usb_diag("usb: %u ms rescanning", timer_ticks() - t0);
         }
         task_sleep(8);
     }

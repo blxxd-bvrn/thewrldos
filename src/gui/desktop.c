@@ -4,6 +4,7 @@
 #include "theme.h"
 #include "wm.h"
 #include "apps.h"
+#include "usb.h"
 
 int wallpaper_id = 0;
 uint32_t desktop_color = HEX(0x3A6EA5);
@@ -840,6 +841,14 @@ bool shell_key(key_event_t *e) {
 static char last_clock[32];
 void shell_tick(void) {
     char b[32]; fmt_clock(b, sizeof b);
+    { extern uint32_t gui_composes; static uint32_t lastc, lastt;
+      uint32_t now = timer_ticks();
+      if (!lastt) { lastt = now; lastc = gui_composes; }
+      else if (now - lastt >= 1000) {
+          uint32_t n = gui_composes - lastc;
+          if (n > 20) usb_diag("gui: %u composes/s", n);
+          lastc = gui_composes; lastt = now;
+      } }
     if (strcmp(b, last_clock)) { strcpy(last_clock, b); wm_need_redraw = true; }
     if (balloon_until && (int32_t)(timer_ticks() - balloon_until) > 0) { balloon_until = 0; wm_need_redraw = true; }
 }

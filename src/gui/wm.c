@@ -3,6 +3,7 @@
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
+#include "usb.h"
 
 #define MAX_WIN 64
 static window_t *wins[MAX_WIN];
@@ -12,6 +13,8 @@ window_t *wm_active;
 int wm_mouse_x, wm_mouse_y;
 uint32_t wm_dblclick_ms = 500;
 bool wm_need_redraw = true;
+uint32_t gui_composes;
+
 bool wm_animations = true;
 static int prev_buttons;
 static window_t *capture;
@@ -382,6 +385,7 @@ static int current_cursor(void) {
     return CURSOR_ARROW;
 }
 static void compose(void) {
+    gui_composes++;
     canvas_reset_clip(&screen);
     desktop_paint(&screen);
     for (int i = 0; i < nwin; i++) {
@@ -670,6 +674,7 @@ void wm_run(void) {
     gui_heartbeat = timer_ticks();
     watchdog_hook = watchdog;
     for (;;) {
+        uint32_t loop_t0 = timer_ticks();
         gui_heartbeat = timer_ticks();
         bool activity = false;
         key_event_t ke;
@@ -698,6 +703,8 @@ void wm_run(void) {
         }
         if (ndying) reap_windows();
         if (wm_need_redraw) compose();
+        if ((int32_t)(timer_ticks() - loop_t0) >= 150)
+            usb_diag("gui: %u ms in one frame", timer_ticks() - loop_t0);
         task_yield();
         if (!activity && !wm_need_redraw) {
             extern volatile bool cpu_idle_flag;

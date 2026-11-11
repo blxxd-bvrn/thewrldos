@@ -579,7 +579,8 @@ static int xhci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
     uint32_t code = 0, left = 0, s, c;
     bool done = false;
     uint32_t t0 = timer_ticks();
-    while ((int32_t)(timer_ticks() - t0) < 2000) {
+    int wait_ms = h->ctl_timeout > 0 ? h->ctl_timeout : 2000;
+    while ((int32_t)(timer_ticks() - t0) < wait_ms) {
         if (take_event(x, TRB_TRANSFER, last, &s, &c)) { code = TRB_CODE(s); done = true; break; }
         /* an error ends the transfer at the stage it happened in */
         if (pend_take_error(x, first, mid, &code)) { done = true; break; }
