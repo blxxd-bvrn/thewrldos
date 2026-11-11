@@ -811,8 +811,9 @@ const char *audio_summary(void)
 void audio_diag(char *buf, int cap) {
     if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16, USB audio).\n"); return; }
     if (dev == DEV_USB) {
-        snprintf(buf, cap, "%s, %u Hz\nUSB audio, isochronous playback %s\nVolume %d%s\n",
-                 devname, out_rate, usb_audio_present() ? "running" : "not running", audio_volume,
+        char u[160];
+        usb_audio_diag(u, sizeof u);
+        snprintf(buf, cap, "%s, %u Hz\n%sVolume %d%s\n", devname, out_rate, u, audio_volume,
                  audio_muted ? " (muted)" : "");
         return;
     }

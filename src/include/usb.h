@@ -131,6 +131,7 @@ bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len
 void usb_audio_detach(usb_dev_t *d);
 void usb_audio_poll(void);                       /* send and reap isochronous packets */
 bool usb_audio_present(void);
+void usb_audio_diag(char *buf, int cap);        /* packets sent, errors, queue depth */
 
 /* host controllers */
 void uhci_probe(void);

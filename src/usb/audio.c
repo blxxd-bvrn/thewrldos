@@ -213,11 +213,19 @@ void usb_audio_poll(void)
 }
 
 bool usb_audio_present(void) { return ua.started && ua.dev; }
+
+void usb_audio_diag(char *buf, int cap)
+{
+    if (!ua.started) { snprintf(buf, cap, "USB audio: no stream\n"); return; }
+    snprintf(buf, cap, "USB audio: %u packets/s expected, %u sent, %u errors, %d queued, %d bytes each\n",
+             ua.pkt_frames ? (unsigned)(ua.rate / ua.pkt_frames) : 0, ua.played, ua.errors, ua.queued, ua.pkt_bytes);
+}
 #else
 #include "usb.h"
 void usb_audio_poll(void) {}
 bool usb_audio_present(void) { return false; }
 void usb_audio_detach(usb_dev_t *d) { (void)d; }
+void usb_audio_diag(char *buf, int cap) { if (cap > 0) buf[0] = 0; }
 bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len)
-{ (void)h; (void)addr; (void)speed; (void)cfg; (void)len; return false; }
+{ (void)h; (void)tmpl; (void)cfg; (void)len; return false; }
 #endif
