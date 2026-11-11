@@ -8,6 +8,7 @@ typedef struct { int16_t *pcm; uint32_t frames; } sound_t;
 void audio_init(void);
 bool audio_present(void);
 const char *audio_device_name(void);
+const char *audio_controller_name(void);    /* HDA (virtual) when the kernel emulates one */
 void audio_diag(char *buf, int cap);        /* device, codec route, whether playback advances */
 int audio_play(const sound_t *s);           /* voice number, or -1 */
 void audio_stop_all(void);

@@ -278,7 +278,10 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       format descriptor's list in class 1, on the clock source entity in class 2), and the
       isochronous OUT endpoint is kept fed with one packet per service interval (1 ms on a
       full-speed bus, 125 us on a high-speed one). A USB audio device becomes the output when it
-      is plugged in, and the card it took over from comes back when it is unplugged.
+      is plugged in, and the card it took over from comes back when it is unplugged. When no audio
+      controller is on the PCI bus at all, the mixer also presents a software HDA controller (one
+      codec, an audio function group, a DAC and a speaker pin) whose stream is fed into the USB
+      device's packets, so the system keeps an HDA playback path even without HDA hardware.
     - The log-on screen names the sound device it found, or the audio controllers it could not
       use and why (`check-audio` checks the descriptor parser on the build machine).
     - Output is 48 kHz 16-bit stereo (44.1 kHz on the ES1370, Sound Blaster 16, and a USB device

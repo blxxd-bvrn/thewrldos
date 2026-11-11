@@ -562,12 +562,17 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
     draw_icon(s, ICON_CP_SOUND, 48, ox + 30, y);
     draw_text(s, FONT_UI, ox + 96, y + 2, "Playback device:", HEX(0x505050));
     draw_text_ellipsis(s, FONT_UI_BOLD, ox + 210, y + 2, s->w - ox - 230, audio_device_name(), BLACK);
+    const char *ctl = audio_controller_name();
+    if (ctl[0]) {
+        draw_text(s, FONT_UI, ox + 96, y + 20, "Controller:", HEX(0x505050));
+        draw_text(s, FONT_UI, ox + 210, y + 20, ctl, HEX(0x505050));
+    }
     if (!audio_present()) {
         draw_text_wrapped(s, FONT_UI, ox + 96, y + 22, s->w - ox - 120, "No supported sound card was found. " OS_NAME " supports Intel High Definition Audio and AC'97 "
             "(QEMU: -device intel-hda -device hda-output, or -device AC97; VirtualBox: 'Intel HD Audio' or 'ICH AC97').", W7_TEXT, 2);
         y += 80;
     } else {
-        y += 26;
+        y += ctl[0] ? 44 : 26;
         draw_text(s, FONT_UI, ox + 96, y + 4, "Volume:", HEX(0x505050));
         int vol = audio_volume;
         if (ui_slider(w, R(ox + 210, y, 220, 24), &vol, 0, 100)) audio_volume = vol;

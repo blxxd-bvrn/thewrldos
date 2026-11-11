@@ -10,6 +10,10 @@
  *     (VMware's "Ensoniq AudioPCI")
  *   - Creative Sound Blaster 16 (ISA, 16-bit auto-init DMA): QEMU (sb16),
  *     VirtualBox (SoundBlaster 16)
+ *   - USB audio class 1 and 2 playback, paced by the device's packets
+ * When no audio controller is on the bus (only a USB headset is present) the
+ * mixer also exposes a software HDA controller whose stream feeds the USB
+ * packets.
  * The output rate is 48 kHz, or 44.1 kHz on cards that cannot do 48. */
 #include "kernel.h"
 #include "audio.h"
@@ -727,10 +731,39 @@ static void audio_tick(uint32_t t) {
 
 static char off_reason[96];
 
-/* ---- USB audio ----
- * The USB audio driver pulls mixed frames from here as it needs them for its
- * isochronous packets, so the mixer is paced by the device itself rather than
- * by a card position. */
+/* ---- Virtual HDA controller ----
+ * A machine can have no audio controller on the PCI bus and still play through
+ * a USB headset. To keep the rest of the system on an HDA footing, the kernel
+ * presents a software controller with one codec, one audio function group, a
+ * DAC and a speaker pin. There is no register file behind it: its stream pulls
+ * from the mixer on demand, and the USB audio driver hands those frames to its
+ * isochronous endpoint. The physical jack stays whatever the hardware is. */
+typedef struct {
+    bool on;
+    int rate;
+    int codec, afg, dac, pin;
+    uint32_t frames;
+} vhda_t;
+static vhda_t vhda;
+static bool card_found, probed;
+
+static void vhda_start(int rate)
+{
+    if (vhda.on) { vhda.rate = rate; return; }
+    memset(&vhda, 0, sizeof vhda);
+    vhda.on = true;
+    vhda.rate = rate;
+    vhda.codec = 0; vhda.afg = 1; vhda.dac = 2; vhda.pin = 3;
+    klog("hda: virtual controller: codec %d, AFG %d, DAC %d -> pin %d (speaker), %d Hz",
+         vhda.codec, vhda.afg, vhda.dac, vhda.pin, rate);
+}
+static void vhda_stop(void)
+{
+    if (!vhda.on) return;
+    vhda.on = false;
+    klog("hda: virtual controller gone");
+}
+
 static bool usb_card;
 static int usb_card_rate;
 static char usb_card_name[64];
@@ -742,7 +775,7 @@ void audio_usb_ready(int rate, const char *name)
     usb_card = true;
     usb_card_rate = rate;
     strlcpy(usb_card_name, name, sizeof usb_card_name);
-    if (dev == DEV_USB) return;
+    if (dev == DEV_USB) { if (probed && !card_found) vhda_start(rate); return; }
     if (dev) {                                /* a card was playing: keep it for later */
         dev_other = dev;
         other_rate = out_rate;
@@ -753,6 +786,7 @@ void audio_usb_ready(int rate, const char *name)
     strlcpy(devname, name, sizeof devname);
     timer_tick_hook = NULL;                   /* the packets pace the mixer */
     klog("audio: output is %s, %d Hz", name, rate);
+    if (probed && !card_found) vhda_start(rate);
 }
 void audio_usb_gone(void)
 {
@@ -769,6 +803,7 @@ void audio_usb_gone(void)
     } else {
         dev = DEV_NONE;
         strlcpy(devname, "No sound device", sizeof devname);
+        vhda_stop();
         klog("audio: the USB audio device was unplugged; no sound device now");
     }
 }
@@ -778,6 +813,7 @@ int audio_usb_pull(int16_t *out, int frames)
     if (frames > BUFFRAMES) frames = BUFFRAMES;
     uint32_t f = irq_save();
     mix_into(out, frames);
+    if (vhda.on) vhda.frames += frames;       /* the virtual controller's stream ran */
     irq_restore(f);
     return frames;
 }
@@ -807,6 +843,8 @@ void audio_init(void) {
         else if (d->cls == 0x04 && d->sub == 0x01 && (d->vendor == 0x8086 || d->vendor == 0x10DE || d->vendor == 0x1022 || d->vendor == 0x1039) && ac97_init(d)) dev = DEV_AC97;
     }
     if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
+    card_found = dev != DEV_NONE;
+    probed = true;
     if (usb_was) {                                      /* a USB device is the output */
         if (dev) { dev_other = dev; other_rate = out_rate; strlcpy(other_name, devname, sizeof other_name); }
         dev = DEV_USB;
@@ -818,6 +856,8 @@ void audio_init(void) {
         strlcpy(devname, usb_card_name, sizeof devname);
     }
     if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI, Sound Blaster 16 or USB audio)"); return; }
+    if (dev == DEV_USB && !card_found) vhda_start(out_rate);
+    else vhda_stop();
     next_fill = 0;
     { uint64_t a = rdtsc(); sleep_ms(20); tsc_per_ms = (rdtsc() - a) / 20; budget_start = rdtsc(); }
     if (dev != DEV_USB) {
@@ -825,13 +865,22 @@ void audio_init(void) {
         timer_tick_hook = audio_tick;                   /* USB audio is paced by its packets */
     }
 }
+/* Some device names already carry the rate (the USB audio one does), so the
+ * status lines do not append it twice. */
+static bool name_has_rate(const char *s)
+{
+    for (; s[0]; s++) if (s[0] == 'H' && s[1] == 'z') return true;
+    return false;
+}
 /* One line for the log-on screen: the sound device that is playing, or the
  * audio hardware that was found and why it is not. */
 const char *audio_summary(void)
 {
     static char out[240];
     if (dev) {
-        int len = snprintf(out, sizeof out, "Sound: %s, %u Hz", devname, out_rate);
+        int len = snprintf(out, sizeof out, "Sound: %s", devname);
+        if (!name_has_rate(devname)) len += snprintf(out + len, sizeof out - len, ", %u Hz", out_rate);
+        if (vhda.on) len += snprintf(out + len, sizeof out - len, ", virtual HDA");
         /* Also say what the onboard codec search found: a USB device can be
          * playing while the line-out jack's codec is still missing. */
         if (hda_why[0]) snprintf(out + len, sizeof out - len, " (onboard: %s)", hda_why);
@@ -851,9 +900,14 @@ const char *audio_summary(void)
 void audio_diag(char *buf, int cap) {
     if (!dev) { snprintf(buf, cap, "No sound device found (supported: HD Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16, USB audio).\n"); return; }
     if (dev == DEV_USB) {
-        char u[160];
+        char u[160], v[200], hdr[96];
         usb_audio_diag(u, sizeof u);
-        snprintf(buf, cap, "%s, %u Hz\n%sVolume %d%s\n", devname, out_rate, u, audio_volume,
+        if (name_has_rate(devname)) snprintf(hdr, sizeof hdr, "%s", devname);
+        else snprintf(hdr, sizeof hdr, "%s, %u Hz", devname, out_rate);
+        if (vhda.on) snprintf(v, sizeof v, "HDA controller: virtual (software), codec %d, AFG %d, DAC %d -> pin %d speaker, %d Hz\n%u frames through the stream\n",
+                              vhda.codec, vhda.afg, vhda.dac, vhda.pin, vhda.rate, vhda.frames);
+        else v[0] = 0;
+        snprintf(buf, cap, "%s\n%s%sVolume %d%s\n", hdr, v, u, audio_volume,
                  audio_muted ? " (muted)" : "");
         return;
     }
@@ -875,6 +929,16 @@ void audio_diag(char *buf, int cap) {
 }
 bool audio_present(void) { return dev != DEV_NONE; }
 const char *audio_device_name(void) { return devname; }
+const char *audio_controller_name(void) {
+    if (vhda.on) return "HDA (virtual)";
+    switch (dev) {
+    case DEV_HDA: return "HDA";
+    case DEV_AC97: return "AC'97";
+    case DEV_ES1370: case DEV_ES1371: return "AudioPCI";
+    case DEV_SB16: return "Sound Blaster 16";
+    default: return "";
+    }
+}
 int audio_play(const sound_t *s) {
     if (!dev || off_reason[0] || !s || !s->frames) return -1;
     uint32_t f = irq_save();
