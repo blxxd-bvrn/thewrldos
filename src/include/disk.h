@@ -18,7 +18,8 @@ struct blkdev {
     int index;                 /* Disk 0, 1, ... */
     bool dead;                 /* unplugged: out of the list, its I/O fails */
     const blkops_t *ops;
-    uint32_t sectors;          /* 512-byte sectors (clamped to 2 TiB) */
+    uint32_t sectors;          /* 512-byte sectors, clamped to the 2 TiB MBR/LBA limit */
+    uint64_t total_sectors;    /* the disk's real size, before that clamp */
     uint32_t bsize;            /* native block size (512 or 4096) */
     uint32_t max_blocks;       /* largest single request, in native blocks */
     char model[41];

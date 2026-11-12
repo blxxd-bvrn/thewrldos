@@ -207,6 +207,7 @@ static void port_init(volatile uint8_t *abar, int i) {
     uint64_t s28 = id[60] | ((uint32_t)id[61] << 16);
     uint64_t s48 = id[100] | ((uint64_t)id[101] << 16) | ((uint64_t)id[102] << 32) | ((uint64_t)id[103] << 48);
     uint64_t secs = (ap->lba48 && s48) ? s48 : s28;
+    d->total_sectors = secs;
     d->sectors = secs > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)secs;
     for (int k = 0; k < 20; k++) { d->model[k * 2] = id[27 + k] >> 8; d->model[k * 2 + 1] = id[27 + k] & 0xFF; }
     d->model[40] = 0;

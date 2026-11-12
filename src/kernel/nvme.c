@@ -165,6 +165,7 @@ static void ctrl_init(pci_dev_t *pd) {
         nvme_ns_t *ns = kzalloc(sizeof *ns); ns->c = c; ns->nsid = nsid;
         d->bsize = 1u << lbads;
         uint64_t secs = nsze << (lbads - 9);
+        d->total_sectors = secs;
         d->sectors = secs > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)secs;
         d->max_blocks = c->max_bytes / d->bsize;
         memcpy(d->model, model, sizeof d->model);

@@ -122,9 +122,16 @@ static item_t items[40];
 static int nitems;
 static part_t ptab[BLK_MAX][4];
 static bool has_mbr[BLK_MAX];
+static bool gpt_disk[BLK_MAX];               /* Setup will replace it with MBR */
 static void disk_desc(int d, char *b, int n) {
     blkdev_t *dv = blk_get(d);
-    snprintf(b, n, "%u MB Disk %d at Id %d on bus %d on %s [MBR]", dv->sectors / 2048, d, dv->id, dv->busno, dv->driver);
+    uint64_t mb = (dv->total_sectors ? dv->total_sectors : dv->sectors) / 2048;
+    if (mb >= 1024 * 1024)
+        snprintf(b, n, "%llu GB Disk %d at Id %d on bus %d on %s [%s]", (unsigned long long)(mb / 1024), d, dv->id, dv->busno, dv->driver,
+                 gpt_disk[d] ? "GPT -> MBR" : "MBR");
+    else
+        snprintf(b, n, "%llu MB Disk %d at Id %d on bus %d on %s [%s]", (unsigned long long)mb, d, dv->id, dv->busno, dv->driver,
+                 gpt_disk[d] ? "GPT -> MBR" : "MBR");
 }
 static void part_desc(item_t *it, char *b, int n) {
     if (it->kind == IT_FREE) { snprintf(b, n, "    Unpartitioned space          %8u MB", it->sectors / 2048); return; }
@@ -143,6 +150,9 @@ static void build_items(void) {
         blkdev_t *dv = blk_get(d);
         items[nitems++] = (item_t){ .kind = IT_DISK, .disk = d };
         has_mbr[d] = mbr_read(dv, ptab[d]);
+        gpt_disk[d] = false;
+        for (int i = 0; i < 4; i++) if (ptab[d][i].type == 0xEE) gpt_disk[d] = true;
+        if (gpt_disk[d]) memset(ptab[d], 0, sizeof ptab[d]);   /* Setup will write MBR */
         int order[4], no = 0;
         for (int i = 0; i < 4; i++) if (ptab[d][i].type) order[no++] = i;
         for (int i = 1; i < no; i++) for (int j = i; j > 0 && ptab[d][order[j]].lba < ptab[d][order[j - 1]].lba; j--) { int t = order[j]; order[j] = order[j - 1]; order[j - 1] = t; }
@@ -169,6 +179,8 @@ static bool write_ptab(int d) { return mbr_write(blk_get(d), ptab[d], NULL); }
 /* create-partition prompt; returns slot or -1 */
 static int create_partition(item_t *it) {
     int maxmb = it->sectors / 2048, slot = free_slot(it->disk);
+    bool capped = false;
+    if (bootinfo.is_efi && maxmb > 100 * 1024) { maxmb = 100 * 1024; capped = true; }
     char dd[96]; disk_desc(it->disk, dd, sizeof dd);
     if (slot < 0) {
         ts_begin("ENTER=Continue", NULL);
@@ -186,6 +198,7 @@ static int create_partition(item_t *it) {
         char b[96];
         snprintf(b, sizeof b, "The minimum size for the new partition is      64 megabytes (MB)."); tx(2, 11, b, TS_FG);
         snprintf(b, sizeof b, "The maximum size for the new partition is %7d megabytes (MB).", maxmb); tx(2, 12, b, TS_FG);
+        if (capped) tx_wrap(2, 10, "This is a FAT32 system partition; it is limited to 100 GB. The rest of the disk stays unpartitioned.", TS_FG);
         tx(2, 14, "Create partition of size (in MB):", TS_FG);
         fill_rect(&screen, X(37) - 4, Y(14) - 2, 9 * cw, LH, TS_BAR);
         draw_text(&screen, FONT_MONO, X(37), Y(14), num, BLACK);
@@ -258,6 +271,10 @@ static bool do_install(int disk, int slot, int mode) {
     if (bootinfo.is_efi && mode < 2) {
         message_screen("This computer started Setup in UEFI mode, so the system partition must be FAT32 (it becomes the EFI System Partition).\n\nRun Setup again and choose a FAT32 option.\n\nPress ENTER to return.", "ENTER=Continue");
         return false;
+    }
+    if (gpt_disk[disk]) {
+        message_screen("This disk uses a GPT partition table. Setup writes an MBR partition table, so it will replace the GPT and erase all partitions on this disk.\n\n"
+                       "Turn the computer off now if you need to keep them. Otherwise press ENTER to continue.", "ENTER=Continue");
     }
     /* boot loader files from the running system */
     uint32_t bl, cl;
@@ -542,7 +559,7 @@ void setup_text_mode(bool from_desktop) {
                 item_t it = items[sel];
                 int slot = it.slot;
                 bool fresh = false;
-                if (blk_get(it.disk)->bsize != 512) {
+                if (!bootinfo.is_efi && blk_get(it.disk)->bsize != 512) {
                     message_screen("This disk uses 4 KB sectors (Advanced Format 4Kn). A computer cannot start from such a disk with a BIOS, so " OS_NAME
                                    " cannot be installed on it.\n\n"
                                    "Select a partition on another disk, or set up the virtual disk with 512-byte sectors.\n\nPress ENTER to continue.", "ENTER=Continue");
@@ -551,7 +568,9 @@ void setup_text_mode(bool from_desktop) {
                 if (it.kind == IT_FREE) {
                     slot = free_slot(it.disk);
                     if (slot < 0) { message_screen("The partition table on this disk is full. Delete a partition first.\n\nPress ENTER to continue.", "ENTER=Continue"); break; }
-                    ptab[it.disk][slot] = (part_t){ .type = 0x0C, .lba = it.lba, .sectors = it.sectors };
+                    uint32_t secs = it.sectors;
+                    if (bootinfo.is_efi && secs > 100u * 1024 * 2048) secs = 100u * 1024 * 2048;
+                    ptab[it.disk][slot] = (part_t){ .type = 0x0C, .lba = it.lba, .sectors = secs };
                     if (!write_ptab(it.disk)) break;
                     fresh = true;
                 }
@@ -560,18 +579,28 @@ void setup_text_mode(bool from_desktop) {
                 }
                 /* file system choice */
                 bool keep_ok = !fresh && it.fat;
+                uint32_t psecs = fresh ? it.sectors : ptab[it.disk][slot].sectors;
+                bool big = psecs / 2048 > 120000;
+                if (bootinfo.is_efi && big) {
+                    message_screen("This FAT32 partition is larger than the 120 GB that Setup can mount on this system.\n\n"
+                                   "Go back and create a smaller system partition (the installer caps new ones at 100 GB); the rest of the disk may stay unpartitioned.\n\nPress ENTER to continue.", "ENTER=Continue");
+                    break;
+                }
                 static const char *opts[5] = { "Format the partition using the NTFS file system (Quick)", "Format the partition using the NTFS file system",
                                                "Format the partition using the FAT file system (Quick)", "Format the partition using the FAT file system",
                                                "Leave the current file system intact (no changes)" };
                 /* UEFI firmware boots from an EFI System Partition, which must be
-                 * FAT; NTFS cannot be one.  Only offer formats that can boot. */
+                 * FAT; NTFS cannot be one.  Only offer formats that can boot.
+                 * A FAT32 volume above ~120 GB has more than the 16 MB FAT this
+                 * driver caches, so do not offer it on a BIOS install either. */
                 int modes[5], nopt = 0;
                 if (bootinfo.is_efi) {
                     modes[nopt++] = 2; modes[nopt++] = 3;
                     if (keep_ok && it.fskind == FS_FAT32) modes[nopt++] = 4;
                 } else {
-                    modes[nopt++] = 0; modes[nopt++] = 1; modes[nopt++] = 2; modes[nopt++] = 3;
-                    if (keep_ok) modes[nopt++] = 4;
+                    modes[nopt++] = 0; modes[nopt++] = 1;
+                    if (!big) { modes[nopt++] = 2; modes[nopt++] = 3; }
+                    if (keep_ok && (it.fskind == FS_NTFS || !big)) modes[nopt++] = 4;
                 }
                 int o = 0;
                 bool back = false;

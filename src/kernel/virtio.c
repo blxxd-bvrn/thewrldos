@@ -204,6 +204,7 @@ static void vblk_init(pci_dev_t *pd) {
     uint32_t bs = (got & (1u << 6)) ? cfg32(&b->v, 20) : 512;
     if (bs != 512 && bs != 1024 && bs != 2048 && bs != 4096) bs = 512;
     d->bsize = bs;
+    d->total_sectors = cap;
     d->sectors = cap > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)cap;
     d->max_blocks = 65536 / bs;
     strcpy(d->model, "VirtIO Block Device");

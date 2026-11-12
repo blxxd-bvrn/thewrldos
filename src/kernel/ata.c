@@ -119,9 +119,9 @@ static void identify(int bus, int slave) {
     d->lba48 = (id[83] & (1 << 10)) != 0;
     d->dma = (id[49] & (1 << 8)) != 0;
     uint32_t s28 = id[60] | ((uint32_t)id[61] << 16);
-    uint32_t s48 = id[100] | ((uint32_t)id[101] << 16);
-    d->sectors = (d->lba48 && s48) ? s48 : s28;
-    if (d->lba48 && id[102]) d->sectors = 0xFFFFFFFF;     /* > 2 TiB: clamp */
+    uint64_t s48 = id[100] | ((uint32_t)id[101] << 16) | ((uint64_t)id[102] << 32) | ((uint64_t)id[103] << 48);
+    d->total_sectors = (d->lba48 && s48) ? s48 : s28;
+    d->sectors = d->total_sectors > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)d->total_sectors;
     for (int i = 0; i < 20; i++) { d->model[i * 2] = id[27 + i] >> 8; d->model[i * 2 + 1] = id[27 + i] & 0xFF; }
     d->model[40] = 0;
     for (int i = 39; i >= 0 && d->model[i] == ' '; i--) d->model[i] = 0;

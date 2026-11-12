@@ -17,6 +17,7 @@ blkdev_t *blk_register(void) {
 void blk_commit(blkdev_t *d) {
     if (!d->max_blocks) d->max_blocks = 1;
     if (!d->bsize) d->bsize = 512;
+    if (!d->total_sectors) d->total_sectors = d->sectors;
     d->index = ndisks;
     disks[ndisks++] = d;
     char b[128]; blk_describe(d, b, sizeof b);
@@ -58,8 +59,9 @@ void blk_describe(blkdev_t *d, char *buf, int cap) {
     else if (!strcmp(d->kind, "SATA")) snprintf(where, sizeof where, "port %d", d->id);
     else if (!strcmp(d->kind, "virtio")) snprintf(where, sizeof where, "disk %d", d->busno);
     else snprintf(where, sizeof where, "target %d lun %d", d->id, d->lun);
-    snprintf(buf, cap, "%s %s (%s) \"%s\" %u MB%s", d->kind, where, d->driver, d->model, d->sectors / 2048,
-             d->bsize != 512 ? " 4K" : "");
+    uint64_t mb = (d->total_sectors ? d->total_sectors : d->sectors) / 2048;
+    snprintf(buf, cap, "%s %s (%s) \"%s\" %llu MB%s%s", d->kind, where, d->driver, d->model, (unsigned long long)mb,
+             d->bsize != 512 ? " 4K" : "", d->total_sectors > d->sectors ? " [2 TiB addressable]" : "");
 }
 
 /* whole native blocks, split into requests the device accepts */

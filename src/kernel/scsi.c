@@ -82,6 +82,7 @@ static void probe_lun(scsi_host_t *h, int t, int l, uint8_t *buf) {
     if (!d) return;
     scsi_disk_t *s = kzalloc(sizeof *s); s->h = h; s->target = t; s->lun = l; s->rw16 = rw16;
     uint64_t secs = (last + 1) * (bsz / 512);
+    d->total_sectors = secs;
     d->sectors = secs > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)secs;
     d->bsize = bsz;
     d->max_blocks = h->max_xfer / bsz;
