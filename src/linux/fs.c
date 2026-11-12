@@ -219,9 +219,11 @@ static char *proc_text(lxproc_t *p, int kind, uint32_t *out)
     }
     case LP_PROC_MEMINFO: {
         uint64_t totalkb = 256ull << 10;
+        uint64_t usedkb = (uint64_t)pmm_used_pages() * PAGE / 1024;
+        uint64_t freekb = totalkb > usedkb ? totalkb - usedkb : 0;
         pb_add(&b, "MemTotal:       %8llu kB\nMemFree:        %8llu kB\nMemAvailable:   %8llu kB\nBuffers:               0 kB\nCached:                0 kB\nSwapCached:            0 kB\nActive:                0 kB\nInactive:              0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\nDirty:                 0 kB\nWriteback:             0 kB\nAnonPages:             0 kB\nMapped:                0 kB\nShmem:                 0 kB\nSlab:                  0 kB\nSReclaimable:          0 kB\nSUnreclaim:            0 kB\nPageTables:            0 kB\n",
-               (unsigned long long)totalkb, (unsigned long long)MAX(0, totalkb - pmm_used_pages() * PAGE / 1024),
-               (unsigned long long)MAX(0, totalkb - pmm_used_pages() * PAGE / 1024));
+               (unsigned long long)totalkb, (unsigned long long)freekb,
+               (unsigned long long)freekb);
         break;
     }
     case LP_PROC_CPUINFO: {
