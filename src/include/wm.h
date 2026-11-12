@@ -163,6 +163,8 @@ extern uint32_t desktop_color;
 extern char user_name[32];
 extern char computer_name[32];
 extern int user_picture;
+extern int user_picture_count;
+void draw_user_picture(canvas_t *c, int id, int size, int x, int y);
 extern bool show_clock, show_seconds, clock_24h, font_smoothing_dummy;
 extern bool wm_animations;
 extern const char *wallpaper_names[];

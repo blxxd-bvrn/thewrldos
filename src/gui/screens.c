@@ -128,7 +128,7 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
         rect_t t = R(SCREEN_W / 2 + 30, SCREEN_H / 2 - 40, 300, 70);
         if (hot == 1) { gradient_h(c, t.x, t.y, t.w, t.h, HEX(0x00309C), HEX(0x5A7EDC)); }
         fill_round_rect(c, t.x + 8, t.y + 8, 54, 54, 5, hot == 1 ? HEX(0xFFC830) : WHITE);
-        draw_icon(c, user_picture, 48, t.x + 11, t.y + 11);
+        draw_user_picture(c, user_picture, 48, t.x + 11, t.y + 11);
         draw_text(c, FONT_LARGE, t.x + 76, t.y + 24, user_name, WHITE);
     } else {
         for (int k = 0; k < 3; k++) { int a = ((frame / 6) % 3) == k ? 255 : 90; fill_circle(c, SCREEN_W / 2 + 40 + k * 16, SCREEN_H / 2, 4, mix(HEX(0x5A7EDC), WHITE, a)); }

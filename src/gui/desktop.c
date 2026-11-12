@@ -12,7 +12,8 @@ int wallpaper_fit = 0;                        /* 0 crop, 1 scale, 2 stretch */
 uint32_t desktop_color = HEX(0x3A6EA5);
 char user_name[32] = "User";
 char computer_name[32] = "WRLD-PC";
-int user_picture = ICON_USER_FLOWER;
+int user_picture = 0;
+int user_picture_count = 71;                  /* the photographs in C:\WRLD\Avatars */
 bool show_clock = true, show_seconds = false, clock_24h = false;
 static canvas_t *wallpaper;
 static bool startmenu_open, allprog_open;
@@ -132,6 +133,65 @@ void shell_wallpaper_changed(void) {
     wallpaper_render(wallpaper, wallpaper_id);
     last_id = wallpaper_id; last_col = desktop_color; last_fit = wallpaper_fit; last_w = SCREEN_W; last_h = SCREEN_H;
     wm_need_redraw = true;
+}
+
+/* ---------------- account pictures ----------------
+ * The 71 photographs in C:\WRLD\Avatars are decoded once into 96x96 cached
+ * thumbnails; draw_user_picture() masks one to a circle at the size asked
+ * for, so the log-on tile, the Start menu and the account page all use it. */
+#define AVATAR_CACHE 96
+static canvas_t *avatar_cache[71];
+static void avatar_scale(canvas_t *dst, canvas_t *src)
+{
+    int size = dst->w, sw = src->w, sh = src->h;
+    int side = MIN(sw, sh), sx0 = (sw - side) / 2, sy0 = (sh - side) / 2;
+    for (int y = 0; y < size; y++) {
+        uint32_t fy = (uint32_t)(((uint64_t)y * side << 8) / size);
+        int ry = (int)(fy >> 8), wy = fy & 255;
+        if (ry >= side - 1) { ry = side - 2; wy = 255; }
+        const uint32_t *r0 = src->px + (sy0 + ry) * src->stride + sx0;
+        const uint32_t *r1 = r0 + src->stride;
+        for (int x = 0; x < size; x++) {
+            uint32_t fx = (uint32_t)(((uint64_t)x * side << 8) / size);
+            int rx = (int)(fx >> 8), wx = fx & 255;
+            if (rx >= side - 1) { rx = side - 2; wx = 255; }
+            uint32_t top = wall_mix(r0[rx], r0[rx + 1], wx);
+            uint32_t bot = wall_mix(r1[rx], r1[rx + 1], wx);
+            dst->px[y * dst->stride + x] = wall_mix(top, bot, wy);
+        }
+    }
+}
+static canvas_t *avatar_thumb(int id)
+{
+    if (id < 0 || id >= user_picture_count) id = 0;
+    if (avatar_cache[id]) return avatar_cache[id];
+    char path[80];
+    snprintf(path, sizeof path, "C:\\WRLD\\Avatars\\Avatar %02d.jpg", id + 1);
+    vnode_t *n = vfs_resolve(path, NULL);
+    if (!n || n->dir || !n->size) return NULL;
+    char err[64];
+    canvas_t *src = image_decode(n->data, n->size, err, sizeof err);
+    if (!src) return NULL;
+    canvas_t *dst = src->w >= 2 && src->h >= 2 ? canvas_new(AVATAR_CACHE, AVATAR_CACHE) : NULL;
+    if (dst) { avatar_scale(dst, src); avatar_cache[id] = dst; }
+    canvas_free(src);
+    return dst;
+}
+void draw_user_picture(canvas_t *c, int id, int size, int x, int y)
+{
+    if (size <= 0) return;
+    canvas_t *a = avatar_thumb(id);
+    if (!a) { fill_round_rect(c, x, y, size, size, MAX(2, size / 8), HEX(0xA8B8C8)); return; }
+    /* a rounded-box cutout, the way Windows XP framed account pictures */
+    int rad = MAX(2, size / 8);
+    for (int yy = 0; yy < size; yy++) for (int xx = 0; xx < size; xx++) {
+        int cx = xx < rad ? rad : (xx >= size - rad ? size - 1 - rad : xx);
+        int cy = yy < rad ? rad : (yy >= size - rad ? size - 1 - rad : yy);
+        int dx = xx - cx, dy = yy - cy;
+        if (dx * dx + dy * dy > rad * rad) continue;
+        int sx = xx * AVATAR_CACHE / size, sy = yy * AVATAR_CACHE / size;
+        put_pixel(c, x + xx, y + yy, a->px[sy * a->stride + sx]);
+    }
 }
 
 /* ---------------- desktop icons ---------------- */
@@ -626,7 +686,7 @@ static void paint_startmenu(canvas_t *c) {
     fill_round_rect(c, px - 2, py - 2, 52, 52, 4, WHITE);
     fill_round_rect(c, px - 3, py - 3, 54, 54, 5, mix(WHITE, T.sm_head_top, 60));
     fill_round_rect(c, px - 2, py - 2, 52, 52, 4, WHITE);
-    draw_icon(c, user_picture, 48, px, py);
+    draw_user_picture(c, user_picture, 48, px, py);
     draw_text_ellipsis(c, FONT_LARGE_BOLD, m.x + 69, m.y + 20, m.w - 80, user_name, darken(T.sm_head_bot, 80));
     draw_text_ellipsis(c, FONT_LARGE_BOLD, m.x + 68, m.y + 19, m.w - 80, user_name, T.sm_head_text);
     /* accent line */

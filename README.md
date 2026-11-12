@@ -589,8 +589,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Text is UTF-8 from the parser to the screen, so the fonts' Latin, Greek, Cyrillic,
     punctuation, arrow and maths coverage all reaches the display.
   - 64 original, procedurally drawn icons (48/32/16 px); the desktop wallpapers are the nine
-    photographs in `WRLD/Wallpapers`, decoded by the same image decoder as the browser. Each
-    can be cropped to the screen, scaled to fit inside it or stretched to both edges.
+    photographs in `WRLD/Wallpapers` and the account pictures are the 71 photographs in
+    `WRLD/Avatars`, all decoded by the same image decoder as the browser. Each wallpaper can be
+    cropped to the screen, scaled to fit inside it or stretched to both edges.
 - **Branding:** a **globe logo** projected from a hand-drawn world map (`tools/globe.py`). It
   spins on the boot screen and is used for the Start button, About and Setup.
 - **Window manager:**
@@ -754,8 +755,8 @@ used to test every screen above, including a full install from a blank disk.
     itself needs about 16 MB.
   - Cooperative (not preemptive) scheduling, and programs run in ring 0.
 - **Names and artwork:** "Luna", "Olive Green", "Silver", "Classic", "Aero" and "Plex" name the
-  visual styles this project recreates. The icons and the globe logo are original; the desktop
-  photographs live in `WRLD/Wallpapers`.
+  visual styles this project recreates. The icons and the globe logo are original; the wallpaper
+  and account-picture photographs live in `WRLD/Wallpapers` and `WRLD/Avatars`.
 
 ## Project layout
 

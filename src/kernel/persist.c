@@ -161,18 +161,29 @@ void settings_set(const char *key, const char *val) {
     for (int i = 0; i < nkv; i++) if (!strcasecmp(kv[i].k, key)) { strlcpy(kv[i].v, val, sizeof kv[i].v); return; }
     if (nkv < 40) { strlcpy(kv[nkv].k, key, sizeof kv[nkv].k); strlcpy(kv[nkv].v, val, sizeof kv[nkv].v); nkv++; }
 }
-/* account pictures are saved by name, so adding icons never changes them */
-static const struct { const char *name; int icon; } pictures[] = {
-    { "flower", ICON_USER_FLOWER }, { "planet", ICON_USER_PLANET }, { "fish", ICON_USER_FISH }, { "mountain", ICON_USER_MOUNTAIN } };
+/* account pictures are saved by name; the old four icon names map to the
+ * first photograph so settings written before the change still load */
 static int picture_from_name(const char *s, int def) {
     if (!s) return def;
-    if (isdigit(s[0])) { int v = atoi(s); for (unsigned i = 0; i < ARRAY_LEN(pictures); i++) if (pictures[i].icon == v) return v; return def; }  /* older wrld.ini */
-    for (unsigned i = 0; i < ARRAY_LEN(pictures); i++) if (!strcasecmp(s, pictures[i].name)) return pictures[i].icon;
+    if (isdigit(s[0])) {
+        int v = atoi(s);
+        if (v >= 0 && v < user_picture_count) return v;
+        if (v >= ICON_USER_FLOWER && v <= ICON_USER_MOUNTAIN) return 0;    /* older wrld.ini */
+        return def;
+    }
+    if (!strcasecmp(s, "flower") || !strcasecmp(s, "planet") ||
+        !strcasecmp(s, "fish") || !strcasecmp(s, "mountain")) return 0;
+    if (!strncasecmp(s, "avatar", 6)) {
+        int v = atoi(s + 6) - 1;
+        if (v >= 0 && v < user_picture_count) return v;
+    }
     return def;
 }
-static const char *picture_name(int icon) {
-    for (unsigned i = 0; i < ARRAY_LEN(pictures); i++) if (pictures[i].icon == icon) return pictures[i].name;
-    return pictures[0].name;
+static const char *picture_name(int id) {
+    static char b[16];
+    if (id < 0 || id >= user_picture_count) id = 0;
+    snprintf(b, sizeof b, "avatar%d", id + 1);
+    return b;
 }
 void persist_status(char *b, int cap) {
     if (!system_volume) { snprintf(b, cap, "Live session from the CD (in memory; changes are not saved)"); return; }

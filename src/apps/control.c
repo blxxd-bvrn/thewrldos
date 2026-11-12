@@ -680,20 +680,22 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
 static void page_users(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Make changes to your user account", NULL);
-    fill_round_rect(s, ox + 28, oy + 68, 56, 56, 5, HEX(0xA8C4E8)); draw_icon(s, user_picture, 48, ox + 32, oy + 72);
+    draw_text(s, FONT_UI_BOLD, ox + 28, oy + 214, "Picture", BLACK);
+    int per = 12, pitch = 42, sz = 36;
+    for (int i = 0; i < user_picture_count; i++) {
+        int col = i % per, row = i / per;
+        rect_t r = R(ox + 28 + col * pitch, oy + 236 + row * pitch, sz + 4, sz + 4);
+        if (ui_click_area(w, r)) user_picture = i;
+        fill_round_rect(s, r.x, r.y, r.w, r.h, 4, user_picture == i ? HEX(0x3399FF) : HEX(0xD8D8D8));
+        draw_user_picture(s, i, sz, r.x + 2, r.y + 2);
+    }
+    /* the summary is drawn after the grid so a new pick shows in this paint */
+    fill_round_rect(s, ox + 28, oy + 68, 56, 56, 5, HEX(0xA8C4E8)); draw_user_picture(s, user_picture, 48, ox + 32, oy + 72);
     draw_text(s, FONT_LARGE, ox + 100, oy + 72, user_name, BLACK);
     draw_text(s, FONT_UI, ox + 100, oy + 98, "Administrator", W7_TEXT);
     draw_text(s, FONT_UI_BOLD, ox + 28, oy + 150, "Account name", BLACK);
     bool enter = ui_textbox(w, R(ox + 28, oy + 170, 220, 22), c->uname, sizeof c->uname);
     if ((ui_button(w, R(ox + 258, oy + 169, 100, 24), "Change name") || enter) && c->uname[0]) { strlcpy(user_name, c->uname, sizeof user_name); wm_need_redraw = true; }
-    draw_text(s, FONT_UI_BOLD, ox + 28, oy + 214, "Picture", BLACK);
-    static const int pics[] = { ICON_USER_FLOWER, ICON_USER_PLANET, ICON_USER_FISH, ICON_USER_MOUNTAIN };
-    for (int i = 0; i < 4; i++) {
-        rect_t r = R(ox + 28 + i * 70, oy + 236, 56, 56);
-        fill_round_rect(s, r.x, r.y, r.w, r.h, 5, user_picture == pics[i] ? HEX(0x3399FF) : HEX(0xD8D8D8));
-        draw_icon(s, pics[i], 48, r.x + 4, r.y + 4);
-        if (ui_click_area(w, r)) { user_picture = pics[i]; wm_need_redraw = true; }
-    }
 }
 static void page_fonts(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;

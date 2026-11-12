@@ -649,7 +649,6 @@ static const struct { const char *name; int off; } zones[] = {
     { "(GMT+08:00) Beijing, Hong Kong, Singapore, Perth", 480 }, { "(GMT+09:00) Osaka, Seoul, Tokyo", 540 }, { "(GMT+10:00) Brisbane, Melbourne, Sydney", 600 },
     { "(GMT+12:00) Auckland, Wellington", 720 },
 };
-static const int pics[4] = { ICON_USER_FLOWER, ICON_USER_PLANET, ICON_USER_FISH, ICON_USER_MOUNTAIN };
 typedef struct { int page; char name[32], org[48], comp[32]; int tz, tzscroll, pic; char err[96]; bool finish; } oobe_t;
 static oobe_t O;
 static window_t ow;
@@ -752,7 +751,7 @@ static void oobe_paint(window_t *w) {
         for (int i = 0; i < 4; i++) {
             int x = bx + 436 + (i % 2) * 64, y = by + 14 + (i / 2) * 64;
             if (O.pic == i) fill_round_rect(s, x - 4, y - 4, 60, 60, 5, T.select);
-            draw_icon(s, pics[i], 48, x + 2, y + 2);
+            draw_user_picture(s, i, 48, x + 2, y + 2);
             if (ui_click_area(w, R(x - 4, y - 4, 60, 60))) O.pic = i;
         }
         draw_text(s, FONT_UI, bx, by + 236, "Hue:", BLACK);
@@ -844,7 +843,7 @@ void setup_oobe(void) {
     /* finalize */
     strlcpy(user_name, O.name, sizeof user_name);
     strlcpy(computer_name, O.comp, sizeof computer_name);
-    user_picture = pics[O.pic];
+    user_picture = O.pic;
     settings_set("organization", O.org);
     static const char *tasks[] = { "Installing Start menu items...", "Registering components...", "Saving settings...", "Removing any temporary files used..." };
     canvas_t *c = &screen;
