@@ -158,6 +158,7 @@ void shell_show_shutdown(void);
 void shell_logoff(void);
 void shell_power_action(void *restart);   /* NULL = shut down, non-NULL = restart */
 extern int wallpaper_id;
+extern int wallpaper_fit;                    /* 0 crop, 1 scale, 2 stretch */
 extern uint32_t desktop_color;
 extern char user_name[32];
 extern char computer_name[32];

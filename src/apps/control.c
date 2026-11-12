@@ -313,8 +313,18 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         if (ch) { theme_set_tone(c->sat, c->light); wm_redraw_all(); }
         y += 64;
     }
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK); y += 22;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK);
     static canvas_t *thumbs[12];
+    static const char *fit_names[] = { "Crop", "Scale", "Stretch" };
+    draw_text(s, FONT_UI, ox + 200, y + 1, "Fit:", HEX(0x505050));
+    for (int i = 0; i < 3; i++)
+        if (ui_radio(w, ox + 232 + i * 82, y - 1, fit_names[i], wallpaper_fit == i) && wallpaper_fit != i) {
+            wallpaper_fit = i;
+            for (int k = 0; k < 12; k++) if (thumbs[k]) { canvas_free(thumbs[k]); thumbs[k] = NULL; }
+            shell_wallpaper_changed();
+            wm_need_redraw = true;
+        }
+    y += 22;
     int wper = 6, wpages = (wallpaper_count + wper - 1) / wper;
     if (wpages > 1) {
         if (ui_link(w, ox + 110, y + 88, FONT_UI, "Next page", W7_LINK)) c->wall_page = (c->wall_page + 1) % wpages;

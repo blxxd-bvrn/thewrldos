@@ -8,6 +8,7 @@
 #include "usb.h"
 
 int wallpaper_id = 0;
+int wallpaper_fit = 0;                        /* 0 crop, 1 scale, 2 stretch */
 uint32_t desktop_color = HEX(0x3A6EA5);
 char user_name[32] = "User";
 char computer_name[32] = "WRLD-PC";
@@ -54,33 +55,46 @@ static uint32_t wall_mix(uint32_t a, uint32_t b, int w)
     int br = (b >> 16) & 255, bg = (b >> 8) & 255, bb = b & 255;
     return RGB(ar + (((br - ar) * w) >> 8), ag + (((bg - ag) * w) >> 8), ab + (((bb - ab) * w) >> 8));
 }
-/* cover the destination, bilinear from the source; the photo is cropped to the
- * screen's shape rather than stretched */
-static void wall_scale(canvas_t *dst, canvas_t *src)
+/* fit 0: crop to the screen's shape, 1: scale the whole image inside it with
+ * bars, 2: stretch it to both edges; all three sample bilinearly */
+static void wall_scale(canvas_t *dst, canvas_t *src, int fit)
 {
     int W = dst->w, H = dst->h, sw = src->w, sh = src->h;
     if (W <= 0 || H <= 0 || sw < 2 || sh < 2) { gfx_clear(dst, HEX(0x202020)); return; }
-    int cw, ch, ox, oy;
-    if ((int64_t)sw * H > (int64_t)sh * W) { ch = sh; cw = (int)((int64_t)sh * W / H); ox = (sw - cw) / 2; oy = 0; }
-    else { cw = sw; ch = (int)((int64_t)sw * H / W); ox = 0; oy = (sh - ch) / 2; }
-    for (int y = 0; y < H; y++) {
-        uint32_t fy = (uint32_t)(((uint64_t)y * ch << 8) / H);
-        int sy = oy + (fy >> 8), wy = fy & 255;
-        if (sy >= sh - 1) { sy = sh - 2; wy = 255; }
+    int sx0 = 0, sy0 = 0, cw = sw, ch = sh, dx = 0, dy = 0, dw = W, dh = H;
+    if (fit == 1) {                                      /* scale: fit inside */
+        gfx_clear(dst, BLACK);
+        if ((int64_t)sw * H > (int64_t)sh * W) { dw = W; dh = (int)((int64_t)sh * W / sw); }
+        else { dh = H; dw = (int)((int64_t)sw * H / sh); }
+        if (dw < 1) dw = 1;
+        if (dh < 1) dh = 1;
+        dx = (W - dw) / 2; dy = (H - dh) / 2;
+    } else if (fit != 2) {                               /* crop: cover the screen */
+        if ((int64_t)sw * H > (int64_t)sh * W) { ch = sh; cw = (int)((int64_t)sh * W / H); sx0 = (sw - cw) / 2; }
+        else { cw = sw; ch = (int)((int64_t)sw * H / W); sy0 = (sh - ch) / 2; }
+        if (cw < 2) cw = 2;
+        if (ch < 2) ch = 2;
+    }
+    for (int y = 0; y < dh; y++) {
+        uint32_t fy = (uint32_t)(((uint64_t)y * ch << 8) / dh);
+        int ry = (int)(fy >> 8), wy = fy & 255;
+        if (ry >= ch - 1) { ry = ch - 2; wy = 255; }
+        int sy = sy0 + ry;
         const uint32_t *r0 = src->px + sy * src->stride;
         const uint32_t *r1 = r0 + src->stride;
-        for (int x = 0; x < W; x++) {
-            uint32_t fx = (uint32_t)(((uint64_t)x * cw << 8) / W);
-            int sx = ox + (fx >> 8), wx = fx & 255;
-            if (sx >= sw - 1) { sx = sw - 2; wx = 255; }
+        for (int x = 0; x < dw; x++) {
+            uint32_t fx = (uint32_t)(((uint64_t)x * cw << 8) / dw);
+            int rx = (int)(fx >> 8), wx = fx & 255;
+            if (rx >= cw - 1) { rx = cw - 2; wx = 255; }
+            int sx = sx0 + rx;
             uint32_t top = wall_mix(r0[sx], r0[sx + 1], wx);
             uint32_t bot = wall_mix(r1[sx], r1[sx + 1], wx);
-            dst->px[y * dst->stride + x] = wall_mix(top, bot, wy);
+            dst->px[(dy + y) * dst->stride + dx + x] = wall_mix(top, bot, wy);
         }
     }
 }
 static canvas_t *wall_src; static int wall_src_id = -1;
-static canvas_t *wall_out; static int wall_out_id = -1;
+static canvas_t *wall_out; static int wall_out_id = -1, wall_out_fit = -1;
 static canvas_t *wall_source(int id)
 {
     if (wall_src && wall_src_id == id) return wall_src;
@@ -95,28 +109,28 @@ static canvas_t *wall_source(int id)
 }
 void wallpaper_render(canvas_t *c, int id) {
     if (id < 0 || id >= wallpaper_count - 1) { gfx_clear(c, desktop_color); return; }
-    if (wall_out && wall_out_id == id && wall_out->w == c->w && wall_out->h == c->h) {
+    if (wall_out && wall_out_id == id && wall_out_fit == wallpaper_fit && wall_out->w == c->w && wall_out->h == c->h) {
         memcpy(c->px, wall_out->px, (size_t)c->w * c->h * 4);
         return;
     }
     canvas_t *src = wall_source(id);
     if (!src) { gfx_clear(c, desktop_color); return; }
-    wall_scale(c, src);
+    wall_scale(c, src, wallpaper_fit);
     /* remember this size: the theme thumbnails re-render the same 120x80 view
      * on every frame */
     if (!wall_out || wall_out->w != c->w || wall_out->h != c->h) {
         if (wall_out) canvas_free(wall_out);
         wall_out = canvas_new(c->w, c->h);
     }
-    if (wall_out) { memcpy(wall_out->px, c->px, (size_t)c->w * c->h * 4); wall_out_id = id; }
+    if (wall_out) { memcpy(wall_out->px, c->px, (size_t)c->w * c->h * 4); wall_out_id = id; wall_out_fit = wallpaper_fit; }
 }
 void shell_wallpaper_changed(void) {
-    static int last_id = -1, last_w, last_h; static uint32_t last_col;
+    static int last_id = -1, last_w, last_h, last_fit = -1; static uint32_t last_col;
     if (wallpaper && (wallpaper->w != SCREEN_W || wallpaper->h != SCREEN_H)) { canvas_free(wallpaper); wallpaper = NULL; last_id = -1; }
     if (!wallpaper) wallpaper = canvas_new(SCREEN_W, SCREEN_H);
-    if (last_id == wallpaper_id && last_w == SCREEN_W && last_h == SCREEN_H && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color)) return;
+    if (last_id == wallpaper_id && last_fit == wallpaper_fit && last_w == SCREEN_W && last_h == SCREEN_H && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color)) return;
     wallpaper_render(wallpaper, wallpaper_id);
-    last_id = wallpaper_id; last_col = desktop_color; last_w = SCREEN_W; last_h = SCREEN_H;
+    last_id = wallpaper_id; last_col = desktop_color; last_fit = wallpaper_fit; last_w = SCREEN_W; last_h = SCREEN_H;
     wm_need_redraw = true;
 }
 

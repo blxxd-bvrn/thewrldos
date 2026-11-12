@@ -212,6 +212,7 @@ void settings_load(void) {
         theme_sat = CLAMP(geti("saturation", 0), -100, 100); theme_light = CLAMP(geti("lightness", 0), -60, 60);
         if (id >= 0 && id < THEME_COUNT) theme_apply(id, geti("hue", 0));
     }
+    wallpaper_fit = CLAMP(geti("wallpaper_fit", wallpaper_fit), 0, 2);
     if (settings_get("wallpaper")) { wallpaper_id = geti("wallpaper", wallpaper_id); if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count) wallpaper_id = 0; shell_wallpaper_changed(); }
     klog("settings: loaded %d values", nkv);
 }
@@ -225,6 +226,7 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", theme_sat); settings_set("saturation", b);
     snprintf(b, sizeof b, "%d", theme_light); settings_set("lightness", b);
     snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);
+    snprintf(b, sizeof b, "%d", wallpaper_fit); settings_set("wallpaper_fit", b);
     snprintf(b, sizeof b, "%d", tz_offset_minutes); settings_set("tz", b);
     snprintf(b, sizeof b, "%d", mouse_speed); settings_set("mouse_speed", b);
     snprintf(b, sizeof b, "%d", clock_24h); settings_set("clock24", b);
