@@ -9,6 +9,7 @@
  * zero-length packet). */
 #ifdef __x86_64__
 #include "usb.h"
+#include "devmgr.h"
 
 #define UHCI_CMD    0x00
 #define UHCI_STS    0x02
@@ -302,6 +303,9 @@ static int uhci_init(uhci_t *u, const pci_dev_t *pd)
     return 0;
 }
 
+static bool uhci_match(const pci_dev_t *p) { return (p->vendor == 0x8086 && p->device == 0x7020) || (p->cls == 0x0C && p->sub == 0x03 && p->prog == 0x00); }
+DRIVER_PCI(drv_uhci, "usbuhci", "USB 1.1 UHCI host controllers", DC_USBCTL, uhci_match);
+
 void uhci_probe(void)
 {
     pci_dev_t *devs = NULL;
@@ -317,6 +321,7 @@ void uhci_probe(void)
         if (!the_uhci) the_uhci = u;                    /* keep the first one for the log */
         found++;
         klog("usb: UHCI at I/O %04x", u->io);
+        { char nm[64]; snprintf(nm, sizeof nm, "USB 1.1 UHCI host controller (%d ports)", (int)u->hcd.ports); dev_claim(pd, &drv_uhci, nm); }
         usb_attach(&u->hcd);
     }
     if (!found) klog("usb: no UHCI controller found");

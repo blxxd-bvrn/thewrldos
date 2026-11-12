@@ -8,6 +8,7 @@
  * callers get errors at once instead of waiting on every command. */
 #include "kernel.h"
 #include "disk.h"
+#include "devmgr.h"
 
 #define HBA_CAP 0x00
 #define HBA_GHC 0x04
@@ -218,6 +219,8 @@ static void port_init(volatile uint8_t *abar, int i) {
     blk_commit(d);
 }
 
+static bool ahci_match(const pci_dev_t *p) { return p->cls == 0x01 && p->sub == 0x06 && p->prog == 0x01; }
+DRIVER_PCI(drv_ahci, "storahci", "SATA AHCI controllers", DC_STORAGE, ahci_match);
 static void hba_init(pci_dev_t *pd) {
     uintptr_t base = pci_bar(pd, 5, NULL);
     if (!base) { klog("ahci: %02x:%02x.%d has no usable ABAR", pd->bus, pd->dev, pd->fn); return; }
@@ -245,11 +248,12 @@ static void hba_init(pci_dev_t *pd) {
     sleep_ms(100);
     wr(abar, HBA_IS, 0xFFFFFFFF);
     klog("ahci: controller %04x:%04x at %x, %d ports (implemented %x)", pd->vendor, pd->device, (uint32_t)base, (cap & 0x1F) + 1, pi);
+    { char nm[64]; snprintf(nm, sizeof nm, "Standard SATA AHCI controller (%d ports)", (int)(cap & 0x1F) + 1); dev_claim(pd, &drv_ahci, nm); }
     for (int i = 0; i < 32; i++) if (pi & (1u << i)) port_init(abar, i);
 }
 
 void ahci_probe(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++)
-        if (devs[i].cls == 0x01 && devs[i].sub == 0x06 && devs[i].prog == 0x01) hba_init(&devs[i]);
+        if (ahci_match(&devs[i])) hba_init(&devs[i]);
 }

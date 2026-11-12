@@ -2,6 +2,7 @@
  * expansion ($var, ${..}, $(..), `..`, $((..)), ~, globs), pipelines, redirection,
  * if/while/until/for/case, functions, and a large set of builtins. */
 #include "kernel.h"
+#include "devmgr.h"
 #include "jsapi.h"
 #include "wm.h"
 #include "apps.h"
@@ -1432,6 +1433,59 @@ static int b_lspci(sh_t *s, int argc, char **argv, io_t *io) {
     for (int i = 0; i < n; i++) out_f(io, "%02x:%02x.%x     %04x:%04x      %s (%s)\n", d[i].bus, d[i].dev, d[i].fn, d[i].vendor, d[i].device, pci_class_name(d[i].cls, d[i].sub), pci_vendor_name(d[i].vendor));
     return 0;
 }
+/* devices: every device found, with the driver that runs it */
+static int b_devices(sh_t *s, int argc, char **argv, io_t *io) {
+    bool problems = argc > 1 && (!strcmp(argv[1], "-p") || !strcmp(argv[1], "--problems"));
+    bool ids = argc > 1 && (!strcmp(argv[1], "-i") || !strcmp(argv[1], "--ids"));
+    devmgr_scan();
+    for (int cls = 0; cls < DC_COUNT; cls++) {
+        bool head = false;
+        for (int i = 0; i < devmgr_count(); i++) {
+            device_t *d = devmgr_get(i);
+            if (d->cls != cls) continue;
+            if (problems && d->status != DS_NO_DRIVER && d->status != DS_FAILED) continue;
+            if (!head) { out_f(io, "\x1b[93m%s\x1b[0m\n", devclass_name(cls)); head = true; }
+            const char *st = d->status == DS_WORKING ? "\x1b[92mworking\x1b[0m    " : d->status == DS_BUILTIN ? "built in   " :
+                             d->status == DS_NOT_STARTED ? "not in use " : d->status == DS_FAILED ? "\x1b[91mnot started\x1b[0m" : "\x1b[91mno driver\x1b[0m  ";
+            out_f(io, "  %s  %-10s %s\n", st, d->drv ? d->drv->name : "-", d->name);
+            if (ids || problems) out_f(io, "               %s%s%s\n", d->hwid, d->location[0] ? "  at " : "", d->location);
+            if (problems) out_f(io, "               %s\n", d->detail);
+        }
+    }
+    char sum[128]; devmgr_summary(sum, sizeof sum);
+    out_f(io, "%s.\n", sum);
+    return devmgr_problem_count() ? 1 : 0;
+}
+/* driverquery: every driver built into the kernel, and how many devices each one runs */
+static int b_driverquery(sh_t *s, int argc, char **argv, io_t *io) {
+    const driver_t *const *drv; int n = devmgr_drivers(&drv);
+    devmgr_scan();
+    out_s(io, "DRIVER      BUS      IN USE  DESCRIPTION\n");
+    int used = 0;
+    for (int cls = 0; cls < DC_COUNT; cls++)
+        for (int k = 0; k < n; k++) {
+            if (drv[k]->cls != cls) continue;
+            int c = 0;
+            for (int i = 0; i < devmgr_count(); i++) { device_t *d = devmgr_get(i); if (d->drv == drv[k] && d->status == DS_WORKING) c++; }
+            if (c) used++;
+            char cnt[12]; if (c) snprintf(cnt, sizeof cnt, "%d", c); else strcpy(cnt, "-");
+            out_f(io, "%-11s %-8s %-7s %s\n", drv[k]->name, drv[k]->bus, cnt, drv[k]->desc);
+        }
+    out_f(io, "%d drivers are built into %s; %d are running a device on this computer.\n", n, OS_NAME, used);
+    return 0;
+}
+static int b_lsusb(sh_t *s, int argc, char **argv, io_t *io) {
+    int n = 0;
+    devmgr_scan();
+    for (int i = 0; i < devmgr_count(); i++) {
+        device_t *d = devmgr_get(i);
+        if (strncmp(d->hwid, "USB\\", 4)) continue;
+        out_f(io, "%s  %-10s %s  (%s)\n", d->hwid + 4, d->drv ? d->drv->name : "no driver", d->name, d->location);
+        n++;
+    }
+    if (!n) out_s(io, ARCH_BITS == 64 ? "No USB devices are connected.\n" : "USB needs the 64-bit edition.\n");
+    return 0;
+}
 static int b_return(sh_t *s, int argc, char **argv, io_t *io) { s->ret = true; return argc > 1 ? atoi(argv[1]) : s->status; }
 static int b_break(sh_t *s, int argc, char **argv, io_t *io) { s->brk = argc > 1 ? atoi(argv[1]) : 1; return 0; }
 static int b_continue(sh_t *s, int argc, char **argv, io_t *io) { s->cont = 1; return 0; }
@@ -1475,7 +1529,8 @@ static const builtin_t builtins[] = {
     { "tree", b_tree, "directory tree" }, { "find", b_find, "find files (-name PAT)" }, { "hexdump", b_hexdump, "hex dump a file" }, { "xxd", b_hexdump, NULL },
     { "mount", b_mount, "mount a .dmg / list drives" }, { "hdiutil", b_hdiutil, "disk image utility" }, { "open", b_open, "open with default app" }, { "start", b_open, NULL },
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
-    { "lspci", b_lspci, "list PCI devices" }, { "lsblk", b_lsblk, "list disks and partitions" }, { "return", b_return, NULL }, { "break", b_break, NULL }, { "continue", b_continue, NULL },
+    { "lspci", b_lspci, "list PCI devices" }, { "devices", b_devices, "devices and their drivers (-p problems, -i IDs)" }, { "lsdev", b_devices, NULL },
+    { "driverquery", b_driverquery, "list the built-in drivers" }, { "lsusb", b_lsusb, "list USB devices" }, { "lsblk", b_lsblk, "list disks and partitions" }, { "return", b_return, NULL }, { "break", b_break, NULL }, { "continue", b_continue, NULL },
     { "shift", b_shift, NULL }, { "cpuinfo", b_cpuinfo, NULL }, { "xargs", b_xargs, "build commands from input" },
 };
 static const builtin_t *find_builtin(const char *name) { for (unsigned i = 0; i < ARRAY_LEN(builtins); i++) if (!strcmp(builtins[i].name, name)) return &builtins[i]; return NULL; }

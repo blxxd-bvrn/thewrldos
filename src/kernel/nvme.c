@@ -3,6 +3,7 @@
  * polled, one command in flight, data through a 64 KiB bounce buffer. */
 #include "kernel.h"
 #include "disk.h"
+#include "devmgr.h"
 
 #define QD 16                              /* entries per queue */
 
@@ -104,6 +105,8 @@ static int admin(nvme_ctrl_t *c, uint8_t op, uint32_t nsid, uint32_t dw10, uint3
 }
 
 static int nctrl;
+static bool nvme_match(const pci_dev_t *p) { return p->cls == 0x01 && p->sub == 0x08 && p->prog == 0x02; }
+DRIVER_PCI(drv_nvme, "stornvme", "NVM Express (NVMe) controllers", DC_STORAGE, nvme_match);
 static void ctrl_init(pci_dev_t *pd) {
     uintptr_t base = pci_bar(pd, 0, NULL);
     if (!base) { klog("nvme: %02x:%02x.%d: BAR0 unusable", pd->bus, pd->dev, pd->fn); return; }
@@ -148,6 +151,7 @@ static void ctrl_init(pci_dev_t *pd) {
     if (admin(c, 0x05, 0, 1 | ((QD - 1) << 16), 1, c->iocq) ||
         admin(c, 0x01, 0, 1 | ((QD - 1) << 16), 1 | (1 << 16), c->iosq)) { klog("nvme%d: creating I/O queues failed", c->index); return; }
     klog("nvme%d: \"%s\" %04x:%04x, %u namespaces, max %u KiB per command", c->index, model, pd->vendor, pd->device, nn, c->max_bytes / 1024);
+    { char nm[72]; snprintf(nm, sizeof nm, "NVMe controller (%s)", model); dev_claim(pd, &drv_nvme, nm); }
     if (nn > 64) nn = 64;
     for (uint32_t nsid = 1; nsid <= nn; nsid++) {
         memset(id, 0, 4096);
@@ -173,5 +177,5 @@ static void ctrl_init(pci_dev_t *pd) {
 void nvme_probe(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++)
-        if (devs[i].cls == 0x01 && devs[i].sub == 0x08 && devs[i].prog == 0x02) ctrl_init(&devs[i]);
+        if (nvme_match(&devs[i])) ctrl_init(&devs[i]);
 }

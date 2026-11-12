@@ -5,6 +5,7 @@
  * device accepts with or without VIRTIO_F_ANY_LAYOUT. */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 #include "virtio.h"
 
 #define F_MAC    (1u << 5)
@@ -77,6 +78,11 @@ static bool vn_link(void) {
     return virtio_cfg16(&vn, 6) & 1;
 }
 
+static bool virtionet_match(const pci_dev_t *p) {
+    return p->vendor == 0x1AF4 && (p->device == 0x1000 || p->device == 0x1041);
+}
+DRIVER_PCI(drv_virtionet, "virtionet", "VirtIO network adapter", DC_NETWORK, virtionet_match);
+
 bool virtionet_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -110,6 +116,7 @@ bool virtionet_probe(nic_ops_t *ops) {
         ops->name = netif.driver; ops->send = vn_send; ops->poll = vn_poll; ops->link_up = vn_link;
         klog("virtio-net: %s transport, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s", vn.modern ? "modern" : "legacy",
              netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5], vn_link() ? "up" : "down");
+        dev_claim(p, &drv_virtionet, netif.driver);
         return true;
     }
     return false;

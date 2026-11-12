@@ -6,6 +6,7 @@
  * firmware configured it. */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 
 #define IDR0      0x00
 #define MAR0      0x08
@@ -97,6 +98,12 @@ static const struct { uint16_t ven, dev; } ids[] = {
     { 0x10FF, 0x8168 }, { 0x1B86, 0x8168 },
 };
 
+static bool rtl8169_match(const pci_dev_t *p) {
+    for (unsigned k = 0; k < ARRAY_LEN(ids); k++) if (p->vendor == ids[k].ven && p->device == ids[k].dev) return true;
+    return false;
+}
+DRIVER_PCI(drv_rtl8169, "rtl8169", "Realtek RTL8111/8168/8169/810x/8125 Ethernet", DC_NETWORK, rtl8169_match);
+
 bool rtl8169_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -154,6 +161,7 @@ bool rtl8169_probe(nic_ops_t *ops) {
         klog("rtl8169: %s (%04x:%04x, XID %03x) at io %04x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s", netif.driver,
              p->vendor, p->device, xid, io, netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5],
              re_link() ? "up" : "down");
+        dev_claim(p, &drv_rtl8169, netif.driver);
         return true;
     }
     return false;

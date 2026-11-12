@@ -5,6 +5,7 @@
  * vmxnet3_defs.h interface that VMware publishes with its Linux driver. */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 
 /* BAR0 (PT) */
 #define PT_IMR     0x000
@@ -155,6 +156,11 @@ static void vx_poll(void) {
 
 static bool vx_link(void) { return cmd(CMD_GET_LINK) & 1; }
 
+static bool vmxnet3_match(const pci_dev_t *p) {
+    return p->vendor == 0x15AD && p->device == 0x07B0;
+}
+DRIVER_PCI(drv_vmxnet3, "vmxnet3", "VMware VMXNET3 Ethernet adapter", DC_NETWORK, vmxnet3_match);
+
 bool vmxnet3_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -215,6 +221,7 @@ bool vmxnet3_probe(nic_ops_t *ops) {
         ops->name = netif.driver; ops->send = vx_send; ops->poll = vx_poll; ops->link_up = vx_link;
         klog("vmxnet3: at %08x/%08x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s", (uint32_t)b0, (uint32_t)b1,
              netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5], vx_link() ? "up" : "down");
+        dev_claim(p, &drv_vmxnet3, netif.driver);
         return true;
     }
     return false;

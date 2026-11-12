@@ -4,6 +4,7 @@
  * through the doorbell handshake, I/O through the request and reply FIFOs. */
 #include "kernel.h"
 #include "disk.h"
+#include "devmgr.h"
 
 #define R_DOORBELL 0x00
 #define R_DIAG 0x08
@@ -126,6 +127,13 @@ static int mpt_exec(scsi_host_t *h, int target, int lun, const uint8_t *cdb, int
 }
 
 static int nhost;
+static const uint16_t mpt_ids[] = { 0x0030, 0x0032, 0x0040, 0x0041, 0x0050, 0x0054, 0x0056, 0x0058, 0x005A, 0x0062 };
+static bool mpt_match(const pci_dev_t *p) {
+    if (p->vendor != 0x1000) return false;
+    for (unsigned k = 0; k < ARRAY_LEN(mpt_ids); k++) if (p->device == mpt_ids[k]) return true;
+    return false;
+}
+DRIVER_PCI(drv_mpt, "mpt", "LSI Logic Fusion-MPT SCSI and SAS adapters", DC_STORAGE, mpt_match);
 static void mpt_init(pci_dev_t *pd) {
     mpt_t *m = kzalloc(sizeof *m);
     bool isio;
@@ -174,14 +182,13 @@ static void mpt_init(pci_dev_t *pd) {
     m->host.max_lun = 7;
     m->host.max_xfer = 65536;
     klog("mpt: LSI %04x \"%s\", %d targets, %s", pd->device, m->host.driver, m->max_devices, m->io ? "I/O ports" : "MMIO");
+    { char nm[72]; snprintf(nm, sizeof nm, "LSI Logic Fusion-MPT adapter (%s)", m->host.driver); dev_claim(pd, &drv_mpt, nm); }
     scsi_scan(&m->host);
 }
 
 void mpt_probe(void) {
-    static const uint16_t ids[] = { 0x0030, 0x0032, 0x0040, 0x0041, 0x0050, 0x0054, 0x0056, 0x0058, 0x005A, 0x0062 };
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
-        if (devs[i].vendor != 0x1000) continue;
-        for (unsigned k = 0; k < ARRAY_LEN(ids); k++) if (devs[i].device == ids[k]) { mpt_init(&devs[i]); break; }
+        if (mpt_match(&devs[i])) mpt_init(&devs[i]);
     }
 }

@@ -3,6 +3,7 @@
  * 8 KB ring buffer; transmit uses the four fixed descriptor registers. */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 
 #define IDR0   0x00
 #define TSD0   0x10
@@ -70,6 +71,12 @@ static const struct { uint16_t ven, dev; } ids[] = {
     { 0x021B, 0x8139 }, { 0x1500, 0x1360 }, { 0x018A, 0x0106 }, { 0x126C, 0x1211 },
 };
 
+static bool rtl8139_match(const pci_dev_t *p) {
+    for (unsigned k = 0; k < ARRAY_LEN(ids); k++) if (p->vendor == ids[k].ven && p->device == ids[k].dev) return true;
+    return false;
+}
+DRIVER_PCI(drv_rtl8139, "rtl8139", "Realtek RTL8139 Fast Ethernet", DC_NETWORK, rtl8139_match);
+
 bool rtl8139_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -102,6 +109,7 @@ bool rtl8139_probe(nic_ops_t *ops) {
         ops->name = netif.driver; ops->send = rt_send; ops->poll = rt_poll; ops->link_up = rt_link;
         klog("rtl8139: at io %04x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s", io,
              netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5], rt_link() ? "up" : "down");
+        dev_claim(p, &drv_rtl8139, netif.driver);
         return true;
     }
     return false;

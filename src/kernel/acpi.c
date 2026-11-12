@@ -114,6 +114,7 @@ static void acpi_enable(void) {
 }
 static void spin_ms(uint32_t ms) { for (uint32_t i = 0; i < ms * 1000; i++) io_wait(); }   /* works with interrupts off */
 
+bool acpi_present(void) { return acpi_ok; }
 bool acpi_poweroff(void) {
     if (acpi_ok && have_s5) {
         acpi_enable();

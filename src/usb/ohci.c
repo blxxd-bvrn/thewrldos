@@ -11,6 +11,7 @@
  * so a USB 1.1 keyboard and mouse work without a companion controller. */
 #ifdef __x86_64__
 #include "usb.h"
+#include "devmgr.h"
 
 #define HC_REVISION     0x00
 #define HC_CONTROL      0x04
@@ -398,6 +399,9 @@ static int ohci_init(ohci_t *o, const pci_dev_t *pd)
     return 0;
 }
 
+static bool ohci_match(const pci_dev_t *p) { return (p->cls == 0x0C && p->sub == 0x03 && p->prog == 0x10); }
+DRIVER_PCI(drv_ohci, "usbohci", "USB 1.1 OHCI host controllers", DC_USBCTL, ohci_match);
+
 void ohci_probe(void)
 {
     pci_dev_t *devs = NULL;
@@ -415,6 +419,7 @@ void ohci_probe(void)
         found++;
         klog("usb: OHCI %04x:%04x at %08lx, %d ports", pd->vendor, pd->device,
              (unsigned long)(uintptr_t)o->mmio, o->ports);
+        { char nm[64]; snprintf(nm, sizeof nm, "USB 1.1 OHCI host controller (%d ports)", (int)o->ports); dev_claim(pd, &drv_ohci, nm); }
         usb_attach(&o->hcd);
     }
     if (!found) klog("usb: no OHCI controller found");

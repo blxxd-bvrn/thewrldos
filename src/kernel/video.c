@@ -6,6 +6,7 @@
  *    updates are reported through the command FIFO.
  * Without a supported adapter the boot framebuffer is used as-is. */
 #include "kernel.h"
+#include "devmgr.h"
 
 /* ---- Bochs / BGA ---- */
 #define DISPI_INDEX 0x01CE
@@ -49,6 +50,14 @@ static int drv;
 static char name[64] = "Standard VESA display (boot framebuffer)";
 static uint32_t lfb, vram = 0, max_w = 0, max_h = 0;
 
+static bool bga_match(const pci_dev_t *p) { return (p->vendor == 0x1234 && p->device == 0x1111) || (p->vendor == 0x80EE && p->device == 0xBEEF); }
+static bool svga_match(const pci_dev_t *p) { return p->vendor == 0x15AD && p->device == 0x0405; }
+DRIVER_PCI(drv_bga, "bga", "Bochs/QEMU and VirtualBox graphics (resolution changes)", DC_DISPLAY, bga_match);
+DRIVER_PCI(drv_vmsvga, "vmsvga", "VMware SVGA II (resolution changes)", DC_DISPLAY, svga_match);
+/* any other display adapter keeps the picture the firmware set up */
+static const driver_t drv_fb = { "vesafb", "Standard display on the firmware's framebuffer (VESA/GOP)", DC_DISPLAY, "PCI", NULL };
+DRIVER_REGISTER(drv_fb);
+
 void video_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n && drv == DRV_NONE; i++) {
@@ -66,6 +75,7 @@ void video_init(void) {
             if (!max_w || max_w > 8192) { max_w = 2560; max_h = 1600; }
             drv = DRV_BGA;
             snprintf(name, sizeof name, p->vendor == 0x80EE ? "VirtualBox Graphics Adapter (BGA %04x)" : "Standard VGA Graphics Adapter (Bochs BGA %04x)", id);
+            dev_claim(p, &drv_bga, name);
         } else if (p->vendor == 0x15AD && p->device == 0x0405) {
             uint32_t bar0 = pci_cfg_read(p->bus, p->dev, p->fn, 0x10);
             if (!(bar0 & 1)) continue;
@@ -85,7 +95,14 @@ void video_init(void) {
              * VESA-mode desktop never sends - a screen that looks frozen. */
             drv = DRV_SVGA;
             snprintf(name, sizeof name, "VMware SVGA II Adapter");
+            dev_claim(p, &drv_vmsvga, name);
         }
+    }
+    if (drv == DRV_NONE) {
+        /* no mode-setting driver: the first display adapter is the one showing the boot framebuffer */
+        const pci_dev_t *boot = NULL;
+        for (int i = 0; i < n; i++) if (devs[i].cls == 0x03 && (!boot || (devs[i].sub == 0 && boot->sub != 0))) boot = &devs[i];
+        if (boot) { char nm[96]; snprintf(nm, sizeof nm, "Standard display adapter (boot framebuffer, %ux%u)", fb_info.width, fb_info.height); dev_claim(boot, &drv_fb, nm); }
     }
     klog("video: %s, max %ux%u, %u MB video memory", name, max_w, max_h, vram >> 20);
 }

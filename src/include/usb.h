@@ -119,6 +119,7 @@ const char *usb_device_summary(void);           /* "kbd@2, mouse@3*, hub@7" */
 const char *usb_live_text(void);                /* per-device interrupt/GET_REPORT counters */
 const char *usb_event_text(void);               /* the last few key/mouse events, with their interface */
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected);
+int usb_undriven(int i, const char **where, uint16_t *vendor, uint16_t *product, uint8_t *cls);   /* devices with no class driver; 0 = no entry i */
 void usb_diag(const char *fmt, ...);            /* last USB failures, shown on the log-on screen */
 const char *usb_diag_text(void);
 extern int usb_unsupported;                    /* USB controllers this kernel has no driver for */

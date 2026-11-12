@@ -5,6 +5,7 @@
  * The card runs in 32-bit mode with software style 2 descriptors. */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 
 /* 32-bit I/O (DWIO) register offsets */
 #define RDP   0x10
@@ -85,6 +86,13 @@ static bool pc_link(void) {
 
 static const uint16_t ids[] = { 0x2000, 0x2001 };
 
+static bool pcnet_match(const pci_dev_t *p) {
+    if (p->vendor != 0x1022) return false;
+    for (unsigned k = 0; k < ARRAY_LEN(ids); k++) if (p->device == ids[k]) return true;
+    return false;
+}
+DRIVER_PCI(drv_pcnet, "pcnet", "AMD PCnet-PCI II / FAST III Ethernet", DC_NETWORK, pcnet_match);
+
 bool pcnet_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -134,6 +142,7 @@ bool pcnet_probe(nic_ops_t *ops) {
         ops->name = netif.driver; ops->send = pc_send; ops->poll = pc_poll; ops->link_up = pc_link;
         klog("pcnet: %s at io %04x, MAC %02x:%02x:%02x:%02x:%02x:%02x", netif.driver, io,
              netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5]);
+        dev_claim(p, &drv_pcnet, netif.driver);
         return true;
     }
     return false;

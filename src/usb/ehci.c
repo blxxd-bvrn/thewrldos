@@ -15,6 +15,7 @@
  * queue element is 32 bytes with a 32-byte-aligned address. */
 #ifdef __x86_64__
 #include "usb.h"
+#include "devmgr.h"
 
 /* capability registers (absolute from the BAR) */
 #define CAPLENGTH   0x00
@@ -438,6 +439,9 @@ static int ehci_init(ehci_t *e, const pci_dev_t *pd)
     return 0;
 }
 
+static bool ehci_match(const pci_dev_t *p) { return (p->cls == 0x0C && p->sub == 0x03 && p->prog == 0x20); }
+DRIVER_PCI(drv_ehci, "usbehci", "USB 2.0 EHCI host controllers", DC_USBCTL, ehci_match);
+
 void ehci_probe(void)
 {
     pci_dev_t *devs = NULL;
@@ -455,6 +459,7 @@ void ehci_probe(void)
         found++;
         klog("usb: EHCI %04x:%04x at %08lx, %d ports", pd->vendor, pd->device,
              (unsigned long)(uintptr_t)e->mmio, e->ports);
+        { char nm[64]; snprintf(nm, sizeof nm, "USB 2.0 EHCI host controller (%d ports)", (int)e->ports); dev_claim(pd, &drv_ehci, nm); }
         usb_attach(&e->hcd);
     }
     if (!found) klog("usb: no EHCI controller found");

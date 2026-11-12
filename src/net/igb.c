@@ -4,6 +4,7 @@
  * descriptors (the format the whole family shares). */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 
 #define CTRL     0x0000
 #define STATUS   0x0008
@@ -108,6 +109,13 @@ static const struct { uint16_t id; const char *name; } ids[] = {
     { 0x0438, "DH89xxCC" }, { 0x043A, "DH89xxCC" }, { 0x043C, "DH89xxCC" }, { 0x0440, "DH89xxCC" },
 };
 
+static bool igb_match(const pci_dev_t *p) {
+    if (p->vendor != 0x8086) return false;
+    for (unsigned k = 0; k < ARRAY_LEN(ids); k++) if (p->device == ids[k].id) return true;
+    return false;
+}
+DRIVER_PCI(drv_igb, "igb", "Intel 82575/82576, I210/I211, I350 Gigabit Ethernet", DC_NETWORK, igb_match);
+
 bool igb_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -179,6 +187,7 @@ bool igb_probe(nic_ops_t *ops) {
         ops->name = netif.driver; ops->send = igb_send; ops->poll = igb_poll; ops->link_up = igb_link;
         klog("igb: %s at %08x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s", netif.driver, (uint32_t)base,
              netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5], igb_link() ? "up" : "down");
+        dev_claim(p, &drv_igb, netif.driver);
         return true;
     }
     return false;

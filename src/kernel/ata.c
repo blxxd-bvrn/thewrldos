@@ -1,6 +1,7 @@
 /* ATA/IDE hard disk driver (bus-master DMA or PIO, polled, LBA28 + LBA48) */
 #include "kernel.h"
 #include "disk.h"
+#include "devmgr.h"
 
 #define ATA_DATA 0
 #define ATA_ERR 1
@@ -40,18 +41,21 @@ static int wait_ready(uint16_t io, uint16_t ctl, bool need_drq) { (void)io; retu
 static uint16_t bmide;                    /* bus master base (primary; secondary is +8) */
 static uint32_t *prdt[2];
 static uint8_t *bounce;                   /* 64 KiB, never crosses a 64 KiB boundary */
+static bool ide_match(const pci_dev_t *p) { return p->cls == 0x01 && p->sub == 0x01; }
+DRIVER_PCI(drv_ide, "atapi", "IDE/ATA controllers (bus-master DMA or PIO)", DC_STORAGE, ide_match);
 static void dma_setup(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
-        if (devs[i].cls != 0x01 || devs[i].sub != 0x01) continue;
+        if (!ide_match(&devs[i])) continue;
         uint32_t bar4 = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x20);
-        if (!(bar4 & 1) || !(bar4 & ~3u)) continue;
+        if (!(bar4 & 1) || !(bar4 & ~3u)) { dev_claim(&devs[i], &drv_ide, "Standard IDE controller (PIO)"); continue; }
         uint32_t cmd = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x04);
         pci_cfg_write(devs[i].bus, devs[i].dev, devs[i].fn, 0x04, (cmd & 0xFFFF) | 0x05);    /* I/O + bus master */
         bmide = bar4 & ~3u;
         for (int c = 0; c < 2; c++) prdt[c] = kmalloc_aligned(16, 16);
         bounce = kmalloc_aligned(65536, 65536);
         klog("ata: bus-master DMA at %x (%04x:%04x)", bmide, devs[i].vendor, devs[i].device);
+        dev_claim(&devs[i], &drv_ide, "Standard dual-channel PCI IDE controller (bus-master DMA)");
         return;
     }
 }

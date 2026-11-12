@@ -16,6 +16,7 @@
  * packets.
  * The output rate is 48 kHz, or 44.1 kHz on cards that cannot do 48. */
 #include "kernel.h"
+#include "devmgr.h"
 #include "audio.h"
 #include "usb.h"
 
@@ -983,6 +984,15 @@ void audio_disable(const char *why) {
     for (int v = 0; v < NVOICE; v++) voices[v].active = false;
     klog("audio: sound switched off: %s", why);
 }
+static bool hda_match(const pci_dev_t *p) { return p->cls == 0x04 && p->sub == 0x03; }
+static bool es1370_match(const pci_dev_t *p) { return p->vendor == 0x1274 && p->device == 0x5000; }
+static bool es1371_match(const pci_dev_t *p) { return (p->vendor == 0x1274 && (p->device == 0x1371 || p->device == 0x5880)) || (p->vendor == 0x1102 && p->device == 0x8938); }
+static bool ac97_match(const pci_dev_t *p) { return p->cls == 0x04 && p->sub == 0x01 && !es1370_match(p) && !es1371_match(p) && (p->vendor == 0x8086 || p->vendor == 0x10DE || p->vendor == 0x1022 || p->vendor == 0x1039); }
+DRIVER_PCI(drv_hda, "hdaudio", "High Definition Audio (Intel, AMD, NVIDIA, VIA, SiS)", DC_SOUND, hda_match);
+DRIVER_PCI(drv_ac97, "ac97", "AC'97 audio (Intel ICH, nVidia, AMD, SiS)", DC_SOUND, ac97_match);
+DRIVER_PCI(drv_es1370, "es1370", "Ensoniq AudioPCI ES1370", DC_SOUND, es1370_match);
+DRIVER_PCI(drv_es1371, "es1371", "Ensoniq/Creative AudioPCI ES1371, ES1373", DC_SOUND, es1371_match);
+
 void audio_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     ring = kmalloc_aligned(NBUF * BUFBYTES, 128);
@@ -997,15 +1007,15 @@ void audio_init(void) {
     for (int pass = 0; pass < 2 && !dev; pass++)
         for (int i = 0; i < n && !dev; i++) {
             pci_dev_t *d = &devs[i];
-            if (d->cls != 0x04 || d->sub != 0x03) continue;
+            if (!hda_match(d)) continue;
             if ((d->bus == 0) != (pass == 0)) continue;
-            if (hda_init(d)) dev = DEV_HDA;
+            if (hda_init(d)) { dev = DEV_HDA; dev_claim(d, &drv_hda, "High Definition Audio controller"); }
         }
     for (int i = 0; i < n && !dev; i++) {
         pci_dev_t *d = &devs[i];
-        if (d->vendor == 0x1274 && d->device == 0x5000) { if (es1370_init(d)) dev = DEV_ES1370; }
-        else if ((d->vendor == 0x1274 && (d->device == 0x1371 || d->device == 0x5880)) || (d->vendor == 0x1102 && d->device == 0x8938)) { if (es1371_init(d)) dev = DEV_ES1371; }
-        else if (d->cls == 0x04 && d->sub == 0x01 && (d->vendor == 0x8086 || d->vendor == 0x10DE || d->vendor == 0x1022 || d->vendor == 0x1039) && ac97_init(d)) dev = DEV_AC97;
+        if (es1370_match(d)) { if (es1370_init(d)) { dev = DEV_ES1370; dev_claim(d, &drv_es1370, "Ensoniq AudioPCI (ES1370)"); } }
+        else if (es1371_match(d)) { if (es1371_init(d)) { dev = DEV_ES1371; dev_claim(d, &drv_es1371, "Creative AudioPCI (ES1371/ES1373)"); } }
+        else if (ac97_match(d) && ac97_init(d)) { dev = DEV_AC97; dev_claim(d, &drv_ac97, "AC'97 audio controller"); }
     }
     if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
     card_found = dev != DEV_NONE;

@@ -4,6 +4,7 @@
  * most Intel-chipset PCs (82574, I217, I218, I219). */
 #include "kernel.h"
 #include "net.h"
+#include "devmgr.h"
 
 #define REG_CTRL   0x0000
 #define REG_STATUS 0x0008
@@ -92,6 +93,14 @@ static const uint16_t ids_pcie[] = { 0x105E, 0x105F, 0x1060, 0x107D, 0x107E, 0x1
     0x15F5, 0x15F9, 0x15FA, 0x15FB, 0x15FC, 0x1A1C, 0x1A1D, 0x1A1E, 0x1A1F, 0x0DC5, 0x0DC6, 0x0DC7, 0x0DC8, 0x550A, 0x550B, 0x550C,
     0x550D, 0x550E, 0x550F, 0x5510, 0x5511, 0x57A0, 0x57A1, 0x57B3, 0x57B4, 0x57B5, 0x57B6, 0x57B7, 0x57B8, 0x57B9, 0x57BA };
 
+static bool e1000_match(const pci_dev_t *p) {
+    if (p->vendor != 0x8086) return false;
+    for (unsigned k = 0; k < ARRAY_LEN(ids_8254x); k++) if (p->device == ids_8254x[k]) return true;
+    for (unsigned k = 0; k < ARRAY_LEN(ids_pcie); k++) if (p->device == ids_pcie[k]) return true;
+    return false;
+}
+DRIVER_PCI(drv_e1000, "e1000", "Intel PRO/1000, 8257x, I217/I218/I219 Gigabit Ethernet", DC_NETWORK, e1000_match);
+
 bool e1000_probe(nic_ops_t *ops) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
@@ -145,6 +154,7 @@ bool e1000_probe(nic_ops_t *ops) {
         ops->name = netif.driver; ops->send = e1000_send; ops->poll = e1000_poll; ops->link_up = e1000_link;
         klog("e1000: %s at %08x, MAC %02x:%02x:%02x:%02x:%02x:%02x, link %s", netif.driver, base,
              netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5], e1000_link() ? "up" : "down");
+        dev_claim(p, &drv_e1000, netif.driver);
         return true;
     }
     return false;

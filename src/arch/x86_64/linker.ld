@@ -9,7 +9,14 @@ SECTIONS
         *(.multiboot2)
         *(.text*)
     }
-    .rodata BLOCK(4K) : ALIGN(4K) { *(.rodata*) }
+    .rodata BLOCK(4K) : ALIGN(4K)
+    {
+        *(.rodata*)
+        . = ALIGN(8);
+        drivers_start = .;          /* the kernel's driver list (devmgr.h) */
+        KEEP(*(drivers))
+        drivers_end = .;
+    }
     .data BLOCK(4K) : ALIGN(4K) { *(.data*) }
     .bss BLOCK(4K) : ALIGN(4K)
     {

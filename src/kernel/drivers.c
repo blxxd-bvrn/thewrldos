@@ -225,7 +225,12 @@ static void kb_byte(uint8_t sc) {
 }
 static void ps2_service(void);
 static void kb_irq(regs_t *r) { (void)r; ps2_service(); }
+/* what the PS/2 probe found, for the device manager: 1 = a keyboard controller,
+ * 2 = a mouse answered, 4 = it has a wheel */
+static bool ps2_ctl_seen;
+int ps2_detected(void);
 void keyboard_init(void) {
+    ps2_ctl_seen = inb(0x64) != 0xFF;              /* a floating bus reads all ones: no controller */
     for (int i = 0; i < 256 && (inb(0x64) & 1); i++) inb(0x60);
     irq_install(1, kb_irq);
 }
@@ -250,6 +255,7 @@ static void mouse_write(uint8_t v) { ps2_wait_write(); outb(0x64, 0xD4); ps2_wai
 static uint8_t mouse_read(void) { ps2_wait_read(); return inb(0x60); }
 
 static volatile bool ps2_ready;              /* both devices initialised */
+static bool ps2_ctl_present, ps2_mouse_ack;
 static uint32_t ms_last;
 void mouse_inject(int dx, int dy, int buttons, int wheel);
 static void mouse_byte(uint8_t b) {
@@ -319,11 +325,13 @@ void mouse_init(int w, int h) {
     mouse_write(0xF2); mouse_read();
     uint8_t id = mouse_read();
     if (id == 3) ms_pkt_size = 4;
-    mouse_write(0xF4); mouse_read();
+    mouse_write(0xF4);
+    ps2_mouse_ack = mouse_read() == 0xFA;          /* a mouse acknowledged "enable reporting" */
     irq_install(12, mouse_irq);
     ps2_ready = true;
     klog("PS/2 mouse initialised (id=%d, %s)", id, ms_pkt_size == 4 ? "wheel" : "3-button");
 }
+int ps2_detected(void) { ps2_ctl_present = ps2_ctl_seen; return (ps2_ctl_present ? 1 : 0) | (ps2_ctl_present && ps2_mouse_ack ? 2 : 0) | (ms_pkt_size == 4 ? 4 : 0); }
 bool mouse_poll(mouse_state_t *st) {
     uint32_t f = irq_save();
     bool c = ms_changed;

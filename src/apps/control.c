@@ -1,5 +1,6 @@
 /* Control Panel (category style): Category / Large icons / Small icons views, breadcrumbs, applets */
 #include "kernel.h"
+#include "devmgr.h"
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
@@ -22,7 +23,7 @@ static const struct { const char *name; int icon; const char *links[3]; const ch
 };
 static const applet_t applets[] = {
     { "system", "System", "View basic information about your computer", ICON_CP_SYSTEM, CAT_SYSTEM },
-    { "devices", "Device Manager", "View hardware detected by the kernel", ICON_CP_DEVICES, CAT_HARDWARE },
+    { "devices", "Device Manager", "See every device and the driver that runs it", ICON_CP_DEVICES, CAT_HARDWARE },
     { "::taskmgr", "Task Manager", "See running programs and performance", ICON_TASKMGR, CAT_SYSTEM },
     { "network", "Network and Sharing Center", "View network status", ICON_CP_NETWORK, CAT_NETWORK },
     { "mouse", "Mouse", "Change mouse settings", ICON_CP_MOUSE, CAT_HARDWARE },
@@ -52,6 +53,7 @@ typedef struct {
     int dbl, speed; bool swap; uint32_t dbl_test_t; bool dbl_open;
     int tz; char keytest[64];
     int prog_sel, prog_scroll;
+    int dev_view, dev_tick; uint32_t dev_closed; char dev_sel[112]; int scroll_max;   /* Device Manager: tab, collapsed classes, selection */
     int wall_page;
     bool anim;
     window_t *win;
@@ -501,22 +503,120 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     if (!system_volume && ui_link(w, ox + 310, y, FONT_UI, "Install " OS_NAME " to a hard disk", W7_LINK)) setup_launch_from_desktop();
     if (ui_link(w, ox + 160, y, FONT_UI, "Kernel log (dmesg)", W7_LINK)) { vfs_write_file("C:\\tmp\\dmesg.log", klog_buffer(), strlen(klog_buffer())); notepad_open("C:\\tmp\\dmesg.log"); }
 }
+/* ---------------- Device Manager ---------------- */
+static int devclass_icon(int cls) {
+    static const int ic[DC_COUNT] = { ICON_COMPUTER, ICON_CP_SYSTEM, ICON_CP_DISPLAY, ICON_DRIVE, ICON_DRIVE, ICON_CP_NETWORK, ICON_CP_SOUND,
+                                      ICON_CP_DEVICES, ICON_CP_DEVICES, ICON_CP_KEYBOARD, ICON_CP_MOUSE, ICON_CP_DEVICES, ICON_CP_HARDWARE, ICON_QUESTION };
+    return cls >= 0 && cls < DC_COUNT ? ic[cls] : ICON_CP_DEVICES;
+}
+static void dev_key(const device_t *d, char *out, int cap) { snprintf(out, cap, "%s|%s", d->hwid, d->location); }
+static const char *dev_status_text(const device_t *d) {
+    switch (d->status) {
+    case DS_WORKING: return "Working";
+    case DS_BUILTIN: return "Built in (no driver needed)";
+    case DS_NOT_STARTED: return "Driver available, device not in use";
+    case DS_FAILED: return "The driver could not start this device";
+    default: return "No driver";
+    }
+}
+/* a 9x9 expand/collapse box, as in a tree view */
+static void tree_box(canvas_t *s, int x, int y, bool open) {
+    fill_rect(s, x, y, 9, 9, WHITE); draw_rect(s, x, y, 9, 9, HEX(0x808080));
+    hline(s, x + 2, y + 4, 5, BLACK);
+    if (!open) vline(s, x + 4, y + 2, 5, BLACK);
+}
 static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Device Manager", "Hardware enumerated from PCI configuration space and the kernel's built-in drivers.");
-    pci_dev_t d[32]; int n = pci_scan(d, 32);
-    int y = oy + 80 - c->scroll;
-    draw_icon(s, ICON_COMPUTER, 16, ox + 20, y); draw_text(s, FONT_UI_BOLD, ox + 40, y + 1, computer_name, BLACK); y += 22;
-    const struct { const char *g; int icon; } builtin[] = { { "Keyboards: Standard PS/2 Keyboard (IRQ 1)", ICON_CP_KEYBOARD }, { "Mice: PS/2 IntelliMouse-compatible (IRQ 12)", ICON_CP_MOUSE },
-        { "System timer: Intel 8253/8254 PIT @ 1000 Hz (IRQ 0)", ICON_CP_DATETIME }, { "System CMOS/real time clock", ICON_CP_CLOCK }, { "Ports: Communications Port (COM1)", ICON_CP_DEVICES }, { "Sound: PC speaker", ICON_CP_SOUND } };
-    for (unsigned i = 0; i < ARRAY_LEN(builtin); i++) { draw_icon(s, builtin[i].icon, 16, ox + 40, y); draw_text(s, FONT_UI, ox + 62, y + 1, builtin[i].g, BLACK); y += 20; }
-    y += 6;
-    for (int i = 0; i < n; i++) {
-        char b[160];
-        snprintf(b, sizeof b, "%s - %s [%04x:%04x] at %02x:%02x.%x", pci_class_name(d[i].cls, d[i].sub), pci_vendor_name(d[i].vendor), d[i].vendor, d[i].device, d[i].bus, d[i].dev, d[i].fn);
-        int ic = d[i].cls == 3 ? ICON_CP_DISPLAY : d[i].cls == 2 ? ICON_CP_NETWORK : d[i].cls == 1 ? ICON_DRIVE : d[i].cls == 4 ? ICON_CP_SOUND : ICON_CP_DEVICES;
-        draw_icon(s, ic, 16, ox + 40, y); draw_text(s, FONT_UI, ox + 62, y + 1, b, BLACK); y += 20;
+    char sum[160]; devmgr_summary(sum, sizeof sum);
+    heading(s, ox + 20, oy + 16, "Device Manager", sum);
+    int y = oy + 70;
+    if (ui_button(w, R(ox + 20, y, 180, 24), "Scan for hardware changes")) { devmgr_scan(); w->dirty = true; }
+    if (ui_tab(w, R(ox + 216, y, 130, 24), "Devices by type", c->dev_view == 0)) { c->dev_view = 0; c->scroll = 0; w->dirty = true; }
+    if (ui_tab(w, R(ox + 346, y, 130, 24), "Built-in drivers", c->dev_view == 1)) { c->dev_view = 1; c->scroll = 0; w->dirty = true; }
+    int top = y + 34, panel_h = c->dev_view == 0 ? 118 : 0, bottom = s->h - panel_h - 8;
+    rect_t area = R(ox + 20, top, s->w - ox - 40, bottom - top);
+    fill_rect(s, area.x, area.y, area.w, area.h, WHITE); draw_rect(s, area.x, area.y, area.w, area.h, HEX(0x8E9CB4));
+    rect_t old = canvas_push_clip(s, R(area.x + 1, area.y + 1, area.w - 2, area.h - 2));
+    int n = devmgr_count(), row = 20, ry = area.y + 6 - c->scroll, content = 0;
+    if (c->dev_view == 1) {
+        /* every driver in the kernel, and how many devices it is running */
+        const driver_t *const *drv; int nd = devmgr_drivers(&drv);
+        int cx[4] = { area.x + 10, area.x + 110, area.x + 180, area.x + 250 };
+        static const char *hd[4] = { "Driver", "Bus", "In use", "Description" };
+        for (int k = 0; k < 4; k++) draw_text(s, FONT_UI_BOLD, cx[k], ry, hd[k], HEX(0x1E3287));
+        ry += row; content += row;
+        for (int cls = 0; cls < DC_COUNT; cls++)
+            for (int k = 0; k < nd; k++) {
+                if (drv[k]->cls != cls) continue;
+                int used = 0;
+                for (int i = 0; i < n; i++) { device_t *d = devmgr_get(i); if (d->drv == drv[k] && d->status == DS_WORKING) used++; }
+                char cnt[12]; if (used) snprintf(cnt, sizeof cnt, "%d", used); else strcpy(cnt, "-");
+                uint32_t col = used ? BLACK : HEX(0x707070);
+                draw_icon(s, devclass_icon(cls), 16, cx[0] - 2, ry - 1);
+                draw_text(s, FONT_UI, cx[0] + 18, ry, drv[k]->name, col); draw_text(s, FONT_UI, cx[1] + 18, ry, drv[k]->bus, col);
+                draw_text(s, FONT_UI, cx[2] + 18, ry, cnt, col);
+                draw_text_ellipsis(s, FONT_UI, cx[3] + 18, ry, area.x + area.w - cx[3] - 28, drv[k]->desc, col);
+                ry += row; content += row;
+            }
+        char foot[120]; snprintf(foot, sizeof foot, "%d drivers are built into %s. Greyed drivers have no matching device in this computer.", nd, OS_NAME);
+        ry += 6; draw_text(s, FONT_SMALL, cx[0], ry, foot, W7_TEXT); content += row + 6;
+    } else {
+        draw_icon(s, ICON_COMPUTER, 16, area.x + 8, ry); draw_text(s, FONT_UI_BOLD, area.x + 30, ry + 1, computer_name, BLACK);
+        ry += row; content += row;
+        for (int cls = 0; cls < DC_COUNT; cls++) {
+            int members = 0; bool trouble = false;
+            for (int i = 0; i < n; i++) { device_t *d = devmgr_get(i); if (d->cls == cls) { members++; if (d->status == DS_NO_DRIVER || d->status == DS_FAILED) trouble = true; } }
+            if (!members) continue;
+            bool open = !(c->dev_closed & (1u << cls));
+            rect_t hr = R(area.x + 4, ry - 1, area.w - 8, row);
+            if (ui_click_area(w, hr)) { c->dev_closed ^= 1u << cls; w->dirty = true; }
+            tree_box(s, area.x + 26, ry + 3, open);
+            draw_icon(s, devclass_icon(cls), 16, area.x + 42, ry);
+            draw_text(s, FONT_UI, area.x + 64, ry + 1, devclass_name(cls), BLACK);
+            if (trouble && !open) draw_icon(s, ICON_WARNING, 16, area.x + 68 + text_width(FONT_UI, devclass_name(cls)), ry);
+            ry += row; content += row;
+            if (!open) continue;
+            for (int i = 0; i < n; i++) {
+                device_t *d = devmgr_get(i);
+                if (d->cls != cls) continue;
+                char key[112]; dev_key(d, key, sizeof key);
+                bool sel = !strcmp(key, c->dev_sel);
+                rect_t dr = R(area.x + 60, ry - 1, area.w - 68, row);
+                if (ui_click_area(w, dr)) { strlcpy(c->dev_sel, key, sizeof c->dev_sel); sel = true; w->dirty = true; }
+                int tw = MIN(text_width(FONT_UI, d->name), area.w - 110);
+                if (sel) fill_rect(s, area.x + 84, ry - 1, tw + 8, row - 1, HEX(0x316AC5));
+                int icon = d->status == DS_NO_DRIVER ? ICON_QUESTION : d->status == DS_FAILED ? ICON_WARNING : devclass_icon(cls);
+                draw_icon(s, icon, 16, area.x + 66, ry);
+                uint32_t col = sel ? WHITE : d->status == DS_NOT_STARTED ? HEX(0x707070) : BLACK;
+                draw_text_ellipsis(s, FONT_UI, area.x + 88, ry + 1, area.w - 110, d->name, col);
+                if (d->is_new) draw_text(s, FONT_SMALL, area.x + 96 + tw, ry + 2, "new", HEX(0x1C7A1C));
+                ry += row; content += row;
+            }
+        }
     }
+    s->clip = old;
+    c->scroll_max = MAX(0, content + 12 - area.h);
+    if (c->scroll > c->scroll_max) { c->scroll = c->scroll_max; w->dirty = true; }
+    if (c->scroll_max) {                                   /* a thin position bar */
+        int bh = MAX(24, area.h * area.h / (content + 12)), by = area.y + 2 + (area.h - 4 - bh) * c->scroll / c->scroll_max;
+        fill_rect(s, area.x + area.w - 7, by, 5, bh, HEX(0xB8C4D8));
+    }
+    if (c->dev_view != 0) return;
+    /* the selected device */
+    int py = bottom + 8, px = ox + 20;
+    device_t *d = NULL;
+    for (int i = 0; i < n && !d; i++) { char key[112]; dev_key(devmgr_get(i), key, sizeof key); if (!strcmp(key, c->dev_sel)) d = devmgr_get(i); }
+    if (!d) { draw_text(s, FONT_UI, px, py + 8, "Click a device to see its driver, status and hardware ID.", W7_TEXT); return; }
+    draw_icon(s, d->status == DS_NO_DRIVER ? ICON_QUESTION : d->status == DS_FAILED ? ICON_WARNING : devclass_icon(d->cls), 32, px, py + 2);
+    draw_text_ellipsis(s, FONT_UI_BOLD, px + 42, py, s->w - px - 60, d->name, BLACK);
+    char line[220];
+    uint32_t stcol = d->status == DS_WORKING ? HEX(0x1C7A1C) : (d->status == DS_NO_DRIVER || d->status == DS_FAILED) ? HEX(0xB03020) : W7_TEXT;
+    draw_text(s, FONT_UI, px + 42, py + 18, "Status:", HEX(0x505050)); draw_text(s, FONT_UI, px + 130, py + 18, dev_status_text(d), stcol);
+    if (d->drv) snprintf(line, sizeof line, "%s  -  %s", d->drv->name, d->drv->desc); else strcpy(line, "None");
+    draw_text(s, FONT_UI, px + 42, py + 36, "Driver:", HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, px + 130, py + 36, s->w - px - 150, line, BLACK);
+    draw_text(s, FONT_UI, px + 42, py + 54, "Hardware ID:", HEX(0x505050)); draw_text(s, FONT_UI, px + 130, py + 54, d->hwid, BLACK);
+    if (d->location[0]) { int hx = px + 140 + text_width(FONT_UI, d->hwid); draw_text_ellipsis(s, FONT_UI, hx, py + 54, s->w - hx - 20, d->location, HEX(0x505050)); }
+    draw_text_wrapped(s, FONT_UI, px + 42, py + 74, s->w - px - 70, d->detail, W7_TEXT, 2);
 }
 static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -771,8 +871,16 @@ static void cp_paint(window_t *w) {
     else if (!strcmp(a->id, "ease")) page_ease(w, c, ox, oy);
     s->clip = old;
 }
-static void cp_tick(window_t *w) { cp_t *c = w->data; if (!strcmp(c->page, "datetime") || !strcmp(c->page, "system") || !strcmp(c->page, "network")) w->dirty = true; }
-static void cp_mouse(window_t *w, int type, int x, int y, int b) { cp_t *c = w->data; if (type == ME_WHEEL && !strcmp(c->page, "devices")) { c->scroll = MAX(0, c->scroll + b * 30); w->dirty = true; } }
+static void cp_tick(window_t *w) {
+    cp_t *c = w->data;
+    if (!strcmp(c->page, "datetime") || !strcmp(c->page, "system") || !strcmp(c->page, "network")) w->dirty = true;
+    if (!strcmp(c->page, "devices") && ++c->dev_tick % 2 == 0) {     /* a device plugged in or removed shows up by itself */
+        int before = devmgr_count(); char a[160], b[160]; devmgr_summary(a, sizeof a);
+        devmgr_scan(); devmgr_summary(b, sizeof b);
+        if (before != devmgr_count() || strcmp(a, b)) w->dirty = true;
+    }
+}
+static void cp_mouse(window_t *w, int type, int x, int y, int b) { cp_t *c = w->data; if (type == ME_WHEEL && !strcmp(c->page, "devices")) { c->scroll = CLAMP(c->scroll + b * 40, 0, c->scroll_max); w->dirty = true; } }
 static void cp_menu(window_t *w, int id) { (void)id; w->dirty = true; }
 static void cp_destroy(window_t *w) { kfree(w->data); }
 void control_open(const char *page) {

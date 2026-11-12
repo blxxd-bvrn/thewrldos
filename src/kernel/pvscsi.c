@@ -2,6 +2,7 @@
  * One request ring page and one completion ring page, polled. */
 #include "kernel.h"
 #include "disk.h"
+#include "devmgr.h"
 
 #define REG_COMMAND 0x0
 #define REG_COMMAND_DATA 0x4
@@ -86,6 +87,8 @@ static int pv_exec(scsi_host_t *h, int target, int lun, const uint8_t *cdb, int 
 }
 
 static int nhost;
+static bool pvscsi_match(const pci_dev_t *p) { return p->vendor == 0x15AD && p->device == 0x07C0; }
+DRIVER_PCI(drv_pvscsi, "pvscsi", "VMware Paravirtual SCSI controller", DC_STORAGE, pvscsi_match);
 static void pv_init(pci_dev_t *pd) {
     uintptr_t base = pci_bar(pd, 0, NULL);
     if (!base) { klog("pvscsi: BAR0 unusable"); return; }
@@ -116,11 +119,12 @@ static void pv_init(pci_dev_t *pd) {
     p->host.max_lun = 7;
     p->host.max_xfer = 65536;
     klog("pvscsi: VMware PVSCSI at %x, %u request slots", (uint32_t)base, 1u << p->state->reqNumEntriesLog2);
+    dev_claim(pd, &drv_pvscsi, "VMware PVSCSI controller");
     scsi_scan(&p->host);
 }
 
 void pvscsi_probe(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++)
-        if (devs[i].vendor == 0x15AD && devs[i].device == 0x07C0) pv_init(&devs[i]);
+        if (pvscsi_match(&devs[i])) pv_init(&devs[i]);
 }

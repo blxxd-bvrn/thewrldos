@@ -18,6 +18,7 @@
  * awaited directly. */
 #ifdef __x86_64__
 #include "usb.h"
+#include "devmgr.h"
 
 /* ---------------- register offsets ---------------- */
 #define CAPLENGTH   0x00
@@ -916,6 +917,9 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     return 0;
 }
 
+static bool xhci_match(const pci_dev_t *p) { return (p->cls == 0x0C && p->sub == 0x03 && p->prog == 0x30); }
+DRIVER_PCI(drv_xhci, "usbxhci", "USB 3 xHCI host controllers", DC_USBCTL, xhci_match);
+
 void xhci_probe(void)
 {
     pci_dev_t *devs = NULL;
@@ -939,6 +943,7 @@ void xhci_probe(void)
         klog("usb: xHCI %04x:%04x at %08lx, %d ports (%d connected), %d slots, %d-byte contexts",
              pd->vendor, pd->device, (unsigned long)(uintptr_t)x->mmio, x->max_ports, conn,
              x->max_slots, x->ctx);
+        { char nm[64]; snprintf(nm, sizeof nm, "USB 3 xHCI host controller (%d ports)", (int)x->max_ports); dev_claim(pd, &drv_xhci, nm); }
         usb_attach(&x->hcd);
     }
     if (!found) klog("usb: no xHCI controller found");

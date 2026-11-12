@@ -1,5 +1,6 @@
 /* THE WRLD OS kernel entry point */
 #include "kernel.h"
+#include "devmgr.h"
 #include "bootinfo.h"
 #include "gfx.h"
 #include "theme.h"
@@ -170,5 +171,6 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
         notify_balloon("USB", "This computer's USB controller has no driver yet. A PS/2 keyboard and mouse still work.");
     else if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
+    devmgr_boot_check();                             /* "Found New Hardware" replaces the welcome balloon when there is some */
     wm_run();
 }

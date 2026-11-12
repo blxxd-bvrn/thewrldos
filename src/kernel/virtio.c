@@ -4,6 +4,7 @@
  * devices. One split virtqueue per device, one request at a time, polled. */
 #include "kernel.h"
 #include "disk.h"
+#include "devmgr.h"
 #include "virtio.h"
 
 /* ---- transport ---- */
@@ -144,6 +145,11 @@ bool virtio_transport(pci_dev_t *pd, vdev_t *v) {
     return false;
 }
 
+static bool vblk_match(const pci_dev_t *p) { return p->vendor == 0x1AF4 && (p->device == 0x1001 || p->device == 0x1042); }
+static bool vscsi_match(const pci_dev_t *p) { return p->vendor == 0x1AF4 && (p->device == 0x1004 || p->device == 0x1048); }
+DRIVER_PCI(drv_vblk, "viostor", "VirtIO block device", DC_STORAGE, vblk_match);
+DRIVER_PCI(drv_vscsi, "vioscsi", "VirtIO SCSI controller", DC_STORAGE, vscsi_match);
+
 /* ---- virtio-blk ---- */
 typedef struct { vdev_t v; bool can_flush; uint8_t *hdr, *buf; } vblk_t;
 
@@ -188,6 +194,7 @@ static void vblk_init(pci_dev_t *pd) {
         klog("virtio-blk: %02x:%02x.%d: setup failed", pd->bus, pd->dev, pd->fn); return;
     }
     set_status(&b->v, b->v.modern ? (1 | 2 | 8 | 4) : (1 | 2 | 4));   /* DRIVER_OK */
+    dev_claim(pd, &drv_vblk, b->v.modern ? "VirtIO block device (modern)" : "VirtIO block device (legacy)");
     b->can_flush = got & (1u << 9);
     b->hdr = kmalloc_aligned(64, 64);
     b->buf = kmalloc_aligned(65536, 4096);
@@ -251,6 +258,7 @@ static void vscsi_init(pci_dev_t *pd) {
     s->host.max_lun = MIN(max_lun, 255u);
     s->host.max_xfer = (max_sectors && max_sectors < 128) ? max_sectors * 512 : 65536;
     klog("virtio-scsi: %s transport, targets 0-%d", s->v.modern ? "modern" : "legacy", s->host.max_target);
+    dev_claim(pd, &drv_vscsi, s->v.modern ? "VirtIO SCSI controller (modern)" : "VirtIO SCSI controller (legacy)");
     scsi_scan(&s->host);
 }
 

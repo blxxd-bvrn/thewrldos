@@ -213,6 +213,25 @@ static int get_descriptor(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_
     return h->control(h, addr, low, 0x80, 6, (uint16_t)((type << 8) | index), 0, buf, len);
 }
 
+/* devices that answered but have no class driver here, for the device manager */
+static struct { char where[24]; uint16_t vendor, product; uint8_t cls, sub, proto; bool used; } nodrv[8];
+static void nodrv_clear(const char *where) { for (unsigned i = 0; i < ARRAY_LEN(nodrv); i++) if (nodrv[i].used && !strcmp(nodrv[i].where, where)) nodrv[i].used = false; }
+static void nodrv_set(const char *where, const uint8_t *dev) {
+    nodrv_clear(where);
+    for (unsigned i = 0; i < ARRAY_LEN(nodrv); i++) if (!nodrv[i].used) {
+        nodrv[i].used = true; strlcpy(nodrv[i].where, where, sizeof nodrv[i].where);
+        nodrv[i].vendor = dev[8] | (dev[9] << 8); nodrv[i].product = dev[10] | (dev[11] << 8);
+        nodrv[i].cls = dev[4]; nodrv[i].sub = dev[5]; nodrv[i].proto = dev[6];
+        return;
+    }
+}
+int usb_undriven(int i, const char **where, uint16_t *vendor, uint16_t *product, uint8_t *cls) {
+    if (i < 0 || i >= (int)ARRAY_LEN(nodrv) || !nodrv[i].used) return 0;
+    *where = nodrv[i].where; *vendor = nodrv[i].vendor; *product = nodrv[i].product;
+    cls[0] = nodrv[i].cls; cls[1] = nodrv[i].sub; cls[2] = nodrv[i].proto;
+    return 1;
+}
+
 static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_port, int route,
                           int hub_addr, int hub_port, int speed);
 static void hub_attach(usb_dev_t *hub);
@@ -885,8 +904,9 @@ static void enumerate_one(usb_hcd_t *h, bool low, const char *where, int root_po
          * in the log-on screen's list of last failures. */
         usb_diag("%s: %04x:%04x class %d/%d no driver", where,
                  dev[8] | (dev[9] << 8), dev[10] | (dev[11] << 8), dev[4], dev[5]);
+        nodrv_set(where, dev);
         if (h->del_device) h->del_device(h, addr);
-    }
+    } else nodrv_clear(where);
 }
 
 static usb_hcd_t *hcds[8];
@@ -1004,7 +1024,11 @@ static void usb_rescan(void)
             bool up = h->port_up(h, p);
             bool used = root_in_use(h, p + 1);
             if (up) h->port_down[p] = 0;
-            else h->port_fail[p] = 0;                 /* nothing on it: a new device may come */
+            else {                                    /* nothing on it: a new device may come */
+                h->port_fail[p] = 0;
+                char w[24]; snprintf(w, sizeof w, "%s port %d", h->name, p + 1);
+                nodrv_clear(w);
+            }
             if (used && !up) {
                 if (++h->port_down[p] < 2) continue;      /* one reading may be a glitch */
                 klog("usb: %s port %d: device removed", h->name, p + 1);
@@ -1266,6 +1290,7 @@ const char *usb_device_summary(void) { return ""; }
 const char *usb_live_text(void) { return ""; }
 void usb_input_reset(void) { }
 void usb_note_controller(const pci_dev_t *pd, int ok, int ports, int connected) { (void)pd; (void)ok; (void)ports; (void)connected; }
+int usb_undriven(int i, const char **where, uint16_t *vendor, uint16_t *product, uint8_t *cls) { (void)i; (void)where; (void)vendor; (void)product; (void)cls; return 0; }
 void usb_diag(const char *fmt, ...) { (void)fmt; }
 const char *usb_diag_text(void) { return ""; }
 int usb_unsupported;
