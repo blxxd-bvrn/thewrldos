@@ -224,6 +224,8 @@ void settings_load(void) {
         if (id >= 0 && id < THEME_COUNT) theme_apply(id, geti("hue", 0));
     }
     wallpaper_fit = CLAMP(geti("wallpaper_fit", wallpaper_fit), 0, 2);
+    sidebar_open = geti("sidebar", sidebar_open);
+    sidebar_tiles = geti("side_tiles", sidebar_tiles);
     if (settings_get("wallpaper")) { wallpaper_id = geti("wallpaper", wallpaper_id); if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count) wallpaper_id = 0; shell_wallpaper_changed(); }
     klog("settings: loaded %d values", nkv);
 }
@@ -238,6 +240,8 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", theme_light); settings_set("lightness", b);
     snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);
     snprintf(b, sizeof b, "%d", wallpaper_fit); settings_set("wallpaper_fit", b);
+    snprintf(b, sizeof b, "%d", sidebar_open ? 1 : 0); settings_set("sidebar", b);
+    snprintf(b, sizeof b, "%d", sidebar_tiles); settings_set("side_tiles", b);
     snprintf(b, sizeof b, "%d", tz_offset_minutes); settings_set("tz", b);
     snprintf(b, sizeof b, "%d", mouse_speed); settings_set("mouse_speed", b);
     snprintf(b, sizeof b, "%d", clock_24h); settings_set("clock24", b);

@@ -600,9 +600,14 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Menu bars, popup menus, modal dialogs.
   - Alt+Tab, Alt+F4, Win key, Ctrl+Shift+Esc.
 - **Shell:**
-  - Taskbar with Start button, Quick Launch, task buttons and clock.
+  - Taskbar with Start button, Quick Launch, task buttons, volume and network icons, and clock.
   - Two-column Luna Start menu with an All Programs flyout; Classic cascading Start menu with
     a vertical banner.
+  - Longhorn-style **sidebar** on the right, toggled by the arrow at the end of the taskbar. Its
+    header is the account photo drawn full-bleed with a gradient wipe into the panel, followed by
+    removable tiles: Clock & Date, Apps, Search, Shortcuts, Quick Launch, Usage Meter and Memo.
+    Search covers apps, files under My Documents/Samples/C: and Control Panel pages. The open
+    state and tile set are saved.
   - Tray balloons; desktop icons with context menus.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
 - **Visual styles**, all `.wrldstyle` files in `C:\WRLD\Resources\Themes`:

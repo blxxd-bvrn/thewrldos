@@ -5,6 +5,7 @@
 #include "wm.h"
 #include "apps.h"
 #include "fs.h"
+#include "net.h"
 #include "usb.h"
 
 int wallpaper_id = 0;
@@ -16,6 +17,7 @@ int user_picture = 0;
 int user_picture_count = 71;                  /* the photographs in C:\WRLD\Avatars */
 bool show_clock = true, show_seconds = false, clock_24h = false;
 static canvas_t *wallpaper;
+static int tb_y(void);
 static bool startmenu_open, allprog_open;
 static int sm_hot = -1, ap_hot = -1, tb_hot = -1;
 
@@ -139,7 +141,7 @@ void shell_wallpaper_changed(void) {
  * The 71 photographs in C:\WRLD\Avatars are decoded once into 96x96 cached
  * thumbnails; draw_user_picture() masks one to a circle at the size asked
  * for, so the log-on tile, the Start menu and the account page all use it. */
-#define AVATAR_CACHE 96
+#define AVATAR_CACHE 128
 static canvas_t *avatar_cache[71];
 static void avatar_scale(canvas_t *dst, canvas_t *src)
 {
@@ -192,6 +194,372 @@ void draw_user_picture(canvas_t *c, int id, int size, int x, int y)
         int sx = xx * AVATAR_CACHE / size, sy = yy * AVATAR_CACHE / size;
         put_pixel(c, x + xx, y + yy, a->px[sy * a->stride + sx]);
     }
+}
+
+/* ---------------- Longhorn-style sidebar ----------------
+ * A panel on the right edge of the desktop with removable tiles: clock, app
+ * list, search, shortcuts, quick launch, usage meter and memo. It follows the
+ * active visual style; the toggle arrow lives at the right end of the taskbar. */
+#define SIDE_W 200
+#define SIDE_HDR 62
+#define SIDE_MEMO "C:\\WRLD\\Sidebar memo.txt"
+enum { ST_CLOCK, ST_APPS, ST_SEARCH, ST_SHORTCUTS, ST_QUICK, ST_USAGE, ST_MEMO, ST_N };
+#define TBIT(t) (1 << (t))
+bool sidebar_open = false;
+int sidebar_tiles = TBIT(ST_CLOCK) | TBIT(ST_APPS) | TBIT(ST_SEARCH) | TBIT(ST_QUICK) | TBIT(ST_USAGE);
+static int side_hot = -1;
+static char side_query[48];
+static bool side_search_focus;
+#define SIDE_RESULTS 5
+typedef struct { char label[64], path[192], action[32]; int icon, kind; } side_res_t;
+static side_res_t side_res[SIDE_RESULTS]; static int side_res_n;
+static char side_last_query[48]; static uint32_t side_res_gen;
+static int side_cpu, side_ram;
+static uint32_t side_last_tick, side_last_idle;
+static char side_memo[192]; static uint32_t side_memo_gen = 0xFFFFFFFF;
+
+static const char *side_tile_name[ST_N] = { "Clock & Date", "Apps", "Search", "Shortcuts", "Quick Launch", "Usage Meter", "Memo" };
+static const int side_tile_icon[ST_N] = { ICON_CP_CLOCK, ICON_CP_PROGRAMS, ICON_SEARCH, ICON_FOLDER, ICON_BROWSER, ICON_TASKMGR, ICON_NOTEPAD };
+static const struct { const char *name, *action; int icon; } side_short[] = {
+    { "My Documents", USER_DOCS, ICON_MY_DOCUMENTS },
+    { "My Computer", "::computer", ICON_COMPUTER },
+    { "Control Panel", "::control", ICON_CONTROL_PANEL },
+};
+static const struct { int icon; const char *app; } side_quick[] = {
+    { ICON_BROWSER, "xplorer" }, { ICON_EXPLORER, "explorer" }, { ICON_TERMINAL, "cmd" }, { ICON_NOTEPAD, "notepad" },
+};
+#define SIDE_SHORTCUTS ((int)ARRAY_LEN(side_short))
+#define SIDE_QUICK ((int)ARRAY_LEN(side_quick))
+
+static int side_body_h(int t) {
+    switch (t) {
+    case ST_CLOCK: return 48;
+    case ST_APPS: return 5 * 16;
+    case ST_SEARCH: return 34 + SIDE_RESULTS * 16;
+    case ST_SHORTCUTS: return SIDE_SHORTCUTS * 16;
+    case ST_QUICK: return 30;
+    case ST_USAGE: return 44;
+    default: return 34;
+    }
+}
+static void side_colors(uint32_t *top, uint32_t *bot, uint32_t *text, uint32_t *dim, uint32_t *hdr1, uint32_t *hdr2) {
+    if (T.classic) { *top = *bot = T.face; *text = BLACK; *dim = HEX(0x404040); *hdr1 = T.face_light; *hdr2 = T.face; }
+    else {
+        /* the taskbar's own Luna blue, so the panel belongs to the same
+         * surface rather than reading as a dark slab */
+        *top = T.tb_hi; *bot = T.tb_mid;
+        *text = WHITE; *dim = mix(WHITE, *bot, 70);
+        *hdr1 = lighten(T.sm_head_top, 12); *hdr2 = T.sm_head_bot;
+    }
+}
+static uint32_t side_bg_at(int y, int h) {
+    uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
+    return mix(top, bot, MIN(255, y * 255 / MAX(1, h)));
+}
+/* the welcome picture: full-bleed photo fading into the panel, not cut to the
+ * account-picture rounded box used elsewhere */
+static void draw_avatar_banner(canvas_t *c, int id, int x, int y, int w, int h, uint32_t fade) {
+    canvas_t *a = avatar_thumb(id);
+    if (!a) { fill_rect(c, x, y, w, h, fade); return; }
+    int side = AVATAR_CACHE;
+    int crop = side * h / MAX(1, w);
+    if (crop > side) crop = side;
+    if (crop < 2) crop = 2;
+    int oy = (side - crop) / 2;
+    int fade_from = h * 40 / 100;
+    for (int yy = 0; yy < h; yy++) {
+        uint32_t fy = (uint32_t)(((uint64_t)yy * crop << 8) / h);
+        int ry = (int)(fy >> 8), wy = fy & 255;
+        if (ry >= crop - 1) { ry = crop - 2; wy = 255; }
+        const uint32_t *r0 = a->px + (oy + ry) * a->stride;
+        const uint32_t *r1 = r0 + a->stride;
+        int alpha = yy > fade_from ? MIN(255, (yy - fade_from) * 255 / MAX(1, h - fade_from)) : 0;
+        for (int xx = 0; xx < w; xx++) {
+            uint32_t fx = (uint32_t)(((uint64_t)xx * side << 8) / w);
+            int rx = (int)(fx >> 8), wx = fx & 255;
+            if (rx >= side - 1) { rx = side - 2; wx = 255; }
+            uint32_t col = wall_mix(wall_mix(r0[rx], r0[rx + 1], wx), wall_mix(r1[rx], r1[rx + 1], wx), wy);
+            if (alpha) col = mix(col, fade, alpha);
+            put_pixel(c, x + xx, y + yy, col);
+        }
+    }
+}
+static void side_tile_header(canvas_t *c, int x, int y, int w, int t) {
+    uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
+    if (T.classic) { fill_rect(c, x, y, w, 17, T.face); bevel(c, x, y, w, 17, true); }
+    else { gradient_round_rect(c, x, y, w, 17, 3, h1, h2); blend_rect(c, x + 2, y + 1, w - 4, 1, WHITE, 45); }
+    draw_icon(c, side_tile_icon[t], 12, x + 4, y + 2);
+    draw_text(c, T.classic ? FONT_UI_BOLD : FONT_UI_BOLD, x + 20, y + 2, side_tile_name[t], text);
+    draw_text(c, FONT_UI, x + w - 11, y + 1, "x", side_hot == 10 + t ? text : dim);
+}
+static void side_bar(canvas_t *c, int x, int y, int w, int pct, uint32_t col, const char *label) {
+    uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
+    draw_text(c, FONT_SMALL, x, y, label, dim);
+    int by = y + 12;
+    fill_round_rect(c, x, by, w, 5, 2, mix(bot, BLACK, 60));
+    fill_round_rect(c, x, by, MAX(2, w * pct / 100), 5, 2, col);
+}
+static void side_memo_load(void) {
+    if (side_memo_gen == vfs_generation) return;
+    side_memo_gen = vfs_generation;
+    side_memo[0] = 0;
+    vnode_t *n = vfs_resolve(SIDE_MEMO, NULL);
+    if (n && !n->dir && n->size) {
+        int l = MIN((int)n->size, (int)sizeof side_memo - 1);
+        memcpy(side_memo, n->data, l); side_memo[l] = 0;
+        for (char *p = side_memo; *p; p++) if (*p == '\r' || *p == '\n') { *p = 0; break; }
+    }
+}
+static bool side_match_ci(const char *s, const char *q) {
+    int ql = strlen(q);
+    if (!ql) return false;
+    for (; *s; s++) {
+        int k = 0;
+        while (k < ql && s[k]) {
+            char a = s[k], b = q[k];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+            k++;
+        }
+        if (k == ql) return true;
+    }
+    return false;
+}
+static int side_budget;
+static void side_add_result(const char *name, const char *path, int icon, int kind, const char *action) {
+    if (side_res_n >= SIDE_RESULTS) return;
+    side_res_t *r = &side_res[side_res_n++];
+    strlcpy(r->label, name, sizeof r->label); strlcpy(r->path, path, sizeof r->path);
+    strlcpy(r->action, action, sizeof r->action); r->icon = icon; r->kind = kind;
+}
+static void side_scan(const char *path, int depth) {
+    if (side_res_n >= SIDE_RESULTS || side_budget <= 0 || depth > 3) return;
+    vnode_t *d = vfs_resolve(path, NULL);
+    if (!d || !d->dir) return;
+    for (vnode_t *n = d->child; n && side_res_n < SIDE_RESULTS && side_budget > 0; n = n->next) {
+        side_budget--;
+        if (side_match_ci(n->name, side_query)) {
+            char full[192]; vfs_path(n, full, sizeof full);
+            side_add_result(n->name, full, file_icon(n), 1, "");
+        }
+        if (n->dir && depth < 3) {
+            char full[192]; vfs_path(n, full, sizeof full);
+            side_scan(full, depth + 1);
+        }
+    }
+}
+static void side_search_run(void) {
+    if (!strcmp(side_query, side_last_query) && side_res_gen == vfs_generation) return;
+    strlcpy(side_last_query, side_query, sizeof side_last_query);
+    side_res_gen = vfs_generation;
+    side_res_n = 0;
+    if (!side_query[0]) return;
+    for (int i = 0; i < app_count && side_res_n < SIDE_RESULTS; i++)
+        if (side_match_ci(app_table[i].title, side_query)) side_add_result(app_table[i].title, "", app_table[i].icon, 0, app_table[i].id);
+    static const struct { const char *name, *page; int icon; } settings[] = {
+        { "Sound settings", "sound", ICON_CP_SOUND }, { "Network settings", "network", ICON_CP_NETWORK },
+        { "Display settings", "display", ICON_CP_DISPLAY }, { "Mouse settings", "mouse", ICON_CP_MOUSE },
+        { "Keyboard settings", "keyboard", ICON_CP_KEYBOARD }, { "Date and Time", "datetime", ICON_CP_DATETIME },
+        { "User Accounts", "users", ICON_CP_USERS }, { "Programs and Features", "programs", ICON_CP_PROGRAMS },
+        { "System information", "system", ICON_CP_SYSTEM }, { "Taskbar and Start Menu", "taskbar", ICON_CP_TASKBAR },
+    };
+    for (unsigned i = 0; i < ARRAY_LEN(settings) && side_res_n < SIDE_RESULTS; i++)
+        if (side_match_ci(settings[i].name, side_query)) side_add_result(settings[i].name, "", settings[i].icon, 2, settings[i].page);
+    side_budget = 600;
+    side_scan(USER_DOCS, 0);
+    side_scan("C:\\Samples", 2);
+    side_scan("C:\\", 2);
+}
+static void side_run_result(int i) {
+    if (i < 0 || i >= side_res_n) return;
+    side_res_t *r = &side_res[i];
+    if (r->kind == 0) app_launch(r->action, NULL);
+    else if (r->kind == 1) shell_open(r->path, NULL);
+    else if (r->kind == 2) control_open(r->action);
+    side_search_focus = false;
+}
+static void side_shortcut(int i) {
+    if (i == 0) shell_open(USER_DOCS, NULL);
+    else if (i == 1) explorer_open("::computer");
+    else if (i == 2) app_launch("control", NULL);
+}
+static void side_quick_launch(int i) {
+    if (i < 0 || i >= SIDE_QUICK) return;
+    app_launch(side_quick[i].app, NULL);
+}
+static void side_add_cb(void *ctx, int id) {
+    (void)ctx;
+    if (id >= 1 && id <= ST_N) {
+        for (int t = 0, n = 1; t < ST_N; t++) {
+            if (sidebar_tiles & TBIT(t)) continue;
+            if (n == id) { sidebar_tiles |= TBIT(t); wm_need_redraw = true; return; }
+            n++;
+        }
+    }
+}
+static void side_open_add(int x, int y, int missing) {
+    menu_item_t m[ST_N];
+    int n = 0;
+    for (int t = 0; t < ST_N; t++) if (!(sidebar_tiles & TBIT(t))) { m[n].label = side_tile_name[t]; m[n].id = n + 1; m[n].flags = 0; n++; }
+    if (!n) return;
+    int h = n * 18;
+    popup_menu(x, MAX(0, y - h), m, n, side_add_cb, NULL);
+}
+static void side_click(int h) {
+    if (h == 1) control_open("users");
+    else if (h >= 10 && h < 10 + ST_N) sidebar_tiles &= ~TBIT(h - 10);
+    else if (h == 400) side_search_focus = true;
+    else if (h >= 401 && h <= 401 + SIDE_RESULTS) side_run_result(h - 401);
+    else if (h >= 100 && h < 100 + 5) { if (h - 100 < app_count) app_launch(app_table[h - 100].id, NULL); }
+    else if (h >= 200 && h < 200 + SIDE_SHORTCUTS) side_shortcut(h - 200);
+    else if (h >= 300 && h < 300 + SIDE_QUICK) side_quick_launch(h - 300);
+    else if (h == 500) notepad_open(SIDE_MEMO);
+    else if (h == 600) side_open_add(SCREEN_W - SIDE_W + 8, tb_y() - 30, 0);
+    else side_search_focus = false;
+    wm_need_redraw = true;
+}
+static void paint_sidebar(canvas_t *c) {
+    if (!sidebar_open) return;
+    side_search_run();
+    int x = SCREEN_W - SIDE_W, h = tb_y();
+    uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
+    if (T.classic) {
+        fill_rect(c, x, 0, SIDE_W, h, T.face);
+        vline(c, x, 0, h, T.face_dark); vline(c, x + 1, 0, h, WHITE);
+    } else {
+        gradient_v3(c, x, 0, SIDE_W, h, top, top, bot, h * 3 / 4);
+        vline(c, x, 0, h, T.sm_accent); blend_rect(c, x + 1, 0, 1, h, WHITE, 45);
+        blend_rect(c, x, 0, SIDE_W, 30, WHITE, 18);
+    }
+    int ix = x + 6, iw = SIDE_W - 12, by = 6;
+    draw_avatar_banner(c, user_picture, ix, by, iw, SIDE_HDR, side_bg_at(by + SIDE_HDR, h));
+    draw_rect(c, ix, by, iw, SIDE_HDR, T.classic ? T.face_dark : mix(T.sm_accent, BLACK, 40));
+    if (!T.classic) { hline(c, ix, by + SIDE_HDR - 1, iw, T.sm_accent); blend_rect(c, ix, by + SIDE_HDR, iw, 1, WHITE, 50); }
+    if (side_hot == 1 && !T.classic) fill_round_rect_blend(c, ix, by, iw, SIDE_HDR, 3, WHITE, 20);
+    draw_text(c, FONT_SMALL, ix + 6, by + SIDE_HDR - 31, "welcome", mix(WHITE, T.sm_accent, 80));
+    draw_text_ellipsis(c, FONT_LARGE_BOLD, ix + 6, by + SIDE_HDR - 20, iw - 12, user_name, WHITE);
+    by += SIDE_HDR + 8;
+    for (int t = 0; t < ST_N; t++) {
+        if (!(sidebar_tiles & TBIT(t))) continue;
+        int bh = side_body_h(t);
+        side_tile_header(c, ix, by, iw, t);
+        int bx = ix, bw = iw, yy = by + 18;
+        if (T.classic) { fill_rect(c, bx, yy, bw, bh, T.face); bevel(c, bx, yy, bw, bh, false); }
+        else fill_round_rect_blend(c, bx, yy, bw, bh, 3, WHITE, 28);
+        if (t == ST_CLOCK) {
+            rtc_time_t now; rtc_now(&now);
+            int cx = bx + 24, cy = yy + bh / 2, r = 19;
+            fill_circle(c, cx, cy, r, HEX(0xF4F4EC)); draw_circle(c, cx, cy, r, mix(bot, BLACK, 80));
+            for (int k = 0; k < 12; k++) {
+                int a = k * 1024 / 12;
+                int px = cx + isin(a) * (r - 3) / 256, py = cy - isin(a + 256) * (r - 3) / 256;
+                put_pixel(c, px, py, HEX(0x404040));
+            }
+            int ha = (now.hour % 12) * 1024 / 12 + now.minute * 1024 / 720;
+            int ma = now.minute * 1024 / 60 + now.second * 1024 / 3600;
+            draw_thick_line(c, cx, cy, cx + isin(ha) * (r - 9) / 256, cy - isin(ha + 256) * (r - 9) / 256, 2, BLACK);
+            draw_thick_line(c, cx, cy, cx + isin(ma) * (r - 6) / 256, cy - isin(ma + 256) * (r - 6) / 256, 1, HEX(0x203060));
+            char tb[32], db[40];
+            if (clock_24h) snprintf(tb, sizeof tb, "%02d:%02d", now.hour, now.minute);
+            else { int hh = now.hour % 12; if (!hh) hh = 12; snprintf(tb, sizeof tb, "%d:%02d %s", hh, now.minute, now.hour >= 12 ? "PM" : "AM"); }
+            snprintf(db, sizeof db, "%02d/%02d/%04d", now.month, now.day, now.year);
+            draw_text(c, FONT_LARGE, bx + 50, yy + 7, tb, text);
+            draw_text(c, FONT_SMALL, bx + 50, yy + 27, db, dim);
+            if (now.second & 1) put_pixel(c, cx, cy, HEX(0xC03030));
+        } else if (t == ST_APPS) {
+            int n = MIN(app_count, 5);
+            for (int i = 0; i < n; i++) {
+                int ry = yy + i * 16;
+                if (side_hot == 100 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.classic ? T.select : mix(WHITE, bot, 180));
+                draw_icon(c, app_table[i].icon, 16, bx + 5, ry);
+                draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, app_table[i].title, text);
+            }
+        } else if (t == ST_SEARCH) {
+            int fw = bw - 8, fy = yy + 3;
+            fill_round_rect(c, bx + 4, fy, fw, 20, 3, T.classic ? WHITE : mix(bot, BLACK, 50));
+            draw_rect(c, bx + 4, fy, fw, 20, side_search_focus ? T.sm_accent : (T.classic ? T.face_dark : mix(bot, WHITE, 80)));
+            draw_text_ellipsis(c, FONT_UI, bx + 9, fy + 3, fw - 12, side_query[0] ? side_query : "Search everything...", side_query[0] ? text : dim);
+            for (int i = 0; i < SIDE_RESULTS; i++) {
+                int ry = yy + 27 + i * 16;
+                if (side_query[0]) {
+                    if (i < side_res_n) {
+                        if (side_hot == 401 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.classic ? T.select : mix(WHITE, bot, 180));
+                        draw_icon(c, side_res[i].icon, 16, bx + 5, ry);
+                        draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, side_res[i].label, text);
+                    }
+                } else if (i == 0) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Apps, files and settings", dim);
+            }
+            if (side_query[0] && !side_res_n) draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 27, bw - 10, "No matches", dim);
+        } else if (t == ST_SHORTCUTS) {
+            for (int i = 0; i < SIDE_SHORTCUTS; i++) {
+                int ry = yy + i * 16;
+                if (side_hot == 200 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.classic ? T.select : mix(WHITE, bot, 180));
+                draw_icon(c, side_short[i].icon, 16, bx + 5, ry);
+                draw_text(c, FONT_UI, bx + 25, ry + 1, side_short[i].name, text);
+            }
+        } else if (t == ST_QUICK) {
+            for (int i = 0; i < SIDE_QUICK; i++) {
+                int qx = bx + 6 + i * 26, qy = yy + 4;
+                if (side_hot == 300 + i) fill_round_rect(c, qx - 2, qy - 2, 24, 24, 3, T.classic ? T.select : mix(WHITE, bot, 170));
+                draw_icon(c, side_quick[i].icon, 16, qx + 2, qy + 2);
+            }
+        } else if (t == ST_USAGE) {
+            side_bar(c, bx + 6, yy + 4, bw - 12, side_cpu, HEX(0x60D060), "CPU");
+            char b[24]; snprintf(b, sizeof b, "CPU %d%%", side_cpu); draw_text(c, FONT_SMALL, bx + bw - 52, yy + 2, b, dim);
+            side_bar(c, bx + 6, yy + 23, bw - 12, side_ram, HEX(0x5090E0), "RAM");
+            snprintf(b, sizeof b, "%d%%", side_ram); draw_text(c, FONT_SMALL, bx + bw - 30, yy + 21, b, dim);
+        } else if (t == ST_MEMO) {
+            side_memo_load();
+            draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 4, bw - 12, side_memo[0] ? side_memo : "Click to write a note", side_memo[0] ? text : dim);
+            draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 18, bw - 12, side_memo[0] ? "Open memo" : "", dim);
+        }
+        by += 18 + bh + 4;
+    }
+    /* add tile */
+    if (by + 20 <= h - 2) {
+        int hovered = side_hot == 600;
+        if (hovered && !T.classic) fill_round_rect_blend(c, ix, by, iw, 18, 3, WHITE, 30);
+        draw_text(c, FONT_UI, ix + 8, by + 2, "+ Add tile", hovered ? text : dim);
+    }
+}
+static int side_hit(int x, int y) {
+    if (!sidebar_open || x < SCREEN_W - SIDE_W || y >= tb_y()) return -1;
+    side_search_run();
+    int ix = SCREEN_W - SIDE_W + 6, iw = SIDE_W - 12, by = 6;
+    if (y >= by && y < by + SIDE_HDR) return 1;
+    by += SIDE_HDR + 8;
+    for (int t = 0; t < ST_N; t++) {
+        if (!(sidebar_tiles & TBIT(t))) continue;
+        int bh = side_body_h(t);
+        if (y >= by && y < by + 18) return x >= ix + iw - 14 ? 10 + t : 11 + t;
+        if (y >= by + 18 && y < by + 18 + bh) {
+            int ry = y - (by + 18);
+            if (t == ST_APPS && ry < 5 * 16) return 100 + ry / 16;
+            if (t == ST_SEARCH) {
+                if (ry < 24) return 400;
+                int row = (ry - 27) / 16;
+                if (side_query[0] && row >= 0 && row < side_res_n) return 401 + row;
+                return 400;
+            }
+            if (t == ST_SHORTCUTS && ry < SIDE_SHORTCUTS * 16) return 200 + ry / 16;
+            if (t == ST_QUICK && ry >= 2 && ry < 28) { int c = (x - (ix + 6)) / 26; if (c >= 0 && c < SIDE_QUICK) return 300 + c; }
+            if (t == ST_MEMO) return 500;
+        }
+        by += 18 + bh + 4;
+    }
+    if (y >= by && y < by + 18 && x >= ix && x < ix + iw) return 600;
+    return -1;
+}
+static void side_sample(void) {
+    uint32_t now = timer_ticks(), idle = idle_ticks;
+    if (now == side_last_tick) return;
+    if (now - side_last_tick < 500) return;
+    uint32_t dt = now - side_last_tick, di = idle - side_last_idle;
+    if (side_last_tick) side_cpu = CLAMP(dt ? 100 - (int)(di * 100 / dt) : 0, 0, 100);
+    side_last_tick = now; side_last_idle = idle;
+    side_ram = mm_total() ? (int)((uint64_t)mm_used() * 100 / mm_total()) : 0;
+    if (sidebar_open && (sidebar_tiles & TBIT(ST_USAGE))) wm_need_redraw = true;
 }
 
 /* ---------------- desktop icons ---------------- */
@@ -265,6 +633,7 @@ void desktop_paint(canvas_t *c) {
     if (wallpaper) memcpy(c->px, wallpaper->px, SCREEN_W * SCREEN_H * 4);
     else gfx_clear(c, desktop_color);
     paint_dicons(c);
+    paint_sidebar(c);
 }
 static void dicon_open(int i) {
     dicon_t *d = &dicons[i];
@@ -319,7 +688,7 @@ void desktop_mouse(int type, int x, int y, int btn) {
 #define START_W_LUNA 99
 #define START_W_CLASSIC 56
 static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? T.taskbar_h + 8 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
-static int tray_w(void) { return show_clock ? (show_seconds ? 110 : 90) : 34; }
+static int tray_w(void) { return 20 + 56 + (show_clock ? (show_seconds ? 110 : 90) : 0); }
 static int tb_y(void) { return SCREEN_H - T.taskbar_h; }
 static int ql_x(void) { return start_w() + (T.classic ? 6 : 8); }
 #define QL_N 4
@@ -478,10 +847,25 @@ void taskbar_paint(canvas_t *c) {
         vline(c, tx, y + 1, h - 1, T.tray_border); vline(c, tx + 1, y + 1, h - 1, lighten(T.tray_hi, 80));
     }
     draw_icon(c, ICON_CP_SOUND, 16, tx + 8, y + (h - 16) / 2);
+    {   /* network tray: a monitor icon with a link/address status dot */
+        int nx = tx + 32;
+        draw_icon(c, ICON_CP_NETWORK, 16, nx, y + (h - 16) / 2);
+        bool up = netif.link && netif.configured;
+        uint32_t dot = !netif.present ? HEX(0x808080) : netif.link ? (up ? HEX(0x30C030) : HEX(0xE0B030)) : HEX(0xD03030);
+        fill_circle(c, nx + 13, y + (h - 16) / 2 + 13, 2, dot);
+    }
     if (show_clock) {
         char b[32]; fmt_clock(b, sizeof b);
         int cw = text_width(FONT_UI, b);
-        draw_text(c, FONT_UI, SCREEN_W - cw - (T.classic ? 10 : 12), y + (h - font_height(FONT_UI)) / 2, b, T.tray_text);
+        draw_text(c, FONT_UI, SCREEN_W - 20 - cw - (T.classic ? 8 : 10), y + (h - font_height(FONT_UI)) / 2, b, T.tray_text);
+    }
+    {   /* sidebar toggle: an up arrow when closed, down when open */
+        int bx = SCREEN_W - 20;
+        if (tb_hot == 4000) {
+            if (T.classic) bevel(c, bx + 2, y + 4, 16, h - 8, false);
+            else fill_round_rect_blend(c, bx + 1, y + 3, 17, h - 6, 3, WHITE, 45);
+        }
+        draw_arrow(c, bx + 9, y + h / 2 - 2, sidebar_open ? 1 : 0, T.tray_text);
     }
 }
 
@@ -796,6 +1180,7 @@ static int sm_hit(int x, int y) {
 }
 static int tb_hit(int x, int y) {
     if (y < tb_y()) return -1;
+    if (x >= SCREEN_W - 20) return 4000;                 /* sidebar toggle */
     if (x < start_w()) return 1000;
     for (int i = 0; i < QL_N; i++) if (pt_in(R(ql_x() + i * 24, tb_y() + (T.taskbar_h - 22) / 2, 22, 22), x, y)) return 2000 + i;
     window_t *list[32]; int n = task_btns(list, 32);
@@ -847,11 +1232,20 @@ bool shell_mouse(int type, int x, int y, int btn) {
         }
         return true;
     }
+    if (sidebar_open && x >= SCREEN_W - SIDE_W && y < tb_y()) {
+        int sh = side_hit(x, y);
+        if (type == ME_MOVE) { if (sh != side_hot) { side_hot = sh; wm_need_redraw = true; } return true; }
+        if (type == ME_DOWN && (btn & MB_LEFT)) { side_click(sh); return true; }
+        return true;
+    }
+    if (side_hot != -1 && (!sidebar_open || x < SCREEN_W - SIDE_W || y >= tb_y())) { side_hot = -1; wm_need_redraw = true; }
+    if (side_search_focus && type == ME_DOWN) { side_search_focus = false; wm_need_redraw = true; }
     int h = tb_hit(x, y);
     if (type == ME_MOVE) { int nh = h >= 0 ? h : -1; if (nh != tb_hot) { tb_hot = nh; wm_need_redraw = true; } return h != -1; }
     if (h == -1) return false;
     if (type == ME_DOWN && (btn & MB_LEFT)) {
-        if (h == 1000) startmenu_toggle();
+        if (h == 4000) { sidebar_open = !sidebar_open; side_search_focus = false; wm_need_redraw = true; }
+        else if (h == 1000) startmenu_toggle();
         else if (h >= 2000 && h < 3000) {
             const char *a = quicklaunch[h - 2000].app;
             if (!strcmp(a, "showdesktop")) { for (int i = 0; i < wm_window_count(); i++) wm_minimize(wm_window_at(i)); }
@@ -859,13 +1253,17 @@ bool shell_mouse(int type, int x, int y, int btn) {
         } else if (h >= 0 && h < 1000) {
             window_t *list[32]; int n = task_btns(list, 32);
             if (h < n) { window_t *w = list[h]; if (w == wm_active && w->state != WS_MINIMIZED) wm_minimize(w); else wm_focus(w); }
-        } else if (h == 3000 && x < SCREEN_W - tray_w() + 28) control_open("sound");    /* speaker icon */
-        else if (h == 3000) {
-            rtc_time_t t; rtc_now(&t);
-            static const char *days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
-            static const char *mons[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
-            char b[80]; snprintf(b, sizeof b, "%s, %s %d, %d", days[t.weekday], mons[(t.month + 11) % 12], t.day, t.year);
-            notify_balloon("Date", b);
+        } else if (h == 3000) {
+            int tx = SCREEN_W - tray_w();
+            if (x < tx + 28) control_open("sound");
+            else if (x < tx + 56) control_open("network");
+            else {
+                rtc_time_t t; rtc_now(&t);
+                static const char *days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
+                static const char *mons[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
+                char b[80]; snprintf(b, sizeof b, "%s, %s %d, %d", days[t.weekday], mons[(t.month + 11) % 12], t.day, t.year);
+                notify_balloon("Date", b);
+            }
         }
         return true;
     }
@@ -883,6 +1281,21 @@ bool shell_mouse(int type, int x, int y, int btn) {
 }
 bool shell_key(key_event_t *e) {
     if (!e->pressed) return false;
+    if (sidebar_open && side_search_focus) {
+        if (e->key == KEY_ESC) { side_search_focus = false; wm_need_redraw = true; return true; }
+        if (e->key == KEY_BACKSPACE) { int l = strlen(side_query); if (l) side_query[l - 1] = 0; wm_need_redraw = true; return true; }
+        if (e->key == KEY_ENTER) {
+            side_search_run();
+            if (side_res_n) side_run_result(0);
+            wm_need_redraw = true; return true;
+        }
+        if (e->ch >= 32 && e->ch < 127) {
+            int l = strlen(side_query);
+            if (l < (int)sizeof side_query - 1) { side_query[l] = e->ch; side_query[l + 1] = 0; wm_need_redraw = true; }
+            return true;
+        }
+        return true;
+    }
     if (e->key == KEY_WIN || (e->key == KEY_ESC && (e->mods & MOD_CTRL))) { startmenu_toggle(); return true; }
     if (startmenu_open) {
         if (e->key == KEY_ESC) { startmenu_open = false; allprog_open = false; wm_need_redraw = true; }
@@ -896,6 +1309,7 @@ bool shell_key(key_event_t *e) {
 }
 static char last_clock[32];
 void shell_tick(void) {
+    side_sample();
     char b[32]; fmt_clock(b, sizeof b);
     { extern uint32_t gui_composes; static uint32_t lastc, lastt;
       uint32_t now = timer_ticks();
