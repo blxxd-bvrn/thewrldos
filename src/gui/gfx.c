@@ -53,6 +53,7 @@ bool gfx_set_resolution(int w, int h) {
     if (w == SCREEN_W && h == SCREEN_H) return true;
     if (!video_set_mode(w, h)) return false;
     fb = (uint32_t *)(uintptr_t)fb_info.addr;
+    paging_set_wc(fb_info.addr, fb_info.pitch * fb_info.height);
     kfree(screen.px);
     SCREEN_W = w; SCREEN_H = h;
     canvas_init(&screen, kmalloc(w * h * 4), w, h);
@@ -941,15 +942,32 @@ static const cursor_t cursors[CURSOR_COUNT] = {
 };
 static int cur_x = -100, cur_y = -100, cur_kind;
 
+/* 32-bit pixels go straight to the framebuffer; a 24-bit boot mode (some
+ * firmware picks one) is converted three bytes at a time. */
+static void fb_store(int x, int y, uint32_t col) {
+    if (fb_info.bpp == 24) {
+        uint8_t *p = (uint8_t *)(uintptr_t)fb + (size_t)y * fb_info.pitch + (size_t)x * 3;
+        p[0] = col & 0xFF; p[1] = (col >> 8) & 0xFF; p[2] = (col >> 16) & 0xFF;
+    } else fb[(size_t)y * (fb_info.pitch / 4) + x] = col;
+}
 static void fb_copy_rect(int x, int y, int w, int h) {
     rect_t r = rect_intersect(R(x, y, w, h), R(0, 0, SCREEN_W, SCREEN_H));
-    uint32_t pitch = fb_info.pitch / 4;
-    for (int j = 0; j < r.h; j++) memcpy(fb + (r.y + j) * pitch + r.x, screen.px + (r.y + j) * SCREEN_W + r.x, r.w * 4);
+    if (fb_info.bpp == 24) {
+        for (int j = 0; j < r.h; j++) {
+            const uint32_t *src = screen.px + (r.y + j) * SCREEN_W + r.x;
+            uint8_t *dst = (uint8_t *)(uintptr_t)fb + (size_t)(r.y + j) * fb_info.pitch + (size_t)r.x * 3;
+            for (int i = 0; i < r.w; i++) {
+                dst[i * 3] = src[i] & 0xFF; dst[i * 3 + 1] = (src[i] >> 8) & 0xFF; dst[i * 3 + 2] = (src[i] >> 16) & 0xFF;
+            }
+        }
+    } else {
+        uint32_t pitch = fb_info.pitch / 4;
+        for (int j = 0; j < r.h; j++) memcpy(fb + (r.y + j) * pitch + r.x, screen.px + (r.y + j) * SCREEN_W + r.x, r.w * 4);
+    }
     video_update(r.x, r.y, r.w, r.h);
 }
 static void fb_draw_cursor(int kind, int mx, int my) {
     const cursor_t *cu = &cursors[kind];
-    uint32_t pitch = fb_info.pitch / 4;
     int ox = mx - cu->hx, oy = my - cu->hy;
     for (int j = 0; j < cu->h; j++)
         for (int i = 0; i < cu->w; i++) {
@@ -958,7 +976,7 @@ static void fb_draw_cursor(int kind, int mx, int my) {
             if (ch == '.' || x < 0 || y < 0 || x >= SCREEN_W || y >= SCREEN_H) continue;
             uint32_t col = ch == 'B' ? 0 : 0xFFFFFF;
             if (kind == CURSOR_IBEAM || kind == CURSOR_CROSS) col = (screen.px[y * SCREEN_W + x] ^ 0xFFFFFF) & 0xFFFFFF;
-            fb[y * pitch + x] = col;
+            fb_store(x, y, col);
         }
     rect_t r = rect_intersect(R(ox, oy, cu->w, cu->h), R(0, 0, SCREEN_W, SCREEN_H));
     video_update(r.x, r.y, r.w, r.h);

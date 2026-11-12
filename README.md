@@ -264,6 +264,12 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     - VMware SVGA II driver (command FIFO) for VMware and VirtualBox VMSVGA.
     - Resolution changes at runtime from Control Panel > Display, with an XP-style "keep these
       settings?" countdown, and are saved in `wrld.ini`.
+    - On real hardware the bootloader asks for the display's preferred 32-bit mode (a
+      1920x1080x32-through-1024x768x32 list, then `auto`) and the kernel marks the framebuffer
+      write-combining, so a real GPU gets a native-resolution, faster surface; a 24-bit boot mode
+      is converted too. A native GPU driver (NVIDIA/AMD/Intel) is not included - those are Linux
+      kernel modules - so the GRUB/UEFI framebuffer remains the device, and the display-engine
+      half of HDMI audio still needs such a driver.
   - **Sound (`audio.c`):**
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
       DAC to the speaker or headphone pins. Every codec on the link and every audio function

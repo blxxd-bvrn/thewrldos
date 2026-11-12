@@ -119,6 +119,9 @@ Already working, and not on the list below:
 - No GPU or 3D, so a real Skia would have to use its software backend. Missing from the raster
   stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
   engine.
+- The display path is the GRUB/UEFI linear framebuffer at the bootloader's best mode, with a
+  write-combining mapping in the kernel; there is no native NVIDIA/AMD/Intel GPU driver, so no
+  hardware acceleration, vsync, mode setting after boot, or display-engine audio.
 - Missing codecs: WebP and SVG; audio/video beyond WAV.
 - Display audio (HDMI/DP) is prepared on the HDA codec side (digital converter,
   channel slots, audio infoframe), but the GPU's display engine must embed the

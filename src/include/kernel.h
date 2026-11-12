@@ -133,6 +133,7 @@ uint32_t *paging_new_dir(void);
 void paging_free_dir(uint32_t *dir);
 #endif
 void paging_set_uncached(uintptr_t addr);
+void paging_set_wc(uintptr_t addr, uint32_t size);
 static inline uint64_t dma_addr(const void *p) { return (uint64_t)(uintptr_t)p; }   /* memory is identity-mapped */
 
 /* ---- tasks (cooperative kernel scheduler) ---- */

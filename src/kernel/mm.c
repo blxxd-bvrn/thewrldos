@@ -124,6 +124,22 @@ void paging_set_uncached(uintptr_t addr) {
     boot_pd[addr >> 21] |= 0x18;
     flush_tlb();
 }
+/* The framebuffer is written far more than it is read: mark its page as
+ * write-combining (PAT entry 1) so full-screen composites leave the CPU in
+ * bursts instead of one uncached store at a time. */
+void paging_set_wc(uintptr_t addr, uint32_t size) {
+    if (addr >= 0x100000000ull) return;
+    uint64_t end = (uint64_t)addr + size;
+    if (end > 0x100000000ull) end = 0x100000000ull;
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x277));
+    uint64_t pat = ((uint64_t)hi << 32) | lo;
+    pat = (pat & ~0xFF00ull) | 0x0100ull;      /* PA1 = write-combining */
+    __asm__ volatile("wrmsr" :: "c"(0x277), "a"((uint32_t)pat), "d"((uint32_t)(pat >> 32)));
+    for (uint64_t a = addr & ~0x1FFFFFull; a < end; a += 0x200000)
+        boot_pd[a >> 21] = (boot_pd[a >> 21] & ~0x18ull) | (1ull << 12);
+    flush_tlb();
+}
 /* Private address spaces for Win32 programs. Each has its own PML4 and PDPT;
  * page directories are shared with the kernel (identity 0..4 GiB) until a 2 MiB
  * page inside one is replaced, then that directory is copied. Tables are
@@ -209,6 +225,8 @@ void paging_set_uncached(uintptr_t addr) {
     page_dir[addr >> 22] |= 0x18;
     uint32_t cr3; __asm__ volatile("mov %%cr3,%0; mov %0,%%cr3" : "=r"(cr3) :: "memory");
 }
+/* write-combining needs the PAT/PAT MSR; the 32-bit build keeps the default */
+void paging_set_wc(uintptr_t addr, uint32_t size) { (void)addr; (void)size; }
 void paging_free_dir(uint32_t *d) { if (d && d != page_dir) kfree_aligned(d); }
 
 static void paging_init(void) {

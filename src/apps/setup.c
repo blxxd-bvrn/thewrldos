@@ -333,7 +333,11 @@ static bool do_install(int disk, int slot, int mode) {
     char cfg[1024];
     snprintf(cfg, sizeof cfg,
         "# THE WRLD OS boot menu - written by Setup\n"
-        "set timeout=4\nset default=0\n\n"
+        "set timeout=4\nset default=0\n"
+        "insmod all_video\n"
+        "if [ \"$grub_platform\" = \"efi\" ]; then insmod efi_gop; fi\n"
+        "set gfxmode=1920x1080x32,1680x1050x32,1600x900x32,1440x900x32,1366x768x32,1280x1024x32,1280x800x32,1024x768x32,auto\n"
+        "set gfxpayload=keep\n\n"
         "menuentry \"" OS_NAME "\" {\n    multiboot2 /boot/wrld.elf root=%08X\n    boot\n}\n"
         "menuentry \"" OS_NAME " (verbose boot)\" {\n    multiboot2 /boot/wrld.elf root=%08X verbose\n    boot\n}\n"
         "menuentry \"" OS_NAME " (safe mode - Classic theme)\" {\n    multiboot2 /boot/wrld.elf root=%08X safe\n    boot\n}\n",
