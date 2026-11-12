@@ -43,7 +43,7 @@ THE INTERNET
     Intel PRO/1000, e1000e, I217/I218/I219, I210/I211/I350 (igb)
     Realtek RTL8111/8168/8169/810x/8125 and RTL8139
     AMD PCnet (VMware "vlance", VirtualBox PCnet), VMware VMXNET3, VirtIO
-  Type lspci to see your card; ipconfig shows the driver in use.
+  Type devices to see your card and its driver; ipconfig shows the address.
 
 INSTALLING TO A HARD DISK
   Double-click "Install THE WRLD OS" on the live desktop, or pick "Install
@@ -85,8 +85,16 @@ RUNNING PROGRAMS
         Script-based .app bundles inside them can be launched; native
         Mach-O binaries are identified but cannot execute.
 
+DEVICES AND DRIVERS
+  Every driver is built in. Control Panel > Hardware and Sound > Device
+  Manager lists each device, its driver and whether it is working; a
+  question mark means THE WRLD OS has no driver for that device.
+  A balloon says "Found New Hardware" when you add or plug in a device.
+
 COMMAND PROMPT TIPS
   ls -l, cd, cat, grep -n, sort, wc -l, find . -name "*.txt", tree
   mount Sample.dmg  /  hdiutil attach X.dmg  /  hdiutil detach D:
   ps, kill PID, free, uptime, dmesg, lspci, cpuinfo, date, uname -a
+  devices (every device and its driver; -p shows only problems),
+  driverquery (the built-in drivers), lsusb
   open FILE (default program), notepad FILE, explorer, control, taskmgr

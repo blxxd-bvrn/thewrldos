@@ -180,7 +180,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
    - **copies the system** and writes the boot loader: GRUB's boot code in the MBR and its core
      image after the MBR (which also keeps the disk BIOS-bootable);
    - restarts.
-2. **First boot from the disk**: a graphical wizard asks for:
+2. **First boot from the disk**: Setup first **installs devices**: it detects the hardware in
+   the computer, matches each device to its built-in driver and shows them one by one, then
+   says how many are ready and how many have no driver. A graphical wizard then asks for:
    - time zone;
    - your name and organisation;
    - computer name;
@@ -571,11 +573,36 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Page source, Save Page, Favorites.
   - Error pages, `file://` folder listings, and downloads saved to `My Documents\Downloads`.
 
+### Devices and drivers (`src/kernel/devmgr.c`, `src/include/devmgr.h`)
+Every driver is part of the kernel, so there is nothing to download or install by hand; the
+device manager's job is to say what the computer has and which driver runs it.
+- **Driver list:** each driver registers itself with `DRIVER_PCI()` or `DRIVER_REGISTER()`
+  (name, description, device class and, for PCI drivers, a function that says whether it
+  would take a device). The linker collects the entries into one table. A driver calls
+  `dev_claim()` once it has a device working.
+- **Detection:** `devmgr_scan()` lists PCI devices, USB devices (including ones with no class
+  driver), disks and the fixed PC devices (PS/2 keyboard and mouse, timer, clock, COM1,
+  speaker, ACPI). Each gets a hardware ID such as `PCI\VEN_8086&DEV_100E`,
+  `USB\VID_046D&PID_C077` or `ACPI\PNP0303`, and one of five states: working; built in (bridges
+  and the like need no driver); driver available but not in use (a second network adapter or
+  sound card); the driver could not start it; no driver.
+- **Device Manager** (Control Panel > Hardware and Sound) shows the devices as a tree by type,
+  with the driver, status, hardware ID and location of the selected one, and a second tab with
+  every built-in driver and how many devices it runs. It updates by itself when a device is
+  plugged in or removed.
+- **Commands:** `devices` (`-p` only problems, `-i` with hardware IDs), `driverquery`, `lsusb`.
+- **Found New Hardware:** the hardware is remembered in
+  `C:\WRLD\System32\config\hardware.ini` (written by Setup's *Installing devices* step). A
+  device that is new since the last start, or plugged in while the system runs, gets a balloon
+  saying whether its driver is ready.
+- To add a driver, write it, describe it with `DRIVER_PCI()` and call `dev_claim()`; it then
+  appears in all of the above without further changes.
+
 ### Setup (`src/apps/setup.c`)
 - **Text mode:** partition editor, NTFS or FAT32 format (quick/full), file copy with progress, GRUB
   install.
-- **First boot:** the graphical wizard. It runs before the log-on screen, using the normal
-  widgets.
+- **First boot:** *Installing devices* (see above), then the graphical wizard. It runs before
+  the log-on screen, using the normal widgets.
 
 ### Desktop (`src/gui`)
 - **Rendering:**

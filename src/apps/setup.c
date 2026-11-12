@@ -4,6 +4,7 @@
  *  2. First boot from the hard disk: a graphical wizard collects the user's
  *     name, computer name, time zone and look, then finishes the installation. */
 #include "kernel.h"
+#include "devmgr.h"
 #include "bootinfo.h"
 #include "gfx.h"
 #include "theme.h"
@@ -800,14 +801,60 @@ static void oobe_run_paint(void) {
     ui_begin(&ow); oobe_paint(&ow); ui_end(&ow);
     ow.ui.pressed = ow.ui.released = ow.ui.rpressed = ow.ui.dblclick = false; ow.ui.wheel = 0;
 }
+/* Installing devices: match every device in this computer to its built-in
+ * driver, show each one as it is done, and remember the result so that only
+ * hardware added later is announced as new. Part of the "Installing" stage,
+ * before the pages that ask about the account and the clock. */
+static void oobe_install_devices(void) {
+    canvas_t *c = &screen;
+    devmgr_scan();
+    int nd = devmgr_count(), ready = 0, nodrv = 0;
+    for (int i = 0; i <= nd; i++) {
+        device_t *d = devmgr_get(i < nd ? i : nd - 1);
+        if (i < nd) { if (d->status == DS_NO_DRIVER || d->status == DS_FAILED) nodrv++; else ready++; }
+        for (int f = 0; f < (i < nd ? 6 : 60); f++) {
+            oobe_compose(3, 60 + i * 10 / MAX(1, nd), "3 minutes", false, (i * 6 + f) * 2);
+            int x = 300, y = 140;
+            draw_text(c, FONT_XL, x, y, "Installing devices", WHITE); y += 50;
+            y += draw_text_wrapped(c, FONT_LARGE, x, y, 600, "Setup is detecting the hardware in this computer and matching each device to its driver. "
+                                   "Every driver is already part of " OS_NAME ", so nothing needs to be downloaded.", HEX(0xE8F0FF), 6) + 26;
+            draw_progress(c, R(x, y, 420, 16), i * 100 / MAX(1, nd)); y += 32;
+            if (d) {
+                char line[160];
+                if (i < nd) {
+                    draw_text_ellipsis(c, FONT_LARGE, x, y, 620, d->name, WHITE); y += 26;
+                    if (d->drv) snprintf(line, sizeof line, "Driver: %s (%s)", d->drv->name, d->drv->desc);
+                    else snprintf(line, sizeof line, "%s", d->status == DS_BUILTIN ? "Built in: no driver needed" : "No driver included for this device");
+                    draw_text_ellipsis(c, FONT_UI, x, y, 620, line, d->status == DS_NO_DRIVER || d->status == DS_FAILED ? HEX(0xFFD08A) : HEX(0xC8D8FF));
+                } else {
+                    snprintf(line, sizeof line, "%d devices are ready to use.", ready);
+                    draw_text(c, FONT_LARGE, x, y, line, WHITE); y += 26;
+                    if (nodrv) {
+                        snprintf(line, sizeof line, "%d %s no driver in %s. Device Manager in Control Panel lists %s.", nodrv, nodrv == 1 ? "device has" : "devices have", OS_NAME, nodrv == 1 ? "it" : "them");
+                        draw_text_wrapped(c, FONT_UI, x, y, 620, line, HEX(0xFFD08A), 4);
+                    }
+                }
+            }
+            draw_text(c, FONT_UI, 22, SCREEN_H - 120, "Installing devices...", WHITE);
+            gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y);
+            task_sleep(25);
+        }
+    }
+    devmgr_save_profile();
+    klog("setup: %d devices installed, %d without a driver", ready, nodrv);
+}
+
 void setup_oobe(void) {
     memset(&O, 0, sizeof O);
     memset(&ow, 0, sizeof ow);
     O.tz = 6;
     for (unsigned i = 0; i < ARRAY_LEN(zones); i++) if (zones[i].off == tz_offset_minutes) O.tz = i;
     obg_render();
-    mouse_state_t ms; key_event_t ke;
-    int prev = 0, frame = 0;
+    oobe_install_devices();
+    mouse_state_t ms = { 0 }; key_event_t ke;
+    while (keyboard_poll(&ke)) {}                     /* nothing typed during that step is meant for the pages */
+    while (mouse_poll(&ms)) { wm_mouse_x = ms.x; wm_mouse_y = ms.y; }
+    int prev = ms.buttons, frame = 0;
     uint32_t next_frame = 0;
     oobe_run_paint();
     while (O.page < 5) {
