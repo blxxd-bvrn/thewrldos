@@ -1,11 +1,11 @@
-/* USB audio, class 1 playback. The audio control interface says the device is
+/* USB audio, class 1 and 2 playback. The audio control interface says the device is
  * an audio device; the streaming interface's alternate setting carries the
  * format (channels, sample size) and an isochronous OUT endpoint. The samples
  * come from the kernel mixer at 48 kHz; this file chops them into one packet
  * per service interval, keeps a few packets queued on the endpoint, and reaps
- * them as the controller reports them sent. Only the format the mixer produces
- * (stereo, 16-bit, 48 kHz or 44.1 kHz) is used; a device that cannot do either
- * is left alone. */
+ * them as the controller reports them sent. A device that offers both classes
+ * uses its class 2 stream. Only the format the mixer produces (stereo, 16-bit,
+ * 48 kHz or 44.1 kHz) is used; a device that cannot do either is left alone. */
 #ifdef __x86_64__
 #include "usb.h"
 #include "audio.h"
@@ -147,7 +147,9 @@ bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len
     ua.ep = ep;
     ua.started = true;
     char name[64];
-    snprintf(name, sizeof name, "USB audio (%s, %d Hz stereo)",
+    /* The mixer treats this as a normal output device; say which USB Audio
+     * class it negotiated, since class 2 is the high-speed path. */
+    snprintf(name, sizeof name, "USB Audio %s (%s, %d Hz stereo)", class2 ? "2.0" : "1.0",
              ua.hi_speed ? "high speed" : "full speed", rate);
     klog("usb-audio: %s at address %d, %d bytes every %s", name, addr, ua.pkt_bytes,
          ua.hi_speed ? "125 us" : "ms");

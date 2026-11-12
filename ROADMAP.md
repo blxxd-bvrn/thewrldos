@@ -120,6 +120,10 @@ Already working, and not on the list below:
   stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
   engine.
 - Missing codecs: WebP and SVG; audio/video beyond WAV.
+- Display audio (HDMI/DP) is prepared on the HDA codec side (digital converter,
+  channel slots, audio infoframe), but the GPU's display engine must embed the
+  stream and pass ELD; the firmware framebuffer path does not enable that, so it
+  needs a GPU display driver.
 
 ### 10. Services a browser engine expects
 

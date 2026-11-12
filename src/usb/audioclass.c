@@ -119,12 +119,14 @@ bool uac_parse(const uint8_t *cfg, int len, uac_fmt_t *o)
         const uint8_t *p = cfg + i;
         if (p[1] != 4 || p[0] < 9 || p[5] != 1) continue;        /* not an audio interface */
         if (p[6] == 1 && o->ac < 0) { o->ac = p[2]; continue; }
-        if (p[6] != 2 || p[4] == 0 || o->stream >= 0) continue;   /* streaming with endpoints */
+        if (p[6] != 2 || p[4] == 0) continue;                     /* streaming with endpoints */
         uac_fmt_t one = *o;
         if (!alt_format(cfg, len, i, &one)) continue;
         one.stream = p[2];
         one.alt = p[3];
-        *o = one;
+        /* Prefer a class 2 stream when the device offers both: it carries
+         * 24-bit/high-speed formats and is the current standard. */
+        if (o->stream < 0 || (one.class2 && !o->class2)) *o = one;
     }
     if (o->ac >= 0 && o->stream < 0) {          /* a stream we could not read: assume the usual */
         for (int i = 0; i + 2 <= len && cfg[i] >= 2 && i + cfg[i] <= len; i += cfg[i]) {

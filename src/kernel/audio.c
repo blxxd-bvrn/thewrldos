@@ -40,7 +40,7 @@ bool audio_muted;
  * USB device, and (on a soft HDA controller) the virtual jacks. */
 #define MAX_EP 10
 #define MAX_PINS 8
-static struct { int nid, devtype; bool digital; } hda_pins[MAX_PINS];
+static struct { int nid, devtype, dac; bool digital; } hda_pins[MAX_PINS];
 static int hda_npins, hda_cad;
 static struct { char name[56]; int kind, pin, devtype; } eps[MAX_EP];
 static int neps, ep_sel;
@@ -210,7 +210,7 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_o
             hda_cmd(cad, nid, VERB(0x707, 0x40 | (devtype == 2 ? 0x80 : 0)));   /* output enable (+ headphone amp) */
             if (pcaps & (1 << 16)) hda_cmd(cad, nid, VERB(0x70C, 2));        /* external amplifier (EAPD) on */
             diag("pin %d (%s%s) -> DAC %d\n", nid, pin_kind(devtype), conn == 1 ? ", reported unconnected" : "", d);
-            if (hda_npins < MAX_PINS) { hda_pins[hda_npins].nid = nid; hda_pins[hda_npins].devtype = devtype; hda_pins[hda_npins].digital = false; hda_npins++; }
+            if (hda_npins < MAX_PINS) { hda_pins[hda_npins].nid = nid; hda_pins[hda_npins].devtype = devtype; hda_pins[hda_npins].dac = d; hda_pins[hda_npins].digital = false; hda_npins++; }
         }
     }
     if (!ndacs)   /* no pin path: use the first analog DAC anyway */
@@ -241,7 +241,7 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_o
             for (int j = 0; j < plen; j++) amp_unmute(cad, path[j], afg_amp);
             hda_cmd(cad, nid, VERB(0x707, 0x40));                /* output enable */
             diag("pin %d (%s) -> digital DAC %d\n", nid, pin_kind(devtype), d);
-            if (hda_npins < MAX_PINS) { hda_pins[hda_npins].nid = nid; hda_pins[hda_npins].devtype = devtype; hda_pins[hda_npins].digital = true; hda_npins++; }
+            if (hda_npins < MAX_PINS) { hda_pins[hda_npins].nid = nid; hda_pins[hda_npins].devtype = devtype; hda_pins[hda_npins].dac = d; hda_pins[hda_npins].digital = true; hda_npins++; }
         }
     if (!ndacs)   /* a display converter with no pin */
         for (int i = 0; i < wcount; i++)
@@ -256,6 +256,49 @@ static int route_out(int cad, int afg, int *dacs, int *pins_out, bool *digital_o
     return ndacs;
 }
 
+/* ---- display audio (HDMI/DP) ----
+ * The codec builds the audio infoframe and sends it over the HDA link; the
+ * GPU's display engine embeds it in the HDMI/DP signal. These are the standard
+ * HDA HDMI verbs Linux uses for the same job (SET_HDMI_DIP_*, SET_DIGI_CONVERT,
+ * SET_CVT_CHAN_COUNT and SET_HDMI_CHAN_SLOT). */
+static void hdmi_infoframe(int cad, int pin, int channels)
+{
+    uint8_t ai[9];
+    ai[0] = 0x84; ai[1] = 0x01; ai[2] = 0x0A; ai[3] = 0;   /* header */
+    ai[4] = (uint8_t)(channels - 1);                        /* CC, CT = 0 */
+    ai[5] = 0x00;                                           /* 48 kHz, 16-bit, LPCM */
+    ai[6] = 0x00;
+    ai[7] = 0x00;                                           /* CA: FL/FR */
+    ai[8] = 0x00;
+    int sum = 0;
+    for (int i = 0; i < 9; i++) sum += ai[i];
+    ai[3] = (uint8_t)(-sum);
+    hda_cmd(cad, pin, VERB(0x730, 0x00));                  /* DIP packet 0, byte 0 */
+    for (int i = 0; i < 9; i++) hda_cmd(cad, pin, VERB(0x731, ai[i]));
+    hda_cmd(cad, pin, VERB(0x732, 0xC0));                  /* transmit, best effort */
+}
+static void hdmi_converter(int cad, int cvt)
+{
+    hda_cmd(cad, cvt, VERB(0x70D, 0x01));                  /* DIG1: digital output enabled */
+    hda_cmd(cad, cvt, VERB(0x72D, 2));                     /* two channels */
+    hda_cmd(cad, cvt, VERB(0x734, 0x00));                  /* converter ch 0 -> slot 0 */
+    hda_cmd(cad, cvt, VERB(0x734, 0x10));                  /* converter ch 1 -> slot 1 */
+}
+static const char *hda_vendor(uint32_t vid) {
+    switch (vid >> 16) {
+    case 0x10ec: return "Realtek";
+    case 0x10de: return "NVIDIA";
+    case 0x8086: return "Intel";
+    case 0x1002: return "AMD";
+    case 0x14f1: return "Conexant";
+    case 0x8384: return "SigmaTel/IDT";
+    case 0x11d4: return "Analog Devices";
+    case 0x1106: return "VIA";
+    case 0x1039: return "SiS";
+    case 0x1af4: return "QEMU";
+    default: return "codec";
+    }
+}
 static bool hda_init(pci_dev_t *p) {
     uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04);
     pci_cfg_write(p->bus, p->dev, p->fn, 0x04, (cmd & 0xFFFF) | 0x06);
@@ -342,6 +385,8 @@ static bool hda_init(pci_dev_t *p) {
         return false;
     }
     diag("using codec %d, function group %d: %d DAC(s), %d pin(s)\n", cad, afg, ndacs, pins);
+    klog("hda: %s %08x codec on %04x:%04x", hda_vendor(vid), vid, p->vendor, p->device);
+    if ((vid >> 16) == 0x10de) klog("hda: NVIDIA display audio codec %08x", vid);
 
     /* output stream 1 -> every DAC used */
     for (int k = 0; k < ndacs; k++) {
@@ -367,6 +412,18 @@ static bool hda_init(pci_dev_t *p) {
     posbuf = kmalloc_aligned(256, 128); memset((void *)posbuf, 0, 256);
     R32(0x74) = 0; R32(0x70) = (uint32_t)(uintptr_t)posbuf | 1;   /* DMA position buffer on */
     R8(sd) |= 2;                                             /* run */
+    if (chosen_digital) {
+        /* the codec owns the audio infoframe; the GPU display engine embeds
+         * it in the HDMI/DP signal when its video path carries audio */
+        for (int k = 0; k < hda_npins; k++) {
+            if (!hda_pins[k].digital) continue;
+            hdmi_converter(cad, hda_pins[k].dac);
+            hdmi_infoframe(cad, hda_pins[k].nid, 2);
+            uint32_t sense = hda_cmd(cad, hda_pins[k].nid, VERB(0xF09, 0));
+            diag("HDMI/DP pin %d: infoframe sent, presence %d, ELD %d\n",
+                 hda_pins[k].nid, !!(sense & (1u << 31)), !!(sense & (1u << 30)));
+        }
+    }
     /* is the DMA engine moving? */
     uint32_t l0 = R32(sd + 0x04), p0 = posbuf[sd_index * 2];
     sleep_ms(40);
@@ -374,7 +431,7 @@ static bool hda_init(pci_dev_t *p) {
     bool moving = l1 != l0 || p1 != p0;
     diag("start: LPIB %x -> %x, position buffer %x -> %x\n", l0, l1, p0, p1);
     diag("output stream %d (registers at 0x%x), DMA %s\n", iss + 1, sd, moving ? "running" : "NOT moving");
-    snprintf(devname, sizeof devname, "%s (%04x:%04x, codec %08x)", chosen_digital ? "HDMI/DP audio" : "High Definition Audio", p->vendor, p->device, vid);
+    snprintf(devname, sizeof devname, "%s (%s, %04x:%04x, codec %08x)", chosen_digital ? "HDMI/DP audio" : "High Definition Audio", hda_vendor(vid), p->vendor, p->device, vid);
     klog("hda: %s, %d DAC(s), %d output pin(s)%s, DMA %s", devname, ndacs, pins, use_immediate ? ", immediate commands" : "", moving ? "running" : "not moving");
     return true;
 }
@@ -799,6 +856,14 @@ static void ep_add(const char *name, int kind, int pin, int devtype)
 }
 /* Rebuild the playback endpoint list whenever the output or the USB device
  * changes: the card's pins, the USB device, and the soft controller's jacks. */
+/* ---- USB audio state (kept above the endpoint helpers) ---- */
+static bool usb_card;
+static int usb_card_rate;
+static char usb_card_name[64];
+static int dev_other;                         /* the card USB audio took over from */
+static int other_rate;
+static char other_name[64];
+
 static void eps_build(void)
 {
     neps = 0;
@@ -815,6 +880,7 @@ static void eps_build(void)
     } else if (dev != DEV_HDA && dev != DEV_NONE) {
         ep_add(devname, EP_CARD, 0, 0);
     }
+    if (usb_card && dev != DEV_USB && usb_card_name[0]) ep_add(usb_card_name, EP_USB, 0, 0);
     if (!neps) ep_add(devname, EP_CARD, 0, 0);
     if (ep_sel < 0 || ep_sel >= neps) ep_sel = 0;
 }
@@ -824,26 +890,43 @@ int audio_device_active(void) { return ep_sel < neps ? ep_sel : 0; }
 void audio_device_select(int i)
 {
     if (i < 0 || i >= neps) return;
+    int kind = eps[i].kind;
+    if (kind == EP_USB && dev != DEV_USB && usb_card) {
+        if (dev) { dev_other = dev; other_rate = out_rate; strlcpy(other_name, devname, sizeof other_name); }
+        dev = DEV_USB;
+        out_rate = usb_card_rate;
+        strlcpy(devname, usb_card_name, sizeof devname);
+        timer_tick_hook = NULL;
+        eps_build();
+        klog("audio: output switched to %s", devname);
+        return;
+    }
+    if (kind != EP_USB && dev == DEV_USB && dev_other) {
+        dev = dev_other;
+        out_rate = other_rate;
+        strlcpy(devname, other_name, sizeof devname);
+        uint32_t f = irq_save(); refill(); irq_restore(f);
+        timer_tick_hook = audio_tick;
+        dev_other = 0;
+        eps_build();
+        klog("audio: output switched back to %s", devname);
+        return;
+    }
     ep_sel = i;
     if (dev == DEV_HDA)
         for (int k = 0; k < neps; k++)
             if (eps[k].kind == EP_HDA)
                 hda_cmd(hda_cad, eps[k].pin, VERB(0x707, k == i ? (0x40u | (eps[k].devtype == 2 ? 0x80u : 0)) : 0));
-    if (vhda.on && eps[i].kind == EP_VJACK) vhda.pin = eps[i].pin;
+    if (vhda.on && kind == EP_VJACK) vhda.pin = eps[i].pin;
     klog("audio: playback device is %s", eps[i].name);
 }
 
-static bool usb_card;
-static int usb_card_rate;
-static char usb_card_name[64];
-static int dev_other;                         /* the card USB audio took over from */
-static int other_rate;
-static char other_name[64];
 void audio_usb_ready(int rate, const char *name)
 {
     usb_card = true;
     usb_card_rate = rate;
     strlcpy(usb_card_name, name, sizeof usb_card_name);
+    if (dev == DEV_HDA) { klog("audio: USB audio available; HD Audio stays the output"); eps_build(); return; }
     if (dev == DEV_USB) { if (probed && !card_found) vhda_start(rate); eps_build(); return; }
     if (dev) {                                /* a card was playing: keep it for later */
         dev_other = dev;
@@ -861,20 +944,21 @@ void audio_usb_ready(int rate, const char *name)
 void audio_usb_gone(void)
 {
     usb_card = false;
-    if (dev != DEV_USB) return;
-    if (dev_other) {
-        dev = dev_other;
-        out_rate = other_rate;
-        strlcpy(devname, other_name, sizeof devname);
-        uint32_t f = irq_save(); refill(); irq_restore(f);
-        timer_tick_hook = audio_tick;
-        klog("audio: output is back to %s", devname);
-        dev_other = 0;
-    } else {
-        dev = DEV_NONE;
-        strlcpy(devname, "No sound device", sizeof devname);
-        vhda_stop();
-        klog("audio: the USB audio device was unplugged; no sound device now");
+    if (dev == DEV_USB) {
+        if (dev_other) {
+            dev = dev_other;
+            out_rate = other_rate;
+            strlcpy(devname, other_name, sizeof devname);
+            uint32_t f = irq_save(); refill(); irq_restore(f);
+            timer_tick_hook = audio_tick;
+            klog("audio: output is back to %s", devname);
+            dev_other = 0;
+        } else {
+            dev = DEV_NONE;
+            strlcpy(devname, "No sound device", sizeof devname);
+            vhda_stop();
+            klog("audio: the USB audio device was unplugged; no sound device now");
+        }
     }
     eps_build();
 }
@@ -883,7 +967,8 @@ int audio_usb_pull(int16_t *out, int frames)
     if (frames <= 0 || !out) return 0;
     if (frames > BUFFRAMES) frames = BUFFRAMES;
     uint32_t f = irq_save();
-    mix_into(out, frames);
+    if (dev == DEV_USB) mix_into(out, frames);
+    else memset(out, 0, (size_t)frames * 4);  /* HD Audio is the output; keep the USB stream silent */
     if (vhda.on) vhda.frames += frames;       /* the virtual controller's stream ran */
     irq_restore(f);
     return frames;
@@ -906,7 +991,16 @@ void audio_init(void) {
      * that the card is there to go back to when the USB one is unplugged. */
     bool usb_was = dev == DEV_USB;
     if (usb_was) dev = DEV_NONE;
-    for (int i = 0; i < n && !dev; i++) if (devs[i].cls == 0x04 && devs[i].sub == 0x03 && hda_init(&devs[i])) dev = DEV_HDA;
+    /* Motherboard HDA controllers (Intel/AMD/VIA/SiS) are normally on bus 0;
+     * GPUs with display audio sit above it. Probe bus 0 first so a laptop or
+     * desktop with both gets the analog codec rather than HDMI. */
+    for (int pass = 0; pass < 2 && !dev; pass++)
+        for (int i = 0; i < n && !dev; i++) {
+            pci_dev_t *d = &devs[i];
+            if (d->cls != 0x04 || d->sub != 0x03) continue;
+            if ((d->bus == 0) != (pass == 0)) continue;
+            if (hda_init(d)) dev = DEV_HDA;
+        }
     for (int i = 0; i < n && !dev; i++) {
         pci_dev_t *d = &devs[i];
         if (d->vendor == 0x1274 && d->device == 0x5000) { if (es1370_init(d)) dev = DEV_ES1370; }
@@ -916,7 +1010,7 @@ void audio_init(void) {
     if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
     card_found = dev != DEV_NONE;
     probed = true;
-    if (usb_was) {                                      /* a USB device is the output */
+    if (usb_was && dev != DEV_HDA) {                    /* USB was the output; a non-HDA card wins */
         if (dev) { dev_other = dev; other_rate = out_rate; strlcpy(other_name, devname, sizeof other_name); }
         dev = DEV_USB;
         out_rate = usb_card_rate;
@@ -926,6 +1020,8 @@ void audio_init(void) {
         out_rate = usb_card_rate;
         strlcpy(devname, usb_card_name, sizeof devname);
     }
+    /* HD Audio is the default: when one was found, it stays the output even
+     * if a USB audio device is plugged in; USB remains selectable in Sound. */
     if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI, Sound Blaster 16 or USB audio)"); return; }
     if (dev == DEV_USB && !card_found) vhda_start(out_rate);
     else vhda_stop();

@@ -266,7 +266,15 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
       DAC to the speaker or headphone pins. Every codec on the link and every audio function
       group is tried, so a display-audio (HDMI/DP) codec that comes first does not hide the analog
-      one, and a codec's jack detection decides which pin is used.
+      one, and a codec's jack detection decides which pin is used. Controllers are probed with the
+      motherboard (bus 0) first, then GPUs, so a laptop with both gets its analog codec rather
+      than HDMI. The codec vendor is reported (Realtek, Conexant, SigmaTel/IDT, Analog Devices,
+      NVIDIA, AMD, Intel), and amplifier paths, EAPD and headphone amps are set up for both laptop
+      and desktop codecs.
+    - **Display audio (HDMI/DP):** the digital converter is enabled, its channel slots mapped, and
+      the codec's audio infoframe is written through the HDA DIP verbs, so the codec side is ready.
+      The GPU's display engine still has to embed the audio into the HDMI/DP signal and pass ELD
+      information; that is part of a GPU display driver (the firmware framebuffer does not do it).
     - **AC'97:** bus-master DMA, for Intel ICH and the compatible nVidia nForce, AMD and SiS
       controllers.
     - **Ensoniq AudioPCI:** ES1370 (AK4531 codec) and ES1371/ES1373/CT5880 (AC'97 codec and
@@ -277,7 +285,11 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       configuration, the streaming alternate setting is selected, the sample rate is set (from the
       format descriptor's list in class 1, on the clock source entity in class 2), and the
       isochronous OUT endpoint is kept fed with one packet per service interval (1 ms on a
-      full-speed bus, 125 us on a high-speed one). A USB audio device becomes the output when it
+      full-speed bus, 125 us on a high-speed one). When a device offers both classes the class 2
+      stream is chosen, and the playback device is named `USB Audio 2.0` or `USB Audio 1.0`
+      accordingly. HD Audio is the default output; while it is present the USB device stays in the
+      Sound playback list, and picking it switches the mixer over (HD Audio is kept for switching
+      back). When no HD Audio controller is present, a USB audio device becomes the output when it
       is plugged in, and the card it took over from comes back when it is unplugged. When no audio
       controller is on the PCI bus at all, the mixer also presents a software HDA controller (one
       codec, an audio function group, a DAC and a speaker pin) whose stream is fed into the USB
