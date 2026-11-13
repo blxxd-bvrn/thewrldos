@@ -32,6 +32,11 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
   Hebrew, ligatures, and the Unicode bidirectional algorithm, so right-to-left text mixes with
   Latin and numbers correctly — at any size.
 
+**Logo animation:** [docs/logo/THE-WRLD-OS-logo.mp4](docs/logo/THE-WRLD-OS-logo.mp4) (1080p, 60 fps, 13.5 s, no sound): a
+holographic globe in space becomes the globe on the log-on screen's blue, and the letters fly in
+to form the logo. [docs/logo/logo-animation.html](docs/logo/logo-animation.html) is the page it was rendered
+from; open it in a browser to watch it live.
+
 ![Boot screen](docs/screenshots/boot.png)
 
 | | |
