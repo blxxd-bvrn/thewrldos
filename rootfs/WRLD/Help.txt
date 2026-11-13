@@ -27,7 +27,7 @@ THE INTERNET
   It has tabs (Ctrl+T new, Ctrl+W close, Ctrl+Tab switch, middle-click a
   link to open it in a new tab) and a bookmarks bar. It shows HTML, CSS
   (selectors, boxes with margins, padding, borders and widths, flexbox,
-  grid, CSS variables and linked style sheets), tables, forms and PNG/GIF/JPEG/BMP pictures, and runs JavaScript (QuickJS)
+  grid, floats, positioning, CSS variables and linked style sheets), SVG icons, tables, forms and PNG/GIF/JPEG/BMP pictures, and runs JavaScript (QuickJS)
   with a DOM, events, timers, localStorage and fetch/XMLHttpRequest.
   Big web apps may still not work; text-heavy sites work best.
   Tools menu: Enable JavaScript, Script Messages (errors and console.log),

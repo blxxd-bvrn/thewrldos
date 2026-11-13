@@ -355,10 +355,31 @@ static void css_decls(const char *s, int n, css_t *c) {
         else if (!strcmp(k, "display")) {
             c->set |= ST_DISPLAY;
             c->display = !strncmp(v, "none", 4) ? DISP_NONE : strstr(v, "flex") ? DISP_FLEX : strstr(v, "grid") ? DISP_GRID
-                       : !strncmp(v, "inline-block", 12) || !strncmp(v, "inline-table", 12) ? DISP_BLOCK
+                       : !strncmp(v, "inline-block", 12) || !strncmp(v, "inline-table", 12) ? DISP_IBLOCK
                        : !strncmp(v, "inline", 6) || !strncmp(v, "contents", 8) ? DISP_INLINE : DISP_BLOCK;
-            /* inline-block is laid out as a block (no floats or inline boxes yet) */
         }
+        else if (!strcmp(k, "position")) {
+            c->set |= ST_POS; c->oset |= 0x10;             /* bit 4: the position property itself */
+            c->pos = !strncmp(v, "relative", 8) ? POS_RELATIVE : !strncmp(v, "absolute", 8) ? POS_ABSOLUTE : !strncmp(v, "fixed", 5) ? POS_FIXED
+                   : !strncmp(v, "sticky", 6) || !strncmp(v, "-webkit-sticky", 14) ? POS_STICKY : POS_STATIC;
+        }
+        else if (!strcmp(k, "top") || !strcmp(k, "right") || !strcmp(k, "bottom") || !strcmp(k, "left") || !strcmp(k, "inset")) {
+            int i0 = k[0] == 't' ? 0 : k[0] == 'r' ? 1 : k[0] == 'b' ? 2 : k[0] == 'l' ? 3 : -1;
+            for (int i = 0; i < 4; i++) {
+                if (i0 >= 0 && i != i0) continue;
+                bool a, pc; int px = css_len(v, &pc, &a);
+                if (a) { c->oset &= ~(1 << i); continue; }
+                c->off[i] = (int16_t)CLAMP(px, -10000, 10000); c->oset |= 1 << i;
+                if (pc) c->opct |= 1 << i; else c->opct &= ~(1 << i);
+            }
+            c->set |= ST_POS;
+        }
+        else if (!strcmp(k, "fill")) {
+            c->set |= ST_FILL; c->fill_cur = !strncasecmp(v, "currentcolor", 12);
+            if (!c->fill_cur && !parse_color(v, &c->fill)) c->fill = 0;      /* none */
+        }
+        else if (!strcmp(k, "float")) { c->set |= ST_FLOAT; c->flt = !strncmp(v, "left", 4) || !strncmp(v, "inline-start", 12) ? 1 : !strncmp(v, "right", 5) || !strncmp(v, "inline-end", 10) ? 2 : 0; }
+        else if (!strcmp(k, "clear")) { c->set |= ST_CLEAR; c->clr = !strncmp(v, "left", 4) ? 1 : !strncmp(v, "right", 5) ? 2 : !strncmp(v, "both", 4) ? 3 : 0; }
         else if (!strcmp(k, "flex-direction")) { c->set |= ST_FLEX; c->fset |= F_DIR; c->fdir = (int8_t)((strstr(v, "column") ? 1 : 0) | (strstr(v, "reverse") ? 2 : 0)); }
         else if (!strcmp(k, "flex-wrap")) { c->set |= ST_FLEX; c->fset |= F_WRAP; c->fwrap = !strncmp(v, "wrap", 4); }
         else if (!strcmp(k, "flex-flow")) {
@@ -435,6 +456,13 @@ static void css_merge(css_t *dst, const css_t *src) {
     }
     if (src->set & ST_WIDTH) { dst->width = src->width; dst->wpct = src->wpct; }
     if (src->set & ST_MAXW) { dst->maxw = src->maxw; dst->mpct = src->mpct; }
+    if (src->set & ST_POS) {
+        if (src->oset & 0x10) { dst->pos = src->pos; dst->oset |= 0x10; }
+        for (int i = 0; i < 4; i++) if (src->oset & (1 << i)) { dst->off[i] = src->off[i]; dst->oset |= 1 << i; dst->opct = (dst->opct & ~(1 << i)) | (src->opct & (1 << i)); }
+    }
+    if (src->set & ST_FLOAT) dst->flt = src->flt;
+    if (src->set & ST_FILL) { dst->fill = src->fill; dst->fill_cur = src->fill_cur; }
+    if (src->set & ST_CLEAR) dst->clr = src->clr;
     if (src->set & ST_HEIGHT) { if (src->height) dst->height = src->height; if (src->minh) dst->minh = src->minh; }
     if (src->set & ST_FLEX) {
         uint16_t f = src->fset;

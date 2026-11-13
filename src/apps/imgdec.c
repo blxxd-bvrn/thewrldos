@@ -516,6 +516,8 @@ canvas_t *image_decode(const uint8_t *d, uint32_t n, char *err, int ecap) {
     if (n >= 8 && !memcmp(d, "\x89PNG\r\n\x1a\n", 8)) return png_decode(d, n, err, ecap);
     if (n >= 6 && (!memcmp(d, "GIF87a", 6) || !memcmp(d, "GIF89a", 6))) return gif_decode(d, n, err, ecap);
     if (n >= 3 && d[0] == 0xFF && d[1] == 0xD8 && d[2] == 0xFF) return jpeg_decode(d, n, err, ecap);
+    { extern bool svg_sniff(const uint8_t *, uint32_t); extern canvas_t *svg_decode(const uint8_t *, uint32_t);
+      if (svg_sniff(d, n)) { canvas_t *c = svg_decode(d, n); if (!c) snprintf(err, ecap, "unreadable SVG"); return c; } }
     if (n >= 2 && d[0] == 'B' && d[1] == 'M') { canvas_t *c = bmp_load(d, n); if (!c) snprintf(err, ecap, "unsupported BMP"); return c; }
     if (n >= 12 && !memcmp(d, "RIFF", 4) && !memcmp(d + 8, "WEBP", 4)) snprintf(err, ecap, "WebP images are not supported");
     else if (n >= 5 && (!memcmp(d, "<svg", 4) || !memcmp(d, "<?xml", 5))) snprintf(err, ecap, "SVG images are not supported");

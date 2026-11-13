@@ -29,6 +29,10 @@ void arena_free(arena_t *a);
 #define ST_MAXW     0x4000
 #define ST_BCOLOR   0x8000    /* border-color on its own */
 #define ST_HEIGHT   0x20000   /* height / min-height (px) */
+#define ST_POS      0x40000   /* position and the offsets in oset */
+#define ST_FLOAT    0x80000
+#define ST_CLEAR    0x100000
+#define ST_FILL     0x200000  /* SVG fill from CSS */
 #define ST_FLEX     0x10000   /* flexbox / grid properties: which ones are in fset */
 /* fset bits */
 #define F_DIR 0x01
@@ -43,7 +47,8 @@ void arena_free(arena_t *a);
 #define F_RGAP 0x200
 #define F_ASELF 0x400
 /* display values */
-enum { DISP_NONE, DISP_BLOCK, DISP_INLINE, DISP_FLEX, DISP_GRID };
+enum { DISP_NONE, DISP_BLOCK, DISP_INLINE, DISP_FLEX, DISP_GRID, DISP_IBLOCK };
+enum { POS_STATIC, POS_RELATIVE, POS_ABSOLUTE, POS_FIXED, POS_STICKY };
 enum { FJ_START, FJ_CENTER, FJ_END, FJ_BETWEEN, FJ_AROUND, FJ_EVENLY };
 enum { FA_STRETCH, FA_START, FA_CENTER, FA_END };
 typedef struct { uint32_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 block, 2 inline */ int8_t align; bool bold, italic, under; int8_t size;
@@ -58,7 +63,11 @@ typedef struct { uint32_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 
                  int16_t gap, rgap, basis;    /* basis: px, -1 auto */
                  int16_t gcols, gmin;         /* grid: column count, or the minimum track width of repeat(auto-fill, minmax(gmin, 1fr)) */
                  bool bpct;
-                 int16_t height, minh; } css_t;
+                 int16_t height, minh;
+                 int8_t pos, flt, clr;        /* position; float 1 left 2 right; clear bits 1 left 2 right */
+                 uint8_t oset, opct;          /* offsets set (top, right, bottom, left) and which are percentages */
+                 int16_t off[4];
+                 uint32_t fill; bool fill_cur; } css_t;
 
 typedef struct node {
     uint8_t type;                 /* 0 element, 1 text */
@@ -102,9 +111,10 @@ int utf8_normalise(const uint8_t *s, uint32_t n, char *out);   /* returns length
 
 
 /* ---------------- page model (shared by browser.c and dom.c) ---------------- */
-enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE };
+enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE, IT_GROUP, IT_SVG };
 typedef struct { uint8_t kind; uint8_t under; int16_t font; int x, y, w, h, asc; uint32_t color; const char *text; int len; int link, idx; node_t *node;
-                 int16_t radius; uint32_t color2; uint8_t grad, grad_dir; int16_t border; uint32_t border_color; } item_t;
+                 int16_t radius; uint32_t color2; uint8_t grad, grad_dir; int16_t border; uint32_t border_color;
+                 uint8_t grp; } item_t;   /* grp: 1 an inline box (IT_GROUP, idx = its first member), 2 a member at box-relative y */
 typedef struct { char *url; canvas_t *img, *scaled; int state; /* 0 pending, 1 ok, 2 failed */ char *alt; } pimg_t;
 enum { C_TEXT, C_PASSWORD, C_SUBMIT, C_BUTTON, C_CHECK, C_RADIO, C_HIDDEN, C_SELECT, C_TEXTAREA, C_RESET };
 typedef struct { int type, form; node_t *node; char name[64]; char value[512]; char label[64]; bool checked; int sel, nopts; char **opts, **optvals; rect_t r; } ctrl_t;

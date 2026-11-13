@@ -232,7 +232,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - Tabs: Ctrl+T opens one, Ctrl+W closes it, Ctrl+Tab and Ctrl+1..9 switch, and a middle-click
     opens a link in a new tab. Ctrl+L selects the address bar.
   - Try `C:\Samples\CSS demo.html` for boxes, margins and a linked style sheet, and
-    `C:\Samples\Modern layout.html` for flexbox, grid and CSS variables.
+    `C:\Samples\Modern layout.html` for flexbox, grid and CSS variables, and
+    `C:\Samples\Icons and floats.html` for SVG icons, floats and positioning.
   - It runs **JavaScript** (QuickJS) and has a built-in **ad blocker**. Try
     `C:\Samples\JavaScript demo.html` (linked from the home page).
   - The home page links to sites that work well, such as Wikipedia, Hacker News, CNN Lite and
@@ -577,6 +578,18 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   so their variables reach earlier sheets), and `calc()`, `min()`, `max()` and `clamp()` for
   lengths. `height`/`min-height`, CSS `width`/`max-width` on images, and `text-decoration: none`
   on links.
+- **Inline boxes, floats and positioning:** an inline element with padding, a border, a rounded
+  background or `display: inline-block` (badges, tags, link buttons) is one box on the line,
+  aligned on its text's baseline. `float: left/right` takes the space beside the following text,
+  which wraps around it; `clear` moves below; a box encloses floats that start in it (what
+  clearfix does). `position: absolute/fixed` boxes leave the flow and sit at their offsets in the
+  nearest positioned ancestor; `relative` shifts a box. Visually hidden helpers (`left: -9999px`,
+  1x1 screen-reader text) are not drawn.
+- **SVG:** inline `<svg>` and `.svg` pictures (also `data:image/svg+xml`) are drawn through the
+  path rasteriser (`src/apps/svg.c`): paths with every command including arcs, rects, circles,
+  ellipses, lines, polylines, polygons, groups, `<use>`/`<symbol>`, transforms, fill and stroke
+  (from attributes, `style` or CSS `fill`), `currentColor` and opacity; a gradient fill uses its
+  first colour. Text, filters, masks and clip paths are not drawn.
 - **Linked style sheets:** `<link rel="stylesheet">` files are fetched (HTTP, HTTPS or `file:`)
   in document order before the first layout, filtered by the ad blocker, and cascaded with the
   page's `<style>` sheets.
@@ -890,7 +903,7 @@ used to test every screen above, including a full install from a blank disk.
     Devices (disks included) can be plugged in and
     removed while the system runs.
   - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
-    shadows or canvas, and CSS layout is block boxes, flexbox, simple grids and tables (no floats, positioning or inline boxes with their own backgrounds).
+    shadows or canvas, and CSS layout covers block and inline boxes, floats, positioning, flexbox, simple grids and tables; no transforms, animations, `position: sticky` behaviour or grid areas.
   - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.

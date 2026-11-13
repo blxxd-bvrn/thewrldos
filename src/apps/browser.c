@@ -13,6 +13,7 @@
 #include "net.h"
 #include "browser.h"
 #include "jsapi.h"
+#include "svg.h"
 
 bool js_enabled = true;
 #ifndef PAGE_MEM_STEP_MB
@@ -81,7 +82,11 @@ static int add_link(page_t *p, const char *href) {
 
 /* ---------------- layout ---------------- */
 typedef struct { int font; uint32_t color; bool under, pre, bold, italic, mono, nowrap; int size; int link; int align; } sty_t;
-typedef struct { page_t *pg; int x0, w, y, cx, line_start, line_h, line_asc, align, trail, maxx; bool pending_space; } lay_t;
+typedef struct { page_t *pg; int x0, w, y, cx, line_start, line_h, line_asc, align, trail, maxx; bool pending_space;
+                 int fl_lx, fl_lb, fl_lt, fl_rx, fl_rb, fl_rt; } lay_t;   /* floats: left one's right edge, bottom, top; right one's left edge... */
+/* the line box at L->y, narrowed by any float beside it */
+static int line_left(lay_t *L) { return L->fl_lb > L->y ? MAX(L->x0, MIN(L->fl_lx, L->x0 + L->w - 20)) : L->x0; }
+static int line_right(lay_t *L) { return L->fl_rb > L->y ? MIN(L->x0 + L->w, MAX(L->fl_rx, line_left(L) + 20)) : L->x0 + L->w; }
 static int pick_font(sty_t *s) {
     if (s->mono) return FONT_MONO;
     switch (s->size) { case 1: return FONT_H1; case 2: return FONT_H2; case 3: return FONT_H3; case -1: return FONT_WEB_SMALL; }
@@ -91,30 +96,38 @@ static void newline(lay_t *L, bool force, int font) {
     page_t *p = L->pg;
     /* a list marker waiting for its first line (e.g. <li><p>...) stays pending */
     if (!force && L->line_start == p->nitems - 1 && p->items[p->nitems - 1].kind == IT_BULLET) { L->cx = L->x0; L->pending_space = false; return; }
-    if (L->line_start == p->nitems && !L->line_h) {
+    bool only_oof = !L->line_h;
+    for (int i = L->line_start; i < p->nitems && only_oof; i++) if (p->items[i].grp != 3) only_oof = false;
+    if (only_oof) {
         if (force) { L->y += font_height(font); L->trail = 0; }
-        L->cx = L->x0; L->pending_space = false;
+        L->cx = line_left(L); L->pending_space = false;
         return;
     }
-    int lw = L->cx - L->x0, shift = L->align == 1 ? (L->w - lw) / 2 : L->align == 2 ? L->w - lw : 0;
+    int ll = line_left(L), lr = line_right(L);
+    int lw = L->cx - ll, shift = L->align == 1 ? (lr - ll - lw) / 2 : L->align == 2 ? lr - ll - lw : 0;
     if (shift < 0) shift = 0;
     for (int i = L->line_start; i < p->nitems; i++) {
         item_t *it = &p->items[i];
+        if (it->grp == 3) continue;                       /* a float or positioned box: already placed */
         it->x += shift;
+        if (it->grp == 2) continue;                       /* inside an inline box: moves with it below */
         it->y = L->y + L->line_asc - it->asc;
     }
+    for (int i = L->line_start; i < p->nitems; i++)
+        if (p->items[i].kind == IT_GROUP) for (int k = p->items[i].idx; k < i; k++) if (p->items[k].grp == 2) p->items[k].y += p->items[i].y;
     if (L->cx + shift > L->maxx) L->maxx = L->cx + shift;
     L->y += L->line_h; L->trail = 0;
     L->line_start = p->nitems; L->line_h = 0; L->line_asc = 0;
-    L->cx = L->x0; L->pending_space = false;
+    L->cx = line_left(L); L->pending_space = false;
 }
 static void vspace(lay_t *L, int m, int font) {
     newline(L, false, font);
     if (L->trail < m) { L->y += m - L->trail; L->trail = m; }
 }
 static void place_box(lay_t *L, item_t *it, int w, int h, int asc) {
-    int sp = L->pending_space && L->cx > L->x0 ? 4 : 0;
-    if (L->cx + sp + w > L->x0 + L->w && L->cx > L->x0) { newline(L, false, FONT_WEB); sp = 0; }
+    int ll = line_left(L); if (L->cx < ll) L->cx = ll;
+    int sp = L->pending_space && L->cx > ll ? 4 : 0;
+    if (L->cx + sp + w > line_right(L) && L->cx > ll) { newline(L, false, FONT_WEB); sp = 0; }
     it->x = L->cx + sp; it->w = w; it->h = h; it->asc = asc;
     L->cx += sp + w; L->pending_space = false;
     if (asc > L->line_asc) L->line_asc = asc;
@@ -125,8 +138,9 @@ static void place_text(lay_t *L, sty_t *s, const char *t, int n) {
     int f = pick_font(s), fh = font_height(f), fa = font_ascent(f);
     int spw = text_width(f, " ");
     int w = text_width_n(f, t, n);
-    int sp = L->pending_space && L->cx > L->x0 ? spw : 0;
-    if (!s->nowrap && L->cx + sp + w > L->x0 + L->w && L->cx > L->x0) { newline(L, false, f); sp = 0; }
+    int ll = line_left(L); if (L->cx < ll) L->cx = ll;
+    int sp = L->pending_space && L->cx > ll ? spw : 0;
+    if (!s->nowrap && L->cx + sp + w > line_right(L) && L->cx > ll) { newline(L, false, f); sp = 0; }
     page_t *p = L->pg;
     /* extend the previous run when it has the same style (fewer items) */
     item_t *last = p->nitems > L->line_start ? &p->items[p->nitems - 1] : NULL;
@@ -420,6 +434,7 @@ static void layout_children(lay_t *L, node_t *n, sty_t *s) { for (node_t *c = n-
  * lines wrap with flex-wrap; then justify-content and align-items place them.
  * Columns: items stacked with the gap, aligned across. Grid: equal columns. */
 static bool flex_item_node(node_t *c) {
+    if (!c->type && (c->css.oset & 0x10) && (c->css.pos == POS_ABSOLUTE || c->css.pos == POS_FIXED)) return false;   /* out of flow */
     if (c->type == 1) { for (const char *t = c->text; t && *t; t++) if (!isspace((uint8_t)*t)) return true; return false; }
     if ((c->css.set & ST_DISPLAY) && c->css.display == DISP_NONE) return false;
     static const char *skip[] = { "script", "style", "template", "head", "datalist", "map" };
@@ -571,11 +586,97 @@ static void layout_flex(lay_t *L, node_t *box, sty_t *s) {
         }
     }
     kfree(fw); kfree(items);
+    for (node_t *c = box->first; c; c = c->next)          /* positioned children: placed on their own */
+        if (!c->type && (c->css.oset & 0x10) && (c->css.pos == POS_ABSOLUTE || c->css.pos == POS_FIXED)) layout_node(L, c, s);
     if (maxx > L->maxx) L->maxx = maxx;
     L->y = y; L->trail = 0; L->cx = L->x0; L->line_start = p->nitems; L->line_h = 0; L->line_asc = 0;
 }
 static int list_counter;
 static void layout_node_el(lay_t *L, node_t *n, sty_t *parent);
+
+/* ---------------- inline boxes, floats, positioned boxes ---------------- */
+/* an inline element with a box of its own (padding, a border, a rounded background, a
+ * width, or display:inline-block) is laid out as one unit on the line */
+static bool inline_box(const node_t *n, bool *only_bg) {
+    const css_t *c = &n->css;
+    *only_bg = false;
+    if ((c->set & ST_DISPLAY) && c->display == DISP_IBLOCK) return true;
+    if (c->pset || ((c->set & ST_BORDER) && c->border) || ((c->set & ST_BG) && (c->set & ST_RADIUS)) ||
+        ((c->set & ST_WIDTH) && !c->wpct) || (c->set & ST_HEIGHT)) return true;
+    if (c->set & ST_BG) { *only_bg = true; return true; }
+    return false;
+}
+static void layout_inline_box(lay_t *L, node_t *n, sty_t *s, bool only_bg) {
+    page_t *p = L->pg;
+    int w = measure_node(L, n, s, L->w);
+    if (only_bg && w > L->w * 2 / 3) { layout_children(L, n, s); return; }   /* long highlighted text: flows as text */
+    int f = pick_font(s);
+    int ll = line_left(L); if (L->cx < ll) L->cx = ll;
+    int sp = L->pending_space && L->cx > ll ? text_width(f, " ") : 0;
+    if (L->cx + sp + w > line_right(L) && L->cx > ll) newline(L, false, f);
+    int start = p->nitems;
+    lay_t C = { p, 0, MAX(1, w), 0, 0, p->nitems, 0, 0, 0, 0, 0, false };
+    node_t *ob = blockify; blockify = n;
+    layout_node(&C, n, s);
+    blockify = ob;
+    newline(&C, false, f);
+    int h = MAX(1, C.y), base = h;
+    for (int i = start; i < p->nitems; i++) if (p->items[i].kind == IT_TEXT) { base = p->items[i].y + p->items[i].asc; break; }
+    int end = p->nitems;
+    for (int i = start; i < end; i++) if (p->items[i].grp != 3) p->items[i].grp = 2;
+    item_t *g = add_item(p, IT_GROUP);
+    g->idx = start; g->grp = 1; g->link = -1;
+    place_box(L, g, w, h, base);
+    for (int i = start; i < end; i++) p->items[i].x += g->x;
+}
+
+static struct { int x, y, w; } cblock = { 0, 0, 0 };   /* containing block of absolutely positioned boxes */
+static node_t *placing;                                 /* the float or positioned box being laid out */
+static int off_px(const css_t *c, int i, int base) { return (c->opct & (1 << i)) ? base * c->off[i] / 100 : c->off[i]; }
+static void layout_float(lay_t *L, node_t *n, sty_t *s) {
+    page_t *p = L->pg;
+    const css_t *c = &n->css;
+    int w = MIN(measure_node(L, n, s, L->w), L->w);
+    int y = L->y;
+    int lx = line_left(L), rx = line_right(L);
+    if (rx - lx < w) { y = MAX(y, MAX(L->fl_lb > y ? L->fl_lb : 0, L->fl_rb > y ? L->fl_rb : 0)); lx = L->x0; rx = L->x0 + L->w; }
+    int x = c->flt == 1 ? lx : rx - w;
+    lay_t C = { p, x, MAX(1, w), y, x, p->nitems, 0, 0, 0, 0, 0, false };
+    node_t *ob = blockify, *op = placing; blockify = n; placing = n;
+    int first = p->nitems;
+    layout_node(&C, n, s);
+    blockify = ob; placing = op;
+    newline(&C, false, pick_font(s));
+    for (int i = first; i < p->nitems; i++) p->items[i].grp = 3;
+    int bottom = C.y;
+    if (c->flt == 1) { L->fl_lx = x + w; L->fl_lb = MAX(L->fl_lb > y ? L->fl_lb : 0, bottom); L->fl_lt = y; }
+    else { L->fl_rx = x; L->fl_rb = MAX(L->fl_rb > y ? L->fl_rb : 0, bottom); L->fl_rt = y; }
+    if (L->line_start == p->nitems) L->cx = line_left(L);
+    if (C.maxx > L->maxx) L->maxx = C.maxx;
+}
+static void layout_abs(lay_t *L, node_t *n, sty_t *s) {
+    page_t *p = L->pg;
+    const css_t *c = &n->css;
+    /* visually hidden helpers (skip links, screen-reader text) stay hidden */
+    if ((c->set & ST_WIDTH) && !c->wpct && c->width <= 1) return;
+    if ((c->set & ST_HEIGHT) && c->height <= 1 && !c->minh) return;
+    for (int i = 0; i < 4; i++) if ((c->oset & (1 << i)) && !(c->opct & (1 << i)) && c->off[i] <= -900) return;
+    int cx = cblock.w ? cblock.x : 0, cy = cblock.w ? cblock.y : 0, cw = cblock.w ? cblock.w : p->lay_width;
+    if (c->pos == POS_FIXED) { cx = 0; cy = 0; cw = p->lay_width; }
+    int w;
+    if ((c->oset & 8) && (c->oset & 2) && !(c->set & ST_WIDTH)) w = MAX(20, cw - off_px(c, 3, cw) - off_px(c, 1, cw));
+    else { int ow = L->w; L->w = cw; w = measure_node(L, n, s, cw); L->w = ow; }
+    int x = (c->oset & 8) ? cx + off_px(c, 3, cw) : (c->oset & 2) ? cx + cw - off_px(c, 1, cw) - w : (L->line_start == p->nitems ? L->x0 : L->cx);
+    int y = (c->oset & 1) ? cy + off_px(c, 0, 600) : L->y;
+    lay_t C = { p, x, MAX(1, w), y, x, p->nitems, 0, 0, 0, 0, 0, false };
+    node_t *ob = blockify, *op = placing; blockify = n; placing = n;
+    int first = p->nitems;
+    layout_node(&C, n, s);
+    blockify = ob; placing = op;
+    newline(&C, false, pick_font(s));
+    for (int i = first; i < p->nitems; i++) p->items[i].grp = 3;
+    if (C.maxx > L->maxx) L->maxx = C.maxx;
+}
 static void layout_node(lay_t *L, node_t *n, sty_t *parent) {
     if (n->type == 1) { layout_text(L, parent, n->text); return; }
     node_t *saved = lay_el; lay_el = n;
@@ -585,7 +686,7 @@ static void layout_node(lay_t *L, node_t *n, sty_t *parent) {
 static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     if ((n->css.set & ST_DISPLAY) && n->css.display == 0) return;
     const char *t = n->tag;
-    static const char *skip[] = { "head", "template", "datalist", "map", "svg", "math", "object", "embed", "applet", "audio", "video", "canvas", "param", "option", "optgroup", "frameset", "script", "style" };
+    static const char *skip[] = { "head", "template", "datalist", "map", "math", "object", "embed", "applet", "audio", "video", "canvas", "param", "option", "optgroup", "frameset", "script", "style" };
     for (unsigned i = 0; i < ARRAY_LEN(skip); i++) if (!strcmp(t, skip[i])) return;
     if (!strcmp(t, "noscript") && L->pg->js) return;       /* scripts are running: show the script version */
     page_t *p = L->pg;
@@ -611,8 +712,24 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     else if (!strcmp(t, "nobr")) s.nowrap = true;
     else if (!strcmp(t, "summary") || !strcmp(t, "dt") || !strcmp(t, "legend")) s.bold = !strcmp(t, "summary") || !strcmp(t, "legend") ? true : s.bold;
     apply_css_style(n, &s);
+    {   /* out of flow: absolutely positioned boxes and floats (not when it is itself a flex item) */
+        const css_t *c = &n->css;
+        if (n != placing && n != blockify && (c->oset & 0x10) && (c->pos == POS_ABSOLUTE || c->pos == POS_FIXED)) { layout_abs(L, n, &s); return; }
+        if (n != placing && n != blockify && (c->set & ST_FLOAT) && c->flt) { layout_float(L, n, &s); return; }
+    }
     if (!strcmp(t, "br")) { newline(L, true, pick_font(&s)); return; }
     if (!strcmp(t, "img")) { layout_image(L, n, &s); return; }
+    if (!strcmp(t, "svg")) {                               /* inline SVG: drawn at paint time from the tree */
+        int w, h; svg_intrinsic(n, &w, &h);
+        if (n->css.set & ST_WIDTH) { int cw = n->css.wpct ? L->w * n->css.width / 100 : n->css.width; if (!(n->css.set & ST_HEIGHT)) h = h * cw / MAX(1, w); w = cw; }
+        if ((n->css.set & ST_HEIGHT) && n->css.height) { int ch = n->css.height; if (!(n->css.set & ST_WIDTH)) w = w * ch / MAX(1, h); h = ch; }
+        if (w > L->w) { h = h * L->w / MAX(1, w); w = L->w; }
+        if (w <= 0 || h <= 0) return;
+        item_t *it = add_item(p, IT_SVG);
+        it->color = s.color; it->link = s.link;
+        place_box(L, it, w, h, h);
+        return;
+    }
     if (!strcmp(t, "input") || !strcmp(t, "select") || !strcmp(t, "textarea") || !strcmp(t, "button")) { layout_control(L, n, &s); return; }
     if (!strcmp(t, "iframe")) {
         const char *src = node_attr(n, "src");
@@ -632,7 +749,12 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
         L->align = al;
         return;
     }
-    if (!is_block(n)) { layout_children(L, n, &s); return; }
+    if (!is_block(n)) {
+        bool only_bg;
+        if (n != blockify && inline_box(n, &only_bg)) { layout_inline_box(L, n, &s, only_bg); return; }
+        layout_children(L, n, &s);
+        return;
+    }
 
     /* blocks */
     int top = 0, bottom = 0, indent = 0, rindent = 0;
@@ -668,7 +790,13 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     else if (cs->mauto & 2) mr = avail - boxw - ml;
     pl = MIN(pl, boxw / 3); pr = MIN(pr, boxw / 3);
     vspace(L, top, pick_font(&s));
+    if ((cs->set & ST_CLEAR) && cs->clr) {
+        if ((cs->clr & 1) && L->fl_lb > L->y) L->y = L->fl_lb;
+        if ((cs->clr & 2) && L->fl_rb > L->y) L->y = L->fl_rb;
+        L->cx = line_left(L);
+    }
     int ox0 = L->x0, ow = L->w, oal = L->align;
+    int rel_start = p->nitems;
     int box_x = L->x0 + ml;
     L->x0 = box_x + bw + pl; L->w = MAX(20, boxw - 2 * bw - pl - pr); L->cx = L->x0;
     if (!strcmp(t, "center")) L->align = 1;
@@ -676,6 +804,9 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     if (al) L->align = !strcasecmp(al, "center") || !strcasecmp(al, "middle") ? 1 : !strcasecmp(al, "right") ? 2 : 0;
     if (n->css.set & ST_ALIGN) L->align = n->css.align;
     int bg_item = -1, y0 = L->y;
+    bool positioned = (cs->oset & 0x10) && cs->pos != POS_STATIC;
+    typeof(cblock) ocb = cblock;
+    if (positioned) { cblock.x = box_x; cblock.y = y0; cblock.w = boxw; }
     if ((n->css.set & (ST_BG | ST_BORDER)) && (bw || (n->css.set & ST_BG)) && strcmp(t, "body")) {
         item_t *it = add_item(p, IT_RECT); it->x = box_x; it->y = L->y; it->w = boxw; it->color = (n->css.set & ST_BG) ? n->css.bg : 0; bg_item = p->nitems - 1; L->line_start = p->nitems;
         if (n->css.set & ST_RADIUS) it->radius = n->css.radius;
@@ -702,11 +833,24 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
         int want = MAX(cs->height, cs->minh), top_y = y0 + bw + pt;
         if (L->y < top_y + want) { L->y = top_y + want; L->trail = 0; }
     }
+    /* a float that started in this box is enclosed by it (what clearfix does on real sites) */
+    if (bg_item >= 0 || bw) {
+        if (L->fl_lb > L->y && L->fl_lt >= y0) L->y = L->fl_lb;
+        if (L->fl_rb > L->y && L->fl_rt >= y0) L->y = L->fl_rb;
+    }
     if (bw + pb) { L->y += bw + pb; L->trail = 0; }
     if (!strcmp(t, "li") && L->line_start == p->nitems && p->nitems && p->items[p->nitems - 1].kind == IT_BULLET) { /* empty item */ }
     if (bg_item >= 0) p->items[bg_item].h = L->y - y0;
     list_counter = !strcmp(t, "ol") ? save_counter : list_counter;
-    L->x0 = ox0; L->w = ow; L->align = oal; L->cx = L->x0;
+    if (positioned) {
+        cblock = ocb;
+        if (cs->pos == POS_RELATIVE) {                     /* shifted after layout, the space it takes stays */
+            int dx = (cs->oset & 8) ? off_px(cs, 3, boxw) : (cs->oset & 2) ? -off_px(cs, 1, boxw) : 0;
+            int dy = (cs->oset & 1) ? cs->off[0] : (cs->oset & 4) ? -cs->off[2] : 0;
+            if (dx || dy) shift_items(p, rel_start, p->nitems, dx, dy);
+        }
+    }
+    L->x0 = ox0; L->w = ow; L->align = oal; L->cx = line_left(L);
     vspace(L, bottom, pick_font(&s));
 }
 static void page_layout(page_t *p, int width) {
@@ -906,6 +1050,7 @@ static const char *home_html =
     "<a href=\"file:///C:/Samples/Welcome.html\">Welcome page</a> - what the browser can show<br>"
     "<a href=\"file:///C:/Samples/CSS%20demo.html\">CSS demo</a> - boxes, margins and a linked style sheet<br>"
     "<a href=\"file:///C:/Samples/Modern%20layout.html\">Modern layout</a> - flexbox, grid and CSS variables<br>"
+    "<a href=\"file:///C:/Samples/Icons%20and%20floats.html\">Icons and floats</a> - SVG, floats and positioning<br>"
     "<a href=\"file:///C:/Samples/JavaScript%20demo.html\">JavaScript demo</a> - scripts, events and timers<br>"
     "<a href=\"file:///C:/\">Browse drive C:</a></div>"
     "<div class=\"card\"><h3>What's new</h3>Tabs (middle-click a link to open it in one), a new toolbar and bookmarks bar, "
@@ -986,7 +1131,10 @@ static uint8_t *data_url(const char *u, uint32_t *len) {
             acc = (acc << 6) | v; bits += 6;
             if (bits >= 8) { bits -= 8; out[o++] = acc >> bits; }
         }
-    } else for (; *s; s++) out[o++] = *s;
+    } else for (; *s; s++) {                         /* data:image/svg+xml,%3Csvg... is percent-encoded */
+        if (*s == '%' && isxdigit((uint8_t)s[1]) && isxdigit((uint8_t)s[2])) { char h[3] = { s[1], s[2], 0 }; out[o++] = (uint8_t)strtoul(h, NULL, 16); s += 2; }
+        else out[o++] = *s;
+    }
     *len = o;
     return out;
 }
@@ -1621,6 +1769,7 @@ static void paint_content(browser_t *b, canvas_t *c, rect_t v) {
             else { char n[16]; snprintf(n, sizeof n, "%d.", it->idx); draw_text(c, it->font, x - text_width(it->font, n), y, n, it->color); }
             break;
         case IT_CTRL: draw_ctrl(c, b, it->idx, x, y, it->w, it->h); p->ctrls[it->idx].r = R(it->x, it->y, it->w, it->h); break;
+        case IT_SVG: if (it->node) svg_draw(c, it->node, x, y, it->w, it->h, it->color); break;
         }
     }
     c->clip = old;
