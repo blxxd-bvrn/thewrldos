@@ -69,6 +69,18 @@ bool ui_link(window_t *w, int x, int y, int font, const char *label, uint32_t co
     if (hot) { hline(w->surf, x, y + font_ascent(font) + 2, r.w, hot ? lighten(col, 60) : col); w->ui.cursor = CURSOR_HAND; }
     return clicked;
 }
+/* A link whose text wraps inside maxw instead of running past it.  The whole
+ * wrapped block is clickable and highlights on hover. */
+bool ui_link_wrapped(window_t *w, int x, int y, int maxw, int font, const char *label, uint32_t col) {
+    int id = ui_id(w);
+    int h = text_wrapped_height(font, maxw, label, 2);
+    rect_t r = R(x, y, maxw, h);
+    bool hot;
+    bool clicked = behave(w, id, r, &hot, NULL);
+    draw_text_wrapped(w->surf, font, x, y, maxw, label, hot ? lighten(col, 60) : col, 2);
+    if (hot) w->ui.cursor = CURSOR_HAND;
+    return clicked;
+}
 bool ui_checkbox(window_t *w, int x, int y, const char *label, bool *v) {
     int id = ui_id(w);
     rect_t r = R(x, y, 18 + text_width(FONT_UI, label), 15);

@@ -688,7 +688,21 @@ void desktop_mouse(int type, int x, int y, int btn) {
 #define START_W_LUNA 99
 #define START_W_CLASSIC 56
 static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? T.taskbar_h + 8 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
-static int tray_w(void) { return 20 + 56 + (show_clock ? (show_seconds ? 110 : 90) : 0); }
+static void fmt_clock(char *b, int n);
+static int tray_clock_w(void) {
+    if (!show_clock) return 0;
+    char b[32]; fmt_clock(b, sizeof b);
+    return text_width(FONT_UI, b);
+}
+/* The tray is only as wide as what it holds: two status icons, the clock and
+ * the sidebar toggle, packed together at the right edge instead of being
+ * spread across a fixed-width panel with empty space between them. */
+static int tray_w(void) { return 88 + tray_clock_w(); }
+static void tray_icon_x(int *sx, int *nx) {
+    int clock_x = SCREEN_W - 30 - tray_clock_w();
+    *nx = clock_x - 26;
+    *sx = *nx - 24;
+}
 static int tb_y(void) { return SCREEN_H - T.taskbar_h; }
 static int ql_x(void) { return start_w() + (T.classic ? 6 : 8); }
 #define QL_N 4
@@ -846,9 +860,9 @@ void taskbar_paint(canvas_t *c) {
         gradient_v3(c, tx, y + 1, tw, h - 1, T.tray_hi, T.tray_top, T.tray_bot, 4);
         vline(c, tx, y + 1, h - 1, T.tray_border); vline(c, tx + 1, y + 1, h - 1, lighten(T.tray_hi, 80));
     }
-    draw_icon(c, ICON_CP_SOUND, 16, tx + 8, y + (h - 16) / 2);
+    int sx, nx; tray_icon_x(&sx, &nx);
+    draw_icon(c, ICON_CP_SOUND, 16, sx, y + (h - 16) / 2);
     {   /* network tray: a monitor icon with a link/address status dot */
-        int nx = tx + 32;
         draw_icon(c, ICON_CP_NETWORK, 16, nx, y + (h - 16) / 2);
         bool up = netif.link && netif.configured;
         uint32_t dot = !netif.present ? HEX(0x808080) : netif.link ? (up ? HEX(0x30C030) : HEX(0xE0B030)) : HEX(0xD03030);
@@ -857,7 +871,7 @@ void taskbar_paint(canvas_t *c) {
     if (show_clock) {
         char b[32]; fmt_clock(b, sizeof b);
         int cw = text_width(FONT_UI, b);
-        draw_text(c, FONT_UI, SCREEN_W - 20 - cw - (T.classic ? 8 : 10), y + (h - font_height(FONT_UI)) / 2, b, T.tray_text);
+        draw_text(c, FONT_UI, SCREEN_W - 30 - cw, y + (h - font_height(FONT_UI)) / 2, b, T.tray_text);
     }
     {   /* sidebar toggle: an up arrow when closed, down when open */
         int bx = SCREEN_W - 20;
@@ -1254,9 +1268,9 @@ bool shell_mouse(int type, int x, int y, int btn) {
             window_t *list[32]; int n = task_btns(list, 32);
             if (h < n) { window_t *w = list[h]; if (w == wm_active && w->state != WS_MINIMIZED) wm_minimize(w); else wm_focus(w); }
         } else if (h == 3000) {
-            int tx = SCREEN_W - tray_w();
-            if (x < tx + 28) control_open("sound");
-            else if (x < tx + 56) control_open("network");
+            int sx, nx; tray_icon_x(&sx, &nx);
+            if (x >= sx - 4 && x < nx - 2) control_open("sound");
+            else if (x >= nx - 2 && x < nx + 20) control_open("network");
             else {
                 rtc_time_t t; rtc_now(&t);
                 static const char *days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };

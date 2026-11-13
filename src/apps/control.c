@@ -142,9 +142,11 @@ static void nav_pane(window_t *w, cp_t *c, int cat) {
     y += 30;
     for (int i = 0; i < CAT_N; i++) {
         bool cur = i == cat;
-        if (cur) draw_text_wrapped(s, FONT_UI_BOLD, 16, y, NAV_W - 30, cats[i].name, BLACK, 1);
-        else if (ui_link(w, 16, y, FONT_UI, cats[i].name, W7_LINK)) { char p[16]; snprintf(p, sizeof p, "cat:%d", i); cp_go(c, p, true); return; }
-        y += (cur && text_width(FONT_UI_BOLD, cats[i].name) > NAV_W - 30) ? 2 * font_height(FONT_UI_BOLD) + 8 : 22;
+        int f = cur ? FONT_UI_BOLD : FONT_UI;
+        int th = text_wrapped_height(f, NAV_W - 30, cats[i].name, 2);
+        if (cur) draw_text_wrapped(s, f, 16, y, NAV_W - 30, cats[i].name, BLACK, 2);
+        else if (ui_link_wrapped(w, 16, y, NAV_W - 30, f, cats[i].name, W7_LINK)) { char p[16]; snprintf(p, sizeof p, "cat:%d", i); cp_go(c, p, true); return; }
+        y += MAX(22, th + 8);
     }
     y += 14;
     hline(s, 16, y, NAV_W - 32, HEX(0xC8D4E4)); y += 12;
@@ -157,10 +159,12 @@ static void nav_pane(window_t *w, cp_t *c, int cat) {
 /* ---------------- home views ---------------- */
 static void home_category(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    int colw = (s->w - 60) / 2;
+    int avail = s->w - 60;
+    int colw = MIN(avail / 2, 400);
+    int x0 = ox + 24 + (avail - 2 * colw) / 2;
     for (int i = 0; i < CAT_N; i++) {
         int col = i < 4 ? 0 : 1, row = i % 4;
-        int x = ox + 24 + col * colw, y = oy + 70 + row * 100;
+        int x = x0 + col * colw, y = oy + 70 + row * 100;
         draw_icon(s, cats[i].icon, 48, x, y);
         if (ui_link(w, x + 60, y + 2, FONT_LARGE, cats[i].name, W7_GREEN)) { char p[16]; snprintf(p, sizeof p, "cat:%d", i); cp_go(c, p, true); return; }
         for (int k = 0; k < 3 && cats[i].links[k]; k++)
@@ -318,9 +322,10 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK);
     static canvas_t *thumbs[12];
     static const char *fit_names[] = { "Crop", "Scale", "Stretch" };
-    draw_text(s, FONT_UI, ox + 200, y + 1, "Fit:", HEX(0x505050));
+    int fx = ox + 20 + text_width(FONT_UI_BOLD, "Desktop background") + 18;
+    draw_text(s, FONT_UI, fx, y + 1, "Fit:", HEX(0x505050));
     for (int i = 0; i < 3; i++)
-        if (ui_radio(w, ox + 232 + i * 82, y - 1, fit_names[i], wallpaper_fit == i) && wallpaper_fit != i) {
+        if (ui_radio(w, fx + 32 + i * 82, y - 1, fit_names[i], wallpaper_fit == i) && wallpaper_fit != i) {
             wallpaper_fit = i;
             for (int k = 0; k < 12; k++) if (thumbs[k]) { canvas_free(thumbs[k]); thumbs[k] = NULL; }
             shell_wallpaper_changed();
@@ -395,16 +400,17 @@ static void page_display(window_t *w, cp_t *c, int ox, int oy) {
     if (!c->res_sel && na) c->res_sel = cur + 1;          /* slider position + 1 (0 = not yet set) */
     if (video_can_set_mode() && na > 1) {
         draw_text(s, FONT_UI, x, y + 4, "Screen resolution:", HEX(0x505050));
-        int sw = MAX(120, MIN(300, s->w - x - 140));
-        draw_text(s, FONT_SMALL, x + 110, y + 26, "Less", HEX(0x606060)); draw_text(s, FONT_SMALL, x + 110 + sw - 24, y + 26, "More", HEX(0x606060));
+        int lx = x + 130;
+        int sw = MAX(120, MIN(300, s->w - lx - 30));
+        draw_text(s, FONT_SMALL, lx, y + 26, "Less", HEX(0x606060)); draw_text(s, FONT_SMALL, lx + sw - 24, y + 26, "More", HEX(0x606060));
         int pos = c->res_sel - 1;
-        if (ui_slider(w, R(x + 110, y, sw, 24), &pos, 0, na - 1)) c->res_sel = pos + 1;
+        if (ui_slider(w, R(lx, y, sw, 24), &pos, 0, na - 1)) c->res_sel = pos + 1;
         int m = avail[CLAMP(c->res_sel - 1, 0, na - 1)];
         snprintf(b, sizeof b, "%d by %d pixels", modes[m].w, modes[m].h);
-        draw_text_centered(s, FONT_UI_BOLD, R(x + 110, y + 40, sw, 16), b, BLACK);
+        draw_text_centered(s, FONT_UI_BOLD, R(lx, y + 40, sw, 16), b, BLACK);
         y += 66;
         bool changed = modes[m].w != SCREEN_W || modes[m].h != SCREEN_H;
-        if (ui_button_ex(w, R(x + 110, y, 90, 24), "Apply", changed, false) && changed) {
+        if (ui_button_ex(w, R(lx, y, 90, 24), "Apply", changed, false) && changed) {
             int pw = SCREEN_W, ph = SCREEN_H;
             if (gfx_set_resolution(modes[m].w, modes[m].h)) {
                 res_prev_w = pw; res_prev_h = ph; res_countdown = 15;

@@ -127,6 +127,7 @@ void ui_end(window_t *w);
 bool ui_button(window_t *w, rect_t r, const char *label);
 bool ui_button_ex(window_t *w, rect_t r, const char *label, bool enabled, bool is_default);
 bool ui_link(window_t *w, int x, int y, int font, const char *label, uint32_t col);
+bool ui_link_wrapped(window_t *w, int x, int y, int maxw, int font, const char *label, uint32_t col);
 bool ui_checkbox(window_t *w, int x, int y, const char *label, bool *v);
 bool ui_radio(window_t *w, int x, int y, const char *label, bool checked);
 bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi);
