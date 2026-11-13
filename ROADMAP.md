@@ -151,8 +151,10 @@ Already working, and not on the list below:
   anti-aliasing, round joins, linear and radial gradients and clipping, used by The WRLD Browser for
   `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
 - 3D is a software engine (`src/gui/r3d.c`) behind OpenGL 1.1 and fixed-function Direct3D 9 for
-  Win32 programs; Vulkan and shaders would need a SPIR-V/HLSL compiler (a llvmpipe-class JIT) and
-  are not planned. Linux programs could get OpenGL through Mesa's software renderer on
+  Win32 programs, and Direct3D 10 runs Shader Model 4 bytecode in an interpreter (`dxbc.c`). Next
+  steps there: a JIT for shaders (the interpreter costs most of the frame time), geometry shaders,
+  Direct3D 11 (Shader Model 5 adds few instructions the interpreter lacks) and a run-time HLSL
+  compiler. Vulkan would need a SPIR-V compiler as well and is not planned. Linux programs could get OpenGL through Mesa's software renderer on
   `/dev/wrld/window`. There is no GPU driver, so a real Skia would have to use its software backend. Missing from the raster
   stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
   engine.

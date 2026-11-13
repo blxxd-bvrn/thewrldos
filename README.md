@@ -227,8 +227,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Samples** in `C:\Samples`:
   - `hello.exe`, a Win32 console program;
   - `winhello.exe`, a Win32 GUI program;
-  - `glcube.exe` and `d3dcube.exe`, spinning cubes drawn through OpenGL and Direct3D 9
-    (3D acceleration must be on);
+  - `glcube.exe`, `d3dcube.exe` and `d3d10cube.exe`, spinning cubes drawn through OpenGL,
+    Direct3D 9 and Direct3D 10 (3D acceleration must be on);
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
 - **The WRLD Browser** (Start menu > Internet, or the globe on Quick Launch):
@@ -731,10 +731,27 @@ device manager's job is to say what the computer has and which driver runs it.
       (`tools/gen_d3d9.py`), so methods that are not implemented return `D3DERR_INVALIDCALL`
       with the stack intact. A few `d3dx9` matrix helpers are exported too. Shaders are not
       supported: `SetVertexShader`/`SetPixelShader` accept only NULL.
+    - **Direct3D 10** (`d3d10.dll`, `dxgi.dll`, `src/win32/d3d10.c` and `dxbc.c`): the shader
+      pipeline. Vertex and pixel shaders are Shader Model 4 bytecode (compiled HLSL); `dxbc.c`
+      decodes them once and interprets them for every vertex and every pixel: the arithmetic,
+      integer, conversion and comparison instructions, if/else/loop, discard, constant buffers
+      (also relatively indexed), immediate constant buffers, indexable temporaries and texture
+      `sample`/`sample_l`/`ld`/`resinfo`. `d3d10.c` rasterises with perspective-correct
+      interpolation of every shader output, depth testing, culling and blending. Swap chains
+      present into a window; buffers, 2D textures, views, input layouts, sampler, rasterizer,
+      depth and blend states, `Draw`, `DrawIndexed` and `DrawInstanced` (triangle lists and
+      strips) are implemented. Not implemented: geometry shaders, stencil, multisampling, lines
+      and points, stream output, mip levels, and compiling HLSL at run time
+      (`D3D10CompileShader`/`D3DCompile` fail), so programs must ship compiled shaders, as most
+      do. The COM tables are generated from mingw-w64's headers (`tools/gen_d3d10.py`).
+      `d3d10cube.exe` in `C:\Samples` runs about 6 frames/s on the 64-bit edition under QEMU and
+      2 on the 32-bit one: every pixel runs the pixel shader in the interpreter.
+      Its shaders come from `samples/d3d10cube.sm4`, assembled by `tools/dxbc_asm.py` (a small
+      Shader Model 4 assembler; there is no HLSL compiler outside Windows).
     - **Vulkan** is not feasible: it draws only with SPIR-V shader programs. `vulkan-1.dll`
       exists so that programs can ask, and `vkCreateInstance` answers
       `VK_ERROR_INCOMPATIBLE_DRIVER` so that they fall back to Direct3D 9 or OpenGL.
-    - With 3D acceleration off, `wglCreateContext` and `Direct3DCreate9` fail as on a computer
+    - With 3D acceleration off, `wglCreateContext`, `Direct3DCreate9` and `D3D10CreateDevice` fail as on a computer
       without 3D support. `glcube.exe` and `d3dcube.exe` in `C:\Samples` run at about 40-50
       frames/s on the 64-bit edition under QEMU and 18-28 on the 32-bit one.
     - Linux programs do not get OpenGL yet (that would be Mesa's software renderer on
@@ -887,7 +904,7 @@ device manager's job is to say what the computer has and which driver runs it.
     `ms_abi`), variadic ones (`printf`, `wsprintfA`) the matching `va_list`; handles,
     `WPARAM`/`LPARAM` and `*LongPtr` values are pointer-sized while `long` stays 32-bit (LLP64).
   - About 190 kernel32, 190 msvcrt, 160 user32 and 45 gdi32 functions, plus advapi32/shell32
-    basics, and opengl32, glu32, d3d9 and vulkan-1 (see 3D for Windows programs).
+    basics, and opengl32, glu32, d3d9, d3d10, dxgi and vulkan-1 (see 3D for Windows programs).
   - Console programs use the terminal for stdin/stdout.
   - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX
     controls, menus, MessageBox and GDI drawing.
@@ -1012,7 +1029,7 @@ src/apps           explorer, notepad, terminal, control panel, accessories, laun
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          sh interpreter
-src/win32          PE loader, kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 9
+src/win32          PE loader, kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 9 and 10
 src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 licence
 third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this OS
@@ -1020,7 +1037,7 @@ third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against
 third_party/minimp3  minimp3 (MP3 decoding for the media player), public domain (CC0)
 src/media          MP3 glue for minimp3 (mp3.c)
-samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c)
+samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c, d3d10cube.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)
 rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrldstyle;

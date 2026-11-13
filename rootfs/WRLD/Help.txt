@@ -73,9 +73,11 @@ MUSIC
   or the mouse wheel moves through them, letting go of Alt picks one, Esc
   goes back (Ctrl+Alt+Tab keeps it open). Start > All Programs > WRLD 3D
   shows a 3D test scene. The engine runs on the processor.
-  Windows programs can draw 3D through OpenGL 1.1 (opengl32.dll, glu32.dll)
-  and Direct3D 9 (d3d9.dll, fixed function), both drawn by the WRLD 3D
-  engine. Try C:\Samples\glcube.exe and d3dcube.exe. Vulkan is not
+  Windows programs can draw 3D through OpenGL 1.1 (opengl32.dll, glu32.dll),
+  Direct3D 9 (d3d9.dll, fixed function) and Direct3D 10 (d3d10.dll, with
+  vertex and pixel shaders run on the processor). Try C:\Samples\glcube.exe,
+  d3dcube.exe and d3d10cube.exe. Direct3D 10 programs must ship compiled
+  shaders: compiling HLSL while the program runs is not supported. Vulkan is not
   available: vulkan-1.dll reports no device, so programs that try it fall
   back to Direct3D or OpenGL. With 3D acceleration off, these programs are
   told 3D is unavailable.

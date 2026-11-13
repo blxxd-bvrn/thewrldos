@@ -83,11 +83,14 @@ static const dll_t dlls[] = {
     { "opengl32.dll", opengl32_exports, &opengl32_count }, { "glu32.dll", glu32_exports, &glu32_count },
     { "d3d9.dll", d3d9_exports, &d3d9_count }, { "d3dx9_43.dll", d3dx9_exports, &d3dx9_count },
     { "vulkan-1.dll", vulkan_exports, &vulkan_count },
+    { "d3d10.dll", d3d10_exports, &d3d10_count }, { "dxgi.dll", dxgi_exports, &dxgi_count },
+    { "d3dcompiler_47.dll", d3dcompiler_exports, &d3dcompiler_count },
 };
 static const dll_t *find_dll(const char *name) {
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) if (!strcasecmp(dlls[i].dll, name)) return &dlls[i];
     if (!strncasecmp(name, "api-ms-win-crt-", 15)) return &dlls[1];
     if (!strncasecmp(name, "d3dx9_", 6)) return find_dll("d3dx9_43.dll");
+    if (!strncasecmp(name, "d3dcompiler_", 12)) return find_dll("d3dcompiler_47.dll");
     if (!strncasecmp(name, "api-ms-win-core-", 16)) return &dlls[0];
     return NULL;
 }

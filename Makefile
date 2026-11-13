@@ -195,6 +195,9 @@ rootfs64/Samples/glcube.exe: samples/glcube.c
 rootfs64/Samples/d3dcube.exe: samples/d3dcube.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d9
+rootfs64/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<
@@ -204,6 +207,10 @@ rootfs/Samples/glcube.exe: samples/glcube.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -lopengl32 -lglu32 -lgdi32
 rootfs/Samples/d3dcube.exe: samples/d3dcube.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -ld3d9
+rootfs/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h
+	$(MINGW) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
+samples/d3d10cube_shaders.h: samples/d3d10cube.sm4 tools/dxbc_asm.py
+	python3 tools/dxbc_asm.py $< $@
 rootfs/Samples/%.exe: samples/%.c
 	$(MINGW) -O2 -s -o $@ $<
 
