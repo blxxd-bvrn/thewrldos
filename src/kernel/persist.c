@@ -155,13 +155,14 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
 
 /* ---------------- settings (C:\WRLD\wrld.ini) ---------------- */
 typedef struct { char k[24]; char v[64]; } kv_t;
-static kv_t kv[40];
+static kv_t kv[64];
 static int nkv;
-static char last_saved[2048];
+#define SETTINGS_TEXT_CAP 6144        /* all 64 maximum-length key/value pairs */
+static char last_saved[SETTINGS_TEXT_CAP];
 const char *settings_get(const char *key) { for (int i = 0; i < nkv; i++) if (!strcasecmp(kv[i].k, key)) return kv[i].v; return NULL; }
 void settings_set(const char *key, const char *val) {
     for (int i = 0; i < nkv; i++) if (!strcasecmp(kv[i].k, key)) { strlcpy(kv[i].v, val, sizeof kv[i].v); return; }
-    if (nkv < 40) { strlcpy(kv[nkv].k, key, sizeof kv[nkv].k); strlcpy(kv[nkv].v, val, sizeof kv[nkv].v); nkv++; }
+    if (nkv < (int)ARRAY_LEN(kv)) { strlcpy(kv[nkv].k, key, sizeof kv[nkv].k); strlcpy(kv[nkv].v, val, sizeof kv[nkv].v); nkv++; }
 }
 /* account pictures are saved by name; the old four icon names map to the
  * first photograph so settings written before the change still load */
@@ -255,6 +256,12 @@ void settings_load(void) {
     wallpaper_fit = CLAMP(geti("wallpaper_fit", wallpaper_fit), 0, 2);
     sidebar_open = geti("sidebar", sidebar_open);
     sidebar_tiles = geti("side_tiles", sidebar_tiles);
+    wm_animations = !boot_safe_mode && geti("animations", wm_animations ? 1 : 0) != 0;
+    wm_animation_style = CLAMP(geti("window_anim", wm_animation_style), WINDOW_ANIM_NONE, WINDOW_ANIM_COUNT - 1);
+    startmenu_animation = CLAMP(geti("start_anim", startmenu_animation), MENU_ANIM_NONE, MENU_ANIM_COUNT - 1);
+    sidebar_slide = geti("sidebar_slide", sidebar_slide ? 1 : 0) != 0;
+    sidebar_tile_fade = geti("tile_fade", sidebar_tile_fade ? 1 : 0) != 0;
+    wm_effects_changed();
     if (settings_get("wallpaper")) { wallpaper_id = geti("wallpaper", wallpaper_id); if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count) wallpaper_id = 0; shell_wallpaper_changed(); }
     klog("settings: loaded %d values", nkv);
 }
@@ -271,6 +278,10 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", wallpaper_fit); settings_set("wallpaper_fit", b);
     snprintf(b, sizeof b, "%d", sidebar_open ? 1 : 0); settings_set("sidebar", b);
     snprintf(b, sizeof b, "%d", sidebar_tiles); settings_set("side_tiles", b);
+    settings_set("animations", wm_animations ? "1" : "0");
+    snprintf(b, sizeof b, "%d", wm_animation_style); settings_set("window_anim", b);
+    snprintf(b, sizeof b, "%d", startmenu_animation); settings_set("start_anim", b);
+    settings_set("sidebar_slide", sidebar_slide ? "1" : "0"); settings_set("tile_fade", sidebar_tile_fade ? "1" : "0");
     snprintf(b, sizeof b, "%d", tz_offset_minutes); settings_set("tz", b);
     snprintf(b, sizeof b, "%d", mouse_speed); settings_set("mouse_speed", b);
     snprintf(b, sizeof b, "%d", clock_24h); settings_set("clock24", b);
@@ -286,7 +297,7 @@ static void capture(void) {
 }
 void settings_save(void) {
     capture();
-    char text[2048]; int o = snprintf(text, sizeof text, "; THE WRLD OS settings\r\n[WRLD]\r\n");
+    char text[SETTINGS_TEXT_CAP]; int o = snprintf(text, sizeof text, "; THE WRLD OS settings\r\n[WRLD]\r\n");
     for (int i = 0; i < nkv && o < (int)sizeof text - 100; i++) o += snprintf(text + o, sizeof text - o, "%s=%s\r\n", kv[i].k, kv[i].v);
     if (!strcmp(text, last_saved)) return;
     if (vfs_write_file(SETTINGS_FILE, text, strlen(text))) strlcpy(last_saved, text, sizeof last_saved);

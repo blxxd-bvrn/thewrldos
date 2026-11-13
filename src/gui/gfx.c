@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "fs.h"
 #include "gfx.h"
+#include "theme.h"
 #include "ttf.h"
 #include "text.h"
 
@@ -233,20 +234,21 @@ void draw_circle(canvas_t *c, int cx, int cy, int r, uint32_t col) {
     }
 }
 void bevel(canvas_t *c, int x, int y, int w, int h, bool raised) {
-    uint32_t hi = raised ? WHITE : HEX(0x808080), lo = raised ? HEX(0x808080) : WHITE;
+    uint32_t hi = raised ? T.face_light : T.face_dark, lo = raised ? T.face_dark : T.face_light;
     hline(c, x, y, w, hi); vline(c, x, y, h, hi);
     hline(c, x, y + h - 1, w, lo); vline(c, x + w - 1, y, h, lo);
 }
 void bevel_deep(canvas_t *c, int x, int y, int w, int h, bool raised) {
+    uint32_t edge = mix(T.face_dark, BLACK, 128);
     if (raised) {
-        hline(c, x, y, w - 1, HEX(0xFFFFFF)); vline(c, x, y, h - 1, HEX(0xFFFFFF));
-        hline(c, x, y + h - 1, w, HEX(0x404040)); vline(c, x + w - 1, y, h, HEX(0x404040));
-        hline(c, x + 1, y + h - 2, w - 2, HEX(0x808080)); vline(c, x + w - 2, y + 1, h - 2, HEX(0x808080));
+        hline(c, x, y, w - 1, T.face_light); vline(c, x, y, h - 1, T.face_light);
+        hline(c, x, y + h - 1, w, edge); vline(c, x + w - 1, y, h, edge);
+        hline(c, x + 1, y + h - 2, w - 2, T.face_dark); vline(c, x + w - 2, y + 1, h - 2, T.face_dark);
     } else {
-        hline(c, x, y, w - 1, HEX(0x808080)); vline(c, x, y, h - 1, HEX(0x808080));
-        hline(c, x + 1, y + 1, w - 3, HEX(0x404040)); vline(c, x + 1, y + 1, h - 3, HEX(0x404040));
-        hline(c, x, y + h - 1, w, WHITE); vline(c, x + w - 1, y, h, WHITE);
-        hline(c, x + 1, y + h - 2, w - 2, HEX(0xD4D0C8)); vline(c, x + w - 2, y + 1, h - 2, HEX(0xD4D0C8));
+        hline(c, x, y, w - 1, T.face_dark); vline(c, x, y, h - 1, T.face_dark);
+        hline(c, x + 1, y + 1, w - 3, edge); vline(c, x + 1, y + 1, h - 3, edge);
+        hline(c, x, y + h - 1, w, T.face_light); vline(c, x + w - 1, y, h, T.face_light);
+        hline(c, x + 1, y + h - 2, w - 2, T.face); vline(c, x + w - 2, y + 1, h - 2, T.face);
     }
 }
 void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, int h) {
@@ -260,6 +262,8 @@ void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, i
     }
 }
 void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha) {
+    if (alpha <= 0) return;
+    if (alpha >= 255) { blit(dst, dx, dy, src, 0, 0, src->w, src->h); return; }
     rect_t r = rect_intersect(R(dx, dy, src->w, src->h), dst->clip);
     for (int j = 0; j < r.h; j++) {
         uint32_t *d = dst->px + (r.y + j) * dst->stride + r.x;

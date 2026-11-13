@@ -38,6 +38,7 @@ static const applet_t applets[] = {
     { "personalization", "Personalization", "Theme, colour hue and background", ICON_CP_APPEARANCE, CAT_APPEARANCE },
     { "advanced", "Advanced Appearance", "Individual colours, scrollbars, buttons and cursors", ICON_CP_APPEARANCE, CAT_APPEARANCE },
     { "display", "Display", "Screen resolution and effects", ICON_CP_DISPLAY, CAT_APPEARANCE },
+    { "effects", "Visual Effects", "Window, Start menu and sidebar animations", ICON_CP_DISPLAY, CAT_APPEARANCE },
     { "taskbar", "Taskbar and Start Menu", "Customise the taskbar", ICON_CP_TASKBAR, CAT_APPEARANCE },
     { "fonts", "Fonts", "View installed fonts", ICON_CP_FONTS, CAT_APPEARANCE },
     { "datetime", "Date and Time", "Set the time zone and clock", ICON_CP_DATETIME, CAT_CLOCK },
@@ -59,7 +60,6 @@ typedef struct {
     int prog_sel, prog_scroll;
     int dev_view, dev_tick; uint32_t dev_closed; char dev_sel[112]; int scroll_max;   /* Device Manager: tab, collapsed classes, selection */
     int wall_page;
-    bool anim;
     int adv_sel, adv_scroll, adv_last, adv_cursor, adv_cursor_scroll, adv_r, adv_g, adv_b;
     bool adv_init;
     window_t *win;
@@ -85,7 +85,7 @@ static void cp_go(cp_t *c, const char *page, bool push) {
     c->hue = theme_hue; c->sat = theme_sat; c->light = theme_light; c->theme = theme_id; c->wall = wallpaper_id; c->res_sel = 0;
     strlcpy(c->uname, user_name, sizeof c->uname);
     c->dbl = wm_dblclick_ms; c->speed = mouse_speed; c->swap = mouse_swap_buttons;
-    c->tz = tz_offset_minutes; c->anim = wm_animations;
+    c->tz = tz_offset_minutes;
     c->win->dirty = true;
 }
 
@@ -94,15 +94,15 @@ static void cp_go(cp_t *c, const char *page, bool push) {
 #define W7_HEAD (T.link_head)
 #define W7_GREEN (dark_mode ? HEX(0x7CE07C) : HEX(0x1C7A1C))
 #define W7_LINK (T.link)
-#define W7_TEXT (T.gray_text)
+#define W7_TEXT (mix(T.text, T.window_bg, 55))
 
 /* ---------------- chrome ---------------- */
 static void round_nav_button(window_t *w, canvas_t *s, int x, int y, bool back, bool enabled, bool *clicked) {
     rect_t r = R(x, y, 26, 26);
     bool hot = ui_hover(w, r) && enabled;
     *clicked = ui_click_area(w, r) && enabled;
-    uint32_t a = enabled ? (hot ? HEX(0x6CB8FF) : HEX(0x4C9BE8)) : HEX(0xC8D0DA), b = enabled ? (hot ? HEX(0x2272D8) : HEX(0x1A5BB8)) : HEX(0xA8B0BA);
-    fill_circle(s, x + 13, y + 13, 13, enabled ? HEX(0x1B4A8A) : HEX(0x9AA4B0));
+    uint32_t a = enabled ? lighten(T.select, hot ? 85 : 55) : T.face_light, b = enabled ? T.select : T.face;
+    fill_circle(s, x + 13, y + 13, 13, enabled ? darken(T.select, 70) : T.face_dark);
     for (int j = -12; j <= 12; j++) { int dx = 0; while ((dx + 1) * (dx + 1) + j * j <= 144) dx++; hline(s, x + 13 - dx, y + 13 + j, 2 * dx + 1, mix(a, b, (j + 12) * 255 / 24)); }
     blend_rect(s, x + 6, y + 3, 14, 6, WHITE, 60);
     int cx = x + 13, cy = y + 13;
@@ -148,7 +148,9 @@ static void draw_chrome(window_t *w, cp_t *c) {
 }
 static void nav_pane(window_t *w, cp_t *c, int cat) {
     canvas_t *s = w->surf;
-    gradient_v(s, 0, TOP_H, NAV_W, s->h - TOP_H, T.pane_top, T.pane_bot);
+    /* Control Panel has a quiet navigation rail, not Explorer's saturated XP
+     * task-pane backdrop: blue links must remain readable in light mode too. */
+    gradient_v(s, 0, TOP_H, NAV_W, s->h - TOP_H, mix(T.face, T.window_bg, 100), T.face);
     vline(s, NAV_W - 1, TOP_H, s->h - TOP_H, T.face_dark);
     int y = TOP_H + 16;
     if (ui_link(w, 16, y, FONT_UI, "Control Panel Home", W7_LINK)) { cp_go(c, "", true); return; }
@@ -162,7 +164,7 @@ static void nav_pane(window_t *w, cp_t *c, int cat) {
         y += MAX(22, th + 8);
     }
     y += 14;
-    hline(s, 16, y, NAV_W - 32, HEX(0xC8D4E4)); y += 12;
+    hline(s, 16, y, NAV_W - 32, T.face_dark); y += 12;
     draw_text(s, FONT_UI, 16, y, "See also", T.gray_text); y += 20;
     if (ui_link(w, 16, y, FONT_UI, "Task Manager", W7_LINK)) taskmgr_open();
     y += 20;
@@ -250,7 +252,7 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     if (T.classic) fill_rect(pre, 0, 70, 120, 10, T.face); else gradient_v(pre, 0, 70, 120, 10, T.tb_top, T.tb_bot);
     if (!T.classic) fill_round_rect(pre, 0, 70, 26, 10, 3, T.start_top); else { fill_rect(pre, 2, 71, 22, 8, T.face); bevel(pre, 2, 71, 22, 8, true); }
     T = save;
-    if (sel) { fill_rect(s, x - 4, y - 4, 128, 88, HEX(0xCCE4F8)); draw_rect(s, x - 4, y - 4, 128, 88, HEX(0x3399FF)); }
+    if (sel) { fill_rect(s, x - 4, y - 4, 128, 88, mix(T.window_bg, T.select, 55)); draw_rect(s, x - 4, y - 4, 128, 88, T.select); }
     blit(s, x, y, pre, 0, 0, 120, 80);
     draw_rect(s, x, y, 120, 80, HEX(0x808080));
     canvas_free(pre);
@@ -371,7 +373,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
             thumbs[i] = big;
         }
         bool sel = wallpaper_id == i;
-        if (sel) { fill_rect(s, x - 3, y - 3, 92, 70, HEX(0xCCE4F8)); draw_rect(s, x - 3, y - 3, 92, 70, HEX(0x3399FF)); }
+        if (sel) { fill_rect(s, x - 3, y - 3, 92, 70, mix(T.window_bg, T.select, 55)); draw_rect(s, x - 3, y - 3, 92, 70, T.select); }
         for (int j = 0; j < 64; j++) for (int q = 0; q < 86; q++) put_pixel(s, x + q, y + j, i == wallpaper_count - 1 ? desktop_color : thumbs[i]->px[(j * thumbs[i]->h / 64) * thumbs[i]->w + q * thumbs[i]->w / 86]);
         draw_rect(s, x, y, 86, 64, HEX(0x808080));
         draw_text_centered(s, FONT_UI, R(x - 3, y + 67, 92, 16), wallpaper_names[i], T.text);
@@ -492,7 +494,7 @@ static void page_display(window_t *w, cp_t *c, int ox, int oy) {
         draw_text(s, FONT_UI, x, y + 4, "Screen resolution:", T.gray_text);
         int lx = x + 130;
         int sw = MAX(120, MIN(300, s->w - lx - 30));
-        draw_text(s, FONT_SMALL, lx, y + 26, "Less", HEX(0x606060)); draw_text(s, FONT_SMALL, lx + sw - 24, y + 26, "More", HEX(0x606060));
+        draw_text(s, FONT_SMALL, lx, y + 26, "Less", W7_TEXT); draw_text(s, FONT_SMALL, lx + sw - 24, y + 26, "More", W7_TEXT);
         int pos = c->res_sel - 1;
         if (ui_slider(w, R(lx, y, sw, 24), &pos, 0, na - 1)) c->res_sel = pos + 1;
         int m = avail[CLAMP(c->res_sel - 1, 0, na - 1)];
@@ -517,9 +519,38 @@ static void page_display(window_t *w, cp_t *c, int ox, int oy) {
     }
     snprintf(b, sizeof b, "Colour depth: %u-bit true colour", fb_info.bpp);
     draw_text(s, FONT_UI, x, y, b, W7_TEXT); y += 30;
-    ui_checkbox(w, x, y, "Animate windows when minimizing and maximizing", &wm_animations);
+    if (ui_link(w, x, y, FONT_UI, "Visual effects and animations...", W7_LINK)) cp_go(c, "effects", true);
     y += 28;
     if (ui_link(w, x, y, FONT_UI, "Personalize visual style and colours", W7_LINK)) cp_go(c, "personalization", true);
+}
+static void page_effects(window_t *w, cp_t *c, int ox, int oy) {
+    canvas_t *s = w->surf;
+    heading(s, ox + 20, oy + 16, "Choose your visual effects", "Animations follow your visual style and never pause mouse or keyboard handling.");
+    int x = ox + 24, y = oy + 88, width = s->w - x - 28;
+    if (ui_checkbox(w, x, y, "Enable visual animations", &wm_animations)) { wm_effects_changed(); settings_save(); }
+    y += 42;
+    static const char *windows[] = { "None (instant)", "Border scale (Windows XP)", "Aero fade (Vista / 7)" };
+    static const char *menus[] = { "None (instant)", "Slide", "Fade" };
+    draw_text(s, FONT_UI_BOLD, x, y + 4, "Windows", T.text);
+    ui_dropdown(w, R(x + 130, y, MIN(280, width - 130), 24), windows, WINDOW_ANIM_COUNT, &wm_animation_style);
+    draw_text_wrapped(s, FONT_UI, x, y + 34, width, "Applied when opening, closing, minimizing, restoring and maximizing windows. Border scale moves the outline; Aero fades the whole window.", W7_TEXT, 2);
+    y += 94;
+    hline(s, x, y - 12, width, T.face_dark);
+    draw_text(s, FONT_UI_BOLD, x, y + 4, "Start menu", T.text);
+    ui_dropdown(w, R(x + 130, y, MIN(280, width - 130), 24), menus, MENU_ANIM_COUNT, &startmenu_animation);
+    y += 54;
+    draw_text(s, FONT_UI_BOLD, x, y, "Sidebar", T.text); y += 26;
+    bool changed = ui_checkbox(w, x + 8, y, "Slide the sidebar in and out", &sidebar_slide); y += 28;
+    changed |= ui_checkbox(w, x + 8, y, "Fade sidebar tiles when opening, adding or removing", &sidebar_tile_fade);
+    if (changed) { wm_effects_changed(); settings_save(); }
+    y += 48;
+    int bw = MIN(140, (width - 20) / 3);
+    if (ui_button(w, R(x, y, bw, 26), "Preview window")) notepad_open(NULL);
+    if (ui_button(w, R(x + bw + 10, y, bw, 26), "Preview Start menu")) startmenu_toggle();
+    if (ui_button(w, R(x + 2 * (bw + 10), y, bw, 26), "Toggle sidebar")) sidebar_open = !sidebar_open;
+    y += 44;
+    draw_text_wrapped(s, FONT_UI, x, y, width, wm_animations ? "Settings are saved automatically. Choose None for individual effects, or clear Enable visual animations to turn all of them off." : "All visual animations are off. Your individual choices are kept for when you enable them again.", W7_TEXT, 2);
+    (void)c;
 }
 static void page_taskbar(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -532,6 +563,7 @@ static void page_taskbar(window_t *w, cp_t *c, int ox, int oy) {
     draw_group(s, R(ox + 20, y, 420, 90), "Start menu"); y += 26;
     draw_text(s, FONT_UI, ox + 36, y, "Start menu style follows the visual style:", T.text); y += 20;
     draw_text(s, FONT_UI, ox + 36, y, "Luna styles use the two-column menu; Classic uses the cascading menu.", W7_TEXT);
+    if (ui_link(w, ox + 36, y + 48, FONT_UI, "Change Start menu and sidebar animations...", W7_LINK)) cp_go(c, "effects", true);
 }
 static void page_datetime(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -727,12 +759,12 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
                 rect_t dr = R(area.x + 60, ry - 1, area.w - 68, row);
                 if (ui_click_area(w, dr)) { strlcpy(c->dev_sel, key, sizeof c->dev_sel); sel = true; w->dirty = true; }
                 int tw = MIN(text_width(FONT_UI, d->name), area.w - 110);
-                if (sel) fill_rect(s, area.x + 84, ry - 1, tw + 8, row - 1, HEX(0x316AC5));
+                if (sel) fill_rect(s, area.x + 84, ry - 1, tw + 8, row - 1, T.select);
                 int icon = d->status == DS_NO_DRIVER ? ICON_QUESTION : d->status == DS_FAILED ? ICON_WARNING : devclass_icon(cls);
                 draw_icon(s, icon, 16, area.x + 66, ry);
                 uint32_t col = sel ? T.select_text : d->status == DS_NOT_STARTED ? T.gray_text : T.text;
                 draw_text_ellipsis(s, FONT_UI, area.x + 88, ry + 1, area.w - 110, d->name, col);
-                if (d->is_new) draw_text(s, FONT_SMALL, area.x + 96 + tw, ry + 2, "new", HEX(0x1C7A1C));
+                if (d->is_new) draw_text(s, FONT_SMALL, area.x + 96 + tw, ry + 2, "new", W7_GREEN);
                 ry += row; content += row;
             }
         }
@@ -742,7 +774,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     if (c->scroll > c->scroll_max) { c->scroll = c->scroll_max; w->dirty = true; }
     if (c->scroll_max) {                                   /* a thin position bar */
         int bh = MAX(24, area.h * area.h / (content + 12)), by = area.y + 2 + (area.h - 4 - bh) * c->scroll / c->scroll_max;
-        fill_rect(s, area.x + area.w - 7, by, 5, bh, HEX(0xB8C4D8));
+        fill_rect(s, area.x + area.w - 7, by, 5, bh, T.sb_thumb_top);
     }
     if (c->dev_view != 0) return;
     /* the selected device */
@@ -753,7 +785,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     draw_icon(s, d->status == DS_NO_DRIVER ? ICON_QUESTION : d->status == DS_FAILED ? ICON_WARNING : devclass_icon(d->cls), 32, px, py + 2);
     draw_text_ellipsis(s, FONT_UI_BOLD, px + 42, py, s->w - px - 60, d->name, T.text);
     char line[220];
-    uint32_t stcol = d->status == DS_WORKING ? HEX(0x1C7A1C) : (d->status == DS_NO_DRIVER || d->status == DS_FAILED) ? HEX(0xB03020) : W7_TEXT;
+    uint32_t stcol = d->status == DS_WORKING ? W7_GREEN : (d->status == DS_NO_DRIVER || d->status == DS_FAILED) ? (dark_mode ? HEX(0xFF9C80) : HEX(0xB03020)) : W7_TEXT;
     draw_text(s, FONT_UI, px + 42, py + 18, "Status:", T.gray_text); draw_text(s, FONT_UI, px + 130, py + 18, dev_status_text(d), stcol);
     if (d->drv) snprintf(line, sizeof line, "%s  -  %s", d->drv->name, d->drv->desc); else strcpy(line, "None");
     draw_text(s, FONT_UI, px + 42, py + 36, "Driver:", T.gray_text); draw_text_ellipsis(s, FONT_UI, px + 130, py + 36, s->w - px - 150, line, T.text);
@@ -874,7 +906,7 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
         device_t *d = devmgr_get(i);
         if (!d || d->cls != DC_SOUND) continue;
         draw_text_ellipsis(s, FONT_UI, ox + 30, y, s->w - ox - 260, d->name, T.text);
-        draw_text(s, FONT_SMALL, s->w - 210, y + 2, dev_status_text(d), d->status == DS_WORKING || d->status == DS_BUILTIN ? T.gray_text : HEX(0x9C4A00));
+        draw_text(s, FONT_SMALL, s->w - 210, y + 2, dev_status_text(d), d->status == DS_WORKING || d->status == DS_BUILTIN ? W7_TEXT : (dark_mode ? HEX(0xFFC080) : HEX(0x9C4A00)));
         y += 18; dn++;
     }
     if (!dn) draw_text(s, FONT_UI, ox + 30, y, "No audio-class hardware found.", T.gray_text);
@@ -899,7 +931,7 @@ static void page_programs(window_t *w, cp_t *c, int ox, int oy) {
     for (int i = 0; i < n && y < s->h - 60; i++) {
         rect_t r = R(ox + 20, y, s->w - ox - 40, 22);
         if (ui_click_area(w, r)) c->prog_sel = i;
-        if (c->prog_sel == i) fill_rect(s, r.x, r.y, r.w, r.h, HEX(0xCCE8FF));
+        if (c->prog_sel == i) fill_rect(s, r.x, r.y, r.w, r.h, mix(T.window_bg, T.select, dark_mode ? 100 : 40));
         else if (ui_hover(w, r)) fill_rect(s, r.x, r.y, r.w, r.h, T.face_light);
         draw_icon(s, icons[i], 16, ox + 26, y + 3);
         draw_text_ellipsis(s, FONT_UI, ox + 48, y + 4, 260, names[i], T.text);
@@ -945,11 +977,11 @@ static void page_users(window_t *w, cp_t *c, int ox, int oy) {
         int col = i % per, row = i / per;
         rect_t r = R(ox + 28 + col * pitch, oy + 236 + row * pitch, sz + 4, sz + 4);
         if (ui_click_area(w, r)) user_picture = i;
-        fill_round_rect(s, r.x, r.y, r.w, r.h, 4, user_picture == i ? HEX(0x3399FF) : HEX(0xD8D8D8));
+        fill_round_rect(s, r.x, r.y, r.w, r.h, 4, user_picture == i ? T.select : T.face_dark);
         draw_user_picture(s, i, sz, r.x + 2, r.y + 2);
     }
     /* the summary is drawn after the grid so a new pick shows in this paint */
-    fill_round_rect(s, ox + 28, oy + 68, 56, 56, 5, HEX(0xA8C4E8)); draw_user_picture(s, user_picture, 48, ox + 32, oy + 72);
+    fill_round_rect(s, ox + 28, oy + 68, 56, 56, 5, mix(T.face, T.select, 70)); draw_user_picture(s, user_picture, 48, ox + 32, oy + 72);
     draw_text(s, FONT_LARGE, ox + 100, oy + 72, user_name, T.text);
     draw_text(s, FONT_UI, ox + 100, oy + 98, "Administrator", W7_TEXT);
     draw_text(s, FONT_UI_BOLD, ox + 28, oy + 150, "Account name", T.text);
@@ -983,7 +1015,9 @@ static void page_ease(window_t *w, cp_t *c, int ox, int oy) {
     y += 80;
     if (ui_link(w, ox + 84, y, FONT_UI, "Make the mouse easier to use (slower pointer, slower double-click)", W7_LINK)) { mouse_speed = 3; wm_dblclick_ms = 700; }
     y += 24;
-    if (ui_link(w, ox + 84, y, FONT_UI, "Turn off unnecessary animations", W7_LINK)) wm_animations = false;
+    if (ui_link(w, ox + 84, y, FONT_UI, "Turn off unnecessary animations", W7_LINK)) { wm_animations = false; wm_effects_changed(); settings_save(); }
+    if (ui_link(w, ox + 84, y + 24, FONT_UI, "Choose individual visual effects...", W7_LINK)) cp_go(c, "effects", true);
+    y += 24;
     y += 24;
     if (ui_link(w, ox + 84, y, FONT_UI, "Show seconds and 24-hour time in the taskbar", W7_LINK)) { show_seconds = true; clock_24h = true; wm_need_redraw = true; }
 }
@@ -1017,6 +1051,7 @@ static void cp_paint(window_t *w) {
     else if (!strcmp(a->id, "personalization")) page_personalization(w, c, ox, oy);
     else if (!strcmp(a->id, "advanced")) page_advanced(w, c, ox, oy);
     else if (!strcmp(a->id, "display")) page_display(w, c, ox, oy);
+    else if (!strcmp(a->id, "effects")) page_effects(w, c, ox, oy);
     else if (!strcmp(a->id, "taskbar")) page_taskbar(w, c, ox, oy);
     else if (!strcmp(a->id, "datetime")) page_datetime(w, c, ox, oy);
     else if (!strcmp(a->id, "system")) page_system(w, c, ox, oy);
@@ -1043,7 +1078,11 @@ static void cp_tick(window_t *w) {
     }
 }
 static void cp_mouse(window_t *w, int type, int x, int y, int b) { cp_t *c = w->data; if (type == ME_WHEEL && !strcmp(c->page, "devices")) { c->scroll = CLAMP(c->scroll + b * 40, 0, c->scroll_max); w->dirty = true; } }
-static void cp_menu(window_t *w, int id) { (void)id; w->dirty = true; }
+static void cp_menu(window_t *w, int id) {
+    cp_t *c = w->data;
+    if (id <= -1000 && !strcmp(c->page, "effects")) { wm_effects_changed(); settings_save(); }
+    w->dirty = true;
+}
 static void cp_destroy(window_t *w) { kfree(w->data); }
 void control_open(const char *page) {
     window_t *w = wm_create("Control Panel", -1, -1, MIN(840, SCREEN_W - 40), MIN(660, SCREEN_H - 70), WF_RESIZABLE);

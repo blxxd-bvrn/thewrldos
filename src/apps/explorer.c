@@ -158,19 +158,19 @@ static int item_at(expl_t *e, int x, int y) { for (int i = 0; i < e->n; i++) if 
 /* ---------------- task pane ---------------- */
 static void pane_box(window_t *w, canvas_t *c, int x, int *y, int width, const char *title, const char **links, const int *icons, int n, int *clicked) {
     int hh = 25;
-    if (T.classic) { fill_rect(c, x, *y, width, hh, T.pane_head_top); draw_text(c, FONT_UI_BOLD, x + 8, *y + 6, title, WHITE); }
+    if (T.classic) { fill_rect(c, x, *y, width, hh, T.pane_head_top); draw_text(c, FONT_UI_BOLD, x + 8, *y + 6, title, T.pane_head_text); }
     else {
         fill_round_rect(c, x, *y, width, hh, 4, T.pane_head_bot);
-        gradient_h(c, x, *y + 3, width, hh - 3, dark_mode ? T.face_light : WHITE, T.pane_head_bot);
-        fill_rect(c, x, *y + 3, 2, hh - 3, dark_mode ? T.face_light : WHITE);
+        gradient_h(c, x, *y + 3, width, hh - 3, T.pane_head_top, T.pane_head_bot);
+        fill_rect(c, x, *y + 3, 2, hh - 3, T.pane_head_top);
         draw_text(c, FONT_UI_BOLD, x + 10, *y + 6, title, T.pane_head_text);
-        fill_circle(c, x + width - 13, *y + 12, 8, dark_mode ? T.face : WHITE); draw_circle(c, x + width - 13, *y + 12, 8, mix(T.pane_head_bot, T.text, 40));
+        fill_circle(c, x + width - 13, *y + 12, 8, T.pane_head_top); draw_circle(c, x + width - 13, *y + 12, 8, mix(T.pane_head_bot, T.text, 40));
         draw_arrow(c, x + width - 13, *y + 9, 0, T.pane_head_text); draw_arrow(c, x + width - 13, *y + 13, 0, T.pane_head_text);
     }
     *y += hh;
     int bh = n * 18 + 12;
     fill_rect(c, x, *y, width, bh, T.pane_body);
-    if (!T.classic) draw_rect(c, x, *y, width, bh, WHITE);
+    if (!T.classic) draw_rect(c, x, *y, width, bh, T.pane_head_top);
     for (int i = 0; i < n; i++) {
         int ly = *y + 7 + i * 18;
         if (icons && icons[i] >= 0) draw_icon(c, icons[i], 16, x + 10, ly - 1);
@@ -273,19 +273,19 @@ static void expl_paint(window_t *w) {
     if (ui_icon_button(w, R(4, 3, 66, 32), ICON_BACK, "Back") && e->hpos > 0) { e->hpos--; navigate(e, e->hist[e->hpos], false); }
     if (ui_icon_button(w, R(72, 3, 32, 32), ICON_FORWARD, NULL) && e->hpos < e->hlen - 1) { e->hpos++; navigate(e, e->hist[e->hpos], false); }
     if (ui_icon_button(w, R(106, 3, 32, 32), ICON_UP, NULL)) go_up(e);
-    vline(c, 142, 6, 26, HEX(0xC5C2B2));
+    vline(c, 142, 6, 26, T.face_dark);
     if (ui_icon_button(w, R(146, 3, 76, 32), ICON_SEARCH, "Search")) terminal_open(NULL, is_special(e) ? "C:\\" : e->path);
     if (ui_icon_button(w, R(224, 3, 78, 32), ICON_FOLDER, "Folders")) navigate(e, "::computer", true);
-    vline(c, 306, 6, 26, HEX(0xC5C2B2));
+    vline(c, 306, 6, 26, T.face_dark);
     static const char *views[] = { "Icons", "Details", "Tiles" };
     int vi = e->view;
     if (ui_dropdown(w, R(312, 9, 84, 21), views, 3, &vi)) {}
     if (vi != e->view) e->view = vi;
     /* address bar */
-    draw_text(c, FONT_UI, 8, TB_H + 6, "Address", HEX(0x7A7A7A));
+    draw_text(c, FONT_UI, 8, TB_H + 6, "Address", T.text);
     bool go = ui_textbox(w, R(58, TB_H + 2, c->w - 112, 21), e->addr, sizeof e->addr);
     if (ui_icon_button(w, R(c->w - 50, TB_H + 2, 44, 21), ICON_GO, "Go") || go) { char a[256]; strcpy(a, e->addr); if (!strcasecmp(a, "My Computer")) navigate(e, "::computer", true); else if (!strcasecmp(a, "Recycle Bin")) navigate(e, "::recycle", true); else navigate(e, a, true); return; }
-    hline(c, 0, TB_H + AB_H - 1, c->w, HEX(0xACA899));
+    hline(c, 0, TB_H + AB_H - 1, c->w, T.face_dark);
     rect_t cr = content_rect(e);
     /* task pane */
     if (cr.x > 0) {
@@ -328,8 +328,8 @@ static void expl_paint(window_t *w) {
         if (y + 80 < py + ph) {
             int hh = 25;
             if (T.classic) fill_rect(c, bx, y, bw, hh, T.pane_head_top);
-            else { fill_round_rect(c, bx, y, bw, hh, 4, T.pane_head_bot); gradient_h(c, bx, y + 3, bw, hh - 3, WHITE, T.pane_head_bot); }
-            draw_text(c, FONT_UI_BOLD, bx + 10, y + 6, "Details", T.classic ? WHITE : T.pane_head_text);
+            else { fill_round_rect(c, bx, y, bw, hh, 4, T.pane_head_bot); gradient_h(c, bx, y + 3, bw, hh - 3, T.pane_head_top, T.pane_head_bot); }
+            draw_text(c, FONT_UI_BOLD, bx + 10, y + 6, "Details", T.pane_head_text);
             y += hh;
             fill_rect(c, bx, y, bw, 76, T.pane_body);
             char t[128], s2[64];
@@ -381,7 +381,7 @@ static void expl_paint(window_t *w) {
             if (r.y + r.h < cr.y || r.y > cr.y + cr.h) continue;
             bool sel = i == e->sel;
             if (e->view == 2) {
-                if (sel) { fill_rect(c, r.x, r.y, r.w, r.h, lighten(T.select, 190)); draw_rect(c, r.x, r.y, r.w, r.h, lighten(T.select, 100)); }
+                if (sel) { fill_rect(c, r.x, r.y, r.w, r.h, mix(T.window_bg, T.select, dark_mode ? 100 : 50)); draw_rect(c, r.x, r.y, r.w, r.h, T.select); }
                 if (sel) draw_icon_tinted(c, it->icon, 48, r.x + 2, r.y + 2, T.select, 80); else draw_icon(c, it->icon, 48, r.x + 2, r.y + 2);
                 draw_text_ellipsis(c, FONT_UI, r.x + 56, r.y + 8, r.w - 60, it->name, T.text);
                 draw_text_ellipsis(c, FONT_UI, r.x + 56, r.y + 23, r.w - 60, it->type, T.gray_text);

@@ -74,7 +74,7 @@ static void tm_paint(window_t *w) {
     fill_rect(c, body.x + 1, body.y + 1, body.w - 2, body.h - 2, T.classic ? T.face : T.window_bg);
     rect_t lr = R(body.x + 10, body.y + 10, body.w - 20, body.h - 54);
     if (t->tab == 0) {
-        draw_sunken_box(c, lr, WHITE);
+        draw_sunken_box(c, lr, T.window_bg);
         fill_rect(c, lr.x + 1, lr.y + 1, lr.w - 2, 20, T.face); draw_text(c, FONT_UI, lr.x + 8, lr.y + 4, "Task", T.text); draw_text(c, FONT_UI, lr.x + lr.w - 100, lr.y + 4, "Status", T.text);
         int n = 0; window_t *list[64];
         for (int i = 0; i < wm_window_count(); i++) { window_t *x = wm_window_at(i); if (x != w && !(x->flags & (WF_POPUP | WF_HIDDEN))) list[n++] = x; }
@@ -92,7 +92,7 @@ static void tm_paint(window_t *w) {
         if (ui_button_ex(w, R(body.x + body.w - 172, body.y + body.h - 36, 80, 24), "Switch To", has, false) && has) wm_focus(list[t->sel]);
         if (ui_button(w, R(body.x + body.w - 84, body.y + body.h - 36, 74, 24), "New Task...")) shell_show_run();
     } else if (t->tab == 1) {
-        draw_sunken_box(c, lr, WHITE);
+        draw_sunken_box(c, lr, T.window_bg);
         static const char *kinds[] = { "System", "Shell", "Win32", "App" };
         const char *hd[] = { "Image Name", "PID", "Type", "CPU time", "Mem Usage" }; int hx[] = { 8, 190, 240, 310, 400 };
         fill_rect(c, lr.x + 1, lr.y + 1, lr.w - 2, 20, T.face);
@@ -195,10 +195,10 @@ static void calc_press(calc_t *c, const char *k) {
 static void calc_paint(window_t *w) {
     calc_t *c = w->data; canvas_t *s = w->surf;
     gfx_clear(s, T.face);
-    draw_sunken_box(s, R(10, 10, s->w - 20, 28), WHITE);
-    draw_text(s, FONT_LARGE, s->w - 18 - text_width(FONT_LARGE, c->disp), 13, c->disp, BLACK);
+    draw_sunken_box(s, R(10, 10, s->w - 20, 28), T.window_bg);
+    draw_text(s, FONT_LARGE, s->w - 18 - text_width(FONT_LARGE, c->disp), 13, c->disp, T.text);
     fill_rect(s, 12, 48, 30, 26, T.face); bevel_deep(s, 12, 48, 30, 26, false);
-    if (c->mem != 0) draw_text_centered(s, FONT_UI, R(12, 48, 30, 26), "M", BLACK);
+    if (c->mem != 0) draw_text_centered(s, FONT_UI, R(12, 48, 30, 26), "M", T.text);
     static const char *top[] = { "Back", "CE", "C" };
     for (int i = 0; i < 3; i++) if (ui_button(w, R(62 + i * 70, 48, 64, 26), top[i])) calc_press(c, top[i]);
     static const char *keys[4][6] = { { "MC", "7", "8", "9", "/", "sqrt" }, { "MR", "4", "5", "6", "*", "%" }, { "MS", "1", "2", "3", "-", "1/x" }, { "M+", "0", "+/-", ".", "+", "=" } };
@@ -232,7 +232,7 @@ static const uint32_t palette[28] = { 0x000000, 0x808080, 0x800000, 0x808000, 0x
 #define PAL_H 46
 #define TOOL_W 56
 static void tool_glyph(canvas_t *c, int t, int x, int y) {
-    uint32_t k = BLACK;
+    uint32_t k = T.text;
     switch (t) {
     case T_PENCIL: draw_thick_line(c, x + 3, y + 14, x + 13, y + 4, 3, HEX(0xE0A020)); draw_line(c, x + 2, y + 15, x + 4, y + 13, k); break;
     case T_BRUSH: draw_thick_line(c, x + 4, y + 12, x + 13, y + 3, 2, HEX(0x8D5A2B)); fill_circle(c, x + 4, y + 13, 3, HEX(0x2060E0)); break;
@@ -255,18 +255,18 @@ static void paint_paint(window_t *w) {
         rect_t r = R(6 + (i % 2) * 24, 6 + (i / 2) * 24, 22, 22);
         bool sel = p->tool == i;
         bool clicked = ui_click_area(w, r);
-        fill_rect(c, r.x, r.y, r.w, r.h, sel ? WHITE : T.face);
+        fill_rect(c, r.x, r.y, r.w, r.h, sel ? T.window_bg : T.face);
         bevel_deep(c, r.x, r.y, r.w, r.h, !sel);
         tool_glyph(c, i, r.x + 3, r.y + 3);
         if (clicked) p->tool = i;
     }
-    draw_sunken_box(c, R(6, 110, 46, 60), WHITE);
+    draw_sunken_box(c, R(6, 110, 46, 60), T.window_bg);
     static const int sizes[] = { 1, 3, 5, 8 };
     for (int i = 0; i < 4; i++) {
         rect_t r = R(8, 112 + i * 14, 42, 14);
         if (ui_click_area(w, r)) p->size = sizes[i];
         if (p->size == sizes[i]) fill_rect(c, r.x, r.y, r.w, r.h, T.select);
-        fill_rect(c, r.x + 6, r.y + 7 - sizes[i] / 2, 30, MAX(1, sizes[i]), p->size == sizes[i] ? WHITE : BLACK);
+        fill_rect(c, r.x + 6, r.y + 7 - sizes[i] / 2, 30, MAX(1, sizes[i]), p->size == sizes[i] ? T.select_text : T.text);
     }
     int py = c->h - PAL_H;
     fill_rect(c, 6, py + 4, 34, 34, WHITE); bevel_deep(c, 6, py + 4, 34, 34, false);
@@ -368,8 +368,8 @@ void paint_open(const char *path) {
 typedef struct { canvas_t *img; char name[96]; } iv_t;
 static void iv_paint(window_t *w) {
     iv_t *v = w->data; canvas_t *c = w->surf;
-    gfx_clear(c, HEX(0xF0F0F0));
-    if (!v->img) { draw_text(c, FONT_UI, 20, 20, "Unable to display this picture.", BLACK); return; }
+    gfx_clear(c, T.face);
+    if (!v->img) { draw_text(c, FONT_UI, 20, 20, "Unable to display this picture.", T.text); return; }
     int iw = v->img->w, ih = v->img->h, aw = c->w - 20, ah = c->h - 50;
     int sw = iw, sh = ih;
     if (sw > aw) { sh = sh * aw / sw; sw = aw; } if (sh > ah) { sw = sw * ah / sh; sh = ah; }
@@ -492,12 +492,12 @@ static void ms_paint(window_t *w) {
             if (m->mine[i]) { fill_circle(c, cx + 12, cy + 12, 7, BLACK); fill_circle(c, cx + 9, cy + 9, 2, WHITE); }
             else {
                 int n = ms_around(m, x, y);
-                if (n) { char s[2] = { (char)('0' + n), 0 }; uint32_t col = n == 1 ? HEX(0x0000C0) : n == 2 ? HEX(0x008000) : n == 3 ? HEX(0xC00000) : n == 4 ? HEX(0x000080) : HEX(0x800080); draw_text(c, FONT_UI_BOLD, cx + 8, cy + 6, s, col); }
+                if (n) { char s[2] = { (char)('0' + n), 0 }; uint32_t col = n == 1 ? HEX(0x0000C0) : n == 2 ? HEX(0x008000) : n == 3 ? HEX(0xC00000) : n == 4 ? HEX(0x000080) : HEX(0x800080); if (dark_mode) col = lighten(col, 140); draw_text(c, FONT_UI_BOLD, cx + 8, cy + 6, s, col); }
             }
         } else {
             fill_rect(c, cx, cy, MS_CELL - 1, MS_CELL - 1, T.face_light);
             draw_rect(c, cx, cy, MS_CELL - 1, MS_CELL - 1, T.face_dark);
-            if (m->flag[i]) draw_text(c, FONT_UI_BOLD, cx + 6, cy + 6, "F", HEX(0xC02020));
+            if (m->flag[i]) draw_text(c, FONT_UI_BOLD, cx + 6, cy + 6, "F", dark_mode ? HEX(0xFF9080) : HEX(0xC02020));
         }
     }
     if (m->lost || m->won) {
@@ -619,7 +619,7 @@ static void prop_paint(window_t *w) {
     fill_rect(c, body.x, body.y, body.w, body.h, T.classic ? T.face : T.window_bg);
     draw_rect(c, body.x, body.y, body.w, body.h, T.face_dark);
     draw_icon(c, file_icon(n), 32, 22, 42);
-    draw_sunken_box(c, R(80, 46, body.w - 90, 22), WHITE);
+    draw_sunken_box(c, R(80, 46, body.w - 90, 22), T.window_bg);
     draw_text_ellipsis(c, FONT_UI, 86, 50, body.w - 100, !n->parent ? vfs_drive_label(n->drive) : n->name, T.text);
     hline(c, 16, 84, body.w - 20, T.face_dark);
     char path[256], b[160];

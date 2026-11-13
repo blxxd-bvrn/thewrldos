@@ -1689,9 +1689,10 @@ static void draw_ctrl(canvas_t *c, browser_t *b, int idx, int x, int y, int w, i
         char shown[512]; strlcpy(shown, ct->value, sizeof shown);
         if (ct->type == C_PASSWORD) for (char *q = shown; *q; q++) *q = '*';
         int tw = text_width(FONT_UI, shown), off = tw > w - 12 ? tw - (w - 12) : 0;
-        if (ct->type == C_TEXTAREA) draw_text_wrapped(c, FONT_UI, x + 4, y + 4, w - 8, shown, T.text, 2);
-        else draw_text(c, FONT_UI, x + 4 - off, y + (h - font_height(FONT_UI)) / 2, shown, T.text);
-        if (focus && (timer_ticks() / 500) % 2 == 0 && ct->type != C_TEXTAREA) vline(c, x + 4 - off + tw, y + 4, h - 8, T.text);
+        /* HTML document/form colours are not the browser chrome palette. */
+        if (ct->type == C_TEXTAREA) draw_text_wrapped(c, FONT_UI, x + 4, y + 4, w - 8, shown, BLACK, 2);
+        else draw_text(c, FONT_UI, x + 4 - off, y + (h - font_height(FONT_UI)) / 2, shown, BLACK);
+        if (focus && (timer_ticks() / 500) % 2 == 0 && ct->type != C_TEXTAREA) vline(c, x + 4 - off + tw, y + 4, h - 8, BLACK);
         c->clip = old;
         break;
     }
@@ -1700,7 +1701,7 @@ static void draw_ctrl(canvas_t *c, browser_t *b, int idx, int x, int y, int w, i
     case C_RADIO: draw_radio(c, x + 1, y + 1, ct->checked, false); break;
     case C_SELECT:
         draw_sunken_box(c, R(x, y, w, h), WHITE);
-        if (ct->nopts) draw_text_ellipsis(c, FONT_UI, x + 4, y + (h - font_height(FONT_UI)) / 2, w - 24, ct->opts[ct->sel], T.text);
+        if (ct->nopts) draw_text_ellipsis(c, FONT_UI, x + 4, y + (h - font_height(FONT_UI)) / 2, w - 24, ct->opts[ct->sel], BLACK);
         fill_rect(c, x + w - 18, y + 2, 16, h - 4, T.face); draw_arrow(c, x + w - 10, y + h / 2 - 1, 1, T.text);
         break;
     }
@@ -1784,8 +1785,8 @@ static void stop_loading(browser_t *b) { b->gen++; b->loading = false; set_statu
 /* ---------------- the window: tabs, toolbar, bookmarks, page, status ---------------- */
 typedef struct { uint32_t strip, bar, tab_hot, text, dim, line, field, field_line, accent; } chrome_t;
 static chrome_t chrome_colours(void) {
-    if (dark_mode) return (chrome_t){ 0xFF161B26, 0xFF262D3D, 0xFF1F2533, 0xFFE6EBF3, 0xFF9AA6BA, 0xFF0E121A, 0xFF161B26, 0xFF3A4458, 0xFF5B9BFF };
-    return (chrome_t){ 0xFFCFD8E6, 0xFFF7F9FC, 0xFFE2E8F1, 0xFF1C2635, 0xFF5E6B80, 0xFFB5C0D0, 0xFFFFFFFF, 0xFFB8C4D6, 0xFF2F6FE0 };
+    return (chrome_t){ mix(T.face, T.select, 35), T.face, mix(T.face, T.select, 20), T.text,
+                       mix(T.text, T.face, 90), T.face_dark, T.window_bg, T.face_dark, T.link };
 }
 static void tri3(canvas_t *c, int x0, int y0, int x1, int y1, int x2, int y2, uint32_t col) {
     raster_path_t *p = raster_path_new(); if (!p) return;

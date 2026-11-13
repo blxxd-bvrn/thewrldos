@@ -13,7 +13,7 @@ static void fdlg_paint(window_t *w) {
     fdlg_t *f = w->data; canvas_t *c = w->surf;
     gfx_clear(c, T.face);
     draw_text(c, FONT_UI, 10, 12, f->save ? "Save in:" : "Look in:", T.text);
-    draw_sunken_box(c, R(70, 8, c->w - 150, 22), WHITE);
+    draw_sunken_box(c, R(70, 8, c->w - 150, 22), T.window_bg);
     draw_icon(c, ICON_FOLDER_OPEN, 16, 74, 11);
     draw_text_ellipsis(c, FONT_UI, 94, 12, c->w - 180, f->dir, T.text);
     if (ui_icon_button(w, R(c->w - 74, 7, 28, 24), ICON_UP, NULL)) { vnode_t *n = vfs_resolve(f->dir, NULL); if (n && n->parent) vfs_path(n->parent, f->dir, sizeof f->dir); f->sel = -1; f->scroll = 0; }
@@ -21,19 +21,20 @@ static void fdlg_paint(window_t *w) {
     /* shortcuts */
     const char *pl[] = { "Desktop", "My Documents", "My Computer" }; const int pi[] = { ICON_DESKTOP, ICON_MY_DOCUMENTS, ICON_COMPUTER };
     const char *pp[] = { USER_DESKTOP, USER_DOCS, "C:\\" };
-    fill_rect(c, 8, 40, 82, c->h - 90, T.classic ? HEX(0x808080) : lighten(T.select, 120));
+    uint32_t places = T.classic ? T.face_dark : mix(T.face, T.select, dark_mode ? 55 : 85);
+    fill_rect(c, 8, 40, 82, c->h - 90, places);
     for (int i = 0; i < 3; i++) {
         rect_t r = R(10, 46 + i * 64, 78, 60);
         if (ui_click_area(w, r)) { strcpy(f->dir, pp[i]); f->sel = -1; f->scroll = 0; }
         draw_icon(c, pi[i], 32, r.x + 23, r.y + 4);
-        draw_text_centered(c, FONT_UI, R(r.x, r.y + 40, r.w, 16), pl[i], WHITE);
+        draw_text_centered(c, FONT_UI, R(r.x, r.y + 40, r.w, 16), pl[i], theme_text_on(places));
     }
     /* listing */
     vnode_t *d = vfs_resolve(f->dir, NULL);
     vnode_t *items[256]; int n = 0;
     if (d && d->dir) { vfs_sort_children(d); for (vnode_t *k = d->child; k && n < 256; k = k->next) if (k->dir || !f->ext || !*f->ext || str_ends_with_ci(k->name, f->ext)) items[n++] = k; }
     rect_t lr = R(96, 40, c->w - 104, c->h - 104);
-    draw_sunken_box(c, lr, WHITE);
+    draw_sunken_box(c, lr, T.window_bg);
     int ih = 20, vis = (lr.h - 4) / ih;
     rect_t old = canvas_push_clip(c, R(lr.x + 1, lr.y + 1, lr.w - 2, lr.h - 2));
     for (int i = f->scroll; i < n && i < f->scroll + vis + 1; i++) {

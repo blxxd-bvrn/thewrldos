@@ -57,6 +57,7 @@ from; open it in a browser to watch it live.
 | ![Aero](docs/screenshots/aero.png) | ![Plex](docs/screenshots/plex.png) |
 | ![Dark mode](docs/screenshots/dark.png) | ![Explorer in dark mode](docs/screenshots/dark-explorer.png) |
 | ![Advanced appearance](docs/screenshots/advanced.png) | ![Sound settings](docs/screenshots/sound.png) |
+| ![Visual Effects settings](docs/screenshots/visual-effects.png) | ![Longhorn-style sidebar tiles](docs/screenshots/sidebar-tiles.png) |
 
 ### The WRLD Browser
 
@@ -720,9 +721,23 @@ device manager's job is to say what the computer has and which driver runs it.
   - Move/resize, maximize/minimize, double-click title, system menu.
   - Menu bars, popup menus, modal dialogs.
   - Alt+Tab, Alt+F4, Win key, Ctrl+Shift+Esc.
+  - **Visual Effects** in Control Panel (also linked from Display and Taskbar): choose
+    **Border scale (Windows XP)**, **Aero fade (Vista / 7)** or **None** for opening, closing,
+    minimizing, restoring and maximizing windows. Start menu transitions have separate
+    **Slide**, **Fade** and **None** choices; sidebar sliding and tile fading can be toggled
+    independently. A master switch disables all of these effects without losing the choices.
+    Defaults are border scale, Start-menu slide, sidebar slide and tile fade.
+  - Effects use timer-based software composition, not sleeps or blocking animation loops.
+    Transitions can reverse, and theme/resolution changes and shell recovery settle them.
+    Preferences are saved in `C:\WRLD\wrld.ini`; safe mode disables animations.
+    `make check-animations` runs host-side checks for easing, reversal, instant effects and
+    timer wraparound without starting the OS; `make check-composite` checks scaled alpha,
+    clipping, transparent corners and padded scanlines.
+    See [desktop appearance checks](docs/appearance-testing.md) for the GUI regression checklist.
 - **Shell:**
   - The desktop, taskbar, sidebar, icons and window manager run in a separate
-    **`shellmanager.exe`** task started at boot. A small **shellwatch** task restarts it
+    **`shellmanager.exe`** kernel task started at boot (not a separately loaded or protected
+    executable). A small **shellwatch** task restarts it
     if it exits, and the watchdog restarts only the shell loop (not the computer) if it
     stops responding. Administrative Tools and Security Center have a restart button.
   - Taskbar with Start button, Quick Launch, task buttons, volume and network icons, and clock.
@@ -732,7 +747,10 @@ device manager's job is to say what the computer has and which driver runs it.
     header is the account photo drawn full-bleed with a gradient wipe into the panel, followed by
     removable tiles: Clock & Date, Apps, Search, Shortcuts, Quick Launch, Usage Meter and Memo.
     Search covers apps, files under My Documents/Samples/C: and Control Panel pages. The open
-    state and tile set are saved.
+    state and tile set are saved. Tiles have distinct Longhorn-style title strips, framed
+    content panels and separators, using the selected style's colours and Classic bevels.
+    Aero keeps translucent glass tile bodies. The panel stays below application windows,
+    including during transitions; covering windows receive the mouse input.
   - Tray balloons; desktop icons with context menus.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
 - **Visual styles**, all `.wrldstyle` files in `C:\WRLD\Resources\Themes`:
@@ -748,14 +766,19 @@ device manager's job is to say what the computer has and which driver runs it.
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.
-  - **Dark mode:** a checkbox in Personalization turns the shell, menus, dialog boxes and the
-    built-in apps (Explorer, Control Panel, Notepad, Task Manager) dark with light text. It
-    keeps the selected style's renderer, so it works with Luna, Aero, Plex or Classic, and it is
-    saved with your settings.
+  - **Dark mode:** a checkbox in Personalization turns the shell, menus, dialog boxes and
+    built-in app chrome dark with readable text. Luna Blue, Olive Green, Silver, Classic,
+    Aero and Plex keep their own accents, gradients and renderer; Aero retains transparency.
+    Explorer task panes, the All Programs flyout, file dialogs, Calculator, Paint tools,
+    browser chrome and standard Win32 controls use the appropriate palette roles. Wallpapers,
+    photos, web document colours and Paint's image pixels are not recoloured. The Media Player
+    keeps its own dark skin. Dark mode is saved with your settings.
   - **Advanced Appearance:** a page in Personalization with a per-role colour editor (window
     face, background, text, hyperlinks, buttons, scrollbars, check/radio accent, menus, taskbar,
     title bars and more) that previews changes live and can reset individual colours or all of
     them.
+    Dark mode is applied before hue/tone adjustments; explicit per-role overrides win last
+    and are stored in `C:\WRLD\System32\config\appearance.bin`.
   - **Cursor sets:** drop folders of standard Windows `.cur` files into `C:\WRLD\Cursors` and
     choose the set in Advanced Appearance. Missing roles fall back to the built-in cursors.
   - **Hue (0–359°), saturation and lightness** sliders recolour any style; they are saved with

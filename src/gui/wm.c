@@ -3,6 +3,7 @@
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
+#include "animation.h"
 #include "usb.h"
 
 #define MAX_WIN 64
@@ -16,6 +17,7 @@ bool wm_need_redraw = true;
 uint32_t gui_composes;
 
 bool wm_animations = true;
+int wm_animation_style = WINDOW_ANIM_BORDER;
 static int prev_buttons;
 static window_t *capture;
 static int capture_btn;
@@ -26,6 +28,30 @@ enum { DRAG_NONE, DRAG_MOVE, DRAG_RESIZE, DRAG_CAPBTN, DRAG_CLIENT };
 static struct { int mode; window_t *w; int edges; int mx, my; rect_t start; int btn; } drag;
 static struct { window_t *w; int btn; } cap_hot;
 static uint32_t last_click_time; static int last_click_x, last_click_y, last_click_btn;
+
+/* Effects own pixels/IDs, never application data or a pointer to a destroyed
+ * window. Logical state changes immediately; only composition is animated. */
+enum { FX_OPEN, FX_CLOSE, FX_MINIMIZE, FX_RESTORE, FX_SIZE };
+#define MAX_EFFECTS 12
+#define EFFECT_BUDGET (32u * 1024 * 1024)
+typedef struct {
+    bool used, pending;
+    int id, before, kind, style;
+    rect_t from, to;
+    animation_t time;
+    canvas_t *image;
+} window_effect_t;
+static window_effect_t effects[MAX_EFFECTS];
+static uint32_t effect_bytes, effect_frame;
+static bool effects_suppressed;
+static void paint_window_at(canvas_t *c, window_t *w, int x, int y);
+static void effect_begin(window_t *w, int kind, rect_t from, rect_t to, bool snapshot);
+static void effects_cancel(void);
+static void effect_cancel_window(window_t *w);
+static window_effect_t *effect_for(window_t *w);
+static rect_t effect_rect(window_effect_t *e);
+static bool effect_mouse(int x, int y);
+static bool effect_covers(int x, int y);
 
 /* deferred calls */
 typedef struct { wm_deferred_fn fn; void *arg; } defer_t;
@@ -57,6 +83,7 @@ static void frame_size_for_client(int cw, int ch, int flags, int nmenus, int *ow
     *oh = ch + T.title_h + T.border + (nmenus ? T.menubar_h : 0);
 }
 void wm_resize_client(window_t *w, int cw, int ch) {
+    effect_cancel_window(w);
     frame_size_for_client(cw, ch, w->flags, w->nmenus, &w->w, &w->h);
     sync_surface(w); wm_need_redraw = true;
 }
@@ -95,8 +122,13 @@ static window_t *modal_child(window_t *w) {
 void wm_focus(window_t *w) {
     if (!w || !wm_alive(w)) { set_active(NULL); return; }
     window_t *m = modal_child(w);
-    if (m) { if (w->state == WS_MINIMIZED) w->state = WS_NORMAL; raise(w); w = m; }
-    if (w->state == WS_MINIMIZED) { w->state = w->restore.w && (w->flags & WF_RESIZABLE) && w->anim == 2 ? WS_MAXIMIZED : WS_NORMAL; w->anim = 0; w->dirty = true; }
+    if (m) { if (w->state == WS_MINIMIZED) { effect_cancel_window(w); w->state = w->minimized_state; } raise(w); w = m; }
+    if (w->state == WS_MINIMIZED) {
+        rect_t from = shell_task_button_rect(w);
+        window_effect_t *e = effect_for(w); if (e) from = effect_rect(e);
+        w->state = w->minimized_state; w->dirty = true;
+        effect_begin(w, FX_RESTORE, from, R(w->x, w->y, w->w, w->h), false);
+    }
     w->flags &= ~WF_HIDDEN;
     raise(w);
     set_active(w);
@@ -119,24 +151,39 @@ window_t *wm_create(const char *title, int x, int y, int cw, int ch, int flags) 
     static int cascade = 0;
     if (x < 0) { rect_t wa = wm_work_area(); x = 60 + (cascade % 8) * 26; y = 40 + (cascade % 8) * 26; cascade++; if (x + w->w > wa.w) x = MAX(0, wa.w - w->w); if (y + w->h > wa.h) y = MAX(0, wa.h - w->h); }
     w->x = x; w->y = y;
+    w->opening = !(flags & (WF_HIDDEN | WF_POPUP));
     task_t *t = task_current();
     w->pid = t ? t->pid : 0;
     w->ui.focus = 0;
     wins[nwin++] = w;
+    for (int i = 0; i < MAX_EFFECTS; i++)
+        if (effects[i].used && !effects[i].id && !effects[i].before) effects[i].before = w->id;
     raise(w);
     sync_surface(w);
     if (!(flags & WF_HIDDEN)) set_active(w);
     wm_need_redraw = true;
     return w;
 }
-void wm_show(window_t *w) { w->flags &= ~WF_HIDDEN; wm_focus(w); }
+void wm_show(window_t *w) { if (w->flags & WF_HIDDEN) w->opening = !(w->flags & WF_POPUP); w->flags &= ~WF_HIDDEN; wm_focus(w); }
 void wm_destroy(window_t *w) {
     int i = index_of(w);
     if (i < 0) return;
     for (int j = 0; j < ndying; j++) if (dying[j] == w) return;
+    window_effect_t *effect = effect_for(w);
+    if (!w->opening && (!effect || effect->kind != FX_CLOSE)) {
+        rect_t r = R(w->x, w->y, w->w, w->h);
+        effect_begin(w, FX_CLOSE, r, R(r.x + r.w / 2, r.y + r.h / 2, 2, 2), true);
+    }
     /* destroy owned windows too */
     for (int k = nwin - 1; k >= 0; k--) if (wins[k]->owner == w) wm_destroy(wins[k]);
     i = index_of(w);
+    int before = i + 1 < nwin ? wins[i + 1]->id : 0;
+    for (int j = 0; j < MAX_EFFECTS; j++) {
+        window_effect_t *e = &effects[j];
+        if (e->used && e->before == w->id) e->before = before;
+        if (e->used && e->id == w->id && e->kind == FX_CLOSE) { e->id = 0; e->before = before; }
+    }
+    effect_cancel_window(w);        /* a close snapshot has already been detached */
     for (int j = i; j < nwin - 1; j++) wins[j] = wins[j + 1];
     nwin--;
     if (capture == w) capture = NULL;
@@ -163,17 +210,29 @@ void wm_destroy_for_pid(int pid) {
 void wm_close(window_t *w) {
     if (!wm_alive(w)) return;
     if (w->close && !w->close(w)) return;
+    if (!wm_alive(w)) return;
+    rect_t r = R(w->x, w->y, w->w, w->h);
+    effect_begin(w, FX_CLOSE, r, R(r.x + r.w / 2, r.y + r.h / 2, 2, 2), true);
     wm_destroy(w);
 }
 void wm_minimize(window_t *w) {
-    if (w->flags & WF_NO_MIN) return;
-    w->anim = w->state == WS_MAXIMIZED ? 2 : 1;
+    if (!w || (w->flags & WF_NO_MIN) || w->state == WS_MINIMIZED) return;
+    w->opening = false;
+    rect_t from = R(w->x, w->y, w->w, w->h);
+    window_effect_t *e = effect_for(w); if (e) from = effect_rect(e);
+    effect_begin(w, FX_MINIMIZE, from, shell_task_button_rect(w), true);
+    w->minimized_state = w->state;
     w->state = WS_MINIMIZED;
     w->dirty = false;                 /* a minimized window is not painted */
     if (wm_active == w) { wm_active = NULL; focus_topmost(); }
     wm_need_redraw = true;
 }
 void wm_maximize(window_t *w, bool on) {
+    if (!w || (on && (w->flags & WF_NO_MAX))) return;
+    if (w->state == WS_MINIMIZED) { effect_cancel_window(w); w->state = w->minimized_state; }
+    rect_t from = R(w->x, w->y, w->w, w->h);
+    window_effect_t *e = effect_for(w); if (e) from = effect_rect(e);
+    bool changed = on != (w->state == WS_MAXIMIZED);
     if (on) {
         if (w->state != WS_MAXIMIZED) w->restore = R(w->x, w->y, w->w, w->h);
         rect_t wa = wm_work_area();
@@ -184,19 +243,24 @@ void wm_maximize(window_t *w, bool on) {
         w->x = w->restore.x; w->y = w->restore.y; w->w = w->restore.w; w->h = w->restore.h;
         w->state = WS_NORMAL;
     }
-    sync_surface(w); wm_need_redraw = true;
+    sync_surface(w);
+    if (changed && !w->opening) effect_begin(w, FX_SIZE, from, R(w->x, w->y, w->w, w->h), false);
+    wm_need_redraw = true;
 }
 void wm_set_title(window_t *w, const char *t) { strlcpy(w->title, t, sizeof w->title); wm_need_redraw = true; }
 void wm_invalidate(window_t *w) { if (w) w->dirty = true; }
 void wm_redraw_all(void) { for (int i = 0; i < nwin; i++) wins[i]->dirty = true; wm_need_redraw = true; }
 void wm_set_timer(window_t *w, uint32_t ms, void (*fn)(window_t *)) { w->timer = fn; w->timer_ms = ms; w->timer_next = timer_ticks() + ms; }
 void wm_theme_changed(void) {
+    wm_effects_changed();
     for (int i = 0; i < nwin; i++) {
         window_t *w = wins[i];
         if (w->state == WS_MAXIMIZED) { rect_t r = w->restore; wm_maximize(w, true); w->restore = r; }
         sync_surface(w);
     }
     shell_wallpaper_changed();
+    extern void w32_theme_changed(void);
+    w32_theme_changed();
     wm_need_redraw = true;
 }
 
@@ -233,10 +297,10 @@ static void popup_paint(canvas_t *c) {
     for (int i = 0; i < pm.n; i++) {
         int iy = pm.y + pm_item_y(i);
         menu_item_t *it = &pm.items[i];
-        if (it->label[0] == '-') { hline(c, pm.x + (T.classic ? 2 : 1), iy + 3, pm.w - (T.classic ? 4 : 2), HEX(0xACA899)); if (T.classic) hline(c, pm.x + 2, iy + 4, pm.w - 4, WHITE); continue; }
+        if (it->label[0] == '-') { hline(c, pm.x + (T.classic ? 2 : 1), iy + 3, pm.w - (T.classic ? 4 : 2), T.face_dark); if (T.classic) hline(c, pm.x + 2, iy + 4, pm.w - 4, T.face_light); continue; }
         bool hot = i == pm.hot && !(it->flags & MI_DISABLED);
         if (hot) fill_rect(c, pm.x + (T.classic ? 3 : 2), iy, pm.w - (T.classic ? 6 : 4), PM_ITEM_H, T.hot);
-        uint32_t col = (it->flags & MI_DISABLED) ? HEX(0xACA899) : hot ? T.hot_text : T.text;
+        uint32_t col = (it->flags & MI_DISABLED) ? T.gray_text : hot ? T.hot_text : T.text;
         char buf[96]; strlcpy(buf, it->label, sizeof buf);
         char *tab = strchr(buf, '\t'); if (tab) *tab = 0;
         draw_text(c, FONT_UI, pm.x + 24, iy + (PM_ITEM_H - font_height(FONT_UI)) / 2, buf, col);
@@ -331,46 +395,175 @@ static window_t *window_at(int sx, int sy) {
     for (int i = nwin - 1; i >= 0; i--) {
         window_t *w = wins[i];
         if (w->state == WS_MINIMIZED || (w->flags & WF_HIDDEN)) continue;
-        if (pt_in(R(w->x, w->y, w->w, w->h), sx, sy)) return w;
+        window_effect_t *e = effect_for(w);
+        if (pt_in(e ? effect_rect(e) : R(w->x, w->y, w->w, w->h), sx, sy)) return w;
     }
     return NULL;
 }
-bool wm_window_at_point(int x, int y) { return window_at(x, y) != NULL; }
+bool wm_window_at_point(int x, int y) { return window_at(x, y) != NULL || effect_covers(x, y); }
 
 /* ---------------- painting ---------------- */
 static void run_paint(window_t *w) {
     if (!w->paint) { w->dirty = false; return; }
     sync_surface(w);              /* e.g. a menu bar was attached after the window was created */
+    w->dirty = false;             /* preserve invalidations made during this paint */
     canvas_reset_clip(w->surf);
     ui_begin(w);
     w->paint(w);
     ui_end(w);
-    w->dirty = false;
     wm_need_redraw = true;
 }
-static void paint_menubar(canvas_t *c, window_t *w) {
+static void paint_menubar(canvas_t *c, window_t *w, int dx, int dy) {
     rect_t cr = wm_client_rect(w);
+    cr.x += dx; cr.y += dy;
     int y = cr.y - T.menubar_h;
     fill_rect(c, cr.x, y, cr.w, T.menubar_h, T.classic ? T.face : T.face);
-    if (!T.classic) hline(c, cr.x, y + T.menubar_h - 1, cr.w, HEX(0xD8D2BD));
+    if (!T.classic) hline(c, cr.x, y + T.menubar_h - 1, cr.w, T.face_dark);
     for (int i = 0; i < w->nmenus; i++) {
         int x = cr.x + menubar_item_x(w, i);
         int tw = text_width(FONT_UI, w->menus[i].title);
         bool open = pm.open && pm.menubar_win == w && pm.menubar_idx == i;
         if (open) fill_rect(c, x - 6, y + 1, tw + 12, T.menubar_h - 2, T.classic ? T.face : T.hot);
         if (open && T.classic) bevel(c, x - 6, y + 1, tw + 12, T.menubar_h - 2, false);
-        draw_text(c, FONT_UI, x, y + (T.menubar_h - font_height(FONT_UI)) / 2, w->menus[i].title, open && !T.classic ? WHITE : T.text);
+        draw_text(c, FONT_UI, x, y + (T.menubar_h - font_height(FONT_UI)) / 2, w->menus[i].title, open && !T.classic ? T.hot_text : T.text);
     }
 }
-static void paint_window(canvas_t *c, window_t *w) {
+static void paint_window_at(canvas_t *c, window_t *w, int x, int y) {
     if (framed(w)) {
         int hot = cap_hot.w == w ? cap_hot.btn : -1;
         int pressed = (drag.mode == DRAG_CAPBTN && drag.w == w && hot == drag.btn) ? drag.btn : -1;
-        draw_window_frame(c, R(w->x, w->y, w->w, w->h), w->title, w->icon, w == wm_active, w->flags, hot, pressed, w->state);
-        if (w->nmenus) paint_menubar(c, w);
+        draw_window_frame(c, R(x, y, w->w, w->h), w->title, w->icon, w == wm_active, w->flags, hot, pressed, w->state);
+        if (w->nmenus) paint_menubar(c, w, x - w->x, y - w->y);
     }
     rect_t cr = wm_client_rect(w);
+    cr.x += x - w->x; cr.y += y - w->y;
     blit(c, cr.x, cr.y, w->surf, 0, 0, cr.w, cr.h);
+}
+
+static void effect_drop(window_effect_t *e) {
+    if (e->image) { effect_bytes -= e->image->w * e->image->h * 4; canvas_free(e->image); }
+    memset(e, 0, sizeof *e);
+    wm_need_redraw = true;
+}
+static window_effect_t *effect_for(window_t *w) {
+    if (w) for (int i = 0; i < MAX_EFFECTS; i++) if (effects[i].used && effects[i].id == w->id) return &effects[i];
+    return NULL;
+}
+static void effect_cancel_window(window_t *w) {
+    window_effect_t *e = effect_for(w); if (e) effect_drop(e);
+}
+static void effects_cancel(void) {
+    for (int i = 0; i < MAX_EFFECTS; i++) if (effects[i].used) effect_drop(&effects[i]);
+}
+void wm_effects_changed(void) {
+    effects_cancel();
+    for (int i = 0; i < nwin; i++) wins[i]->opening = false;
+    shell_effects_changed();
+    wm_need_redraw = true;
+}
+static rect_t effect_rect(window_effect_t *e) {
+    int p = animation_value(&e->time, timer_ticks());
+    return R(animation_lerp(e->from.x, e->to.x, p), animation_lerp(e->from.y, e->to.y, p),
+             animation_lerp(e->from.w, e->to.w, p), animation_lerp(e->from.h, e->to.h, p));
+}
+static bool effect_snapshot(window_effect_t *e, window_t *w) {
+    uint64_t bytes = (uint64_t)w->w * w->h * 4;
+    if (!w->surf || w->w <= 0 || w->h <= 0 || bytes > EFFECT_BUDGET - effect_bytes) return false;
+    canvas_t *image = kzalloc(sizeof *image);
+    if (!image) return false;
+    uint32_t *pixels = kmalloc((size_t)bytes);
+    if (!pixels) { kfree(image); return false; }
+    canvas_init(image, pixels, w->w, w->h);
+    e->image = image; effect_bytes += (uint32_t)bytes;
+    /* Aero samples the backdrop before drawing glass; the application paints
+     * only its client surface. Corners outside the frame remain transparent. */
+    gfx_clear(e->image, T.face);
+    rect_t visible = rect_intersect(R(w->x, w->y, w->w, w->h), R(0, 0, SCREEN_W, SCREEN_H));
+    blit(e->image, visible.x - w->x, visible.y - w->y, &screen, visible.x, visible.y, visible.w, visible.h);
+    paint_window_at(e->image, w, 0, 0);
+    if (framed(w) && !T.classic && w->state != WS_MAXIMIZED) {
+        for (int y = 0; y < MIN(7, w->h); y++) for (int x = 0; x < MIN(7, w->w / 2); x++) {
+            if ((7 - x) * (7 - x) + (7 - y) * (7 - y) > 49) {
+                e->image->px[y * e->image->stride + x] = 0;
+                e->image->px[y * e->image->stride + w->w - 1 - x] = 0;
+            }
+        }
+    }
+    return true;
+}
+static void effect_begin(window_t *w, int kind, rect_t from, rect_t to, bool snapshot) {
+    effect_cancel_window(w);
+    if (effects_suppressed || !wm_animations || boot_safe_mode || (snapshot && w->opening) || wm_animation_style <= WINDOW_ANIM_NONE || wm_animation_style >= WINDOW_ANIM_COUNT ||
+        (w->flags & (WF_HIDDEN | WF_POPUP)) || w->state == WS_MINIMIZED) return;
+    window_effect_t *e = NULL;
+    for (int i = 0; i < MAX_EFFECTS; i++) if (!effects[i].used) { e = &effects[i]; break; }
+    if (!e) return;                /* a busy desktop still changes state immediately */
+    e->used = true; e->id = w->id; e->kind = kind; e->style = wm_animation_style;
+    e->from = from; e->to = to; e->pending = !snapshot;
+    if (e->style == WINDOW_ANIM_AERO && (kind == FX_OPEN || kind == FX_CLOSE)) {
+        rect_t full = kind == FX_OPEN ? to : from;
+        rect_t small = R(full.x + full.w * 3 / 100, full.y + full.h * 3 / 100 + 12, MAX(1, full.w * 94 / 100), MAX(1, full.h * 94 / 100));
+        if (kind == FX_OPEN) e->from = small; else e->to = small;
+    }
+    animation_set(&e->time, 0);
+    if (snapshot) {
+        if (e->style == WINDOW_ANIM_AERO && !effect_snapshot(e, w)) { effect_drop(e); return; }
+        animation_start(&e->time, 255, timer_ticks(), e->style == WINDOW_ANIM_BORDER ? 180 : 220);
+    }
+    wm_need_redraw = true;
+}
+static void effect_paint(canvas_t *c, window_effect_t *e, window_t *w) {
+    if (e->pending) {
+        if (!w || (e->style == WINDOW_ANIM_AERO && !effect_snapshot(e, w))) { effect_drop(e); if (w) paint_window_at(c, w, w->x, w->y); return; }
+        e->pending = false;
+        animation_start(&e->time, 255, timer_ticks(), e->style == WINDOW_ANIM_BORDER ? 180 : 220);
+    }
+    rect_t r = effect_rect(e);
+    if (e->style == WINDOW_ANIM_BORDER) {
+        /* XP-style wireframe scaling: no repeatedly resized client paints. */
+        draw_rect(c, r.x, r.y, r.w, r.h, T.select);
+        if (r.w > 4 && r.h > 4) draw_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, mix(T.select, WHITE, 160));
+        if (r.w > 8 && r.h > 8) draw_rect(c, r.x + 3, r.y + 3, r.w - 6, r.h - 6, T.select);
+    } else {
+        int p = animation_value(&e->time, timer_ticks());
+        int alpha = e->kind == FX_CLOSE || e->kind == FX_MINIMIZE ? 255 - p : e->kind == FX_SIZE ? 205 + p * 50 / 255 : p;
+        blit_scaled_alpha(c, r, e->image, alpha);
+    }
+}
+static void effects_before(canvas_t *c, int id) {
+    for (int i = 0; i < MAX_EFFECTS; i++)
+        if (effects[i].used && !effects[i].id && effects[i].before == id) effect_paint(c, &effects[i], NULL);
+}
+static void effects_tick(uint32_t now) {
+    if (now - effect_frame < 16) return;
+    effect_frame = now;
+    for (int i = 0; i < MAX_EFFECTS; i++) {
+        window_effect_t *e = &effects[i];
+        if (!e->used) continue;
+        if (!wm_animations || (!e->pending && !animation_running(&e->time, now))) effect_drop(e);
+        else wm_need_redraw = true;
+    }
+}
+static bool effect_covers(int x, int y) {
+    for (int i = 0; i < MAX_EFFECTS; i++) if (effects[i].used && pt_in(effect_rect(&effects[i]), x, y)) return true;
+    return false;
+}
+static bool effect_mouse(int x, int y) {
+    window_t *top = window_at(x, y);
+    int top_z = top ? index_of(top) : -1;
+    for (int i = MAX_EFFECTS - 1; i >= 0; i--) {
+        window_effect_t *e = &effects[i];
+        if (!e->used || !pt_in(effect_rect(e), x, y)) continue;
+        window_t *w = wm_find(e->id), *before = wm_find(e->before);
+        int z = w ? index_of(w) : before ? index_of(before) - 1 : nwin;
+        if (top_z > z) continue;
+        /* A click settles a moving visual, but must not activate a control at
+         * a coordinate it has not reached yet, or click through to the sidebar. */
+        effect_drop(e);
+        if (w && w->state != WS_MINIMIZED) { wm_focus(w); w->dirty = true; }
+        return true;
+    }
+    return false;
 }
 static int current_cursor(void) {
     if (drag.mode == DRAG_RESIZE) return edge_cursor(drag.edges);
@@ -380,6 +573,7 @@ static int current_cursor(void) {
     if (sc >= 0) return sc;
     window_t *w = window_at(wm_mouse_x, wm_mouse_y);
     if (!w) return CURSOR_ARROW;
+    if (effect_for(w)) return CURSOR_ARROW;
     int e = 0, b = -1;
     int ht = hit_test(w, wm_mouse_x, wm_mouse_y, &e, &b);
     if (ht == HT_EDGE) return edge_cursor(e);
@@ -392,9 +586,17 @@ static void compose(void) {
     desktop_paint(&screen);
     for (int i = 0; i < nwin; i++) {
         window_t *w = wins[i];
-        if (w->state == WS_MINIMIZED || (w->flags & WF_HIDDEN)) continue;
-        paint_window(&screen, w);
+        effects_before(&screen, w->id);
+        if (w->flags & WF_HIDDEN) { effect_cancel_window(w); continue; }
+        if (w->opening && w->state != WS_MINIMIZED) {
+            w->opening = false;
+            effect_begin(w, FX_OPEN, R(w->x + w->w / 2, w->y + w->h / 2, 2, 2), R(w->x, w->y, w->w, w->h), false);
+        }
+        window_effect_t *e = effect_for(w);
+        if (e) effect_paint(&screen, e, w);
+        else if (w->state != WS_MINIMIZED) paint_window_at(&screen, w, w->x, w->y);
     }
+    effects_before(&screen, 0);
     taskbar_paint(&screen);
     shell_paint_overlays(&screen);
     popup_paint(&screen);
@@ -459,7 +661,7 @@ static void handle_mouse(mouse_state_t *ms) {
             if (drag.mode == DRAG_MOVE) {
                 if (w->state == WS_MAXIMIZED) {
                     /* drag a maximised window: restore under the cursor */
-                    int rw = w->restore.w; wm_maximize(w, false);
+                    int rw = w->restore.w; wm_maximize(w, false); effect_cancel_window(w);
                     w->x = mx - rw / 2; w->y = my - 10; drag.start = R(w->x, w->y, w->w, w->h); drag.mx = mx; drag.my = my;
                 } else { w->x = drag.start.x + dx; w->y = MAX(0, MIN(drag.start.y + dy, SCREEN_H - T.taskbar_h - 10)); }
             } else {
@@ -507,8 +709,10 @@ static void handle_mouse(mouse_state_t *ms) {
         if (hover_win && wm_alive(hover_win)) { deliver_mouse(hover_win, ME_LEAVE, mx, my, 0); hover_win = NULL; }
         return;
     }
+    if ((pressed || released) && my < SCREEN_H - T.taskbar_h && effect_mouse(mx, my)) return;
 
     window_t *w = window_at(mx, my);
+    if (w && effect_for(w)) return;       /* hover waits for the visual to settle */
     /* hover tracking */
     if (hover_win != w) {
         if (hover_win && wm_alive(hover_win)) deliver_mouse(hover_win, ME_LEAVE, mx, my, 0);
@@ -587,6 +791,7 @@ static void cycle_windows(void) {
 }
 extern void app_launch(const char *name, const char *arg);
 static void handle_key(key_event_t *e) {
+    if (e->pressed && wm_active) effect_cancel_window(wm_active);
     if (e->pressed) {
         if ((e->key == KEY_DELETE && (e->mods & MOD_CTRL) && (e->mods & MOD_ALT)) || (e->key == KEY_ESC && (e->mods & MOD_CTRL) && (e->mods & MOD_SHIFT))) { app_launch("taskmgr", NULL); return; }
         if (e->key == KEY_TAB && (e->mods & MOD_ALT)) { cycle_windows(); return; }
@@ -616,6 +821,7 @@ static void handle_key(key_event_t *e) {
 
 /* ---------------- main loop ---------------- */
 static void screen_resized(void) {
+    effects_cancel();
     rect_t wa = wm_work_area();
     for (int i = 0; i < nwin; i++) {
         window_t *w = wins[i];
@@ -629,11 +835,13 @@ static void screen_resized(void) {
     if (wm_mouse_x >= SCREEN_W) wm_mouse_x = SCREEN_W - 1;
     if (wm_mouse_y >= SCREEN_H) wm_mouse_y = SCREEN_H - 1;
     mouse_set_bounds(SCREEN_W, SCREEN_H);
+    wm_effects_changed();
     shell_wallpaper_changed();
     desktop_refresh();
     wm_redraw_all();
 }
 void wm_init(void) {
+    wm_animations = !boot_safe_mode;
     gfx_resized_hook = screen_resized; styles_load(); theme_apply(boot_safe_mode ? THEME_CLASSIC : THEME_LUNA_BLUE, 0); }
 bool gfx_ready_for_watchdog = true;
 /* ---------------- watchdog ----------------
@@ -692,6 +900,7 @@ static void watchdog(regs_t *r, uint32_t now) {
 }
 static volatile bool shell_restart_req;
 void wm_recover_shell(void) {
+    effects_cancel();
     popup_close();
     pm.open = false;
     drag.mode = DRAG_NONE;
@@ -700,7 +909,9 @@ void wm_recover_shell(void) {
     cap_hot.w = NULL;
     prev_buttons = 0;
     last_click_time = 0;
+    effects_suppressed = true;
     while (nwin > 0) wm_destroy(wins[nwin - 1]);
+    effects_suppressed = false;
     wm_need_redraw = true;
 }
 void shellmanager_restart(void) { klog("shellmanager: restart requested"); shell_restart_req = true; wm_need_redraw = true; }
@@ -772,6 +983,9 @@ void wm_run(void) {
             if (w->timer && (int32_t)(now - w->timer_next) >= 0) { w->timer_next = now + w->timer_ms; w->timer(w); }
         }
         while (defn) { defer_t d = defq[0]; memmove(defq, defq + 1, (--defn) * sizeof(defer_t)); d.fn(d.arg); }
+        now = timer_ticks();
+        effects_tick(now);
+        shell_animate(now);
         if (now - last_tick >= 250) { last_tick = now; shell_tick(); }
         for (int i = 0; i < nwin; i++) {
             window_t *w = wins[i];

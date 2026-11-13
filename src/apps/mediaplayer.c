@@ -644,8 +644,10 @@ static void draw_library(window_t *w, mp_t *m, rect_t a) {
     int sw = MIN(200, a.w - (bx + 330 - a.x) - 14);
     if (sw > 80) {
         rect_t sb = R(a.x + a.w - sw - 14, y + 1, sw, 24);
-        ui_textbox(w, sb, m->search, sizeof m->search);
-        if (!m->search[0]) draw_text(c, FONT_UI, sb.x + 6, sb.y + 5, "Search music", 0xFF9AA4B4);
+        fill_round_rect(c, sb.x, sb.y, sb.w, sb.h, 4, C_BG);
+        draw_round_rect(c, sb.x, sb.y, sb.w, sb.h, 4, C_LINE);
+        ui_textbox_ex(w, sb, m->search, sizeof m->search, true, C_TEXT, NULL);
+        if (!m->search[0]) draw_text(c, FONT_UI, sb.x + 6, sb.y + 5, "Search music", C_DIM);
     }
     y += 40;
     /* columns */

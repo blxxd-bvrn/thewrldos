@@ -69,12 +69,12 @@ typedef struct {
 static gdiobj_t *OBJ(uintptr_t h) {
     if (h >= 1 && h <= 31) { /* system colour brush (COLOR_x + 1) */
         static gdiobj_t sys[32];
-        static const uint32_t cols[32] = { 0xC8D0D4, 0x3A6EA5, 0x0A246A, 0x808080, 0xD8E9EC, 0xFFFFFF, 0x000000, 0x000000, 0x000000, 0xFFFFFF,
-            0xD4D0C8, 0xD4D0C8, 0x808080, 0xC56A31, 0xFFFFFF, 0xD8E9EC, 0x99A8AC, 0xACA899, 0x000000, 0x404040, 0xFFFFFF, 0x716F64, 0xF1EFE2, 0x000000, 0xE1FFFF };
-        int i = h - 1; uint32_t bgr = cols[i];
-        sys[i].magic = OBJMAGIC; sys[i].type = OBJ_BRUSH; sys[i].color = RGB(bgr & 0xFF, (bgr >> 8) & 0xFF, bgr >> 16); sys[i].stock = true;
-        if (i == 15 || i == 4) sys[i].color = T.face;
-        if (i == 5) sys[i].color = WHITE;
+        const uint32_t cols[32] = { T.sb_track, T.desktop_bg, T.title_top, T.ititle_top, T.menu_bg, T.window_bg,
+            T.frame_out, T.text, T.text, T.title_text, T.frame_mid, T.iframe_mid, T.face_dark, T.select, T.select_text,
+            T.face, T.face_dark, T.gray_text, T.text, T.ititle_text, T.face_light, mix(T.face_dark, BLACK, 128), T.face,
+            T.text, dark_mode ? T.face : HEX(0xFFFFE1), T.face, T.link, T.title_bot, T.ititle_bot, T.hot, T.face, T.face };
+        int i = h - 1;
+        sys[i].magic = OBJMAGIC; sys[i].type = OBJ_BRUSH; sys[i].color = cols[i]; sys[i].stock = true;
         return &sys[i];
     }
     gdiobj_t *o = (gdiobj_t *)h;
@@ -342,8 +342,8 @@ static void draw_control(w32win_t *c) {
     if (c->ctl == CTL_BUTTON) {
         int bs = c->style & 0xF;
         if (bs == 7) { draw_group(s, r, label); }
-        else if (bs == 2 || bs == 3 || bs == 5 || bs == 6) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_check(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? BLACK : HEX(0x808080)); }
-        else if (bs == 4 || bs == 9) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_radio(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? BLACK : HEX(0x808080)); }
+        else if (bs == 2 || bs == 3 || bs == 5 || bs == 6) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_check(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? T.text : T.gray_text); }
+        else if (bs == 4 || bs == 9) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_radio(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? T.text : T.gray_text); }
         else draw_button(s, r, label, c->hot, c->pressed && c->hot, focus_win == c || bs == 1, c->enabled);
     } else if (c->ctl == CTL_STATIC) {
         int ss = c->style & 0x1F;
@@ -351,26 +351,26 @@ static void draw_control(w32win_t *c) {
         else {
             int x = r.x, tw = text_width(f, label);
             if (ss == 1) x = r.x + (r.w - tw) / 2; else if (ss == 2) x = r.x + r.w - tw;
-            draw_text_wrapped(s, f, x, r.y, r.w, label, BLACK, 0);
+            draw_text_wrapped(s, f, x, r.y, r.w, label, T.text, 0);
         }
     } else if (c->ctl == CTL_EDIT) {
-        draw_sunken_box(s, r, c->enabled ? WHITE : T.face);
+        draw_sunken_box(s, r, c->enabled ? T.window_bg : T.face);
         rect_t o2 = canvas_push_clip(s, R(r.x + 2, r.y + 2, r.w - 4, r.h - 4));
         char shown[512]; strlcpy(shown, label, sizeof shown);
         if (c->style & 0x20) for (char *p = shown; *p; p++) *p = '*';
-        if (c->style & 4) draw_text_wrapped(s, f, r.x + 4, r.y + 3, r.w - 8, shown, BLACK, 0);
+        if (c->style & 4) draw_text_wrapped(s, f, r.x + 4, r.y + 3, r.w - 8, shown, c->enabled ? T.text : T.gray_text, 0);
         else {
             int tw = text_width(f, shown), off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
-            draw_text(s, f, r.x + 4 - off, r.y + (r.h - font_height(f)) / 2, shown, BLACK);
-            if (focus_win == c) vline(s, r.x + 4 - off + tw, r.y + 3, r.h - 6, BLACK);
+            draw_text(s, f, r.x + 4 - off, r.y + (r.h - font_height(f)) / 2, shown, c->enabled ? T.text : T.gray_text);
+            if (focus_win == c) vline(s, r.x + 4 - off + tw, r.y + 3, r.h - 6, T.text);
         }
         s->clip = o2;
     } else if (c->ctl == CTL_LISTBOX) {
-        draw_sunken_box(s, r, WHITE);
+        draw_sunken_box(s, r, T.window_bg);
         int ih = font_height(FONT_UI) + 2;
         for (int i = 0; i < c->lb_n && 2 + i * ih < r.h; i++) {
             if (i == c->lb_sel) fill_rect(s, r.x + 2, r.y + 2 + i * ih, r.w - 4, ih, T.select);
-            draw_text(s, FONT_UI, r.x + 4, r.y + 3 + i * ih, c->lb_items[i], i == c->lb_sel ? WHITE : BLACK);
+            draw_text(s, FONT_UI, r.x + 4, r.y + 3 + i * ih, c->lb_items[i], i == c->lb_sel ? T.select_text : T.text);
         }
     }
     s->clip = old;
@@ -382,6 +382,12 @@ static void draw_children(w32win_t *w) {
         if (c->ctl) draw_control(c); else c->need_paint = true;
         draw_children(c);
     }
+}
+void w32_theme_changed(void) {
+    /* Repaint on each application's own message loop; do not call PE window
+     * procedures on the shell's stack. Explicit GDI drawing colours stay put. */
+    for (w32win_t *w = all_wins; w; w = w->all_next)
+        if (!w->destroyed && !w->parent) { w->need_paint = true; w->erase = true; }
 }
 static LRESULT WINAPI ctl_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
 

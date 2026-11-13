@@ -53,6 +53,7 @@ void theme_apply(int id, int hue);
 extern int theme_sat, theme_light;             /* -100..100 / -60..60, applied with the hue */
 void theme_set_tone(int sat, int light);
 void theme_compute(int id, int hue, theme_t *out);
+uint32_t theme_text_on(uint32_t bg);            /* readable text for tinted shell panels */
 /* advanced per-role colour overrides */
 int theme_role_count(void);
 const char *theme_role_name(int i);

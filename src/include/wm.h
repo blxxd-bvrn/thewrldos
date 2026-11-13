@@ -67,7 +67,8 @@ struct window {
     window_t *owner;
     int cursor;
     void *w32;
-    int anim;   /* minimize/restore animation frame */
+    int minimized_state;             /* restore maximized windows without losing their state */
+    bool opening;                    /* start the effect after the first client paint */
 };
 
 /* window manager */
@@ -97,6 +98,7 @@ int wm_window_count(void);
 window_t *wm_window_at(int idx);    /* z order, 0 = bottom */
 bool wm_window_at_point(int x, int y);   /* a visible window covers this screen point */
 void wm_theme_changed(void);
+void wm_effects_changed(void);        /* settle effects after settings/theme/resolution changes */
 void wm_set_timer(window_t *w, uint32_t ms, void (*fn)(window_t *));
 rect_t wm_work_area(void);
 void wm_destroy_for_pid(int pid);
@@ -157,6 +159,9 @@ int shell_cursor(int x, int y);
 bool shell_key(key_event_t *e);
 void shell_paint_overlays(canvas_t *c);
 void shell_tick(void);
+void shell_animate(uint32_t now);      /* short, nonblocking animation tick */
+void shell_effects_changed(void);
+rect_t shell_task_button_rect(window_t *w);
 void shell_wallpaper_changed(void);
 void desktop_refresh(void);
 bool startmenu_is_open(void);
@@ -180,6 +185,10 @@ extern int user_picture_count;
 void draw_user_picture(canvas_t *c, int id, int size, int x, int y);
 extern bool show_clock, show_seconds, clock_24h, font_smoothing_dummy;
 extern bool wm_animations;
+enum { WINDOW_ANIM_NONE, WINDOW_ANIM_BORDER, WINDOW_ANIM_AERO, WINDOW_ANIM_COUNT };
+enum { MENU_ANIM_NONE, MENU_ANIM_SLIDE, MENU_ANIM_FADE, MENU_ANIM_COUNT };
+extern int wm_animation_style, startmenu_animation;
+extern bool sidebar_slide, sidebar_tile_fade;
 extern const char *wallpaper_names[];
 extern int wallpaper_count;
 void wallpaper_render(canvas_t *c, int id);

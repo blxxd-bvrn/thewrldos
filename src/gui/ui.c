@@ -147,7 +147,7 @@ bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_
         if (k->key != KEY_TAB && k->key != KEY_ESC) u->has_key = false;
     }
     canvas_t *c = w->surf;
-    if (!flat) { draw_sunken_box(c, r, WHITE); fg = T.text; }
+    if (!flat) { draw_sunken_box(c, r, T.window_bg); fg = T.text; }
     rect_t old = canvas_push_clip(c, R(r.x + 2, r.y + 1, r.w - 4, r.h - 2));
     int tw = text_width(FONT_UI, buf);
     int off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
@@ -182,7 +182,7 @@ bool ui_password(window_t *w, rect_t r, char *buf, int cap) {
     for (int i = 0; i < n; i++) mask[i] = '*';
     mask[n] = 0;
     canvas_t *c = w->surf;
-    draw_sunken_box(c, r, WHITE);
+    draw_sunken_box(c, r, T.window_bg);
     rect_t old = canvas_push_clip(c, R(r.x + 2, r.y + 1, r.w - 4, r.h - 2));
     int tw = text_width(FONT_UI, mask);
     int off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
@@ -221,7 +221,7 @@ int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scr
         u->has_key = false;
     }
     canvas_t *c = w->surf;
-    draw_sunken_box(c, r, WHITE);
+    draw_sunken_box(c, r, T.window_bg);
     rect_t old = canvas_push_clip(c, R(r.x + 2, r.y + 2, r.w - 4, r.h - 4));
     for (int i = *scroll; i < n && i < *scroll + vis + 1; i++) {
         int y = r.y + 2 + (i - *scroll) * ih;
@@ -246,7 +246,7 @@ bool ui_dropdown(window_t *w, rect_t r, const char **items, int n, int *sel) {
     bool hot;
     bool clicked = behave(w, id, r, &hot, NULL);
     canvas_t *c = w->surf;
-    draw_sunken_box(c, r, WHITE);
+    draw_sunken_box(c, r, T.window_bg);
     if (*sel >= 0 && *sel < n) draw_text_ellipsis(c, FONT_UI, r.x + 4, r.y + (r.h - font_height(FONT_UI)) / 2, r.w - 24, items[*sel], T.text);
     rect_t b = R(r.x + r.w - 18, r.y + 1, 17, r.h - 2);
     if (T.classic) { fill_rect(c, b.x, b.y, b.w, b.h, T.face); bevel_deep(c, b.x, b.y, b.w, b.h, true); }

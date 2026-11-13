@@ -1,7 +1,7 @@
 # Roadmap: from Linux programs to a browser engine
 
 The 64-bit edition runs unmodified x86-64 Linux programs in ring 3. This file lists what is
-still missing between that and running WPE WebKit as The WRLD Xplorer, in the order the pieces
+still missing between that and running WPE WebKit as The WRLD Browser, in the order the pieces
 have to be built.
 
 ## Where the port stands
@@ -114,19 +114,36 @@ Already working, and not on the list below:
   engine), CJK and emoji coverage (the fonts have none), and the FreeType/HarfBuzz/ICU APIs
   themselves for Linux programs, which have no font stack at all.
 - The GUI also has its own **software rasteriser** (`src/gui/raster.c`): path fills and strokes,
-  anti-aliasing, round joins, linear and radial gradients and clipping, used by XplorerLite for
+  anti-aliasing, round joins, linear and radial gradients and clipping, used by The WRLD Browser for
   `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
 - No GPU or 3D, so a real Skia would have to use its software backend. Missing from the raster
   stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
   engine.
-- The display path is the GRUB/UEFI linear framebuffer at the bootloader's best mode, with a
-  write-combining mapping in the kernel; there is no native NVIDIA/AMD/Intel GPU driver, so no
-  hardware acceleration, vsync, mode setting after boot, or display-engine audio.
-- Missing codecs: WebP and SVG; audio/video beyond WAV.
+- The display path starts with the GRUB/UEFI linear framebuffer and a write-combining mapping.
+  QEMU/Bochs, VirtualBox and VMware adapters also support runtime mode changes via native drivers.
+  There is no NVIDIA/AMD/Intel GPU driver, hardware acceleration, vsync or display-engine audio.
+- PNG/JPEG/GIF/BMP, the native SVG subset and MP3/WAV audio are present. WebP, video decoding
+  and a complete SVG implementation are still missing.
 - Display audio (HDMI/DP) is prepared on the HDA codec side (digital converter,
   channel slots, audio infoframe), but the GPU's display engine must embed the
   stream and pass ELD; the firmware framebuffer path does not enable that, so it
   needs a GPU display driver.
+
+#### Native desktop appearance
+
+- Dark mode is a palette overlay on Luna Blue, Olive Green, Silver, Classic, Aero and Plex,
+  preserving their accents and renderers. Explicit advanced colour overrides are applied
+  after dark mode and hue/tone. Images, web document colours and Paint canvases stay unchanged.
+- Control Panel's **Visual Effects** page selects XP-style border scaling or Aero-style
+  fading for window transitions, Slide/Fade for the Start menu, and separate sidebar-slide
+  and tile-fade switches. An overall animation switch and per-effect None choices are
+  available; choices persist in `wrld.ini`, and safe mode turns animations off.
+- Sidebar tiles have framed bodies and theme-aware title strips; Aero bodies remain glass.
+  Time-based transitions run in the existing shell loop without sleeping or waiting for
+  frames. Window input still takes precedence over the desktop-layer sidebar.
+- These are native software-rendered effects, not GPU acceleration or a new protected shell
+  process. `shellmanager.exe` remains a dedicated kernel task with shared kernel-linked GUI
+  code. High-memory allocation and full 16/32 TB system volumes remain separate work.
 
 ### 10. Services a browser engine expects
 
@@ -166,7 +183,7 @@ Already working, and not on the list below:
    Arabic as the Arabic fallback. FreeType, HarfBuzz and ICU themselves are not used: for the
    scripts the image ships, the same work is done without a 30 MB dependency.
 8. [x] **Software rasterisation** - the GUI's own path engine (`src/gui/raster.c`): anti-aliased
-   fills and strokes, round joins, linear/radial gradients and clipping, used by XplorerLite for
+    fills and strokes, round joins, linear/radial gradients and clipping, used by The WRLD Browser for
    `border-radius` and gradient backgrounds. Skia itself is not used.
 9. [ ] **libjpeg/libpng and SQLite** - media and storage.
 10. [x] **`/proc`, `/sys`, honest `prctl`** - `/proc/self/{maps,stat,status,cmdline,fd}`,
@@ -177,7 +194,7 @@ Already working, and not on the list below:
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
 `fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.
 
-The shell and XplorerLite get their text from the same engine as the desktop: TrueType,
+The shell and The WRLD Browser get their text from the same engine as the desktop: TrueType,
 OpenType shaping and bidi, so Arabic and Hebrew reach the screen without a library dependency.
 A full browser engine would still benefit from a CJK font and Indic shaping, which is what the
 fonts and the generic GSUB engine do not cover.

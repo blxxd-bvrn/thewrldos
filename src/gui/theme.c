@@ -75,45 +75,63 @@ void theme_overrides_save(void) {
     vfs_write_file(OVERRIDE_FILE, buf, sizeof buf);
 }
 
-/* Dark mode keeps the selected style's renderer (Luna, Aero, Plex, Classic)
- * but replaces its surfaces and text with dark equivalents.  Applied before
- * the hue adjustment so the accent colours still respond to the sliders. */
+uint32_t theme_text_on(uint32_t bg) {
+    int luma = (C_R(bg) * 299 + C_G(bg) * 587 + C_B(bg) * 114) / 1000;
+    return luma >= 145 ? HEX(0x17202A) : WHITE;
+}
+
+/* A palette overlay, not a seventh visual style. Keep each style's accent,
+ * title gradients, Start button and glass settings, with dark neutral client
+ * surfaces. Hue/tone and the user's explicit role overrides still run last. */
 static void apply_dark(theme_t *t) {
-    t->face = HEX(0x20242B); t->face_dark = HEX(0x0E1116); t->face_light = HEX(0x343B46);
-    t->window_bg = HEX(0x171A20); t->text = HEX(0xE6E8EC); t->gray_text = HEX(0xA2A9B4);
-    t->select = HEX(0x2D5F9A); t->select_text = WHITE; t->hot = HEX(0x2F6FB5); t->hot_text = WHITE;
-    t->title_hi = HEX(0x3C4C62); t->title_top = HEX(0x1B2430); t->title_mid = HEX(0x1B2430); t->title_bot = HEX(0x10151D);
-    t->ititle_hi = HEX(0x2A3240); t->ititle_top = HEX(0x202631); t->ititle_mid = HEX(0x202631); t->ititle_bot = HEX(0x171C24);
-    t->title_text = WHITE; t->title_shadow = BLACK; t->ititle_text = HEX(0xC4CAD4);
-    t->frame_out = HEX(0x080C12); t->frame_mid = HEX(0x1B2430); t->frame_in = HEX(0x46566C);
-    t->iframe_out = HEX(0x3A4658); t->iframe_mid = HEX(0x263244); t->iframe_in = HEX(0x66768C);
-    t->cap_top = HEX(0x3A4658); t->cap_bot = HEX(0x1E2735); t->cap_border = HEX(0x080C12);
-    t->cap_glyph = WHITE; t->close_top = HEX(0xD06A5A); t->close_bot = HEX(0xA32A1C);
-    t->tb_hi = HEX(0x3A4A60); t->tb_top = HEX(0x10151D); t->tb_mid = HEX(0x0C1016); t->tb_bot = HEX(0x070A0E);
-    t->tb_text = HEX(0xE6E8EC);
-    t->tray_hi = HEX(0x3A4A60); t->tray_top = HEX(0x10151D); t->tray_bot = HEX(0x0C1016);
-    t->tray_border = HEX(0x05080C); t->tray_text = HEX(0xE6E8EC);
-    t->start_hi = HEX(0x5A7A9A); t->start_top = HEX(0x1E4D2E); t->start_bot = HEX(0x123A1E);
-    t->start_text = WHITE; t->start_shadow = BLACK;
-    t->tbtn_top = HEX(0x222A36); t->tbtn_bot = HEX(0x161C26); t->tbtn_border = HEX(0x080C12);
-    t->tbtn_act_top = HEX(0x2E4A6A); t->tbtn_act_bot = HEX(0x1E3450);
-    t->tbtn_text = HEX(0xE6E8EC); t->tbtn_hot = HEX(0x2A3A50);
-    t->sm_head_top = HEX(0x1B2430); t->sm_head_bot = HEX(0x0F141C); t->sm_head_text = HEX(0xE6E8EC);
-    t->sm_border = HEX(0x38465A); t->sm_left = HEX(0x1A202A); t->sm_left_text = HEX(0xE6E8EC);
-    t->sm_right = HEX(0x202834); t->sm_right_line = HEX(0x38465A); t->sm_right_text = HEX(0xE6E8EC);
-    t->sm_foot_top = HEX(0x0F141C); t->sm_foot_bot = HEX(0x1B2430);
-    t->sm_accent = HEX(0x4A7AB5); t->sm_foot_text = HEX(0xE6E8EC);
-    t->btn_border = HEX(0x080C12); t->btn_top = HEX(0x2A3240); t->btn_bot = HEX(0x161C26);
-    t->btn_hot_a = HEX(0x3A4A60); t->btn_hot_b = HEX(0x243040); t->btn_focus = HEX(0x4A7AB5);
-    t->sb_track = HEX(0x14171D); t->sb_thumb_top = HEX(0x3A4A60); t->sb_thumb_bot = HEX(0x222C3A);
-    t->sb_border = HEX(0x080C12); t->check = HEX(0x7CE07C);
-    t->pane_top = HEX(0x20242B); t->pane_bot = HEX(0x181B21);
-    t->pane_head_top = HEX(0x2A3240); t->pane_head_bot = HEX(0x1B2430);
-    t->pane_head_text = HEX(0xE6E8EC); t->pane_body = HEX(0x181B21); t->pane_link = HEX(0x6FB3FF);
-    t->link = HEX(0x6FB3FF); t->link_head = HEX(0x9CC7FF);
-    t->desktop_bg = HEX(0x0A0C10); t->menu_bg = HEX(0x20242B); t->menu_border = HEX(0x38465A);
-    t->glass = HEX(0x101827); t->iglass = HEX(0x263244);
-    t->glass_alpha = 210; t->iglass_alpha = 160; t->glass_blur = 7;
+    uint32_t accent = t->select, title = t->title_mid ? t->title_mid : t->title_top;
+    uint32_t shell = t->tb_top ? t->tb_top : accent;
+    t->face = mix(HEX(0x232529), accent, 12);
+    t->face_dark = mix(HEX(0x111317), accent, 10); t->face_light = mix(HEX(0x41454C), accent, 18);
+    t->window_bg = mix(HEX(0x191B1F), accent, 6); t->text = HEX(0xE9EBEF); t->gray_text = HEX(0xABB2BE);
+    t->select = darken(accent, 100); t->select_text = WHITE;
+    t->hot = darken(accent, 80); t->hot_text = WHITE;
+    t->title_hi = mix(t->title_hi ? t->title_hi : title, t->face_light, 140);
+    t->title_top = mix(t->title_top, t->face, 165); t->title_mid = mix(title, t->face_dark, 175);
+    t->title_bot = mix(t->title_bot, t->face_dark, 185);
+    t->ititle_hi = t->face_light; t->ititle_top = mix(t->face, title, 18);
+    t->ititle_mid = t->face; t->ititle_bot = t->face_dark;
+    t->title_text = WHITE; t->title_shadow = BLACK; t->ititle_text = HEX(0xBFC6D0);
+    t->frame_out = darken(title, 210); t->frame_mid = t->title_mid; t->frame_in = mix(title, t->face_light, 140);
+    t->iframe_out = t->face_dark; t->iframe_mid = t->face; t->iframe_in = t->face_light;
+    t->cap_top = mix(t->cap_top ? t->cap_top : title, t->face_light, 180);
+    t->cap_bot = mix(title, t->face_dark, 175); t->cap_border = mix(t->face_light, WHITE, 85);
+    t->cap_glyph = WHITE; t->close_top = darken(t->close_top ? t->close_top : HEX(0xD06A5A), 35);
+    t->close_bot = darken(t->close_bot ? t->close_bot : HEX(0xA32A1C), 30);
+    t->tb_hi = mix(shell, t->face_light, 140); t->tb_top = mix(shell, t->face_dark, 180);
+    t->tb_mid = mix(shell, HEX(0x101216), 195); t->tb_bot = mix(shell, HEX(0x0B0D10), 210); t->tb_text = t->text;
+    t->tray_hi = t->tb_hi; t->tray_top = mix(t->tray_top ? t->tray_top : shell, t->face, 185);
+    t->tray_bot = t->tb_bot; t->tray_border = t->frame_out; t->tray_text = t->text;
+    t->start_hi = darken(t->start_hi ? t->start_hi : shell, 45);
+    t->start_top = darken(t->start_top ? t->start_top : shell, 90);
+    t->start_bot = darken(t->start_bot ? t->start_bot : shell, 115); t->start_text = WHITE; t->start_shadow = BLACK;
+    t->tbtn_top = mix(shell, t->face, 175); t->tbtn_bot = mix(shell, t->face_dark, 195); t->tbtn_border = t->frame_out;
+    t->tbtn_act_top = mix(accent, t->face, 110); t->tbtn_act_bot = mix(accent, t->face_dark, 135);
+    t->tbtn_text = t->text; t->tbtn_hot = mix(accent, t->face_light, 160);
+    t->sm_head_top = mix(t->sm_head_top, t->face, 175); t->sm_head_bot = mix(t->sm_head_bot, t->face_dark, 190);
+    t->sm_head_text = t->text; t->sm_border = mix(title, t->face_light, 160);
+    t->sm_left = t->window_bg; t->sm_left_text = t->text;
+    t->sm_right = mix(t->face, shell, 20); t->sm_right_line = t->face_light; t->sm_right_text = t->text;
+    t->sm_foot_top = t->sm_head_top; t->sm_foot_bot = t->sm_head_bot;
+    t->sm_accent = lighten(t->sm_accent ? t->sm_accent : accent, 35); t->sm_foot_text = t->text;
+    t->btn_border = t->face_dark; t->btn_top = mix(t->face_light, accent, 12); t->btn_bot = t->face;
+    t->btn_hot_a = mix(t->face_light, accent, 65); t->btn_hot_b = mix(t->face, accent, 85); t->btn_focus = lighten(accent, 100);
+    t->sb_track = t->window_bg; t->sb_thumb_top = mix(t->face_light, accent, 45); t->sb_thumb_bot = t->face;
+    t->sb_border = t->face_dark; t->check = lighten(t->check ? t->check : accent, 125);
+    t->pane_top = mix(t->face, title, 12); t->pane_bot = t->window_bg;
+    t->pane_head_top = mix(t->face_light, title, 20); t->pane_head_bot = mix(t->face, title, 35);
+    t->pane_head_text = t->text; t->pane_body = mix(t->window_bg, accent, 10);
+    t->pane_link = lighten(t->pane_link, 150); t->link = lighten(t->link, 150); t->link_head = lighten(t->link_head, 155);
+    t->menu_bg = t->face; t->menu_border = t->face_light;
+    t->glass = mix(t->glass ? t->glass : title, HEX(0x0F131B), 175);
+    t->iglass = mix(t->iglass ? t->iglass : title, t->face, 200);
+    /* Do not turn Aero into an opaque slab or give opaque Plex a blur. */
+    if (t->renderer == RENDER_AERO) { t->glass_alpha = MAX(t->glass_alpha, 135); t->iglass_alpha = MAX(t->iglass_alpha, 105); }
 }
 
 /* built-in fallback (safe mode, or when the style files are missing) */
@@ -387,7 +405,7 @@ static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, b
         return;
     }
     uint32_t top = kind == 3 ? T.close_top : T.cap_top, bot = kind == 3 ? T.close_bot : T.cap_bot;
-    if (!active) { top = mix(top, WHITE, 90); bot = mix(bot, WHITE, 90); }
+    if (!active) { top = mix(top, dark_mode ? T.face : WHITE, 90); bot = mix(bot, dark_mode ? T.face : WHITE, 90); }
     if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); }
     if (pressed) { uint32_t t2 = top; top = darken(bot, 30); bot = t2; }
     /* XP Luna: a white rounded outline, a light-to-dark blue face and a white
@@ -560,7 +578,7 @@ void draw_button(canvas_t *c, rect_t r, const char *label, bool hot, bool presse
     draw_text_centered(c, FONT_UI, R(r.x + (pressed ? 1 : 0), r.y + (pressed ? 1 : 0), r.w, r.h), label, enabled ? T.text : T.gray_text);
 }
 void draw_sunken_box(canvas_t *c, rect_t r, uint32_t bg) {
-    fill_rect(c, r.x, r.y, r.w, r.h, bg == WHITE ? T.window_bg : bg);
+    fill_rect(c, r.x, r.y, r.w, r.h, bg);
     if (T.classic) bevel_deep(c, r.x, r.y, r.w, r.h, false);
     else draw_rect(c, r.x, r.y, r.w, r.h, dark_mode ? T.face_dark : HEX(0x7F9DB9));
 }

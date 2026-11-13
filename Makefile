@@ -105,12 +105,12 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio FORCE
+.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
 GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
-ifneq ($(filter-out clean check-tools,$(GOALS)),)
+ifneq ($(filter-out clean check-tools check-hid check-audio check-animations check-composite,$(GOALS)),)
 ifneq ($(findstring MINGW,$(UNAME))$(findstring MSYS,$(UNAME))$(findstring CYGWIN,$(UNAME)),)
 $(error This is $(UNAME) (MSYS2/Cygwin). Its gcc makes Windows PE files, not the 32-bit ELF kernel THE WRLD OS needs, and it has no BIOS GRUB tools. Build inside WSL instead - see README.md, section "Building on Windows")
 endif
@@ -296,6 +296,17 @@ check-audio:
 	@mkdir -p build64
 	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/uactest tools/uactest.c src/usb/audioclass.c
 	./build64/uactest
+
+# Timing/easing code is shared by all shell effects and has no hardware access.
+check-animations:
+	@mkdir -p build64
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/include -o build64/animationtest tools/animationtest.c
+	./build64/animationtest
+
+check-composite:
+	@mkdir -p build64
+	$(CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/include -o build64/compositetest tools/compositetest.c src/gui/composite.c
+	./build64/compositetest
 
 clean:
 	rm -rf build build64 wrldos.iso wrldos64.iso

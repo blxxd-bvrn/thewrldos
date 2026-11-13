@@ -72,6 +72,7 @@ void bevel_deep(canvas_t *c, int x, int y, int w, int h, bool raised);
 void dotted_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col);
 void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, int h);
 void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha);
+void blit_scaled_alpha(canvas_t *dst, rect_t r, canvas_t *src, int alpha);
 void flood_fill(canvas_t *c, int x, int y, uint32_t col);
 
 /* text */
