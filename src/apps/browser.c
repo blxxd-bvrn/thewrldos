@@ -564,7 +564,7 @@ static page_t *page_from_html(const char *url, const char *html, uint32_t len, c
     p->doc = html_parse(html, len, charset, url);
     strlcpy(p->title, p->doc->title, sizeof p->title);
     p->bg = p->doc->bgcolor ? p->doc->bgcolor : WHITE;
-    p->fg = p->doc->text ? p->doc->text : BLACK;
+    p->fg = p->doc->text ? p->doc->text : T.text;
     p->linkc = p->doc->link ? p->doc->link : HEX(0x0000EE);
     p->ads_ok = adblock_page_allowed(url);
     p->mem_limit = PAGE_MEM_STEP;
@@ -1245,9 +1245,9 @@ static void draw_ctrl(canvas_t *c, browser_t *b, int idx, int x, int y, int w, i
         char shown[512]; strlcpy(shown, ct->value, sizeof shown);
         if (ct->type == C_PASSWORD) for (char *q = shown; *q; q++) *q = '*';
         int tw = text_width(FONT_UI, shown), off = tw > w - 12 ? tw - (w - 12) : 0;
-        if (ct->type == C_TEXTAREA) draw_text_wrapped(c, FONT_UI, x + 4, y + 4, w - 8, shown, BLACK, 2);
-        else draw_text(c, FONT_UI, x + 4 - off, y + (h - font_height(FONT_UI)) / 2, shown, BLACK);
-        if (focus && (timer_ticks() / 500) % 2 == 0 && ct->type != C_TEXTAREA) vline(c, x + 4 - off + tw, y + 4, h - 8, BLACK);
+        if (ct->type == C_TEXTAREA) draw_text_wrapped(c, FONT_UI, x + 4, y + 4, w - 8, shown, T.text, 2);
+        else draw_text(c, FONT_UI, x + 4 - off, y + (h - font_height(FONT_UI)) / 2, shown, T.text);
+        if (focus && (timer_ticks() / 500) % 2 == 0 && ct->type != C_TEXTAREA) vline(c, x + 4 - off + tw, y + 4, h - 8, T.text);
         c->clip = old;
         break;
     }
@@ -1256,8 +1256,8 @@ static void draw_ctrl(canvas_t *c, browser_t *b, int idx, int x, int y, int w, i
     case C_RADIO: draw_radio(c, x + 1, y + 1, ct->checked, false); break;
     case C_SELECT:
         draw_sunken_box(c, R(x, y, w, h), WHITE);
-        if (ct->nopts) draw_text_ellipsis(c, FONT_UI, x + 4, y + (h - font_height(FONT_UI)) / 2, w - 24, ct->opts[ct->sel], BLACK);
-        fill_rect(c, x + w - 18, y + 2, 16, h - 4, T.face); draw_arrow(c, x + w - 10, y + h / 2 - 1, 1, BLACK);
+        if (ct->nopts) draw_text_ellipsis(c, FONT_UI, x + 4, y + (h - font_height(FONT_UI)) / 2, w - 24, ct->opts[ct->sel], T.text);
+        fill_rect(c, x + w - 18, y + 2, 16, h - 4, T.face); draw_arrow(c, x + w - 10, y + h / 2 - 1, 1, T.text);
         break;
     }
 }
@@ -1384,7 +1384,7 @@ static void br_paint(window_t *w) {
     hline(c, 0, sy, c->w, darken(T.face, 40));
     const char *st = b->hover_link >= 0 && b->page && b->hover_link < b->page->nlinks ? b->page->links[b->hover_link] : b->status;
     draw_icon(c, b->loading ? ICON_BROWSER : ICON_INFO, 16, 4, sy + 3);
-    draw_text_ellipsis(c, FONT_UI, 24, sy + 4, c->w - 330, st, BLACK);
+    draw_text_ellipsis(c, FONT_UI, 24, sy + 4, c->w - 330, st, T.text);
     vline(c, c->w - 170, sy + 3, STATUS_H - 6, darken(T.face, 40));
     {   /* ad blocker indicator */
         char ab[24]; uint32_t col = adblock_enabled ? HEX(0x1E8A3C) : HEX(0x909090);
@@ -1392,13 +1392,13 @@ static void br_paint(window_t *w) {
         else snprintf(ab, sizeof ab, "Ads: %d blocked", b->page ? b->page->blocked : 0);
         int aw = text_width(FONT_UI, ab) + 22, ax = c->w - 176 - aw;
         fill_round_rect(c, ax, sy + 4, 14, 14, 3, col); draw_text(c, FONT_SMALL, ax + 4, sy + 5, "A", WHITE);
-        draw_text(c, FONT_UI, ax + 18, sy + 4, ab, BLACK);
+        draw_text(c, FONT_UI, ax + 18, sy + 4, ab, T.text);
         vline(c, ax - 6, sy + 3, STATUS_H - 6, darken(T.face, 40));
         if (ui_click_area(w, R(ax, sy, aw, STATUS_H))) br_menu(w, BM_ADBLOCK);
     }
     if (b->page && b->page->secure) draw_icon(c, ICON_LOCK, 16, c->w - 162, sy + 3);
     draw_icon(c, ICON_CP_NETWORK, 16, c->w - 130, sy + 3);
-    draw_text(c, FONT_UI, c->w - 110, sy + 4, netif.configured ? "Internet" : "Offline", BLACK);
+    draw_text(c, FONT_UI, c->w - 110, sy + 4, netif.configured ? "Internet" : "Offline", T.text);
 }
 static int item_at(page_t *p, int x, int y, int kind_ctrl) {
     if (!p) return -1;

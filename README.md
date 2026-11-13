@@ -42,6 +42,7 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 | ![Win32 GUI program](docs/screenshots/win32-exe.png) | ![Win32 console program](docs/screenshots/console-exe.png) |
 | ![Shell script](docs/screenshots/shell-script.png) | ![Mounted .dmg disk image](docs/screenshots/dmg-mounted.png) |
 | ![Aero](docs/screenshots/aero.png) | ![Plex](docs/screenshots/plex.png) |
+| ![Dark mode](docs/screenshots/dark.png) | ![Explorer in dark mode](docs/screenshots/dark-explorer.png) |
 | ![Sound settings](docs/screenshots/sound.png) | ![Running at 1280x800](docs/screenshots/resolution-1280x800.png) |
 
 ### XplorerLite
@@ -684,6 +685,10 @@ device manager's job is to say what the computer has and which driver runs it.
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.
+  - **Dark mode:** a checkbox in Personalization turns the shell, menus, dialog boxes and the
+    built-in apps (Explorer, Control Panel, Notepad, Task Manager) dark with light text. It
+    keeps the selected style's renderer, so it works with Luna, Aero, Plex or Classic, and it is
+    saved with your settings.
   - **Hue (0–359°), saturation and lightness** sliders recolour any style; they are saved with
     your settings.
 - **`.wrldstyle` format:** plain INI text.

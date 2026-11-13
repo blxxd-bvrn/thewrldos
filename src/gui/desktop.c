@@ -438,10 +438,11 @@ static void paint_sidebar(canvas_t *c) {
         vline(c, x, 0, h, T.face_dark); vline(c, x + 1, 0, h, WHITE);
     } else if (T.renderer == RENDER_AERO) {
         /* Aero: blurred wallpaper under a blue glass tint, like the window
-         * frames, then a light darkening so the white tile text keeps its
-         * contrast over bright wallpapers. */
+         * frames, then a light darkening so the tile text keeps its contrast. */
+        int gl = (C_R(T.glass) * 30 + C_G(T.glass) * 59 + C_B(T.glass) * 11) / 100;
+        int extra = gl < 100 ? 20 : 65;
         draw_glass(c, x, 0, SIDE_W, h, T.glass, MAX(30, T.glass_alpha - 20), T.glass_blur);
-        for (int j = 0; j < h; j++) blend_rect(c, x, j, SIDE_W, 1, T.tb_mid, 65 + 35 * j / MAX(1, h));
+        for (int j = 0; j < h; j++) blend_rect(c, x, j, SIDE_W, 1, T.tb_mid, extra + (gl < 100 ? 15 : 35) * j / MAX(1, h));
         blend_rect(c, x, 0, SIDE_W, 28, WHITE, 18);
         vline(c, x, 0, h, mix(T.frame_out, WHITE, 35));
         blend_rect(c, x + 1, 0, 1, h, WHITE, 80);
@@ -916,13 +917,14 @@ static rect_t balloon_rect(void) {
 static void paint_balloon(canvas_t *c) {
     if (!balloon_until || (int32_t)(timer_ticks() - balloon_until) > 0) return;
     rect_t r = balloon_rect();
+    uint32_t bg = dark_mode ? T.face : HEX(0xFFFFE1), fg = dark_mode ? T.text : BLACK, bd = dark_mode ? T.menu_border : BLACK;
     blend_rect(c, r.x + 3, r.y + 3, r.w, r.h, BLACK, 40);
-    fill_round_rect(c, r.x, r.y, r.w, r.h, 8, BLACK);
-    fill_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 7, HEX(0xFFFFE1));
-    for (int i = 0; i < 12; i++) { hline(c, r.x + r.w - 40 + i, r.y + r.h - 1 + i, 13 - i, HEX(0xFFFFE1)); put_pixel(c, r.x + r.w - 41 + i, r.y + r.h - 1 + i, BLACK); put_pixel(c, r.x + r.w - 27, r.y + r.h - 1 + i, BLACK); }
+    fill_round_rect(c, r.x, r.y, r.w, r.h, 8, bd);
+    fill_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 7, bg);
+    for (int i = 0; i < 12; i++) { hline(c, r.x + r.w - 40 + i, r.y + r.h - 1 + i, 13 - i, bg); put_pixel(c, r.x + r.w - 41 + i, r.y + r.h - 1 + i, bd); put_pixel(c, r.x + r.w - 27, r.y + r.h - 1 + i, bd); }
     draw_icon(c, ICON_INFO, 16, r.x + 10, r.y + 8);
-    draw_text(c, FONT_UI_BOLD, r.x + 32, r.y + 9, balloon_title, BLACK);
-    draw_text_wrapped(c, FONT_UI, r.x + 10, r.y + 28, r.w - 20, balloon_text, BLACK, 1);
+    draw_text(c, FONT_UI_BOLD, r.x + 32, r.y + 9, balloon_title, fg);
+    draw_text_wrapped(c, FONT_UI, r.x + 10, r.y + 28, r.w - 20, balloon_text, fg, 1);
 }
 
 /* ---------------- start menu ---------------- */

@@ -48,6 +48,7 @@ bool ui_icon_button(window_t *w, rect_t r, int icon, const char *label) {
     canvas_t *c = w->surf;
     if (hot || held) {
         if (T.classic) bevel(c, r.x, r.y, r.w, r.h, !held);
+        else if (dark_mode) { fill_round_rect(c, r.x, r.y, r.w, r.h, 3, held ? T.btn_hot_b : T.face_light); draw_round_rect(c, r.x, r.y, r.w, r.h, 3, T.face_dark); }
         else { fill_round_rect(c, r.x, r.y, r.w, r.h, 3, held ? HEX(0xC1D2EE) : HEX(0xCEDBF2)); draw_round_rect(c, r.x, r.y, r.w, r.h, 3, HEX(0x8EA8D8)); }
     }
     int isz = r.h >= 40 ? 32 : r.h >= 24 && !label ? 24 : 16;
@@ -55,7 +56,7 @@ bool ui_icon_button(window_t *w, rect_t r, int icon, const char *label) {
     int o = held ? 1 : 0;
     if (label && r.w > r.h + 10) {
         draw_icon(c, icon, isz, r.x + 4 + o, r.y + (r.h - isz) / 2 + o);
-        draw_text(c, FONT_UI, r.x + isz + 8 + o, r.y + (r.h - font_height(FONT_UI)) / 2 + o, label, BLACK);
+        draw_text(c, FONT_UI, r.x + isz + 8 + o, r.y + (r.h - font_height(FONT_UI)) / 2 + o, label, T.text);
     } else draw_icon(c, icon, isz, r.x + (r.w - isz) / 2 + o, r.y + (r.h - isz) / 2 + o);
     return clicked;
 }
@@ -88,7 +89,7 @@ bool ui_checkbox(window_t *w, int x, int y, const char *label, bool *v) {
     bool clicked = behave(w, id, r, &hot, NULL);
     if (clicked) { *v = !*v; w->ui.focus = id; }
     draw_check(w->surf, x, y + 1, *v, hot);
-    draw_text(w->surf, FONT_UI, x + 19, y + 1, label, BLACK);
+    draw_text(w->surf, FONT_UI, x + 19, y + 1, label, T.text);
     return clicked;
 }
 bool ui_radio(window_t *w, int x, int y, const char *label, bool checked) {
@@ -97,7 +98,7 @@ bool ui_radio(window_t *w, int x, int y, const char *label, bool checked) {
     bool hot;
     bool clicked = behave(w, id, r, &hot, NULL);
     draw_radio(w->surf, x, y + 1, checked, hot);
-    draw_text(w->surf, FONT_UI, x + 19, y + 1, label, BLACK);
+    draw_text(w->surf, FONT_UI, x + 19, y + 1, label, T.text);
     return clicked;
 }
 bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi) {
@@ -149,8 +150,8 @@ bool ui_textbox(window_t *w, rect_t r, char *buf, int cap) {
     int tw = text_width(FONT_UI, buf);
     int off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
     int ty = r.y + (r.h - font_height(FONT_UI)) / 2;
-    draw_text(c, FONT_UI, r.x + 4 - off, ty, buf, BLACK);
-    if (focused && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), BLACK);
+    draw_text(c, FONT_UI, r.x + 4 - off, ty, buf, T.text);
+    if (focused && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), T.text);
     c->clip = old;
     if (focused) { extern void ui_blink_request(window_t *w); ui_blink_request(w); }
     return enter;
@@ -190,7 +191,7 @@ int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scr
     for (int i = *scroll; i < n && i < *scroll + vis + 1; i++) {
         int y = r.y + 2 + (i - *scroll) * ih;
         if (i == *sel) fill_rect(c, r.x + 2, y, r.w - 4, ih, T.select);
-        draw_text_ellipsis(c, FONT_UI, r.x + 5, y + 2, r.w - 30, items[i], i == *sel ? T.select_text : BLACK);
+        draw_text_ellipsis(c, FONT_UI, r.x + 5, y + 2, r.w - 30, items[i], i == *sel ? T.select_text : T.text);
     }
     c->clip = old;
     if (n > vis) draw_scrollbar(c, R(r.x + r.w - 18, r.y + 1, 17, r.h - 2), n, vis, *scroll, true);
@@ -211,11 +212,12 @@ bool ui_dropdown(window_t *w, rect_t r, const char **items, int n, int *sel) {
     bool clicked = behave(w, id, r, &hot, NULL);
     canvas_t *c = w->surf;
     draw_sunken_box(c, r, WHITE);
-    if (*sel >= 0 && *sel < n) draw_text_ellipsis(c, FONT_UI, r.x + 4, r.y + (r.h - font_height(FONT_UI)) / 2, r.w - 24, items[*sel], BLACK);
+    if (*sel >= 0 && *sel < n) draw_text_ellipsis(c, FONT_UI, r.x + 4, r.y + (r.h - font_height(FONT_UI)) / 2, r.w - 24, items[*sel], T.text);
     rect_t b = R(r.x + r.w - 18, r.y + 1, 17, r.h - 2);
     if (T.classic) { fill_rect(c, b.x, b.y, b.w, b.h, T.face); bevel_deep(c, b.x, b.y, b.w, b.h, true); }
+    else if (dark_mode) { fill_round_rect(c, b.x, b.y, b.w, b.h, 2, T.btn_border); gradient_round_rect(c, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 2, T.btn_top, T.btn_bot); }
     else { fill_round_rect(c, b.x, b.y, b.w, b.h, 2, hot ? HEX(0xB8D0F8) : HEX(0xC4D6F8)); gradient_round_rect(c, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 2, HEX(0xE6EEFC), HEX(0xB9CDF5)); }
-    draw_arrow(c, b.x + 8, b.y + b.h / 2 - 1, 1, T.classic ? BLACK : HEX(0x4D6185));
+    draw_arrow(c, b.x + 8, b.y + b.h / 2 - 1, 1, T.classic || dark_mode ? T.text : HEX(0x4D6185));
     if (clicked) {
         menu_item_t mi[20]; int k = MIN(n, 20);
         for (int i = 0; i < k; i++) { mi[i].label = items[i]; mi[i].id = i; mi[i].flags = i == *sel ? MI_CHECKED | MI_RADIO : 0; }

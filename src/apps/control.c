@@ -9,6 +9,8 @@
 #include "net.h"
 #include "audio.h"
 
+static void cp_refresh_theme(void *arg);
+
 typedef struct { const char *id, *name, *desc; int icon; int cat; } applet_t;
 enum { CAT_SYSTEM, CAT_NETWORK, CAT_HARDWARE, CAT_PROGRAMS, CAT_USERS, CAT_APPEARANCE, CAT_CLOCK, CAT_EASE, CAT_N };
 static const struct { const char *name; int icon; const char *links[3]; const char *targets[3]; } cats[CAT_N] = {
@@ -81,7 +83,10 @@ static void cp_go(cp_t *c, const char *page, bool push) {
 
 #define TOP_H 40
 #define NAV_W 200
-static const uint32_t W7_HEAD = 0xFF1E3287, W7_GREEN = 0xFF1C7A1C, W7_LINK = 0xFF0066CC, W7_TEXT = 0xFF333333;
+#define W7_HEAD (T.link_head)
+#define W7_GREEN (dark_mode ? HEX(0x7CE07C) : HEX(0x1C7A1C))
+#define W7_LINK (T.link)
+#define W7_TEXT (T.gray_text)
 
 /* ---------------- chrome ---------------- */
 static void round_nav_button(window_t *w, canvas_t *s, int x, int y, bool back, bool enabled, bool *clicked) {
@@ -98,8 +103,8 @@ static void round_nav_button(window_t *w, canvas_t *s, int x, int y, bool back, 
 }
 static void draw_chrome(window_t *w, cp_t *c) {
     canvas_t *s = w->surf;
-    gradient_v(s, 0, 0, s->w, TOP_H, HEX(0xF3F7FC), HEX(0xDAE5F3));
-    hline(s, 0, TOP_H - 1, s->w, HEX(0xA0AFC3));
+    gradient_v(s, 0, 0, s->w, TOP_H, T.face_light, T.face);
+    hline(s, 0, TOP_H - 1, s->w, T.face_dark);
     bool b1, b2;
     round_nav_button(w, s, 8, 7, true, c->hpos > 0, &b1);
     round_nav_button(w, s, 38, 7, false, c->hpos < c->hlen - 1, &b2);
@@ -108,7 +113,7 @@ static void draw_chrome(window_t *w, cp_t *c) {
     /* breadcrumb */
     int bx = 72, bw = s->w - bx - 210;
     rect_t br = R(bx, 8, bw, 24);
-    fill_rect(s, br.x, br.y, br.w, br.h, WHITE); draw_rect(s, br.x, br.y, br.w, br.h, HEX(0x8E9EB8));
+    fill_rect(s, br.x, br.y, br.w, br.h, T.window_bg); draw_rect(s, br.x, br.y, br.w, br.h, T.face_dark);
     draw_icon(s, ICON_CONTROL_PANEL, 16, bx + 4, 12);
     int x = bx + 24;
     const char *crumbs[3]; const char *targets[3]; int n = 0;
@@ -119,24 +124,24 @@ static void draw_chrome(window_t *w, cp_t *c) {
     if (cat >= 0 && !c->view) { snprintf(catpage, sizeof catpage, "cat:%d", cat); crumbs[n] = cats[cat].name; targets[n++] = catpage; }
     if (a) { crumbs[n] = a->name; targets[n++] = a->id; }
     for (int i = 0; i < n; i++) {
-        draw_arrow(s, x + 2, 20, 3, HEX(0x505A68)); x += 10;
+        draw_arrow(s, x + 2, 20, 3, T.gray_text); x += 10;
         rect_t r = R(x - 2, 10, text_width(FONT_UI, crumbs[i]) + 6, 20);
         bool hot = ui_hover(w, r);
-        if (hot) { fill_rect(s, r.x, r.y, r.w, r.h, HEX(0xE5F1FB)); draw_rect(s, r.x, r.y, r.w, r.h, HEX(0x7DA2CE)); }
+        if (hot) { fill_rect(s, r.x, r.y, r.w, r.h, T.face_light); draw_rect(s, r.x, r.y, r.w, r.h, T.face_dark); }
         if (ui_click_area(w, r) && strcmp(targets[i], c->page)) { cp_go(c, targets[i], true); return; }
-        draw_text(s, FONT_UI, x + 1, 13, crumbs[i], BLACK);
+        draw_text(s, FONT_UI, x + 1, 13, crumbs[i], T.text);
         x += r.w + 2;
     }
     /* search box */
     rect_t sr = R(s->w - 200, 8, 190, 24);
     ui_textbox(w, sr, c->search, sizeof c->search);
-    if (!c->search[0]) draw_text(s, FONT_UI, sr.x + 6, sr.y + 5, "Search Control Panel", HEX(0x8A8A8A));
+    if (!c->search[0]) draw_text(s, FONT_UI, sr.x + 6, sr.y + 5, "Search Control Panel", T.gray_text);
     draw_icon(s, ICON_SEARCH, 16, sr.x + sr.w - 20, sr.y + 4);
 }
 static void nav_pane(window_t *w, cp_t *c, int cat) {
     canvas_t *s = w->surf;
-    gradient_v(s, 0, TOP_H, NAV_W, s->h - TOP_H, HEX(0xE3ECF7), HEX(0xF8FBFE));
-    vline(s, NAV_W - 1, TOP_H, s->h - TOP_H, HEX(0xD2DCE8));
+    gradient_v(s, 0, TOP_H, NAV_W, s->h - TOP_H, T.pane_top, T.pane_bot);
+    vline(s, NAV_W - 1, TOP_H, s->h - TOP_H, T.face_dark);
     int y = TOP_H + 16;
     if (ui_link(w, 16, y, FONT_UI, "Control Panel Home", W7_LINK)) { cp_go(c, "", true); return; }
     y += 30;
@@ -144,13 +149,13 @@ static void nav_pane(window_t *w, cp_t *c, int cat) {
         bool cur = i == cat;
         int f = cur ? FONT_UI_BOLD : FONT_UI;
         int th = text_wrapped_height(f, NAV_W - 30, cats[i].name, 2);
-        if (cur) draw_text_wrapped(s, f, 16, y, NAV_W - 30, cats[i].name, BLACK, 2);
+        if (cur) draw_text_wrapped(s, f, 16, y, NAV_W - 30, cats[i].name, T.text, 2);
         else if (ui_link_wrapped(w, 16, y, NAV_W - 30, f, cats[i].name, W7_LINK)) { char p[16]; snprintf(p, sizeof p, "cat:%d", i); cp_go(c, p, true); return; }
         y += MAX(22, th + 8);
     }
     y += 14;
     hline(s, 16, y, NAV_W - 32, HEX(0xC8D4E4)); y += 12;
-    draw_text(s, FONT_UI, 16, y, "See also", HEX(0x6A7A8E)); y += 20;
+    draw_text(s, FONT_UI, 16, y, "See also", T.gray_text); y += 20;
     if (ui_link(w, 16, y, FONT_UI, "Task Manager", W7_LINK)) taskmgr_open();
     y += 20;
     if (ui_link(w, 16, y, FONT_UI, "Command Prompt", W7_LINK)) terminal_open(NULL, NULL);
@@ -180,12 +185,12 @@ static void home_icons(window_t *w, cp_t *c, int ox, int oy, bool large) {
     for (int i = 0; i < n; i++) {
         int x = ox + 24 + (i % cols) * cw2, y = oy + 60 + (i / cols) * (chh + 8);
         rect_t r = R(x - 4, y - 3, cw2 - 10, chh + 6);
-        if (ui_hover(w, r)) { fill_round_rect(s, r.x, r.y, r.w, r.h, 3, HEX(0xEAF4FD)); draw_round_rect(s, r.x, r.y, r.w, r.h, 3, HEX(0xB8D6FB)); }
+        if (ui_hover(w, r)) { fill_round_rect(s, r.x, r.y, r.w, r.h, 3, T.face_light); draw_round_rect(s, r.x, r.y, r.w, r.h, 3, T.face_dark); }
         if (ui_click_area(w, r)) { cp_go(c, list[i]->id, true); return; }
-        if (large) { draw_icon(s, list[i]->icon, 32, x, y + 6); draw_text(s, FONT_UI, x + 42, y + 10, list[i]->name, W7_LINK); draw_text_ellipsis(s, FONT_SMALL, x + 42, y + 26, cw2 - 60, list[i]->desc, HEX(0x6A6A6A)); }
+        if (large) { draw_icon(s, list[i]->icon, 32, x, y + 6); draw_text(s, FONT_UI, x + 42, y + 10, list[i]->name, W7_LINK); draw_text_ellipsis(s, FONT_SMALL, x + 42, y + 26, cw2 - 60, list[i]->desc, T.gray_text); }
         else { draw_icon(s, list[i]->icon, 16, x, y + 4); draw_text(s, FONT_UI, x + 24, y + 5, list[i]->name, W7_LINK); }
     }
-    if (!n) draw_text(s, FONT_UI, ox + 24, oy + 60, "No items match your search.", HEX(0x6A6A6A));
+    if (!n) draw_text(s, FONT_UI, ox + 24, oy + 60, "No items match your search.", T.gray_text);
 }
 static void category_page(window_t *w, cp_t *c, int cat, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -196,7 +201,7 @@ static void category_page(window_t *w, cp_t *c, int cat, int ox, int oy) {
         if (ui_link(w, ox + 80, y + 4, FONT_LARGE, applets[i].name, W7_GREEN)) { cp_go(c, applets[i].id, true); return; }
         draw_text(s, FONT_UI, ox + 80, y + 30, applets[i].desc, W7_TEXT);
         y += 72;
-        hline(s, ox + 20, y - 12, s->w - ox - 40, HEX(0xE6ECF2));
+        hline(s, ox + 20, y - 12, s->w - ox - 40, T.face_dark);
     }
 }
 
@@ -248,7 +253,16 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     /* pick up new or edited .wrldstyle files */
     if (c->style_gen != vfs_generation) { c->style_gen = vfs_generation; styles_load(); theme_compute(theme_id, theme_hue, &T); wm_theme_changed(); }
     int y = oy + 78;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", T.text);
+    {
+        bool dm = dark_mode;
+        int dmx = ox + 20 + text_width(FONT_UI_BOLD, "Visual styles") + 24;
+        if (ui_checkbox(w, dmx, y - 1, "Dark mode", &dm) && dm != dark_mode) {
+            dark_mode = dm; theme_apply(theme_id, theme_hue);
+            wm_defer(cp_refresh_theme, NULL);      /* repaint after this paint pass */
+            settings_save();
+        }
+    }
     if (ui_link(w, s->w - 330, y, FONT_UI, "Create a style...", W7_LINK)) style_create_from(theme_id);
     if (ui_link(w, s->w - 210, y, FONT_UI, "Open the Themes folder", W7_LINK)) explorer_open(STYLE_DIR);
     y += 22;
@@ -266,7 +280,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
             for (int j = 0; wp[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], wp)) { wallpaper_id = j; shell_wallpaper_changed(); }
             wm_redraw_all();
         }
-        draw_text_centered(s, FONT_UI, R(x - 4, yy + 83, 128, 16), style_name(i), BLACK);
+        draw_text_centered(s, FONT_UI, R(x - 4, yy + 83, 128, 16), style_name(i), T.text);
     }
     if (pages > 1) {
         char pb[32]; snprintf(pb, sizeof pb, "Page %d of %d", c->style_page + 1, pages);
@@ -277,7 +291,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     draw_text_ellipsis(s, FONT_UI, ox + 20, y - 4, s->w - ox - 40, style_desc(hovered >= 0 ? hovered : theme_id), W7_TEXT);
     y += 16;
     int cw = s->w - ox - 40;                     /* usable width */
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Colour hue", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Colour hue", T.text);
     char hb[40]; snprintf(hb, sizeof hb, "%d degrees", c->hue);
     draw_text(s, FONT_UI, ox + 110, y, hb, W7_TEXT);
     theme_t base;
@@ -305,9 +319,9 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     {
         char vb[24];
         int half = (MIN(cw, 560) - 20) / 2, x2 = ox + 20 + half + 20;
-        draw_text(s, FONT_UI_BOLD, ox + 20, y, "Saturation", BLACK);
+        draw_text(s, FONT_UI_BOLD, ox + 20, y, "Saturation", T.text);
         snprintf(vb, sizeof vb, "%+d%%", c->sat); draw_text(s, FONT_UI, ox + 105, y, c->sat ? vb : "normal", W7_TEXT);
-        draw_text(s, FONT_UI_BOLD, x2, y, "Lightness", BLACK);
+        draw_text(s, FONT_UI_BOLD, x2, y, "Lightness", T.text);
         snprintf(vb, sizeof vb, "%+d%%", c->light); draw_text(s, FONT_UI, x2 + 80, y, c->light ? vb : "normal", W7_TEXT);
         uint32_t bc = hue_shift(basec | 0xFF000000, c->hue);
         for (int i = 0; i < half - 10; i += 2) {
@@ -319,11 +333,11 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         if (ch) { theme_set_tone(c->sat, c->light); wm_redraw_all(); }
         y += 64;
     }
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", T.text);
     static canvas_t *thumbs[12];
     static const char *fit_names[] = { "Crop", "Scale", "Stretch" };
     int fx = ox + 20 + text_width(FONT_UI_BOLD, "Desktop background") + 18;
-    draw_text(s, FONT_UI, fx, y + 1, "Fit:", HEX(0x505050));
+    draw_text(s, FONT_UI, fx, y + 1, "Fit:", T.gray_text);
     for (int i = 0; i < 3; i++)
         if (ui_radio(w, fx + 32 + i * 82, y - 1, fit_names[i], wallpaper_fit == i) && wallpaper_fit != i) {
             wallpaper_fit = i;
@@ -351,12 +365,12 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         if (sel) { fill_rect(s, x - 3, y - 3, 92, 70, HEX(0xCCE4F8)); draw_rect(s, x - 3, y - 3, 92, 70, HEX(0x3399FF)); }
         for (int j = 0; j < 64; j++) for (int q = 0; q < 86; q++) put_pixel(s, x + q, y + j, i == wallpaper_count - 1 ? desktop_color : thumbs[i]->px[(j * thumbs[i]->h / 64) * thumbs[i]->w + q * thumbs[i]->w / 86]);
         draw_rect(s, x, y, 86, 64, HEX(0x808080));
-        draw_text_centered(s, FONT_UI, R(x - 3, y + 67, 92, 16), wallpaper_names[i], BLACK);
+        draw_text_centered(s, FONT_UI, R(x - 3, y + 67, 92, 16), wallpaper_names[i], T.text);
         if (ui_click_area(w, R(x - 3, y - 3, 92, 86))) { wallpaper_id = i; shell_wallpaper_changed(); wm_need_redraw = true; }
     }
     y += 92 + (wpages > 1 ? 20 : 0);
     if (wallpaper_id == wallpaper_count - 1) {
-        draw_text(s, FONT_UI, ox + 20, y + 4, "Desktop colour:", BLACK);
+        draw_text(s, FONT_UI, ox + 20, y + 4, "Desktop colour:", T.text);
         static const uint32_t cols[] = { 0x3A6EA5, 0x008080, 0x000000, 0x6E7F48, 0x5A4A7A, 0xA05030, 0x404858, 0xC0C0C0 };
         for (int i = 0; i < 8; i++) {
             rect_t r = R(ox + 120 + i * 28, y, 22, 22);
@@ -394,12 +408,12 @@ static void page_display(window_t *w, cp_t *c, int ox, int oy) {
     char b[160];
     snprintf(b, sizeof b, "%d x %d", SCREEN_W, SCREEN_H); draw_text_centered(s, FONT_UI_BOLD, R(mx + 8, my + 8, 134, 84), b, WHITE);
     int x = ox + 210, y = oy + 64;
-    draw_text(s, FONT_UI, x, y, "Display adapter:", HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, x + 110, y, s->w - x - 130, video_driver_name(), BLACK); y += 22;
+    draw_text(s, FONT_UI, x, y, "Display adapter:", T.gray_text); draw_text_ellipsis(s, FONT_UI, x + 110, y, s->w - x - 130, video_driver_name(), T.text); y += 22;
     int avail[ARRAY_LEN(modes)], na = 0, cur = 0;
     for (unsigned i = 0; i < ARRAY_LEN(modes); i++) if (video_mode_ok(modes[i].w, modes[i].h)) { if (modes[i].w == SCREEN_W && modes[i].h == SCREEN_H) cur = na; avail[na++] = i; }
     if (!c->res_sel && na) c->res_sel = cur + 1;          /* slider position + 1 (0 = not yet set) */
     if (video_can_set_mode() && na > 1) {
-        draw_text(s, FONT_UI, x, y + 4, "Screen resolution:", HEX(0x505050));
+        draw_text(s, FONT_UI, x, y + 4, "Screen resolution:", T.gray_text);
         int lx = x + 130;
         int sw = MAX(120, MIN(300, s->w - lx - 30));
         draw_text(s, FONT_SMALL, lx, y + 26, "Less", HEX(0x606060)); draw_text(s, FONT_SMALL, lx + sw - 24, y + 26, "More", HEX(0x606060));
@@ -407,7 +421,7 @@ static void page_display(window_t *w, cp_t *c, int ox, int oy) {
         if (ui_slider(w, R(lx, y, sw, 24), &pos, 0, na - 1)) c->res_sel = pos + 1;
         int m = avail[CLAMP(c->res_sel - 1, 0, na - 1)];
         snprintf(b, sizeof b, "%d by %d pixels", modes[m].w, modes[m].h);
-        draw_text_centered(s, FONT_UI_BOLD, R(lx, y + 40, sw, 16), b, BLACK);
+        draw_text_centered(s, FONT_UI_BOLD, R(lx, y + 40, sw, 16), b, T.text);
         y += 66;
         bool changed = modes[m].w != SCREEN_W || modes[m].h != SCREEN_H;
         if (ui_button_ex(w, R(lx, y, 90, 24), "Apply", changed, false) && changed) {
@@ -440,7 +454,7 @@ static void page_taskbar(window_t *w, cp_t *c, int ox, int oy) {
     if (ui_checkbox(w, ox + 36, y, "Show seconds", &show_seconds)) wm_need_redraw = true; y += 26;
     if (ui_checkbox(w, ox + 36, y, "Use 24-hour clock", &clock_24h)) wm_need_redraw = true; y += 50;
     draw_group(s, R(ox + 20, y, 420, 90), "Start menu"); y += 26;
-    draw_text(s, FONT_UI, ox + 36, y, "Start menu style follows the visual style:", BLACK); y += 20;
+    draw_text(s, FONT_UI, ox + 36, y, "Start menu style follows the visual style:", T.text); y += 20;
     draw_text(s, FONT_UI, ox + 36, y, "Luna styles use the two-column menu; Classic uses the cascading menu.", W7_TEXT);
 }
 static void page_datetime(window_t *w, cp_t *c, int ox, int oy) {
@@ -453,7 +467,7 @@ static void page_datetime(window_t *w, cp_t *c, int ox, int oy) {
     for (int i = 0; i < 12; i++) {
         int a = i * 1024 / 12;
         int sx = ext_isin(a), sy = -ext_isin(a + 256);
-        fill_circle(s, cx + sx * (r - 10) / 256, cy + sy * (r - 10) / 256, i % 3 ? 2 : 4, HEX(0x1E3287));
+        fill_circle(s, cx + sx * (r - 10) / 256, cy + sy * (r - 10) / 256, i % 3 ? 2 : 4, T.link_head);
     }
     int ha = ((t.hour % 12) * 60 + t.minute) * 1024 / 720, ma = t.minute * 1024 / 60, sa = t.second * 1024 / 60;
     draw_thick_line(s, cx, cy, cx + ext_isin(ha) * (r - 35) / 256, cy - ext_isin(ha + 256) * (r - 35) / 256, 5, HEX(0x202020));
@@ -463,10 +477,10 @@ static void page_datetime(window_t *w, cp_t *c, int ox, int oy) {
     static const char *days[] = { "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
     static const char *mons[] = { "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
     char b[96];
-    snprintf(b, sizeof b, "%02d:%02d:%02d", t.hour, t.minute, t.second); draw_text(s, FONT_XL, ox + 230, oy + 90, b, BLACK);
-    snprintf(b, sizeof b, "%s, %s %d, %d", days[t.weekday], mons[(t.month + 11) % 12], t.day, t.year); draw_text(s, FONT_UI, ox + 232, oy + 128, b, BLACK);
-    draw_text(s, FONT_UI_BOLD, ox + 232, oy + 170, "Time zone", BLACK);
-    snprintf(b, sizeof b, "UTC%c%02d:%02d", c->tz < 0 ? '-' : '+', ABSDIFF(c->tz, 0) / 60, ABSDIFF(c->tz, 0) % 60); draw_text(s, FONT_UI, ox + 320, oy + 170, b, BLACK);
+    snprintf(b, sizeof b, "%02d:%02d:%02d", t.hour, t.minute, t.second); draw_text(s, FONT_XL, ox + 230, oy + 90, b, T.text);
+    snprintf(b, sizeof b, "%s, %s %d, %d", days[t.weekday], mons[(t.month + 11) % 12], t.day, t.year); draw_text(s, FONT_UI, ox + 232, oy + 128, b, T.text);
+    draw_text(s, FONT_UI_BOLD, ox + 232, oy + 170, "Time zone", T.text);
+    snprintf(b, sizeof b, "UTC%c%02d:%02d", c->tz < 0 ? '-' : '+', ABSDIFF(c->tz, 0) / 60, ABSDIFF(c->tz, 0) % 60); draw_text(s, FONT_UI, ox + 320, oy + 170, b, T.text);
     int hours = c->tz / 30;
     if (ui_slider(w, R(ox + 230, oy + 190, 300, 24), &hours, -24, 28)) { c->tz = hours * 30; tz_offset_minutes = c->tz; wm_need_redraw = true; }
     draw_text(s, FONT_SMALL, ox + 230, oy + 216, "UTC-12", W7_TEXT); draw_text(s, FONT_SMALL, ox + 500, oy + 216, "UTC+14", W7_TEXT);
@@ -477,13 +491,13 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "View basic information about your computer", NULL);
     int y = oy + 64;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Edition", HEX(0x1E3287)); hline(s, ox + 80, y + 8, s->w - ox - 120, HEX(0xD8E0EA)); y += 24;
-    draw_text(s, FONT_UI, ox + 40, y, OS_NAME " " OS_EDITION, BLACK); y += 18;
-    draw_text(s, FONT_UI, ox + 40, y, "Version " OS_VERSION " (Build " OS_BUILD ")", BLACK); y += 18;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Edition", T.link_head); hline(s, ox + 80, y + 8, s->w - ox - 120, T.face_dark); y += 24;
+    draw_text(s, FONT_UI, ox + 40, y, OS_NAME " " OS_EDITION, T.text); y += 18;
+    draw_text(s, FONT_UI, ox + 40, y, "Version " OS_VERSION " (Build " OS_BUILD ")", T.text); y += 18;
     draw_text(s, FONT_UI, ox + 40, y, "An original operating system with an XP-style shell", W7_TEXT);
     draw_icon(s, ICON_LOGO, 48, s->w - 90, oy + 64);
     y += 30;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "System", HEX(0x1E3287)); hline(s, ox + 80, y + 8, s->w - ox - 120, HEX(0xD8E0EA)); y += 24;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "System", T.link_head); hline(s, ox + 80, y + 8, s->w - ox - 120, T.face_dark); y += 24;
     char v[16], br[52], b[160]; cpu_get_info(v, br);
     const char *lab[] = { "Computer name:", "Installed on:", "Processor:", "Installed memory:", "Kernel heap:", "System type:", "Uptime:", "Tasks:" };
     char vals[8][96];
@@ -496,15 +510,15 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     uint32_t up = timer_ticks() / 1000; snprintf(vals[4], 96, "%u:%02u:%02u", up / 3600, (up / 60) % 60, up % 60);
     snprintf(vals[5], 96, "%d running (cooperative scheduler)", task_count());
     static const int order[8] = { 6, 7, 0, 1, 2, 3, 4, 5 };
-    for (int k = 0; k < 8; k++) { int i = order[k]; draw_text(s, FONT_UI, ox + 40, y, lab[k], HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, ox + 170, y, s->w - ox - 200, vals[i], BLACK); y += 20; }
+    for (int k = 0; k < 8; k++) { int i = order[k]; draw_text(s, FONT_UI, ox + 40, y, lab[k], T.gray_text); draw_text_ellipsis(s, FONT_UI, ox + 170, y, s->w - ox - 200, vals[i], T.text); y += 20; }
     y += 14;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Compatibility", HEX(0x1E3287)); hline(s, ox + 110, y + 8, s->w - ox - 150, HEX(0xD8E0EA)); y += 24;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Compatibility", T.link_head); hline(s, ox + 110, y + 8, s->w - ox - 150, T.face_dark); y += 24;
     snprintf(b, sizeof b, "Win32 " OS_EXE_DESC " (.exe): %d kernel32, %d msvcrt, %d user32, %d gdi32 functions", 0, 0, 0, 0);
     extern const int kernel32_count, msvcrt_count, user32_count, gdi32_count;
     snprintf(b, sizeof b, "Win32 " OS_EXE_DESC " (.exe): %d kernel32 / %d msvcrt / %d user32 / %d gdi32 functions", kernel32_count, msvcrt_count, user32_count, gdi32_count);
-    draw_text(s, FONT_UI, ox + 40, y, b, BLACK); y += 18;
-    draw_text(s, FONT_UI, ox + 40, y, "Shell scripts (.sh): built-in POSIX-style interpreter", BLACK); y += 18;
-    draw_text(s, FONT_UI, ox + 40, y, "Apple disk images (.dmg): UDIF raw/zlib, FAT volumes, script .app bundles", BLACK); y += 26;
+    draw_text(s, FONT_UI, ox + 40, y, b, T.text); y += 18;
+    draw_text(s, FONT_UI, ox + 40, y, "Shell scripts (.sh): built-in POSIX-style interpreter", T.text); y += 18;
+    draw_text(s, FONT_UI, ox + 40, y, "Apple disk images (.dmg): UDIF raw/zlib, FAT volumes, script .app bundles", T.text); y += 26;
     if (ui_link(w, ox + 40, y, FONT_UI, "Device Manager", W7_LINK)) cp_go(c, "devices", true);
     if (!system_volume && ui_link(w, ox + 310, y, FONT_UI, "Install " OS_NAME " to a hard disk", W7_LINK)) setup_launch_from_desktop();
     if (ui_link(w, ox + 160, y, FONT_UI, "Kernel log (dmesg)", W7_LINK)) { vfs_write_file("C:\\tmp\\dmesg.log", klog_buffer(), strlen(klog_buffer())); notepad_open("C:\\tmp\\dmesg.log"); }
@@ -527,9 +541,9 @@ static const char *dev_status_text(const device_t *d) {
 }
 /* a 9x9 expand/collapse box, as in a tree view */
 static void tree_box(canvas_t *s, int x, int y, bool open) {
-    fill_rect(s, x, y, 9, 9, WHITE); draw_rect(s, x, y, 9, 9, HEX(0x808080));
-    hline(s, x + 2, y + 4, 5, BLACK);
-    if (!open) vline(s, x + 4, y + 2, 5, BLACK);
+    fill_rect(s, x, y, 9, 9, T.window_bg); draw_rect(s, x, y, 9, 9, T.face_dark);
+    hline(s, x + 2, y + 4, 5, T.text);
+    if (!open) vline(s, x + 4, y + 2, 5, T.text);
 }
 static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -541,7 +555,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     if (ui_tab(w, R(ox + 346, y, 130, 24), "Built-in drivers", c->dev_view == 1)) { c->dev_view = 1; c->scroll = 0; w->dirty = true; }
     int top = y + 34, panel_h = c->dev_view == 0 ? 118 : 0, bottom = s->h - panel_h - 8;
     rect_t area = R(ox + 20, top, s->w - ox - 40, bottom - top);
-    fill_rect(s, area.x, area.y, area.w, area.h, WHITE); draw_rect(s, area.x, area.y, area.w, area.h, HEX(0x8E9CB4));
+    fill_rect(s, area.x, area.y, area.w, area.h, T.window_bg); draw_rect(s, area.x, area.y, area.w, area.h, T.face_dark);
     rect_t old = canvas_push_clip(s, R(area.x + 1, area.y + 1, area.w - 2, area.h - 2));
     int n = devmgr_count(), row = 20, ry = area.y + 6 - c->scroll, content = 0;
     if (c->dev_view == 1) {
@@ -549,7 +563,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
         const driver_t *const *drv; int nd = devmgr_drivers(&drv);
         int cx[4] = { area.x + 10, area.x + 110, area.x + 180, area.x + 250 };
         static const char *hd[4] = { "Driver", "Bus", "In use", "Description" };
-        for (int k = 0; k < 4; k++) draw_text(s, FONT_UI_BOLD, cx[k], ry, hd[k], HEX(0x1E3287));
+        for (int k = 0; k < 4; k++) draw_text(s, FONT_UI_BOLD, cx[k], ry, hd[k], T.link_head);
         ry += row; content += row;
         for (int cls = 0; cls < DC_COUNT; cls++)
             for (int k = 0; k < nd; k++) {
@@ -557,7 +571,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
                 int used = 0;
                 for (int i = 0; i < n; i++) { device_t *d = devmgr_get(i); if (d->drv == drv[k] && d->status == DS_WORKING) used++; }
                 char cnt[12]; if (used) snprintf(cnt, sizeof cnt, "%d", used); else strcpy(cnt, "-");
-                uint32_t col = used ? BLACK : HEX(0x707070);
+                uint32_t col = used ? T.text : T.gray_text;
                 draw_icon(s, devclass_icon(cls), 16, cx[0] - 2, ry - 1);
                 draw_text(s, FONT_UI, cx[0] + 18, ry, drv[k]->name, col); draw_text(s, FONT_UI, cx[1] + 18, ry, drv[k]->bus, col);
                 draw_text(s, FONT_UI, cx[2] + 18, ry, cnt, col);
@@ -567,7 +581,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
         char foot[120]; snprintf(foot, sizeof foot, "%d drivers are built into %s. Greyed drivers have no matching device in this computer.", nd, OS_NAME);
         ry += 6; draw_text(s, FONT_SMALL, cx[0], ry, foot, W7_TEXT); content += row + 6;
     } else {
-        draw_icon(s, ICON_COMPUTER, 16, area.x + 8, ry); draw_text(s, FONT_UI_BOLD, area.x + 30, ry + 1, computer_name, BLACK);
+        draw_icon(s, ICON_COMPUTER, 16, area.x + 8, ry); draw_text(s, FONT_UI_BOLD, area.x + 30, ry + 1, computer_name, T.text);
         ry += row; content += row;
         for (int cls = 0; cls < DC_COUNT; cls++) {
             int members = 0; bool trouble = false;
@@ -578,7 +592,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
             if (ui_click_area(w, hr)) { c->dev_closed ^= 1u << cls; w->dirty = true; }
             tree_box(s, area.x + 26, ry + 3, open);
             draw_icon(s, devclass_icon(cls), 16, area.x + 42, ry);
-            draw_text(s, FONT_UI, area.x + 64, ry + 1, devclass_name(cls), BLACK);
+            draw_text(s, FONT_UI, area.x + 64, ry + 1, devclass_name(cls), T.text);
             if (trouble && !open) draw_icon(s, ICON_WARNING, 16, area.x + 68 + text_width(FONT_UI, devclass_name(cls)), ry);
             ry += row; content += row;
             if (!open) continue;
@@ -593,7 +607,7 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
                 if (sel) fill_rect(s, area.x + 84, ry - 1, tw + 8, row - 1, HEX(0x316AC5));
                 int icon = d->status == DS_NO_DRIVER ? ICON_QUESTION : d->status == DS_FAILED ? ICON_WARNING : devclass_icon(cls);
                 draw_icon(s, icon, 16, area.x + 66, ry);
-                uint32_t col = sel ? WHITE : d->status == DS_NOT_STARTED ? HEX(0x707070) : BLACK;
+                uint32_t col = sel ? T.select_text : d->status == DS_NOT_STARTED ? T.gray_text : T.text;
                 draw_text_ellipsis(s, FONT_UI, area.x + 88, ry + 1, area.w - 110, d->name, col);
                 if (d->is_new) draw_text(s, FONT_SMALL, area.x + 96 + tw, ry + 2, "new", HEX(0x1C7A1C));
                 ry += row; content += row;
@@ -614,26 +628,26 @@ static void page_devices(window_t *w, cp_t *c, int ox, int oy) {
     for (int i = 0; i < n && !d; i++) { char key[112]; dev_key(devmgr_get(i), key, sizeof key); if (!strcmp(key, c->dev_sel)) d = devmgr_get(i); }
     if (!d) { draw_text(s, FONT_UI, px, py + 8, "Click a device to see its driver, status and hardware ID.", W7_TEXT); return; }
     draw_icon(s, d->status == DS_NO_DRIVER ? ICON_QUESTION : d->status == DS_FAILED ? ICON_WARNING : devclass_icon(d->cls), 32, px, py + 2);
-    draw_text_ellipsis(s, FONT_UI_BOLD, px + 42, py, s->w - px - 60, d->name, BLACK);
+    draw_text_ellipsis(s, FONT_UI_BOLD, px + 42, py, s->w - px - 60, d->name, T.text);
     char line[220];
     uint32_t stcol = d->status == DS_WORKING ? HEX(0x1C7A1C) : (d->status == DS_NO_DRIVER || d->status == DS_FAILED) ? HEX(0xB03020) : W7_TEXT;
-    draw_text(s, FONT_UI, px + 42, py + 18, "Status:", HEX(0x505050)); draw_text(s, FONT_UI, px + 130, py + 18, dev_status_text(d), stcol);
+    draw_text(s, FONT_UI, px + 42, py + 18, "Status:", T.gray_text); draw_text(s, FONT_UI, px + 130, py + 18, dev_status_text(d), stcol);
     if (d->drv) snprintf(line, sizeof line, "%s  -  %s", d->drv->name, d->drv->desc); else strcpy(line, "None");
-    draw_text(s, FONT_UI, px + 42, py + 36, "Driver:", HEX(0x505050)); draw_text_ellipsis(s, FONT_UI, px + 130, py + 36, s->w - px - 150, line, BLACK);
-    draw_text(s, FONT_UI, px + 42, py + 54, "Hardware ID:", HEX(0x505050)); draw_text(s, FONT_UI, px + 130, py + 54, d->hwid, BLACK);
-    if (d->location[0]) { int hx = px + 140 + text_width(FONT_UI, d->hwid); draw_text_ellipsis(s, FONT_UI, hx, py + 54, s->w - hx - 20, d->location, HEX(0x505050)); }
+    draw_text(s, FONT_UI, px + 42, py + 36, "Driver:", T.gray_text); draw_text_ellipsis(s, FONT_UI, px + 130, py + 36, s->w - px - 150, line, T.text);
+    draw_text(s, FONT_UI, px + 42, py + 54, "Hardware ID:", T.gray_text); draw_text(s, FONT_UI, px + 130, py + 54, d->hwid, T.text);
+    if (d->location[0]) { int hx = px + 140 + text_width(FONT_UI, d->hwid); draw_text_ellipsis(s, FONT_UI, hx, py + 54, s->w - hx - 20, d->location, T.gray_text); }
     draw_text_wrapped(s, FONT_UI, px + 42, py + 74, s->w - px - 70, d->detail, W7_TEXT, 2);
 }
 static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "View your basic network information", NULL);
     bool ok = net_ready();
-    draw_icon(s, ICON_COMPUTER, 48, ox + 40, oy + 80); draw_text(s, FONT_UI, ox + 30, oy + 134, computer_name, BLACK);
+    draw_icon(s, ICON_COMPUTER, 48, ox + 40, oy + 80); draw_text(s, FONT_UI, ox + 30, oy + 134, computer_name, T.text);
     if (ok) for (int x = ox + 100; x < ox + 240; x += 2) hline(s, x, oy + 104, 1, HEX(0x2E8E2E));
     else { for (int x = ox + 100; x < ox + 240; x += 8) hline(s, x, oy + 104, 4, HEX(0xC03030)); draw_icon(s, ICON_ERROR, 16, ox + 162, oy + 96); }
-    draw_icon(s, ICON_CP_NETWORK, 48, ox + 250, oy + 80); draw_text(s, FONT_UI, ox + 254, oy + 134, "Internet", BLACK);
+    draw_icon(s, ICON_CP_NETWORK, 48, ox + 250, oy + 80); draw_text(s, FONT_UI, ox + 254, oy + 134, "Internet", T.text);
     int y = oy + 170;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Local Area Connection", HEX(0x1E3287)); hline(s, ox + 160, y + 8, s->w - ox - 190, HEX(0xD8E0EA)); y += 24;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Local Area Connection", T.link_head); hline(s, ox + 160, y + 8, s->w - ox - 190, T.face_dark); y += 24;
     char a[16], m[16], g[16], d[16], b[160];
     ip_to_str(netif.ip, a); ip_to_str(netif.mask, m); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d);
     const char *lab[] = { "Status:", "Adapter:", "Physical address:", "IPv4 address:", "Subnet mask:", "Default gateway:", "DNS server:", "Activity:" };
@@ -644,7 +658,7 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     strlcpy(vals[3], netif.configured ? a : "-", 96); strlcpy(vals[4], netif.configured ? m : "-", 96);
     strlcpy(vals[5], netif.configured ? g : "-", 96); strlcpy(vals[6], netif.configured ? d : "-", 96);
     snprintf(vals[7], 96, "%u KB sent, %u KB received", netif.tx_bytes / 1024, netif.rx_bytes / 1024);
-    for (int i = 0; i < 8; i++) { if (!netif.present && i > 1) break; draw_text(s, FONT_UI, ox + 40, y, lab[i], HEX(0x505050)); draw_text(s, FONT_UI, ox + 170, y, vals[i], BLACK); y += 20; }
+    for (int i = 0; i < 8; i++) { if (!netif.present && i > 1) break; draw_text(s, FONT_UI, ox + 40, y, lab[i], T.gray_text); draw_text(s, FONT_UI, ox + 170, y, vals[i], T.text); y += 20; }
     y += 10;
     if (netif.present && ui_button(w, R(ox + 40, y, 150, 26), "Renew address (DHCP)")) dhcp_renew();
     if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open XplorerLite", W7_LINK)) browser_open(NULL);
@@ -657,7 +671,7 @@ static void page_mouse(window_t *w, cp_t *c, int ox, int oy) {
     heading(s, ox + 20, oy + 16, "Mouse Properties", NULL);
     int y = oy + 70;
     draw_group(s, R(ox + 20, y, 460, 110), "Double-click speed");
-    draw_text(s, FONT_UI, ox + 36, y + 30, "Slow", BLACK); draw_text(s, FONT_UI, ox + 300, y + 30, "Fast", BLACK);
+    draw_text(s, FONT_UI, ox + 36, y + 30, "Slow", T.text); draw_text(s, FONT_UI, ox + 300, y + 30, "Fast", T.text);
     int v = 900 - c->dbl;
     if (ui_slider(w, R(ox + 70, y + 26, 220, 24), &v, 100, 750)) { c->dbl = 900 - v; wm_dblclick_ms = c->dbl; }
     rect_t tr = R(ox + 380, y + 22, 48, 48);
@@ -666,7 +680,7 @@ static void page_mouse(window_t *w, cp_t *c, int ox, int oy) {
     draw_text(s, FONT_SMALL, ox + 36, y + 70, "Double-click the folder to test the setting.", W7_TEXT);
     y += 126;
     draw_group(s, R(ox + 20, y, 460, 80), "Pointer speed");
-    draw_text(s, FONT_UI, ox + 36, y + 30, "Slow", BLACK); draw_text(s, FONT_UI, ox + 300, y + 30, "Fast", BLACK);
+    draw_text(s, FONT_UI, ox + 36, y + 30, "Slow", T.text); draw_text(s, FONT_UI, ox + 300, y + 30, "Fast", T.text);
     if (ui_slider(w, R(ox + 70, y + 26, 220, 24), &c->speed, 1, 10)) mouse_speed = c->speed;
     y += 96;
     if (ui_checkbox(w, ox + 24, y, "Switch primary and secondary buttons", &c->swap)) mouse_swap_buttons = c->swap;
@@ -674,9 +688,9 @@ static void page_mouse(window_t *w, cp_t *c, int ox, int oy) {
 static void page_keyboard(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Keyboard Properties", "Click in the box and type to test the PS/2 keyboard driver.");
-    draw_text(s, FONT_UI, ox + 20, oy + 80, "Test area:", BLACK);
+    draw_text(s, FONT_UI, ox + 20, oy + 80, "Test area:", T.text);
     ui_textbox(w, R(ox + 100, oy + 76, 300, 22), c->keytest, sizeof c->keytest);
-    draw_text(s, FONT_UI_BOLD, ox + 20, oy + 120, "Keyboard shortcuts", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 20, oy + 120, "Keyboard shortcuts", T.text);
     const char *k[] = { "Win or Ctrl+Esc - open the Start menu", "Alt+Tab - switch windows", "Alt+F4 - close the active window", "Ctrl+Alt+Del / Ctrl+Shift+Esc - Task Manager", "F2 - rename, F5 - refresh, Delete - recycle", "Ctrl+C in Command Prompt - interrupt" };
     for (int i = 0; i < 6; i++) draw_text(s, FONT_UI, ox + 30, oy + 142 + i * 18, k[i], W7_TEXT);
 }
@@ -685,7 +699,7 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
     heading(s, ox + 20, oy + 16, "Sound", "Change the volume, and choose the sounds " OS_NAME " plays when it starts and shuts down.");
     int y = oy + 64; char b[160];
     draw_icon(s, ICON_CP_SOUND, 48, ox + 30, y);
-    draw_text(s, FONT_UI, ox + 96, y + 2, "Playback devices:", HEX(0x505050));
+    draw_text(s, FONT_UI, ox + 96, y + 2, "Playback devices:", T.gray_text);
     int nd = audio_present() ? audio_device_count() : 0;
     if (nd > 8) nd = 8;
     const char *items[8];
@@ -697,8 +711,8 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
     int cy = lr.y + lr.h + 4;
     const char *ctl = audio_controller_name();
     if (ctl[0]) {
-        draw_text(s, FONT_UI, ox + 96, cy, "Controller:", HEX(0x505050));
-        draw_text(s, FONT_UI, ox + 210, cy, ctl, HEX(0x505050));
+        draw_text(s, FONT_UI, ox + 96, cy, "Controller:", T.gray_text);
+        draw_text(s, FONT_UI, ox + 210, cy, ctl, T.gray_text);
         cy += 22;
     }
     if (!audio_present()) {
@@ -707,19 +721,19 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
         y += 80;
     } else {
         y = cy + 6;
-        draw_text(s, FONT_UI, ox + 96, y + 4, "Volume:", HEX(0x505050));
+        draw_text(s, FONT_UI, ox + 96, y + 4, "Volume:", T.gray_text);
         int vol = audio_volume;
         if (ui_slider(w, R(ox + 210, y, 220, 24), &vol, 0, 100)) audio_volume = vol;
-        snprintf(b, sizeof b, "%d%%", audio_volume); draw_text(s, FONT_UI, ox + 440, y + 4, b, BLACK);
+        snprintf(b, sizeof b, "%d%%", audio_volume); draw_text(s, FONT_UI, ox + 440, y + 4, b, T.text);
         y += 30;
         ui_checkbox(w, ox + 210, y, "Mute", &audio_muted);
         y += 40;
-        draw_text(s, FONT_UI_BOLD, ox + 20, y, "System sounds", HEX(0x1E3287)); hline(s, ox + 125, y + 8, s->w - ox - 155, HEX(0xD8E0EA)); y += 26;
+        draw_text(s, FONT_UI_BOLD, ox + 20, y, "System sounds", T.link_head); hline(s, ox + 125, y + 8, s->w - ox - 155, T.face_dark); y += 26;
         ui_checkbox(w, ox + 40, y, "Play the startup and shutdown sounds", &system_sounds); y += 30;
         static const struct { const char *label, *file; } snd[] = { { "Startup", SOUND_STARTUP }, { "Shutdown", SOUND_SHUTDOWN } };
         for (int i = 0; i < 2; i++) {
             draw_icon(s, ICON_CP_SOUND, 16, ox + 40, y + 4);
-            draw_text(s, FONT_UI, ox + 62, y + 5, snd[i].label, BLACK);
+            draw_text(s, FONT_UI, ox + 62, y + 5, snd[i].label, T.text);
             draw_text_ellipsis(s, FONT_UI, ox + 140, y + 5, s->w - ox - 260, path_basename(snd[i].file), W7_TEXT);
             if (ui_button(w, R(s->w - 110, y, 80, 24), "Test")) { char err[64]; audio_stop_all(); if (!audio_play_file(snd[i].file, err, sizeof err)) msgbox("Sound", err, MBI_ERROR, MBX_OK, NULL, NULL); }
             y += 30;
@@ -727,7 +741,7 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
         if (ui_button(w, R(s->w - 110, y, 80, 24), "Stop")) audio_stop_all();
         y += 40;
     }
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "PC speaker", HEX(0x1E3287)); hline(s, ox + 105, y + 8, s->w - ox - 135, HEX(0xD8E0EA)); y += 26;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "PC speaker", T.link_head); hline(s, ox + 105, y + 8, s->w - ox - 135, T.face_dark); y += 26;
     static const struct { const char *n; int f; } tones[] = { { "Beep", 880 }, { "Asterisk", 1200 }, { "Critical Stop", 330 } };
     for (int i = 0; i < 3; i++) if (ui_button(w, R(ox + 40 + i * 110, y, 100, 24), tones[i].n)) speaker_beep(tones[i].f, 150);
 }
@@ -741,16 +755,16 @@ static void page_programs(window_t *w, cp_t *c, int ox, int oy) {
     vnode_t *sm = vfs_resolve("C:\\Samples", NULL);
     for (vnode_t *k = sm ? sm->child : NULL; k && n < 64; k = k->next) { names[n] = k->name; icons[n] = file_icon(k); pub[n] = "Sample program"; nodes[n] = k; n++; }
     int y = oy + 76;
-    gradient_v(s, ox + 20, y, s->w - ox - 40, 22, WHITE, HEX(0xEEF2F7)); draw_rect(s, ox + 20, y, s->w - ox - 40, 22, HEX(0xD5DFEA));
-    draw_text(s, FONT_UI, ox + 30, y + 4, "Name", BLACK); draw_text(s, FONT_UI, ox + 320, y + 4, "Publisher", BLACK); draw_text(s, FONT_UI, ox + 480, y + 4, "Size", BLACK);
+    gradient_v(s, ox + 20, y, s->w - ox - 40, 22, T.window_bg, T.face); draw_rect(s, ox + 20, y, s->w - ox - 40, 22, T.face_dark);
+    draw_text(s, FONT_UI, ox + 30, y + 4, "Name", T.text); draw_text(s, FONT_UI, ox + 320, y + 4, "Publisher", T.text); draw_text(s, FONT_UI, ox + 480, y + 4, "Size", T.text);
     y += 24;
     for (int i = 0; i < n && y < s->h - 60; i++) {
         rect_t r = R(ox + 20, y, s->w - ox - 40, 22);
         if (ui_click_area(w, r)) c->prog_sel = i;
         if (c->prog_sel == i) fill_rect(s, r.x, r.y, r.w, r.h, HEX(0xCCE8FF));
-        else if (ui_hover(w, r)) fill_rect(s, r.x, r.y, r.w, r.h, HEX(0xE5F3FF));
+        else if (ui_hover(w, r)) fill_rect(s, r.x, r.y, r.w, r.h, T.face_light);
         draw_icon(s, icons[i], 16, ox + 26, y + 3);
-        draw_text_ellipsis(s, FONT_UI, ox + 48, y + 4, 260, names[i], BLACK);
+        draw_text_ellipsis(s, FONT_UI, ox + 48, y + 4, 260, names[i], T.text);
         draw_text(s, FONT_UI, ox + 320, y + 4, pub[i], W7_TEXT);
         if (nodes[i]) { char b[32]; format_size(b, sizeof b, vfs_tree_size(nodes[i])); draw_text(s, FONT_UI, ox + 480, y + 4, b, W7_TEXT); }
         y += 22;
@@ -775,18 +789,18 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
     };
     int y = oy + 64;
     for (unsigned i = 0; i < ARRAY_LEN(assoc); i++) {
-        if (i % 2) fill_rect(s, ox + 20, y - 2, s->w - ox - 40, 34, HEX(0xF4F8FC));
+        if (i % 2) fill_rect(s, ox + 20, y - 2, s->w - ox - 40, 34, T.face);
         draw_icon(s, assoc[i].icon, 32, ox + 26, y);
-        draw_text(s, FONT_UI_BOLD, ox + 68, y + 2, assoc[i].ext, BLACK);
+        draw_text(s, FONT_UI_BOLD, ox + 68, y + 2, assoc[i].ext, T.text);
         draw_text(s, FONT_UI, ox + 68, y + 17, assoc[i].desc, W7_TEXT);
-        draw_text(s, FONT_UI, ox + 380, y + 9, assoc[i].prog, BLACK);
+        draw_text(s, FONT_UI, ox + 380, y + 9, assoc[i].prog, T.text);
         y += 36;
     }
 }
 static void page_users(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Make changes to your user account", NULL);
-    draw_text(s, FONT_UI_BOLD, ox + 28, oy + 214, "Picture", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 28, oy + 214, "Picture", T.text);
     int per = 12, pitch = 42, sz = 36;
     for (int i = 0; i < user_picture_count; i++) {
         int col = i % per, row = i / per;
@@ -797,9 +811,9 @@ static void page_users(window_t *w, cp_t *c, int ox, int oy) {
     }
     /* the summary is drawn after the grid so a new pick shows in this paint */
     fill_round_rect(s, ox + 28, oy + 68, 56, 56, 5, HEX(0xA8C4E8)); draw_user_picture(s, user_picture, 48, ox + 32, oy + 72);
-    draw_text(s, FONT_LARGE, ox + 100, oy + 72, user_name, BLACK);
+    draw_text(s, FONT_LARGE, ox + 100, oy + 72, user_name, T.text);
     draw_text(s, FONT_UI, ox + 100, oy + 98, "Administrator", W7_TEXT);
-    draw_text(s, FONT_UI_BOLD, ox + 28, oy + 150, "Account name", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 28, oy + 150, "Account name", T.text);
     bool enter = ui_textbox(w, R(ox + 28, oy + 170, 220, 22), c->uname, sizeof c->uname);
     if ((ui_button(w, R(ox + 258, oy + 169, 100, 24), "Change name") || enter) && c->uname[0]) { strlcpy(user_name, c->uname, sizeof user_name); wm_need_redraw = true; }
 }
@@ -808,23 +822,23 @@ static void page_fonts(window_t *w, cp_t *c, int ox, int oy) {
     heading(s, ox + 20, oy + 16, "Preview fonts", "Text is shaped by the font's own OpenType tables (Liberation family, SIL Open Font License; Noto Naskh Arabic for Arabic).");
     static const struct { int f; const char *n; } fl[] = { { FONT_UI, "Sans 12 (UI)" }, { FONT_UI_BOLD, "Sans Bold 12" }, { FONT_TITLE, "Sans Bold 13 (title bars)" }, { FONT_LARGE, "Sans 18" }, { FONT_XL, "Sans 24" }, { FONT_MONO, "Mono 13 (console)" }, { FONT_START, "Sans Bold Italic 17" } };
     int y = oy + 96;
-    for (unsigned i = 0; i < ARRAY_LEN(fl); i++) { draw_text(s, FONT_SMALL, ox + 24, y, fl[i].n, W7_TEXT); draw_text(s, fl[i].f, ox + 200, y - 2, "The quick brown fox jumps over the lazy dog", BLACK); y += font_height(fl[i].f) + 12; }
+    for (unsigned i = 0; i < ARRAY_LEN(fl); i++) { draw_text(s, FONT_SMALL, ox + 24, y, fl[i].n, W7_TEXT); draw_text(s, fl[i].f, ox + 200, y - 2, "The quick brown fox jumps over the lazy dog", T.text); y += font_height(fl[i].f) + 12; }
     y += 4;
     draw_text(s, FONT_SMALL, ox + 24, y, "Arabic (right to left)", W7_TEXT);
-    draw_text(s, FONT_LARGE, ox + 200, y - 2, "العربية: مرحبًا بالعالم", BLACK);
+    draw_text(s, FONT_LARGE, ox + 200, y - 2, "العربية: مرحبًا بالعالم", T.text);
     y += font_height(FONT_LARGE) + 12;
     draw_text(s, FONT_SMALL, ox + 24, y, "Hebrew (right to left)", W7_TEXT);
-    draw_text(s, FONT_LARGE, ox + 200, y - 2, "שלום עולם", BLACK);
+    draw_text(s, FONT_LARGE, ox + 200, y - 2, "שלום עולם", T.text);
     y += font_height(FONT_LARGE) + 12;
     draw_text(s, FONT_SMALL, ox + 24, y, "Bidirectional", W7_TEXT);
-    draw_text(s, FONT_UI, ox + 200, y - 1, "WRLD 7 — العربية 123 abc", BLACK);
+    draw_text(s, FONT_UI, ox + 200, y - 1, "WRLD 7 — العربية 123 abc", T.text);
 }
 static void page_ease(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Make your computer easier to use", NULL);
     int y = oy + 70;
     draw_icon(s, ICON_CP_EASE, 48, ox + 24, y);
-    draw_text(s, FONT_UI_BOLD, ox + 84, y + 4, "Quick access to common tools", BLACK);
+    draw_text(s, FONT_UI_BOLD, ox + 84, y + 4, "Quick access to common tools", T.text);
     if (ui_button(w, R(ox + 84, y + 26, 190, 26), "Use high-contrast Classic style")) { theme_apply(THEME_CLASSIC, 0); wm_redraw_all(); }
     if (ui_button(w, R(ox + 284, y + 26, 160, 26), "Restore Luna (Blue)")) { theme_apply(THEME_LUNA_BLUE, 0); wm_redraw_all(); }
     y += 80;
@@ -835,9 +849,10 @@ static void page_ease(window_t *w, cp_t *c, int ox, int oy) {
     if (ui_link(w, ox + 84, y, FONT_UI, "Show seconds and 24-hour time in the taskbar", W7_LINK)) { show_seconds = true; clock_24h = true; wm_need_redraw = true; }
 }
 
+static void cp_refresh_theme(void *arg) { (void)arg; wm_redraw_all(); }
 static void cp_paint(window_t *w) {
     cp_t *c = w->data; canvas_t *s = w->surf;
-    gfx_clear(s, WHITE);
+    gfx_clear(s, T.window_bg);
     draw_chrome(w, c);
     const applet_t *a = find_applet(c->page);
     int cat = !strncmp(c->page, "cat:", 4) ? atoi(c->page + 4) : a ? a->cat : -1;
@@ -846,7 +861,7 @@ static void cp_paint(window_t *w) {
     if (!c->page[0]) {
         draw_text(s, FONT_LARGE, 24, oy + 18, c->view ? "Adjust your computer's settings" : "Adjust your computer's settings", W7_HEAD);
         static const char *views[] = { "Category", "Large icons", "Small icons" };
-        draw_text(s, FONT_UI, s->w - 210, oy + 22, "View by:", BLACK);
+        draw_text(s, FONT_UI, s->w - 210, oy + 22, "View by:", T.text);
         int v = c->view;
         rect_t dr = R(s->w - 150, oy + 18, 120, 22);
         ui_dropdown(w, dr, views, 3, &c->view);

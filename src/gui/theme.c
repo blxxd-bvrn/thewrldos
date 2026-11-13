@@ -7,6 +7,46 @@
 theme_t T;
 int theme_id = THEME_LUNA_BLUE, theme_hue = 0;
 int theme_sat, theme_light;
+bool dark_mode;
+
+/* Dark mode keeps the selected style's renderer (Luna, Aero, Plex, Classic)
+ * but replaces its surfaces and text with dark equivalents.  Applied before
+ * the hue adjustment so the accent colours still respond to the sliders. */
+static void apply_dark(theme_t *t) {
+    t->face = HEX(0x20242B); t->face_dark = HEX(0x0E1116); t->face_light = HEX(0x343B46);
+    t->window_bg = HEX(0x171A20); t->text = HEX(0xE6E8EC); t->gray_text = HEX(0xA2A9B4);
+    t->select = HEX(0x2D5F9A); t->select_text = WHITE; t->hot = HEX(0x2F6FB5); t->hot_text = WHITE;
+    t->title_hi = HEX(0x3C4C62); t->title_top = HEX(0x1B2430); t->title_mid = HEX(0x1B2430); t->title_bot = HEX(0x10151D);
+    t->ititle_hi = HEX(0x2A3240); t->ititle_top = HEX(0x202631); t->ititle_mid = HEX(0x202631); t->ititle_bot = HEX(0x171C24);
+    t->title_text = WHITE; t->title_shadow = BLACK; t->ititle_text = HEX(0xC4CAD4);
+    t->frame_out = HEX(0x080C12); t->frame_mid = HEX(0x1B2430); t->frame_in = HEX(0x46566C);
+    t->iframe_out = HEX(0x3A4658); t->iframe_mid = HEX(0x263244); t->iframe_in = HEX(0x66768C);
+    t->cap_top = HEX(0x3A4658); t->cap_bot = HEX(0x1E2735); t->cap_border = HEX(0x080C12);
+    t->cap_glyph = WHITE; t->close_top = HEX(0xD06A5A); t->close_bot = HEX(0xA32A1C);
+    t->tb_hi = HEX(0x3A4A60); t->tb_top = HEX(0x10151D); t->tb_mid = HEX(0x0C1016); t->tb_bot = HEX(0x070A0E);
+    t->tb_text = HEX(0xE6E8EC);
+    t->tray_hi = HEX(0x3A4A60); t->tray_top = HEX(0x10151D); t->tray_bot = HEX(0x0C1016);
+    t->tray_border = HEX(0x05080C); t->tray_text = HEX(0xE6E8EC);
+    t->start_hi = HEX(0x5A7A9A); t->start_top = HEX(0x1E4D2E); t->start_bot = HEX(0x123A1E);
+    t->start_text = WHITE; t->start_shadow = BLACK;
+    t->tbtn_top = HEX(0x222A36); t->tbtn_bot = HEX(0x161C26); t->tbtn_border = HEX(0x080C12);
+    t->tbtn_act_top = HEX(0x2E4A6A); t->tbtn_act_bot = HEX(0x1E3450);
+    t->tbtn_text = HEX(0xE6E8EC); t->tbtn_hot = HEX(0x2A3A50);
+    t->sm_head_top = HEX(0x1B2430); t->sm_head_bot = HEX(0x0F141C); t->sm_head_text = HEX(0xE6E8EC);
+    t->sm_border = HEX(0x38465A); t->sm_left = HEX(0x1A202A); t->sm_left_text = HEX(0xE6E8EC);
+    t->sm_right = HEX(0x202834); t->sm_right_line = HEX(0x38465A); t->sm_right_text = HEX(0xE6E8EC);
+    t->sm_foot_top = HEX(0x0F141C); t->sm_foot_bot = HEX(0x1B2430);
+    t->sm_accent = HEX(0x4A7AB5); t->sm_foot_text = HEX(0xE6E8EC);
+    t->btn_border = HEX(0x080C12); t->btn_top = HEX(0x2A3240); t->btn_bot = HEX(0x161C26);
+    t->btn_hot_a = HEX(0x3A4A60); t->btn_hot_b = HEX(0x243040); t->btn_focus = HEX(0x4A7AB5);
+    t->pane_top = HEX(0x20242B); t->pane_bot = HEX(0x181B21);
+    t->pane_head_top = HEX(0x2A3240); t->pane_head_bot = HEX(0x1B2430);
+    t->pane_head_text = HEX(0xE6E8EC); t->pane_body = HEX(0x181B21); t->pane_link = HEX(0x6FB3FF);
+    t->link = HEX(0x6FB3FF); t->link_head = HEX(0x9CC7FF);
+    t->desktop_bg = HEX(0x0A0C10); t->menu_bg = HEX(0x20242B); t->menu_border = HEX(0x38465A);
+    t->glass = HEX(0x101827); t->iglass = HEX(0x263244);
+    t->glass_alpha = 210; t->iglass_alpha = 160; t->glass_blur = 7;
+}
 
 /* built-in fallback (safe mode, or when the style files are missing) */
 static void make_classic(theme_t *t) {
@@ -165,6 +205,7 @@ void theme_compute(int id, int hue, theme_t *t) {
     hue = ((hue % 360) + 360) % 360;
     *t = styles[id].base;
     t->id = id;
+    if (dark_mode) apply_dark(t);
     if (hue || theme_sat || theme_light) for (unsigned i = 0; i < ARRAY_LEN(fields); i++) if (fields[i].shift) {
         uint32_t *c = (uint32_t *)((uint8_t *)t + fields[i].off);
         if (*c) *c = color_adjust(hue_shift(*c, hue), theme_sat, theme_light);
@@ -236,10 +277,10 @@ static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, b
         bevel_deep(c, x, y, s, s - 2, !pressed);
         int ox = x + (pressed ? 1 : 0), oy = y + (pressed ? 1 : 0);
         switch (kind) {
-        case 0: fill_rect(c, ox + 4, oy + 9, 6, 2, BLACK); break;
-        case 1: draw_rect(c, ox + 3, oy + 2, 9, 9, BLACK); hline(c, ox + 3, oy + 3, 9, BLACK); break;
-        case 2: draw_rect(c, ox + 5, oy + 2, 6, 5, BLACK); hline(c, ox + 5, oy + 3, 6, BLACK); fill_rect(c, ox + 3, oy + 6, 6, 5, T.face); draw_rect(c, ox + 3, oy + 6, 6, 5, BLACK); hline(c, ox + 3, oy + 7, 6, BLACK); break;
-        case 3: for (int i = 0; i < 7; i++) { fill_rect(c, ox + 4 + i, oy + 3 + i, 2, 1, BLACK); fill_rect(c, ox + 10 - i, oy + 3 + i, 2, 1, BLACK); } break;
+        case 0: fill_rect(c, ox + 4, oy + 9, 6, 2, T.text); break;
+        case 1: draw_rect(c, ox + 3, oy + 2, 9, 9, T.text); hline(c, ox + 3, oy + 3, 9, T.text); break;
+        case 2: draw_rect(c, ox + 5, oy + 2, 6, 5, T.text); hline(c, ox + 5, oy + 3, 6, T.text); fill_rect(c, ox + 3, oy + 6, 6, 5, T.face); draw_rect(c, ox + 3, oy + 6, 6, 5, T.text); hline(c, ox + 3, oy + 7, 6, T.text); break;
+        case 3: for (int i = 0; i < 7; i++) { fill_rect(c, ox + 4 + i, oy + 3 + i, 2, 1, T.text); fill_rect(c, ox + 10 - i, oy + 3 + i, 2, 1, T.text); } break;
         }
         return;
     }
@@ -404,19 +445,19 @@ void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool 
 void draw_button(canvas_t *c, rect_t r, const char *label, bool hot, bool pressed, bool focus, bool enabled) {
     if (T.classic) {
         fill_rect(c, r.x, r.y, r.w, r.h, T.face);
-        if (focus) { draw_rect(c, r.x, r.y, r.w, r.h, BLACK); bevel_deep(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, !pressed); }
+        if (focus) { draw_rect(c, r.x, r.y, r.w, r.h, T.text); bevel_deep(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, !pressed); }
         else bevel_deep(c, r.x, r.y, r.w, r.h, !pressed);
         int o = pressed ? 1 : 0;
-        if (!enabled) draw_text_centered(c, FONT_UI, R(r.x + 1, r.y + 1, r.w, r.h), label, WHITE);
-        draw_text_centered(c, FONT_UI, R(r.x + o, r.y + o, r.w, r.h), label, enabled ? BLACK : HEX(0x808080));
-        if (focus) dotted_rect(c, r.x + 4, r.y + 4, r.w - 8, r.h - 8, BLACK);
+        if (!enabled) draw_text_centered(c, FONT_UI, R(r.x + 1, r.y + 1, r.w, r.h), label, T.face_light);
+        draw_text_centered(c, FONT_UI, R(r.x + o, r.y + o, r.w, r.h), label, enabled ? T.text : T.gray_text);
+        if (focus) dotted_rect(c, r.x + 4, r.y + 4, r.w - 8, r.h - 8, T.text);
         return;
     }
-    fill_round_rect(c, r.x, r.y, r.w, r.h, 3, enabled ? T.btn_border : HEX(0xC9C7BA));
+    fill_round_rect(c, r.x, r.y, r.w, r.h, 3, enabled ? T.btn_border : T.face_dark);
     uint32_t top = T.btn_top, bot = T.btn_bot;
-    if (pressed) { top = HEX(0xE3E2DA); bot = HEX(0xF0EFEA); }
+    if (pressed) { top = T.face; bot = T.face_light; }
     gradient_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 2, top, bot);
-    if (!pressed && enabled) hline(c, r.x + 2, r.y + r.h - 3, r.w - 4, HEX(0xD6D0C5));
+    if (!pressed && enabled) hline(c, r.x + 2, r.y + r.h - 3, r.w - 4, T.face_dark);
     if (enabled && (hot || focus)) {
         uint32_t a = hot ? T.btn_hot_a : lighten(T.btn_focus, 80), b2 = hot ? T.btn_hot_b : T.btn_focus;
         hline(c, r.x + 2, r.y + 1, r.w - 4, a); hline(c, r.x + 2, r.y + r.h - 2, r.w - 4, b2);
@@ -425,38 +466,38 @@ void draw_button(canvas_t *c, rect_t r, const char *label, bool hot, bool presse
         vline(c, r.x + 1, r.y + 2, r.h - 4, mix(a, b2, 128)); vline(c, r.x + r.w - 2, r.y + 2, r.h - 4, mix(a, b2, 128));
         vline(c, r.x + 2, r.y + 2, r.h - 4, mix(a, b2, 128)); vline(c, r.x + r.w - 3, r.y + 2, r.h - 4, mix(a, b2, 128));
     }
-    draw_text_centered(c, FONT_UI, R(r.x + (pressed ? 1 : 0), r.y + (pressed ? 1 : 0), r.w, r.h), label, enabled ? BLACK : HEX(0xACA899));
+    draw_text_centered(c, FONT_UI, R(r.x + (pressed ? 1 : 0), r.y + (pressed ? 1 : 0), r.w, r.h), label, enabled ? T.text : T.gray_text);
 }
 void draw_sunken_box(canvas_t *c, rect_t r, uint32_t bg) {
-    fill_rect(c, r.x, r.y, r.w, r.h, bg);
+    fill_rect(c, r.x, r.y, r.w, r.h, bg == WHITE ? T.window_bg : bg);
     if (T.classic) bevel_deep(c, r.x, r.y, r.w, r.h, false);
-    else draw_rect(c, r.x, r.y, r.w, r.h, HEX(0x7F9DB9));
+    else draw_rect(c, r.x, r.y, r.w, r.h, dark_mode ? T.face_dark : HEX(0x7F9DB9));
 }
 void draw_check(canvas_t *c, int x, int y, bool checked, bool hot) {
-    if (T.classic) { fill_rect(c, x, y, 13, 13, WHITE); bevel_deep(c, x, y, 13, 13, false); }
+    if (T.classic) { fill_rect(c, x, y, 13, 13, T.window_bg); bevel_deep(c, x, y, 13, 13, false); }
     else {
-        draw_rect(c, x, y, 13, 13, HEX(0x1C5180));
-        gradient_v(c, x + 1, y + 1, 11, 11, HEX(0xDCDCD7), WHITE);
+        draw_rect(c, x, y, 13, 13, dark_mode ? T.face_dark : HEX(0x1C5180));
+        gradient_v(c, x + 1, y + 1, 11, 11, dark_mode ? T.face_light : HEX(0xDCDCD7), T.window_bg);
         if (hot) { draw_rect(c, x + 1, y + 1, 11, 11, HEX(0xF8B330)); draw_rect(c, x + 2, y + 2, 9, 9, HEX(0xFFE0A0)); }
     }
     if (checked) {
-        uint32_t k = T.classic ? BLACK : HEX(0x21A121);
+        uint32_t k = T.classic ? T.text : (dark_mode ? HEX(0x7CE07C) : HEX(0x21A121));
         for (int i = 0; i < 3; i++) { vline(c, x + 3 + i, y + 5 + i, 3, k); }
         for (int i = 0; i < 4; i++) { vline(c, x + 6 + i, y + 6 - i, 3, k); }
     }
 }
 void draw_radio(canvas_t *c, int x, int y, bool checked, bool hot) {
     if (T.classic) {
-        fill_circle(c, x + 6, y + 6, 6, HEX(0x808080)); fill_circle(c, x + 6, y + 6, 5, WHITE);
+        fill_circle(c, x + 6, y + 6, 6, T.face_dark); fill_circle(c, x + 6, y + 6, 5, T.window_bg);
     } else {
-        fill_circle(c, x + 6, y + 6, 6, HEX(0x1C5180)); fill_circle(c, x + 6, y + 6, 5, HEX(0xE4E3DB)); fill_circle(c, x + 6, y + 6, 4, WHITE);
+        fill_circle(c, x + 6, y + 6, 6, dark_mode ? T.face_dark : HEX(0x1C5180)); fill_circle(c, x + 6, y + 6, 5, dark_mode ? T.face : HEX(0xE4E3DB)); fill_circle(c, x + 6, y + 6, 4, T.window_bg);
         if (hot) draw_circle(c, x + 6, y + 6, 4, HEX(0xF8B330));
     }
-    if (checked) fill_circle(c, x + 6, y + 6, 2, T.classic ? BLACK : HEX(0x21A121));
+    if (checked) fill_circle(c, x + 6, y + 6, 2, T.classic ? T.text : (dark_mode ? HEX(0x7CE07C) : HEX(0x21A121)));
 }
 void draw_scrollbar(canvas_t *c, rect_t r, int total, int visible, int pos, bool vertical) {
     int len = vertical ? r.h : r.w, thick = vertical ? r.w : r.h;
-    uint32_t track = T.classic ? HEX(0xE6E3DD) : HEX(0xF4F3EE);
+    uint32_t track = dark_mode ? T.face : (T.classic ? HEX(0xE6E3DD) : HEX(0xF4F3EE));
     fill_rect(c, r.x, r.y, r.w, r.h, track);
     int avail = len - 2 * thick;
     int tl = total > visible && total > 0 ? MAX(12, avail * visible / total) : avail;
@@ -469,48 +510,49 @@ void draw_scrollbar(canvas_t *c, rect_t r, int total, int visible, int pos, bool
     for (int i = 0; i < 3; i++) {
         rect_t p = parts[i];
         if (T.classic) { fill_rect(c, p.x, p.y, p.w, p.h, T.face); bevel_deep(c, p.x, p.y, p.w, p.h, true); }
+        else if (dark_mode) { fill_round_rect(c, p.x, p.y, p.w, p.h, 2, T.btn_border); gradient_round_rect(c, p.x + 1, p.y + 1, p.w - 2, p.h - 2, 2, T.btn_top, T.btn_bot); }
         else { fill_round_rect(c, p.x, p.y, p.w, p.h, 2, HEX(0xA9BCE8)); gradient_round_rect(c, p.x + 1, p.y + 1, p.w - 2, p.h - 2, 2, HEX(0xD8E4FC), HEX(0xB9CDF5)); }
     }
-    uint32_t ac = T.classic ? BLACK : HEX(0x4D6185);
+    uint32_t ac = T.text;
     if (vertical) { draw_arrow(c, a1.x + thick / 2, a1.y + thick / 2 - 2, 0, ac); draw_arrow(c, a2.x + thick / 2, a2.y + thick / 2 - 1, 1, ac); }
     else { draw_arrow(c, a1.x + thick / 2 - 2, a1.y + thick / 2, 2, ac); draw_arrow(c, a2.x + thick / 2 - 1, a2.y + thick / 2, 3, ac); }
-    if (!T.classic && (vertical ? tl : tl) > 14) {
+    if (!T.classic && tl > 14) {
         for (int i = -2; i <= 2; i += 2) {
-            if (vertical) hline(c, th.x + 4, th.y + tl / 2 + i, thick - 8, HEX(0x8AA4D6));
-            else vline(c, th.x + tl / 2 + i, th.y + 4, thick - 8, HEX(0x8AA4D6));
+            if (vertical) hline(c, th.x + 4, th.y + tl / 2 + i, thick - 8, dark_mode ? T.gray_text : HEX(0x8AA4D6));
+            else vline(c, th.x + tl / 2 + i, th.y + 4, thick - 8, dark_mode ? T.gray_text : HEX(0x8AA4D6));
         }
     }
 }
 void draw_progress(canvas_t *c, rect_t r, int pct) {
-    draw_sunken_box(c, r, WHITE);
+    draw_sunken_box(c, r, T.window_bg);
     int fw = (r.w - 4) * CLAMP(pct, 0, 100) / 100;
     if (T.classic) { for (int x = 0; x + 8 <= fw; x += 10) fill_rect(c, r.x + 2 + x, r.y + 2, 8, r.h - 4, T.select); return; }
     for (int x = 0; x + 6 <= fw; x += 8) gradient_v3(c, r.x + 2 + x, r.y + 2, 6, r.h - 4, HEX(0xB2EDB2), HEX(0x2FBD2F), HEX(0x8BE38B), (r.h - 4) / 2);
 }
 void draw_group(canvas_t *c, rect_t r, const char *label) {
     int fh = font_height(FONT_UI);
-    if (T.classic) { draw_rect(c, r.x, r.y + fh / 2, r.w, r.h - fh / 2, HEX(0x808080)); draw_rect(c, r.x + 1, r.y + fh / 2 + 1, r.w, r.h - fh / 2, WHITE); }
-    else draw_round_rect(c, r.x, r.y + fh / 2, r.w, r.h - fh / 2, 3, HEX(0xD0D0BF));
+    if (T.classic) { draw_rect(c, r.x, r.y + fh / 2, r.w, r.h - fh / 2, T.face_dark); draw_rect(c, r.x + 1, r.y + fh / 2 + 1, r.w, r.h - fh / 2, T.face_light); }
+    else draw_round_rect(c, r.x, r.y + fh / 2, r.w, r.h - fh / 2, 3, T.face_dark);
     int tw = text_width(FONT_UI, label);
     fill_rect(c, r.x + 7, r.y, tw + 6, fh, T.face);
-    draw_text(c, FONT_UI, r.x + 10, r.y, label, T.classic ? BLACK : HEX(0x0046D5));
+    draw_text(c, FONT_UI, r.x + 10, r.y, label, T.classic ? T.text : T.link);
 }
 void draw_tab(canvas_t *c, rect_t r, const char *label, bool active, bool hot) {
     if (!active) { r.y += 2; r.h -= 2; }
     if (T.classic) {
         fill_rect(c, r.x, r.y, r.w, r.h, T.face);
-        hline(c, r.x + 2, r.y, r.w - 4, WHITE); vline(c, r.x, r.y + 2, r.h - 2, WHITE); put_pixel(c, r.x + 1, r.y + 1, WHITE);
-        vline(c, r.x + r.w - 1, r.y + 2, r.h - 2, HEX(0x404040)); vline(c, r.x + r.w - 2, r.y + 1, r.h - 1, HEX(0x808080));
+        hline(c, r.x + 2, r.y, r.w - 4, T.face_light); vline(c, r.x, r.y + 2, r.h - 2, T.face_light); put_pixel(c, r.x + 1, r.y + 1, T.face_light);
+        vline(c, r.x + r.w - 1, r.y + 2, r.h - 2, T.face_dark); vline(c, r.x + r.w - 2, r.y + 1, r.h - 1, T.face_dark);
     } else {
-        fill_rect(c, r.x, r.y, r.w, r.h, HEX(0x919B9C));
-        gradient_v(c, r.x + 1, r.y + 1, r.w - 2, r.h - 1, WHITE, active ? HEX(0xFCFCFE) : HEX(0xECEBE6));
+        fill_rect(c, r.x, r.y, r.w, r.h, T.face_dark);
+        gradient_v(c, r.x + 1, r.y + 1, r.w - 2, r.h - 1, T.face_light, active ? T.face : T.window_bg);
         if (active || hot) { hline(c, r.x + 1, r.y, r.w - 2, HEX(0xE68B2C)); hline(c, r.x, r.y + 1, r.w, HEX(0xFFC73C)); hline(c, r.x, r.y + 2, r.w, HEX(0xFFC73C)); }
     }
-    draw_text_centered(c, FONT_UI, r, label, BLACK);
+    draw_text_centered(c, FONT_UI, r, label, T.text);
 }
 void draw_menu_panel(canvas_t *c, rect_t r) {
     if (T.classic) { fill_rect(c, r.x, r.y, r.w, r.h, T.face); bevel_deep(c, r.x, r.y, r.w, r.h, true); return; }
     blend_rect(c, r.x + 3, r.y + 3, r.w, r.h, BLACK, 50);
-    fill_rect(c, r.x, r.y, r.w, r.h, WHITE);
-    draw_rect(c, r.x, r.y, r.w, r.h, HEX(0xACA899));
+    fill_rect(c, r.x, r.y, r.w, r.h, T.menu_bg);
+    draw_rect(c, r.x, r.y, r.w, r.h, T.menu_border);
 }

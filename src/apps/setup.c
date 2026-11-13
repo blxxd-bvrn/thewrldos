@@ -1217,6 +1217,8 @@ static void sg_key(key_event_t *e) {
 }
 
 void setup_gui_mode(bool from_desktop) {
+    bool was_dark = dark_mode;
+    if (was_dark) { dark_mode = false; theme_compute(theme_id, theme_hue, &T); }
     gui_setup = true; setup_text_active = true; SG_from_desk = from_desktop;
     memset(&SG, 0, sizeof SG); memset(&sw, 0, sizeof sw);
     SG.page = SG_WELCOME;
@@ -1249,6 +1251,7 @@ void setup_gui_mode(bool from_desktop) {
         task_yield();
     }
     if (sw.surf) { canvas_free(sw.surf); sw.surf = NULL; }
+    if (was_dark) { dark_mode = true; theme_compute(theme_id, theme_hue, &T); }
     gui_setup = false; setup_text_active = false;
 }
 

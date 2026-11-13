@@ -12,10 +12,10 @@ static void fdlg_finish(window_t *w, const char *path) { fdlg_t *f = w->data; fd
 static void fdlg_paint(window_t *w) {
     fdlg_t *f = w->data; canvas_t *c = w->surf;
     gfx_clear(c, T.face);
-    draw_text(c, FONT_UI, 10, 12, f->save ? "Save in:" : "Look in:", BLACK);
+    draw_text(c, FONT_UI, 10, 12, f->save ? "Save in:" : "Look in:", T.text);
     draw_sunken_box(c, R(70, 8, c->w - 150, 22), WHITE);
     draw_icon(c, ICON_FOLDER_OPEN, 16, 74, 11);
-    draw_text_ellipsis(c, FONT_UI, 94, 12, c->w - 180, f->dir, BLACK);
+    draw_text_ellipsis(c, FONT_UI, 94, 12, c->w - 180, f->dir, T.text);
     if (ui_icon_button(w, R(c->w - 74, 7, 28, 24), ICON_UP, NULL)) { vnode_t *n = vfs_resolve(f->dir, NULL); if (n && n->parent) vfs_path(n->parent, f->dir, sizeof f->dir); f->sel = -1; f->scroll = 0; }
     if (ui_icon_button(w, R(c->w - 42, 7, 28, 24), ICON_MY_DOCUMENTS, NULL)) { strcpy(f->dir, USER_DOCS); f->sel = -1; }
     /* shortcuts */
@@ -45,7 +45,7 @@ static void fdlg_paint(window_t *w) {
         }
         if (i == f->sel) fill_rect(c, r.x, r.y, r.w, r.h, T.select);
         draw_icon(c, file_icon(items[i]), 16, r.x + 3, r.y + 2);
-        draw_text_ellipsis(c, FONT_UI, r.x + 24, r.y + 3, r.w - 30, items[i]->name, i == f->sel ? WHITE : BLACK);
+        draw_text_ellipsis(c, FONT_UI, r.x + 24, r.y + 3, r.w - 30, items[i]->name, i == f->sel ? T.select_text : T.text);
     }
     c->clip = old;
     if (n > vis) draw_scrollbar(c, R(lr.x + lr.w - 18, lr.y + 1, 17, lr.h - 2), n, vis, f->scroll, true);
@@ -55,7 +55,7 @@ static void fdlg_paint(window_t *w) {
         else { char p[400]; vfs_path(k, p, sizeof p); fdlg_finish(w, p); return; }
     }
     if (w->ui.wheel) { f->scroll = CLAMP(f->scroll + w->ui.wheel * 3, 0, MAX(0, n - vis)); }
-    draw_text(c, FONT_UI, 96, c->h - 56, "File name:", BLACK);
+    draw_text(c, FONT_UI, 96, c->h - 56, "File name:", T.text);
     if (!w->ui.focus) w->ui.focus = 0;
     bool enter = ui_textbox(w, R(170, c->h - 60, c->w - 270, 22), f->name, sizeof f->name);
     bool ok = ui_button_ex(w, R(c->w - 88, c->h - 60, 78, 23), f->save ? "Save" : "Open", true, true);
@@ -272,7 +272,7 @@ static void np_mouse(window_t *w, int type, int x, int y, int btn) {
 void np_popup_cb(void *ctx, int id) { window_t *w = ctx; if (wm_alive(w)) np_cmd(w, id); }
 static void np_paint(window_t *w) {
     np_t *n = w->data; canvas_t *c = w->surf;
-    gfx_clear(c, WHITE);
+    gfx_clear(c, T.window_bg);
     np_layout(n);
     int vis = (c->h - 4) / lh() + 1, a, b;
     sel_range(n, &a, &b);
@@ -285,8 +285,8 @@ static void np_paint(window_t *w) {
             bool in_sel = i >= a && i < b;
             int cwid = (i < e && n->buf[i] == '\t') ? cw() * 4 : cw();
             if (in_sel && i < e) fill_rect(c, x, y, cwid, lh(), T.select);
-            if (i == n->cur && focused && (timer_ticks() / 500) % 2 == 0) vline(c, x, y, lh(), BLACK);
-            if (i < e && n->buf[i] != '\t' && x > -cw() && x < c->w) { char ch = n->buf[i]; draw_text_n(c, NP_FONT, x, y, &ch, 1, in_sel ? WHITE : BLACK); }
+            if (i == n->cur && focused && (timer_ticks() / 500) % 2 == 0) vline(c, x, y, lh(), T.text);
+            if (i < e && n->buf[i] != '\t' && x > -cw() && x < c->w) { char ch = n->buf[i]; draw_text_n(c, NP_FONT, x, y, &ch, 1, in_sel ? T.select_text : T.text); }
             x += cwid;
         }
     }

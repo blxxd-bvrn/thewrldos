@@ -218,6 +218,7 @@ void settings_load(void) {
     const char *rs = settings_get("resolution");
     if (rs && video_can_set_mode()) { int rw = atoi(rs); const char *xx = strchr(rs, 'x'); int rh = xx ? atoi(xx + 1) : 0; if (rw && rh) gfx_set_resolution(rw, rh); }
     const char *th = settings_get("theme");
+    dark_mode = !boot_safe_mode && geti("dark", dark_mode ? 1 : 0) != 0;
     if (!boot_safe_mode && th) {
         int id = isdigit(th[0]) ? atoi(th) : style_find(th);    /* numbers: older wrld.ini */
         theme_sat = CLAMP(geti("saturation", 0), -100, 100); theme_light = CLAMP(geti("lightness", 0), -60, 60);
@@ -248,6 +249,7 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", show_seconds); settings_set("seconds", b);
     snprintf(b, sizeof b, "%d", audio_volume); settings_set("volume", b);
     snprintf(b, sizeof b, "%d", system_sounds); settings_set("sounds", b);
+    snprintf(b, sizeof b, "%d", dark_mode ? 1 : 0); settings_set("dark", b);
 }
 void settings_save(void) {
     capture();

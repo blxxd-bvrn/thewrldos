@@ -161,10 +161,10 @@ static void pane_box(window_t *w, canvas_t *c, int x, int *y, int width, const c
     if (T.classic) { fill_rect(c, x, *y, width, hh, T.pane_head_top); draw_text(c, FONT_UI_BOLD, x + 8, *y + 6, title, WHITE); }
     else {
         fill_round_rect(c, x, *y, width, hh, 4, T.pane_head_bot);
-        gradient_h(c, x, *y + 3, width, hh - 3, WHITE, T.pane_head_bot);
-        fill_rect(c, x, *y + 3, 2, hh - 3, WHITE);
+        gradient_h(c, x, *y + 3, width, hh - 3, dark_mode ? T.face_light : WHITE, T.pane_head_bot);
+        fill_rect(c, x, *y + 3, 2, hh - 3, dark_mode ? T.face_light : WHITE);
         draw_text(c, FONT_UI_BOLD, x + 10, *y + 6, title, T.pane_head_text);
-        fill_circle(c, x + width - 13, *y + 12, 8, WHITE); draw_circle(c, x + width - 13, *y + 12, 8, mix(T.pane_head_bot, BLACK, 40));
+        fill_circle(c, x + width - 13, *y + 12, 8, dark_mode ? T.face : WHITE); draw_circle(c, x + width - 13, *y + 12, 8, mix(T.pane_head_bot, T.text, 40));
         draw_arrow(c, x + width - 13, *y + 9, 0, T.pane_head_text); draw_arrow(c, x + width - 13, *y + 13, 0, T.pane_head_text);
     }
     *y += hh;
@@ -266,10 +266,10 @@ static void expl_paint(window_t *w) {
     expl_t *e = w->data;
     canvas_t *c = w->surf;
     if (e->gen != vfs_generation) rebuild(e);
-    gfx_clear(c, WHITE);
+    gfx_clear(c, T.window_bg);
     /* toolbar */
-    if (T.classic) { fill_rect(c, 0, 0, c->w, TB_H + AB_H, T.face); hline(c, 0, TB_H - 1, c->w, HEX(0x808080)); }
-    else { gradient_v(c, 0, 0, c->w, TB_H, HEX(0xFBFBF8), T.face); fill_rect(c, 0, TB_H, c->w, AB_H, T.face); hline(c, 0, TB_H - 1, c->w, HEX(0xD8D2BD)); }
+    if (T.classic) { fill_rect(c, 0, 0, c->w, TB_H + AB_H, T.face); hline(c, 0, TB_H - 1, c->w, T.gray_text); }
+    else { gradient_v(c, 0, 0, c->w, TB_H, T.face_light, T.face); fill_rect(c, 0, TB_H, c->w, AB_H, T.face); hline(c, 0, TB_H - 1, c->w, T.face_dark); }
     if (ui_icon_button(w, R(4, 3, 66, 32), ICON_BACK, "Back") && e->hpos > 0) { e->hpos--; navigate(e, e->hist[e->hpos], false); }
     if (ui_icon_button(w, R(72, 3, 32, 32), ICON_FORWARD, NULL) && e->hpos < e->hlen - 1) { e->hpos++; navigate(e, e->hist[e->hpos], false); }
     if (ui_icon_button(w, R(106, 3, 32, 32), ICON_UP, NULL)) go_up(e);
@@ -334,12 +334,12 @@ static void expl_paint(window_t *w) {
             fill_rect(c, bx, y, bw, 76, T.pane_body);
             char t[128], s2[64];
             if (it) {
-                draw_text_ellipsis(c, FONT_UI_BOLD, bx + 10, y + 8, bw - 20, it->name, BLACK);
-                draw_text(c, FONT_UI, bx + 10, y + 26, it->type, BLACK);
-                if (it->node && !it->node->dir) { format_size(s2, sizeof s2, it->size); snprintf(t, sizeof t, "Size: %s", s2); draw_text(c, FONT_UI, bx + 10, y + 42, t, BLACK); }
-                else if (it->node) { snprintf(t, sizeof t, "%d items", vfs_count_children(it->node)); draw_text(c, FONT_UI, bx + 10, y + 42, t, BLACK); }
-                if (it->node) { snprintf(t, sizeof t, "Modified: %02d/%02d/%04d", it->node->mtime.month, it->node->mtime.day, it->node->mtime.year); draw_text(c, FONT_UI, bx + 10, y + 58, t, BLACK); }
-            } else { title_for(e, t, sizeof t); draw_text_ellipsis(c, FONT_UI_BOLD, bx + 10, y + 8, bw - 20, t, BLACK); snprintf(t, sizeof t, "%d objects", e->n); draw_text(c, FONT_UI, bx + 10, y + 26, t, BLACK); }
+                draw_text_ellipsis(c, FONT_UI_BOLD, bx + 10, y + 8, bw - 20, it->name, T.text);
+                draw_text(c, FONT_UI, bx + 10, y + 26, it->type, T.text);
+                if (it->node && !it->node->dir) { format_size(s2, sizeof s2, it->size); snprintf(t, sizeof t, "Size: %s", s2); draw_text(c, FONT_UI, bx + 10, y + 42, t, T.text); }
+                else if (it->node) { snprintf(t, sizeof t, "%d items", vfs_count_children(it->node)); draw_text(c, FONT_UI, bx + 10, y + 42, t, T.text); }
+                if (it->node) { snprintf(t, sizeof t, "Modified: %02d/%02d/%04d", it->node->mtime.month, it->node->mtime.day, it->node->mtime.year); draw_text(c, FONT_UI, bx + 10, y + 58, t, T.text); }
+            } else { title_for(e, t, sizeof t); draw_text_ellipsis(c, FONT_UI_BOLD, bx + 10, y + 8, bw - 20, t, T.text); snprintf(t, sizeof t, "%d objects", e->n); draw_text(c, FONT_UI, bx + 10, y + 26, t, T.text); }
         }
         c->clip = old;
     }
@@ -353,8 +353,8 @@ static void expl_paint(window_t *w) {
         const char *hdr[] = { "Name", "Size", "Type", "Date Modified" }; int cw[] = { MAX(160, cr.w - 420), 80, 150, 170 };
         for (int k = 0; k < 4; k++) {
             if (T.classic) { fill_rect(c, cx, cr.y, cw[k], 20, T.face); bevel(c, cx, cr.y, cw[k], 20, true); }
-            else { gradient_v(c, cx, cr.y, cw[k], 20, WHITE, HEX(0xEBEADB)); vline(c, cx + cw[k] - 1, cr.y + 3, 14, HEX(0xC7C5B2)); hline(c, cx, cr.y + 19, cw[k], HEX(0xD6D2C2)); }
-            draw_text(c, FONT_UI, cx + 6, cr.y + 3, hdr[k], BLACK); cx += cw[k];
+            else { gradient_v(c, cx, cr.y, cw[k], 20, T.face_light, T.face); vline(c, cx + cw[k] - 1, cr.y + 3, 14, T.face_dark); hline(c, cx, cr.y + 19, cw[k], T.face_dark); }
+            draw_text(c, FONT_UI, cx + 6, cr.y + 3, hdr[k], T.text); cx += cw[k];
         }
         rect_t o2 = canvas_push_clip(c, R(cr.x, cr.y + 20, cr.w, cr.h - 20));
         for (int i = 0; i < e->n; i++) {
@@ -364,12 +364,12 @@ static void expl_paint(window_t *w) {
             bool sel = i == e->sel;
             if (sel) fill_rect(c, r.x, r.y, cw[0] - 4, r.h, T.select);
             draw_icon(c, it->icon, 16, r.x + 4, r.y + 2);
-            draw_text_ellipsis(c, FONT_UI, r.x + 24, r.y + 3, cw[0] - 30, it->name, sel ? WHITE : BLACK);
+            draw_text_ellipsis(c, FONT_UI, r.x + 24, r.y + 3, cw[0] - 30, it->name, sel ? T.select_text : T.text);
             char s2[32] = "";
             if (it->node && !it->node->dir) { if (it->size < 1024) snprintf(s2, sizeof s2, "%u B", it->size); else snprintf(s2, sizeof s2, "%u KB", (it->size + 1023) / 1024); }
-            draw_text(c, FONT_UI, cr.x + cw[0] + cw[1] - 8 - text_width(FONT_UI, s2), r.y + 3, s2, BLACK);
-            draw_text_ellipsis(c, FONT_UI, cr.x + cw[0] + cw[1] + 6, r.y + 3, cw[2] - 10, it->type, BLACK);
-            if (it->node) { char t[40]; snprintf(t, sizeof t, "%02d/%02d/%04d %02d:%02d", it->node->mtime.month, it->node->mtime.day, it->node->mtime.year, it->node->mtime.hour, it->node->mtime.minute); draw_text(c, FONT_UI, cr.x + cw[0] + cw[1] + cw[2] + 6, r.y + 3, t, BLACK); }
+            draw_text(c, FONT_UI, cr.x + cw[0] + cw[1] - 8 - text_width(FONT_UI, s2), r.y + 3, s2, T.text);
+            draw_text_ellipsis(c, FONT_UI, cr.x + cw[0] + cw[1] + 6, r.y + 3, cw[2] - 10, it->type, T.text);
+            if (it->node) { char t[40]; snprintf(t, sizeof t, "%02d/%02d/%04d %02d:%02d", it->node->mtime.month, it->node->mtime.day, it->node->mtime.year, it->node->mtime.hour, it->node->mtime.minute); draw_text(c, FONT_UI, cr.x + cw[0] + cw[1] + cw[2] + 6, r.y + 3, t, T.text); }
         }
         c->clip = o2;
     } else {
@@ -383,14 +383,14 @@ static void expl_paint(window_t *w) {
             if (e->view == 2) {
                 if (sel) { fill_rect(c, r.x, r.y, r.w, r.h, lighten(T.select, 190)); draw_rect(c, r.x, r.y, r.w, r.h, lighten(T.select, 100)); }
                 if (sel) draw_icon_tinted(c, it->icon, 48, r.x + 2, r.y + 2, T.select, 80); else draw_icon(c, it->icon, 48, r.x + 2, r.y + 2);
-                draw_text_ellipsis(c, FONT_UI, r.x + 56, r.y + 8, r.w - 60, it->name, BLACK);
-                draw_text_ellipsis(c, FONT_UI, r.x + 56, r.y + 23, r.w - 60, it->type, HEX(0x808080));
-                if (it->node && !it->node->dir) { char s2[32]; format_size(s2, sizeof s2, it->size); draw_text(c, FONT_UI, r.x + 56, r.y + 37, s2, HEX(0x808080)); }
+                draw_text_ellipsis(c, FONT_UI, r.x + 56, r.y + 8, r.w - 60, it->name, T.text);
+                draw_text_ellipsis(c, FONT_UI, r.x + 56, r.y + 23, r.w - 60, it->type, T.gray_text);
+                if (it->node && !it->node->dir) { char s2[32]; format_size(s2, sizeof s2, it->size); draw_text(c, FONT_UI, r.x + 56, r.y + 37, s2, T.gray_text); }
                 continue;
             }
             int ix = r.x + (r.w - 32) / 2;
             if (sel) draw_icon_tinted(c, it->icon, 32, ix, r.y + 2, T.select, 110); else draw_icon(c, it->icon, 32, ix, r.y + 2);
-            if (clip_cut && clip_node == it->node) blend_rect(c, ix, r.y + 2, 32, 32, WHITE, 120);
+            if (clip_cut && clip_node == it->node) blend_rect(c, ix, r.y + 2, 32, 32, T.face_light, 120);
             int lines_y = r.y + 38;
             char l1[64], l2[64] = ""; const char *s = it->name;
             int n = text_fit_chars(FONT_UI, s, r.w - 4);
@@ -400,22 +400,22 @@ static void expl_paint(window_t *w) {
                 const char *t = L ? l2 : l1; if (!*t) break;
                 int tw = MIN(text_width(FONT_UI, t), r.w - 4), tx = r.x + (r.w - tw) / 2, ty = lines_y + L * 13;
                 if (sel) fill_rect(c, tx - 2, ty - 1, tw + 4, 14, T.select);
-                draw_text_ellipsis(c, FONT_UI, tx, ty, r.w - 4, t, sel ? WHITE : BLACK);
+                draw_text_ellipsis(c, FONT_UI, tx, ty, r.w - 4, t, sel ? T.select_text : T.text);
             }
         }
     }
-    if (!e->n) draw_text(c, FONT_UI, cr.x + 20, cr.y + (e->view == 1 ? 30 : 16), !strcmp(e->path, "::recycle") ? "The Recycle Bin is empty." : "This folder is empty.", HEX(0x808080));
+    if (!e->n) draw_text(c, FONT_UI, cr.x + 20, cr.y + (e->view == 1 ? 30 : 16), !strcmp(e->path, "::recycle") ? "The Recycle Bin is empty." : "This folder is empty.", T.gray_text);
     c->clip = old;
     if (maxs > 0) draw_scrollbar(c, R(cr.x + cr.w - 17, cr.y, 17, cr.h), ch, cr.h, e->scroll, true);
     /* status bar */
     int sy = c->h - SB_H;
     fill_rect(c, 0, sy, c->w, SB_H, T.face);
-    if (T.classic) bevel(c, 2, sy + 2, c->w - 4, SB_H - 3, false); else hline(c, 0, sy, c->w, HEX(0xD8D2BD));
+    if (T.classic) bevel(c, 2, sy + 2, c->w - 4, SB_H - 3, false); else hline(c, 0, sy, c->w, T.face_dark);
     char st[128];
     if (e->sel >= 0 && e->sel < e->n && e->items[e->sel].node && !e->items[e->sel].node->dir) { char s2[32]; format_size(s2, sizeof s2, e->items[e->sel].size); snprintf(st, sizeof st, "Type: %s   Size: %s", e->items[e->sel].type, s2); }
     else snprintf(st, sizeof st, "%d object%s", e->n, e->n == 1 ? "" : "s");
-    draw_text(c, FONT_UI, 8, sy + 4, st, BLACK);
-    if (!is_special(e)) { vnode_t *n = vfs_resolve(e->path, NULL); if (n) { char d[48]; snprintf(d, sizeof d, "%c: %s", vfs_drive_letter(n), vfs_drive_kind(vfs_drive_letter(n)) == 2 ? "Disk image (read-only)" : "Local Disk"); draw_text(c, FONT_UI, c->w - text_width(FONT_UI, d) - 12, sy + 4, d, BLACK); } }
+    draw_text(c, FONT_UI, 8, sy + 4, st, T.text);
+    if (!is_special(e)) { vnode_t *n = vfs_resolve(e->path, NULL); if (n) { char d[48]; snprintf(d, sizeof d, "%c: %s", vfs_drive_letter(n), vfs_drive_kind(vfs_drive_letter(n)) == 2 ? "Disk image (read-only)" : "Local Disk"); draw_text(c, FONT_UI, c->w - text_width(FONT_UI, d) - 12, sy + 4, d, T.text); } }
 }
 static void expl_mouse(window_t *w, int type, int x, int y, int btn) {
     expl_t *e = w->data;

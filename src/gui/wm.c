@@ -236,7 +236,7 @@ static void popup_paint(canvas_t *c) {
         if (it->label[0] == '-') { hline(c, pm.x + (T.classic ? 2 : 1), iy + 3, pm.w - (T.classic ? 4 : 2), HEX(0xACA899)); if (T.classic) hline(c, pm.x + 2, iy + 4, pm.w - 4, WHITE); continue; }
         bool hot = i == pm.hot && !(it->flags & MI_DISABLED);
         if (hot) fill_rect(c, pm.x + (T.classic ? 3 : 2), iy, pm.w - (T.classic ? 6 : 4), PM_ITEM_H, T.hot);
-        uint32_t col = (it->flags & MI_DISABLED) ? HEX(0xACA899) : hot ? T.hot_text : BLACK;
+        uint32_t col = (it->flags & MI_DISABLED) ? HEX(0xACA899) : hot ? T.hot_text : T.text;
         char buf[96]; strlcpy(buf, it->label, sizeof buf);
         char *tab = strchr(buf, '\t'); if (tab) *tab = 0;
         draw_text(c, FONT_UI, pm.x + 24, iy + (PM_ITEM_H - font_height(FONT_UI)) / 2, buf, col);
@@ -359,7 +359,7 @@ static void paint_menubar(canvas_t *c, window_t *w) {
         bool open = pm.open && pm.menubar_win == w && pm.menubar_idx == i;
         if (open) fill_rect(c, x - 6, y + 1, tw + 12, T.menubar_h - 2, T.classic ? T.face : T.hot);
         if (open && T.classic) bevel(c, x - 6, y + 1, tw + 12, T.menubar_h - 2, false);
-        draw_text(c, FONT_UI, x, y + (T.menubar_h - font_height(FONT_UI)) / 2, w->menus[i].title, open && !T.classic ? WHITE : BLACK);
+        draw_text(c, FONT_UI, x, y + (T.menubar_h - font_height(FONT_UI)) / 2, w->menus[i].title, open && !T.classic ? WHITE : T.text);
     }
 }
 static void paint_window(canvas_t *c, window_t *w) {

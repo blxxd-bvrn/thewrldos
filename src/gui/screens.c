@@ -378,7 +378,7 @@ static void mbox_paint(window_t *w) {
     gfx_clear(c, T.face);
     int tx = 16;
     if (m->icon >= 0) { static const int ic[] = { ICON_INFO, ICON_WARNING, ICON_ERROR, ICON_QUESTION }; draw_icon(c, ic[m->icon], 32, 14, 16); tx = 62; }
-    draw_text_wrapped(c, FONT_UI, tx, 20, c->w - tx - 16, m->text, BLACK, 2);
+    draw_text_wrapped(c, FONT_UI, tx, 20, c->w - tx - 16, m->text, T.text, 2);
     const char *labels[3]; int ids[3], n = 0;
     switch (m->buttons) {
     case MBX_OKCANCEL: labels[0] = "OK"; ids[0] = IDOK; labels[1] = "Cancel"; ids[1] = IDCANCEL; n = 2; break;
@@ -417,7 +417,7 @@ typedef struct { char prompt[128]; char buf[256]; void (*cb)(void *, const char 
 static void ibox_paint(window_t *w) {
     ibox_t *b = w->data; canvas_t *c = w->surf;
     gfx_clear(c, T.face);
-    draw_text(c, FONT_UI, 12, 14, b->prompt, BLACK);
+    draw_text(c, FONT_UI, 12, 14, b->prompt, T.text);
     if (b->first) { w->ui.focus = 1; b->first = false; }
     bool enter = ui_textbox(w, R(12, 34, c->w - 24, 22), b->buf, sizeof b->buf);
     bool ok = ui_button_ex(w, R(c->w - 170, c->h - 34, 75, 23), "OK", true, false);
@@ -441,8 +441,8 @@ static void run_paint(window_t *w) {
     canvas_t *c = w->surf;
     gfx_clear(c, T.face);
     draw_icon(c, ICON_RUN, 32, 12, 14);
-    draw_text_wrapped(c, FONT_UI, 56, 14, c->w - 70, "Type the name of a program, folder, document, or script, and " OS_NAME " will open it for you.", BLACK, 2);
-    draw_text(c, FONT_UI, 12, 64, "Open:", BLACK);
+    draw_text_wrapped(c, FONT_UI, 56, 14, c->w - 70, "Type the name of a program, folder, document, or script, and " OS_NAME " will open it for you.", T.text, 2);
+    draw_text(c, FONT_UI, 12, 64, "Open:", T.text);
     if (!w->ui.focus) w->ui.focus = 1;
     bool enter = ui_textbox(w, R(56, 60, c->w - 68, 22), run_buf, sizeof run_buf);
     bool ok = ui_button_ex(w, R(c->w - 250, c->h - 34, 75, 23), "OK", true, false);
