@@ -922,6 +922,7 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
         { ".app", "macOS application bundle", "Bundle launcher (script executables)", ICON_APP_BUNDLE },
         { ".txt / .log / .ini / .c", "Text document", "Notepad", ICON_TEXT_FILE },
         { ".bmp", "Bitmap image", "Image Viewer / Paint", ICON_IMAGE_FILE },
+        { ".mp3 / .wav", "MP3 audio / Wave sound", "THE WRLD Media Player", ICON_MUSIC_FILE },
         { ".lnk", "Shortcut", "Shell", ICON_EXE },
         { "Mach-O / ELF", "Native macOS / Linux binaries", "Identified, not executed", ICON_SYS_FILE },
     };

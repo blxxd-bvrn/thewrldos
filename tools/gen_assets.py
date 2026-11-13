@@ -524,6 +524,16 @@ def ic_home():
 def ic_lock():
     i = new(); ImageDraw.Draw(i).arc(box(26, 8, 74, 62), start=180, end=360, fill=hexc("#8A8A90"), width=int(P(10)))
     rect(i, 18, 40, 82, 94, hexc("#FFD24A"), hexc("#D8900A"), r=6, ol=hexc("#8A5A04"), ow=1.6); ellipse(i, 44, 56, 56, 68, hexc("#6A4A04")); return i
+def ic_media_player():
+    """THE WRLD Media Player: a glossy disc with a play triangle"""
+    i = new(); circle_badge(i, 4, 4, 96, 96, "#4FD6C8", "#0B4FA8", "#062E66")
+    ellipse(i, 16, 16, 84, 84, None, ol=hexc("#BFF4FF"), ow=1.4)
+    poly(i, [(40, 28), (40, 72), (76, 50)], WHITE, hexc("#D8ECFF"), ol=hexc("#0A3A80"), ow=1.2)
+    ellipse(i, 18, 8, 70, 40, (255, 255, 255, 70)); return i
+def ic_music_file():
+    i = new(); page(i)
+    line(i, [(44, 70), (44, 32), (66, 26), (66, 62)], hexc("#1C62C8"), 4.5)
+    ellipse(i, 32, 64, 46, 76, hexc("#3A82E8"), hexc("#0E3FAE")); ellipse(i, 54, 56, 68, 68, hexc("#3A82E8"), hexc("#0E3FAE")); return i
 def ic_logo():
     i = new(); logo_globe(i, 0, 0, 100, 100); return i
 def ic_start_logo():
@@ -607,6 +617,7 @@ ICONS = [
     ("user_flower", user_pic("flower")), ("user_planet", user_pic("planet")), ("user_fish", user_pic("fish")), ("user_mountain", user_pic("mountain")),
     ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder), ("setup", ic_setup),
     ("browser", ic_browser), ("stop", ic_stop), ("refresh", ic_refresh), ("home", ic_home), ("lock", ic_lock),
+    ("media_player", ic_media_player), ("music_file", ic_music_file),
 ]
 SIZES = [48, 32, 16]
 

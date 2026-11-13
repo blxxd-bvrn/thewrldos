@@ -935,12 +935,12 @@ static const sm_item_t sm_left[] = {
     { "Command Prompt", "Shell & scripts", ICON_TERMINAL, "cmd", true },
     { "File Explorer", "Browse files", ICON_EXPLORER, "explorer", true },
     { NULL },
+    { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer", false },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad", false },
     { "Paint", NULL, ICON_PAINT, "paint", false },
     { "Task Manager", NULL, ICON_TASKMGR, "taskmgr", false },
     { "Snake", NULL, ICON_GAME, "snake", false },
     { "Minesweeper", NULL, ICON_GAME, "minesweeper", false },
-    { "Pong", NULL, ICON_GAME, "pong", false },
 };
 static const sm_item_t sm_right[] = {
     { "My Documents", NULL, ICON_MY_DOCUMENTS, "explorer:" USER_DOCS, true },
@@ -959,6 +959,7 @@ static const sm_item_t all_programs[] = {
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
     { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },
+    { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer" },
     { "WRLD Security Center", NULL, ICON_CP_SYSTEM, "security" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },
     { NULL },
     { "Samples (EXE / DMG / SH)", NULL, ICON_FOLDER, "explorer:C:\\Samples" },

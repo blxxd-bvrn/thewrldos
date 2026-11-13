@@ -62,8 +62,10 @@ LXB_OBJ := $(patsubst $(LXB)/source/%.c,$(BUILD)/lexbor/%.o,$(LXB_SRC)) $(patsub
 LXB_CFLAGS = $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
            -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
            -I$(QSHIM)/include -I$(LXB)/source -DLEXBOR_STATIC -DNDEBUG
+# minimp3 (MP3 decoding for THE WRLD Media Player); src/media/mp3.c is the glue
+MP3_OBJ := $(patsubst src/media/%.c,$(BUILD)/media/%.o,$(wildcard src/media/*.c))
 ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
-OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ)
+OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ) $(MP3_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 MINGW   := i686-w64-mingw32-gcc
 SAMPLES := $(wildcard samples/*.c)
@@ -135,6 +137,9 @@ $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(BUILD)/media/%.o: src/media/%.c src/include/mp3glue.h third_party/minimp3/minimp3.h
+	@mkdir -p $(dir $@)
+	$(CC) $(filter-out -DLEXBOR_STATIC,$(LXB_CFLAGS)) -iquote src/include -Wall -Wno-unused-function -c $< -o $@
 $(BUILD)/lexbor/%.o: $(LXB)/source/%.c $(QSHIM)/include/qjs_libc.h
 	@mkdir -p $(dir $@)
 	@$(CC) $(LXB_CFLAGS) -w -c $< -o $@

@@ -17,6 +17,7 @@ const app_info_t app_table[] = {
     { "snake", "Snake", "A small arcade game", ICON_GAME },
     { "minesweeper", "Minesweeper", "Clear the minefield", ICON_GAME },
     { "pong", "Pong", "Two-paddle arcade game", ICON_GAME },
+    { "wmplayer", "THE WRLD Media Player", "Play music and sounds", ICON_MEDIA_PLAYER },
     { "security", "WRLD Security Center", "Firewall, password, web protection and system health", ICON_CP_SYSTEM },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
@@ -39,6 +40,7 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "snake")) snake_open();
     else if (!strcasecmp(name, "minesweeper") || !strcasecmp(name, "mine")) minesweeper_open();
     else if (!strcasecmp(name, "pong")) pong_open();
+    else if (!strcasecmp(name, "wmplayer") || !strcasecmp(name, "mediaplayer") || !strcasecmp(name, "wmplayer.exe")) mediaplayer_open(arg);
     else if (!strcasecmp(name, "security") || !strcasecmp(name, "firewall")) security_open();
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
     else if (!strcasecmp(name, "help")) notepad_open("C:\\WRLD\\Help.txt");
@@ -61,7 +63,7 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
     if (!strcasecmp(e, "wrldstyle")) return ICON_CP_APPEARANCE;
-    if (!strcasecmp(e, "wav")) return ICON_CP_SOUND;
+    if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3") || !strcasecmp(e, "wma") || !strcasecmp(e, "m3u")) return ICON_MUSIC_FILE;
     if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) return ICON_IMAGE_FILE;
     if (!strcasecmp(e, "html") || !strcasecmp(e, "htm") || !strcasecmp(e, "url")) return ICON_BROWSER;
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
@@ -86,6 +88,7 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "url")) return "Internet Shortcut";
     if (!strcasecmp(e, "wrldstyle")) return "Visual Style";
     if (!strcasecmp(e, "wav")) return "Wave Sound";
+    if (!strcasecmp(e, "mp3")) return "MP3 Audio File";
     if (!strcasecmp(e, "plist")) return "Property List";
     if (!strcasecmp(e, "c")) return "C Source File";
     return "File";
@@ -118,10 +121,8 @@ bool shell_open(const char *path, const char *cwd) {
         char l = dmg_mount(n, msg, sizeof msg);
         if (!l) err_box("Disk Image", msg);
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
-    } else if (!strcasecmp(e, "wav")) {
-        char err[96];
-        if (!audio_play_file(full, err, sizeof err)) err_box("Sound", !audio_present() ? "There is no sound device to play this sound on." : err);
-        else { char m[200]; snprintf(m, sizeof m, "Playing %s", n->name); notify_balloon("Sound", m); }
+    } else if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3")) {
+        mediaplayer_open(full);
     } else if (!strcasecmp(e, "wrldstyle")) {
         /* apply the visual style, then show it in Personalization */
         char dir[512]; path_dirname(full, dir, sizeof dir);

@@ -1,7 +1,7 @@
 # THE WRLD OS
 
 An original x86 operating system written from scratch in C and assembly (about 20,000
-lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine and the Lexbor HTML parser), in a **32-bit**
+lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the Lexbor HTML parser and the minimp3 decoder), in a **32-bit**
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
@@ -743,8 +743,22 @@ device manager's job is to say what the computer has and which driver runs it.
     Fonts, Ease of Access.
 - **Task Manager:** applications, processes, CPU/memory graphs.
 - **XplorerLite** web browser (see above).
+- **THE WRLD Media Player** (`mediaplayer.c`): an all-in-one player in the style of the XP era,
+  with its own dark glossy skin.
+  - Now Playing shows the track's info and a visualisation drawn from the samples being heard
+    (a spectrum from a 512-point FFT, a scope, or an ambience); Library lists every `.mp3` and
+    `.wav` on the drives, with ID3 titles, artists and albums, and a search box; the Now Playing
+    list sits on the right.
+  - Transport bar: play/pause, stop, previous, next, a seek bar, shuffle, repeat, mute and volume.
+    Keys: Ctrl+P play/pause, Ctrl+S stop, Ctrl+F/Ctrl+B next/previous, Ctrl+H shuffle,
+    Ctrl+T repeat, Ctrl+O open, F8 mute, F9/F10 volume, Space and the arrow keys on Now Playing.
+  - MP3s (MPEG-1/2 layer III) are decoded by [minimp3](https://github.com/lieff/minimp3)
+    (`third_party/minimp3`, public domain; glue in `src/media/mp3.c`) on their own task, straight
+    into a sound of the full length: playback starts once half a second is ready.
+  - Opening an `.mp3` or `.wav` file opens it in the player. My Music has three original sample
+    tracks, synthesised by `tools/gen_music.py`.
 - **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
-  Minesweeper, Pong, Security Center, Administrative Tools, Properties, Run, About, Setup.
+  Minesweeper, Pong, WRLD Security Center, Administrative Tools, Properties, Run, About, Setup.
 
 ### Compatibility
 - **`.exe`: Win32 subsystem (`src/win32`)**
@@ -886,6 +900,8 @@ third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 lic
 third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this OS
 third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against
+third_party/minimp3  minimp3 (MP3 decoding for the media player), public domain (CC0)
+src/media          MP3 glue for minimp3 (mp3.c)
 samples/           Win32 sample sources (hello.c, winhello.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)

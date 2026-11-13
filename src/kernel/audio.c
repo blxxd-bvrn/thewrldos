@@ -48,7 +48,7 @@ static struct { char name[56]; int kind, pin, devtype; } eps[MAX_EP];
 static int neps, ep_sel;
 enum { EP_CARD, EP_HDA, EP_USB, EP_VJACK };
 
-typedef struct { const sound_t *s; uint32_t pos; bool active; } voice_t;
+typedef struct { const sound_t *s; uint32_t pos; bool active, paused; } voice_t;
 static voice_t voices[NVOICE];
 void audio_disable(const char *why);
 
@@ -969,7 +969,7 @@ static void mix_into(int16_t *out, int frames) {
     int vol = audio_muted ? 0 : audio_volume;
     for (int v = 0; v < NVOICE; v++) {
         voice_t *vc = &voices[v];
-        if (!vc->active) continue;
+        if (!vc->active || vc->paused) continue;
         int n = MIN((uint32_t)frames, vc->s->frames - vc->pos);
         const int16_t *src = vc->s->pcm + vc->pos * 2;
         for (int i = 0; i < n * 2; i++) acc[i] += src[i];
@@ -1420,13 +1420,43 @@ int audio_play(const sound_t *s) {
     int v = 0;
     while (v < NVOICE && voices[v].active) v++;
     if (v == NVOICE) v = 0;                                          /* all busy: replace the first */
-    voices[v].s = s; voices[v].pos = 0; voices[v].active = true;
+    voices[v].s = s; voices[v].pos = 0; voices[v].paused = false; voices[v].active = true;
     irq_restore(f);
     return v;
 }
 void audio_stop_all(void) { uint32_t f = irq_save(); for (int v = 0; v < NVOICE; v++) voices[v].active = false; irq_restore(f); }
 bool audio_busy(void) { for (int v = 0; v < NVOICE; v++) if (voices[v].active) return true; return false; }
+int audio_rate(void) { return (int)out_rate; }
 bool audio_voice_active(int v, const sound_t *s) { return v >= 0 && v < NVOICE && voices[v].active && voices[v].s == s; }
+/* Media-player controls for one voice. The mixer runs LEAD buffers ahead of the
+ * speaker, so the frame being heard is about that much behind `pos`. */
+static bool voice_ok(int v, const sound_t *s) { return v >= 0 && v < NVOICE && voices[v].s == s && s; }
+uint32_t audio_voice_position(int v, const sound_t *s) {
+    if (!voice_ok(v, s)) return 0;
+    if (!voices[v].active) return s->frames;
+    uint32_t ahead = voices[v].paused ? 0 : (dev == DEV_VIRTIO ? 4 : LEAD) * BUFFRAMES;
+    return voices[v].pos > ahead ? voices[v].pos - ahead : 0;
+}
+void audio_voice_seek(int v, const sound_t *s, uint32_t frame) {
+    if (!voice_ok(v, s)) return;
+    uint32_t f = irq_save();
+    voices[v].pos = frame < s->frames ? frame : s->frames;
+    irq_restore(f);
+}
+void audio_voice_pause(int v, const sound_t *s, bool paused) {
+    if (!voice_ok(v, s) || !voices[v].active) return;
+    uint32_t f = irq_save();
+    if (paused && !voices[v].paused) {                          /* rewind what was mixed ahead */
+        uint32_t ahead = (dev == DEV_VIRTIO ? 4 : LEAD) * BUFFRAMES;
+        voices[v].pos = voices[v].pos > ahead ? voices[v].pos - ahead : 0;
+    }
+    voices[v].paused = paused;
+    irq_restore(f);
+}
+void audio_voice_stop(int v, const sound_t *s) {
+    if (!voice_ok(v, s)) return;
+    uint32_t f = irq_save(); voices[v].active = false; voices[v].paused = false; irq_restore(f);
+}
 
 /* ======================= WAV ======================= */
 static uint32_t le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
@@ -1463,6 +1493,7 @@ sound_t *sound_load_wav(const uint8_t *d, uint32_t n, char *err, int errcap) {
     return s;
 }
 void sound_free(sound_t *s) { if (s) { kfree(s->pcm); kfree(s); } }
+
 
 /* ======================= files ======================= */
 #include "fs.h"

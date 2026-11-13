@@ -31,6 +31,7 @@ void snake_open(void);
 void minesweeper_open(void);
 void pong_open(void);
 void security_open(void);
+void mediaplayer_open(const char *path);   /* NULL: My Music */
 void imageview_open(const char *path);
 void properties_open(vnode_t *n);
 void bundle_open(vnode_t *app);

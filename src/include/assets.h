@@ -93,6 +93,8 @@ enum {
     ICON_REFRESH = 66,
     ICON_HOME = 67,
     ICON_LOCK = 68,
-    ICON_COUNT = 69
+    ICON_MEDIA_PLAYER = 69,
+    ICON_MUSIC_FILE = 70,
+    ICON_COUNT = 71
 };
 #endif

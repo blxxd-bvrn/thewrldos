@@ -56,6 +56,13 @@ INSTALLING TO A HARD DISK
   NVMe, SCSI (LSI Logic, LSI Logic SAS, VMware Paravirtual, virtio-scsi) and
   virtio disks.
 
+MUSIC
+  THE WRLD Media Player (Start menu) plays MP3 and WAV files: double-click
+  one, or open the player and pick a song in the Library. Three sample
+  tracks are in My Documents\My Music. Now Playing shows a visualisation;
+  click the arrows under it to change it. Keys: Space play/pause, Ctrl+F
+  next, Ctrl+B previous, Ctrl+S stop, F8 mute, F9/F10 volume.
+
 SOUND AND DISPLAY
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
   shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High

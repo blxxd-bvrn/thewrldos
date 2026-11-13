@@ -17,6 +17,12 @@ void audio_device_select(int i);            /* makes endpoint i the default */
 void audio_diag(char *buf, int cap);        /* device, codec route, whether playback advances */
 int audio_play(const sound_t *s);           /* voice number, or -1 */
 void audio_stop_all(void);
+int audio_rate(void);                        /* frames per second of a sound_t */
+bool audio_voice_active(int v, const sound_t *s);
+uint32_t audio_voice_position(int v, const sound_t *s);  /* frame being heard */
+void audio_voice_seek(int v, const sound_t *s, uint32_t frame);
+void audio_voice_pause(int v, const sound_t *s, bool paused);
+void audio_voice_stop(int v, const sound_t *s);
 bool audio_busy(void);
 extern int audio_volume;                    /* 0..100 */
 extern bool audio_muted;

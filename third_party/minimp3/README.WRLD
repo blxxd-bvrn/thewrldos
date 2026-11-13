@@ -1,0 +1,8 @@
+minimp3 (https://github.com/lieff/minimp3), the MPEG-1/2 layer III decoder
+used by THE WRLD Media Player. Public domain (CC0), see LICENSE.
+
+Only minimp3.h is vendored, unmodified. It is compiled freestanding against
+the C library shim in third_party/quickjs-shim by src/media/mp3.c, which is
+the glue and exposes plain C types to the kernel (src/include/mp3glue.h).
+SIMD is off (MINIMP3_NO_SIMD) so the 32-bit edition, built without SSE, and
+the 64-bit edition run the same code.
