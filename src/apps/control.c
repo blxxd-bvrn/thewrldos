@@ -35,6 +35,7 @@ static const applet_t applets[] = {
     { "defaults", "Default Programs", "File type associations", ICON_EXE, CAT_PROGRAMS },
     { "users", "User Accounts", "Change your name and picture", ICON_CP_USERS, CAT_USERS },
     { "personalization", "Personalization", "Theme, colour hue and background", ICON_CP_APPEARANCE, CAT_APPEARANCE },
+    { "advanced", "Advanced Appearance", "Individual colours, scrollbars, buttons and cursors", ICON_CP_APPEARANCE, CAT_APPEARANCE },
     { "display", "Display", "Screen resolution and effects", ICON_CP_DISPLAY, CAT_APPEARANCE },
     { "taskbar", "Taskbar and Start Menu", "Customise the taskbar", ICON_CP_TASKBAR, CAT_APPEARANCE },
     { "fonts", "Fonts", "View installed fonts", ICON_CP_FONTS, CAT_APPEARANCE },
@@ -58,6 +59,8 @@ typedef struct {
     int dev_view, dev_tick; uint32_t dev_closed; char dev_sel[112]; int scroll_max;   /* Device Manager: tab, collapsed classes, selection */
     int wall_page;
     bool anim;
+    int adv_sel, adv_scroll, adv_last, adv_cursor, adv_cursor_scroll, adv_r, adv_g, adv_b;
+    bool adv_init;
     window_t *win;
 } cp_t;
 
@@ -71,6 +74,10 @@ static void cp_go(cp_t *c, const char *page, bool push) {
     }
     strlcpy(c->page, page, sizeof c->page);
     c->scroll = 0;
+    if (!strcmp(page, "advanced")) {
+        c->adv_sel = 0; c->adv_scroll = 0; c->adv_last = -1; c->adv_init = false;
+        c->adv_cursor = cursor_set_current(); c->adv_cursor_scroll = 0;
+    }
     const applet_t *a = find_applet(page);
     wm_set_title(c->win, a ? a->name : !strncmp(page, "cat:", 4) ? cats[atoi(page + 4)].name : c->view ? "All Control Panel Items" : "Control Panel");
     c->win->icon = a ? a->icon : ICON_CONTROL_PANEL;
@@ -252,6 +259,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, adjust its hue, saturation and lightness, and choose a background.");
     /* pick up new or edited .wrldstyle files */
     if (c->style_gen != vfs_generation) { c->style_gen = vfs_generation; styles_load(); theme_compute(theme_id, theme_hue, &T); wm_theme_changed(); }
+    if (ui_link(w, ox + 20, oy + 56, FONT_UI, "Advanced appearance: colours and cursors...", W7_LINK)) cp_go(c, "advanced", true);
     int y = oy + 78;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", T.text);
     {
@@ -378,6 +386,73 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
             if (ui_click_area(w, r)) { desktop_color = HEX(cols[i]); shell_wallpaper_changed(); }
         }
     }
+}
+static void page_advanced(window_t *w, cp_t *c, int ox, int oy) {
+    canvas_t *s = w->surf;
+    heading(s, ox + 20, oy + 16, "Advanced appearance", "Change individual colours and choose a cursor set. Changes are saved for this user.");
+    int n = theme_role_count();
+    if (c->adv_sel < 0 || c->adv_sel >= n) c->adv_sel = 0;
+    int lx = ox + 20, ly = oy + 64, lw = 240, lh = MIN(390, s->h - ly - 24);
+    draw_sunken_box(s, R(lx, ly, lw, lh), T.window_bg);
+    const char *names[40];
+    for (int i = 0; i < n && i < 40; i++) names[i] = theme_role_name(i);
+    ui_list(w, R(lx + 1, ly + 1, lw - 2, lh - 2), names, n, &c->adv_sel, &c->adv_scroll);
+    if (!c->adv_init || c->adv_sel != c->adv_last) {
+        c->adv_last = c->adv_sel; c->adv_init = true;
+        uint32_t col = theme_role_effective(c->adv_sel);
+        c->adv_r = C_R(col); c->adv_g = C_G(col); c->adv_b = C_B(col);
+    }
+    int px = lx + lw + 24, pw = s->w - px - 20;
+    if (pw < 220) { px = lx; pw = lw; }
+    int sel = CLAMP(c->adv_sel, 0, n - 1);
+    uint32_t col = theme_role_effective(sel);
+    draw_text(s, FONT_LARGE, px, ly, theme_role_name(sel), T.text);
+    draw_text(s, FONT_UI, px, ly + 24, theme_role_is_set(sel) ? "Custom colour" : "Automatic (from the current style)", T.gray_text);
+    fill_rect(s, px, ly + 46, 120, 38, col);
+    draw_rect(s, px, ly + 46, 120, 38, T.face_dark);
+    char hx[16]; snprintf(hx, sizeof hx, "#%06X", col & 0xFFFFFF);
+    draw_text(s, FONT_UI, px + 132, ly + 56, hx, T.text);
+    int sy = ly + 100, changed = 0;
+    const char *lab[] = { "Red", "Green", "Blue" };
+    int *vv[] = { &c->adv_r, &c->adv_g, &c->adv_b };
+    for (int i = 0; i < 3; i++) {
+        draw_text(s, FONT_UI, px, sy + 4, lab[i], T.text);
+        int v = *vv[i];
+        if (ui_slider(w, R(px + 58, sy, MIN(230, pw - 58), 22), &v, 0, 255)) { *vv[i] = v; changed = 1; }
+        char b[8]; snprintf(b, sizeof b, "%d", *vv[i]); draw_text(s, FONT_UI, px + pw - 32, sy + 4, b, T.text);
+        sy += 30;
+    }
+    if (changed) {
+        theme_role_set(sel, RGB(c->adv_r, c->adv_g, c->adv_b));
+        theme_apply(theme_id, theme_hue);
+        if (!w->ui.down || w->ui.released) theme_overrides_save();
+        wm_defer(cp_refresh_theme, NULL);
+    }
+    sy += 4;
+    if (ui_button(w, R(px, sy, 90, 24), "Automatic")) {
+        theme_role_clear(sel); theme_apply(theme_id, theme_hue); theme_overrides_save();
+        c->adv_init = false; wm_defer(cp_refresh_theme, NULL);
+    }
+    if (ui_button(w, R(px + 100, sy, 90, 24), "Reset all")) {
+        theme_role_clear_all(); theme_apply(theme_id, theme_hue); theme_overrides_save();
+        c->adv_init = false; wm_defer(cp_refresh_theme, NULL);
+    }
+    sy += 42;
+    draw_text(s, FONT_UI_BOLD, px, sy, "Cursor set", T.link_head);
+    sy += 20;
+    int nc = cursor_set_count();
+    const char *cn[16];
+    for (int i = 0; i < nc && i < 16; i++) cn[i] = cursor_set_name(i);
+    if (c->adv_cursor < 0 || c->adv_cursor >= nc) c->adv_cursor = cursor_set_current();
+    draw_sunken_box(s, R(px, sy, MIN(240, pw), MIN(90, MAX(26, nc * 18 + 4))), T.window_bg);
+    ui_list(w, R(px + 1, sy + 1, MIN(240, pw) - 2, MIN(90, MAX(26, nc * 18 + 4)) - 2), cn, nc, &c->adv_cursor, &c->adv_cursor_scroll);
+    if (c->adv_cursor >= 0 && c->adv_cursor < nc && c->adv_cursor != cursor_set_current()) {
+        cursor_set_load(cn[c->adv_cursor]);
+        settings_save();
+        wm_defer(cp_refresh_theme, NULL);
+    }
+    sy += MIN(90, MAX(26, nc * 18 + 4)) + 8;
+    draw_text_wrapped(s, FONT_SMALL, px, sy, pw, "Put Windows .cur files in C:\\WRLD\\Cursors\\<set>\\ named arrow, ibeam, hand, sizens, sizewe, sizenwse, sizenesw, busy, move and cross. Missing files keep the built-in cursor.", T.gray_text, 3);
 }
 static const struct { int w, h; } modes[] = { { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 800 }, { 1280, 960 }, { 1280, 1024 }, { 1360, 768 },
     { 1366, 768 }, { 1440, 900 }, { 1600, 900 }, { 1600, 1200 }, { 1680, 1050 }, { 1920, 1080 }, { 1920, 1200 }, { 2560, 1440 } };
@@ -700,12 +775,13 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
     int y = oy + 64; char b[160];
     draw_icon(s, ICON_CP_SOUND, 48, ox + 30, y);
     draw_text(s, FONT_UI, ox + 96, y + 2, "Playback devices:", T.gray_text);
+    if (ui_button(w, R(s->w - 118, y, 88, 24), "Scan again")) { audio_rescan(); devmgr_scan(); w->dirty = true; }
     int nd = audio_present() ? audio_device_count() : 0;
     if (nd > 8) nd = 8;
     const char *items[8];
     for (int i = 0; i < nd; i++) items[i] = audio_device_entry(i);
     int ih = font_height(FONT_UI) + 4, scroll = 0, sel = audio_device_active();
-    rect_t lr = R(ox + 96, y + 20, s->w - ox - 130, nd * ih + 4);
+    rect_t lr = R(ox + 96, y + 28, s->w - ox - 130, nd * ih + 4);
     if (nd) ui_list(w, lr, items, nd, &sel, &scroll);
     if (nd && sel != audio_device_active()) audio_device_select(sel);
     int cy = lr.y + lr.h + 4;
@@ -716,9 +792,10 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
         cy += 22;
     }
     if (!audio_present()) {
-        draw_text_wrapped(s, FONT_UI, ox + 96, y + 22, s->w - ox - 120, "No supported sound card was found. " OS_NAME " supports Intel High Definition Audio and AC'97 "
-            "(QEMU: -device intel-hda -device hda-output, or -device AC97; VirtualBox: 'Intel HD Audio' or 'ICH AC97').", W7_TEXT, 2);
-        y += 80;
+        draw_text_wrapped(s, FONT_UI, ox + 96, y + 30, s->w - ox - 120, audio_summary(), W7_TEXT, 2);
+        draw_text_wrapped(s, FONT_SMALL, ox + 96, y + 60, s->w - ox - 120, "Supported: Intel High Definition Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16 and USB audio class 1/2. "
+            "Use Scan again after connecting a device, or see Device Manager for the hardware IDs.", W7_TEXT, 2);
+        y += 110;
     } else {
         y = cy + 6;
         draw_text(s, FONT_UI, ox + 96, y + 4, "Volume:", T.gray_text);
@@ -741,6 +818,19 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
         if (ui_button(w, R(s->w - 110, y, 80, 24), "Stop")) audio_stop_all();
         y += 40;
     }
+    y += 10;
+    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Detected audio hardware", T.link_head); hline(s, ox + 190, y + 8, s->w - ox - 220, T.face_dark); y += 22;
+    if (devmgr_count() == 0) devmgr_scan();
+    int dn = 0;
+    for (int i = 0; i < devmgr_count() && dn < 8; i++) {
+        device_t *d = devmgr_get(i);
+        if (!d || d->cls != DC_SOUND) continue;
+        draw_text_ellipsis(s, FONT_UI, ox + 30, y, s->w - ox - 260, d->name, T.text);
+        draw_text(s, FONT_SMALL, s->w - 210, y + 2, dev_status_text(d), d->status == DS_WORKING || d->status == DS_BUILTIN ? T.gray_text : HEX(0x9C4A00));
+        y += 18; dn++;
+    }
+    if (!dn) draw_text(s, FONT_UI, ox + 30, y, "No audio-class hardware found.", T.gray_text);
+    else y += 4;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "PC speaker", T.link_head); hline(s, ox + 105, y + 8, s->w - ox - 135, T.face_dark); y += 26;
     static const struct { const char *n; int f; } tones[] = { { "Beep", 880 }, { "Asterisk", 1200 }, { "Critical Stop", 330 } };
     for (int i = 0; i < 3; i++) if (ui_button(w, R(ox + 40 + i * 110, y, 100, 24), tones[i].n)) speaker_beep(tones[i].f, 150);
@@ -876,6 +966,7 @@ static void cp_paint(window_t *w) {
     rect_t old = canvas_push_clip(s, R(NAV_W, TOP_H, s->w - NAV_W, s->h - TOP_H));
     if (!a) category_page(w, c, cat, ox, oy);
     else if (!strcmp(a->id, "personalization")) page_personalization(w, c, ox, oy);
+    else if (!strcmp(a->id, "advanced")) page_advanced(w, c, ox, oy);
     else if (!strcmp(a->id, "display")) page_display(w, c, ox, oy);
     else if (!strcmp(a->id, "taskbar")) page_taskbar(w, c, ox, oy);
     else if (!strcmp(a->id, "datetime")) page_datetime(w, c, ox, oy);

@@ -942,6 +942,124 @@ static const cursor_t cursors[CURSOR_COUNT] = {
 };
 static int cur_x = -100, cur_y = -100, cur_kind;
 
+/* ---------- custom cursor sets (Windows .cur files) ----------
+ * A set is a folder under C:\WRLD\Cursors.  Files are matched by role:
+ * arrow.cur, ibeam.cur, hand.cur, sizens.cur, sizewe.cur, sizenwse.cur,
+ * sizenesw.cur, busy.cur, move.cur and cross.cur.  Missing files fall back to
+ * the built-in artwork, so a set may contain only the cursors it changes. */
+#define CURSOR_DIR "C:\\WRLD\\Cursors"
+typedef struct { int w, h, hx, hy; uint32_t *px; } ucur_t;   /* ARGB, A=0 transparent */
+static ucur_t ucur[CURSOR_COUNT];
+static char active_cursor_set[32];
+static char cursor_sets[16][32];
+static int cursor_nsets;
+static uint32_t cursor_sets_gen = 0xFFFFFFFF;
+
+static void ucur_free(int k) { if (k >= 0 && k < CURSOR_COUNT && ucur[k].px) { kfree(ucur[k].px); ucur[k].px = NULL; } }
+static bool load_cur_file(const char *path, ucur_t *out) {
+    uint32_t len = 0;
+    uint8_t *b = vfs_read_file(path, &len);
+    if (!b || len < 6 + 16) { kfree(b); return false; }
+    if (*(uint16_t *)(b + 2) != 2) { kfree(b); return false; }        /* type 2 = cursor */
+    int count = *(uint16_t *)(b + 4), best = -1, bestarea = 0;
+    for (int i = 0; i < count; i++) {
+        uint8_t *e = b + 6 + i * 16;
+        int w = e[0] ? e[0] : 256, h = e[1] ? e[1] : 256;
+        if (w > 64 || h > 64) continue;
+        if (w * h > bestarea) { bestarea = w * h; best = i; }
+    }
+    if (best < 0) { kfree(b); return false; }
+    uint8_t *e = b + 6 + best * 16;
+    int w = e[0] ? e[0] : 256, h = e[1] ? e[1] : 256;
+    int hx = *(uint16_t *)(e + 4), hy = *(uint16_t *)(e + 6);
+    uint32_t size = *(uint32_t *)(e + 8), off = *(uint32_t *)(e + 12);
+    if (off + 40 > len || size < 40) { kfree(b); return false; }
+    uint8_t *d = b + off;
+    int bpp = *(uint16_t *)(d + 14), comp = *(uint32_t *)(d + 16), hh = *(int32_t *)(d + 8);
+    int xorH = hh / 2;
+    if (comp != 0 || (bpp != 32 && bpp != 24) || xorH <= 0) { kfree(b); return false; }
+    int xorStride = ((w * bpp / 8 + 3) / 4) * 4;
+    int andStride = ((w + 31) / 32) * 4;
+    uint32_t pixOff = 40;
+    if (off + pixOff + (uint32_t)xorStride * xorH + (uint32_t)andStride * h > len) { kfree(b); return false; }
+    uint32_t *px = kmalloc((uint32_t)w * h * 4);
+    if (!px) { kfree(b); return false; }
+    memset(px, 0, (uint32_t)w * h * 4);
+    bool any_alpha = false;
+    for (int y = 0; y < h; y++) {
+        int sy = h - 1 - y;
+        uint8_t *row = d + pixOff + sy * xorStride;
+        uint8_t *am = d + pixOff + xorStride * xorH + sy * andStride;
+        for (int x = 0; x < w; x++) {
+            uint32_t c;
+            int a = 255;
+            if (bpp == 32) { uint8_t *q = row + x * 4; c = RGB(q[2], q[1], q[0]); a = q[3]; if (a) any_alpha = true; }
+            else { uint8_t *q = row + x * 3; c = RGB(q[2], q[1], q[0]); }
+            if (am[x >> 3] & (0x80 >> (x & 7))) a = 0;
+            px[y * w + x] = a ? (c | ((uint32_t)a << 24)) : 0;
+        }
+    }
+    if (bpp == 32 && !any_alpha) {                 /* no alpha channel: use the AND mask */
+        for (int y = 0; y < h; y++) {
+            int sy = h - 1 - y;
+            uint8_t *am = d + pixOff + xorStride * xorH + sy * andStride;
+            for (int x = 0; x < w; x++) {
+                uint32_t c = px[y * w + x] & 0xFFFFFF;
+                px[y * w + x] = (am[x >> 3] & (0x80 >> (x & 7))) ? 0 : (0xFF000000u | c);
+            }
+        }
+    }
+    out->w = w; out->h = h;
+    out->hx = CLAMP(hx, 0, w - 1); out->hy = CLAMP(hy, 0, h - 1);
+    out->px = px;
+    kfree(b);
+    return true;
+}
+static void cursor_sets_scan(void) {
+    if (cursor_sets_gen == vfs_generation) return;
+    cursor_sets_gen = vfs_generation;
+    cursor_nsets = 0;
+    strlcpy(cursor_sets[cursor_nsets++], "Default", sizeof cursor_sets[0]);
+    vnode_t *d = vfs_resolve(CURSOR_DIR, NULL);
+    if (d && d->dir) {
+        vfs_sort_children(d);
+        for (vnode_t *n = d->child; n && cursor_nsets < 16; n = n->next)
+            if (n->dir && strcasecmp(n->name, "Default"))
+                strlcpy(cursor_sets[cursor_nsets++], n->name, sizeof cursor_sets[0]);
+    }
+}
+int cursor_set_count(void) { cursor_sets_scan(); return cursor_nsets; }
+const char *cursor_set_name(int i) { cursor_sets_scan(); return i >= 0 && i < cursor_nsets ? cursor_sets[i] : "Default"; }
+const char *cursor_set_active(void) { return active_cursor_set[0] ? active_cursor_set : "Default"; }
+int cursor_set_current(void) {
+    cursor_sets_scan();
+    for (int i = 1; i < cursor_nsets; i++) if (!strcasecmp(cursor_sets[i], active_cursor_set)) return i;
+    return 0;
+}
+bool cursor_set_load(const char *name) {
+    for (int k = 0; k < CURSOR_COUNT; k++) ucur_free(k);
+    strlcpy(active_cursor_set, name && *name && strcasecmp(name, "Default") ? name : "", sizeof active_cursor_set);
+    if (!active_cursor_set[0]) return true;
+    static const char *files[CURSOR_COUNT] = { "arrow", "ibeam", "hand", "sizens", "sizewe", "sizenwse", "sizenesw", "busy", "move", "cross" };
+    for (int k = 0; k < CURSOR_COUNT; k++) {
+        char path[160];
+        snprintf(path, sizeof path, CURSOR_DIR "\\%s\\%s.cur", active_cursor_set, files[k]);
+        if (!load_cur_file(path, &ucur[k])) {
+            ucur[k].px = NULL; ucur[k].w = ucur[k].h = 0;
+        }
+    }
+    klog("cursor: set \"%s\" loaded", active_cursor_set);
+    return true;
+}
+static void cursor_metrics(int kind, int *w, int *h, int *hx, int *hy) {
+    if (kind >= 0 && kind < CURSOR_COUNT && ucur[kind].px) {
+        *w = ucur[kind].w; *h = ucur[kind].h; *hx = ucur[kind].hx; *hy = ucur[kind].hy;
+    } else {
+        const cursor_t *cu = &cursors[kind];
+        *w = cu->w; *h = cu->h; *hx = cu->hx; *hy = cu->hy;
+    }
+}
+
 /* 32-bit pixels go straight to the framebuffer; a 24-bit boot mode (some
  * firmware picks one) is converted three bytes at a time. */
 static void fb_store(int x, int y, uint32_t col) {
@@ -967,18 +1085,32 @@ static void fb_copy_rect(int x, int y, int w, int h) {
     video_update(r.x, r.y, r.w, r.h);
 }
 static void fb_draw_cursor(int kind, int mx, int my) {
-    const cursor_t *cu = &cursors[kind];
-    int ox = mx - cu->hx, oy = my - cu->hy;
-    for (int j = 0; j < cu->h; j++)
-        for (int i = 0; i < cu->w; i++) {
-            char ch = cu->art[j * cu->w + i];
-            int x = ox + i, y = oy + j;
-            if (ch == '.' || x < 0 || y < 0 || x >= SCREEN_W || y >= SCREEN_H) continue;
-            uint32_t col = ch == 'B' ? 0 : 0xFFFFFF;
-            if (kind == CURSOR_IBEAM || kind == CURSOR_CROSS) col = (screen.px[y * SCREEN_W + x] ^ 0xFFFFFF) & 0xFFFFFF;
-            fb_store(x, y, col);
-        }
-    rect_t r = rect_intersect(R(ox, oy, cu->w, cu->h), R(0, 0, SCREEN_W, SCREEN_H));
+    int w, h, hx, hy; cursor_metrics(kind, &w, &h, &hx, &hy);
+    int ox = mx - hx, oy = my - hy;
+    if (kind >= 0 && kind < CURSOR_COUNT && ucur[kind].px) {
+        const uint32_t *px = ucur[kind].px;
+        for (int j = 0; j < h; j++)
+            for (int i = 0; i < w; i++) {
+                uint32_t p = px[j * w + i];
+                int a = p >> 24;
+                int x = ox + i, y = oy + j;
+                if (!a || x < 0 || y < 0 || x >= SCREEN_W || y >= SCREEN_H) continue;
+                uint32_t fg = p & 0xFFFFFF;
+                fb_store(x, y, a == 255 ? fg : mix(screen.px[y * SCREEN_W + x], fg, a));
+            }
+    } else {
+        const cursor_t *cu = &cursors[kind];
+        for (int j = 0; j < cu->h; j++)
+            for (int i = 0; i < cu->w; i++) {
+                char ch = cu->art[j * cu->w + i];
+                int x = ox + i, y = oy + j;
+                if (ch == '.' || x < 0 || y < 0 || x >= SCREEN_W || y >= SCREEN_H) continue;
+                uint32_t col = ch == 'B' ? 0 : 0xFFFFFF;
+                if (kind == CURSOR_IBEAM || kind == CURSOR_CROSS) col = (screen.px[y * SCREEN_W + x] ^ 0xFFFFFF) & 0xFFFFFF;
+                fb_store(x, y, col);
+            }
+    }
+    rect_t r = rect_intersect(R(ox, oy, w, h), R(0, 0, SCREEN_W, SCREEN_H));
     video_update(r.x, r.y, r.w, r.h);
 }
 void gfx_present(int kind, int mx, int my) {
@@ -988,8 +1120,8 @@ void gfx_present(int kind, int mx, int my) {
 }
 void gfx_move_cursor(int kind, int mx, int my) {
     if (mx == cur_x && my == cur_y && kind == cur_kind) return;
-    const cursor_t *oc = &cursors[cur_kind];
-    fb_copy_rect(cur_x - oc->hx, cur_y - oc->hy, oc->w, oc->h);
+    int w, h, hx, hy; cursor_metrics(cur_kind, &w, &h, &hx, &hy);
+    fb_copy_rect(cur_x - hx, cur_y - hy, w, h);
     fb_draw_cursor(kind, mx, my);
     cur_x = mx; cur_y = my; cur_kind = kind;
 }

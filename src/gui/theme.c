@@ -9,6 +9,72 @@ int theme_id = THEME_LUNA_BLUE, theme_hue = 0;
 int theme_sat, theme_light;
 bool dark_mode;
 
+/* ---------- advanced colour overrides ----------
+ * A small binary file in the system config directory holds the user's
+ * per-role colours.  A zero entry means "use the style's colour"; non-zero
+ * entries are applied after dark mode and the hue adjustment, so they win. */
+#define OVERRIDE_FILE "C:\\WRLD\\System32\\config\\appearance.bin"
+#define OVERRIDE_MAGIC 0x57434F4Cu                /* "WCOL" */
+typedef struct { const char *name; uint16_t off; } role_t;
+static const role_t roles[] = {
+    { "Window face", offsetof(theme_t, face) },
+    { "Window background", offsetof(theme_t, window_bg) },
+    { "Text", offsetof(theme_t, text) },
+    { "Dim text", offsetof(theme_t, gray_text) },
+    { "Hyperlink", offsetof(theme_t, link) },
+    { "Headings and links", offsetof(theme_t, link_head) },
+    { "Selection", offsetof(theme_t, select) },
+    { "Selected text", offsetof(theme_t, select_text) },
+    { "Button top", offsetof(theme_t, btn_top) },
+    { "Button bottom", offsetof(theme_t, btn_bot) },
+    { "Button border", offsetof(theme_t, btn_border) },
+    { "Button hover top", offsetof(theme_t, btn_hot_a) },
+    { "Button hover bottom", offsetof(theme_t, btn_hot_b) },
+    { "Scrollbar track", offsetof(theme_t, sb_track) },
+    { "Scrollbar thumb top", offsetof(theme_t, sb_thumb_top) },
+    { "Scrollbar thumb bottom", offsetof(theme_t, sb_thumb_bot) },
+    { "Scrollbar border", offsetof(theme_t, sb_border) },
+    { "Check and radio", offsetof(theme_t, check) },
+    { "Menu background", offsetof(theme_t, menu_bg) },
+    { "Menu border", offsetof(theme_t, menu_border) },
+    { "Taskbar top", offsetof(theme_t, tb_top) },
+    { "Taskbar bottom", offsetof(theme_t, tb_bot) },
+    { "Taskbar text", offsetof(theme_t, tb_text) },
+    { "Title bar top", offsetof(theme_t, title_top) },
+    { "Title bar bottom", offsetof(theme_t, title_bot) },
+    { "Title text", offsetof(theme_t, title_text) },
+    { "Panel top", offsetof(theme_t, pane_top) },
+    { "Panel bottom", offsetof(theme_t, pane_bot) },
+    { "Panel links", offsetof(theme_t, pane_link) },
+    { "Desktop colour", offsetof(theme_t, desktop_bg) },
+};
+#define NROLES ((int)ARRAY_LEN(roles))
+static uint32_t role_override[NROLES];
+int theme_role_count(void) { return NROLES; }
+const char *theme_role_name(int i) { return i >= 0 && i < NROLES ? roles[i].name : ""; }
+uint32_t theme_role_color(int i) { return i >= 0 && i < NROLES ? role_override[i] : 0; }
+bool theme_role_is_set(int i) { return i >= 0 && i < NROLES && role_override[i] != 0; }
+uint32_t theme_role_effective(int i) { return i >= 0 && i < NROLES ? (role_override[i] ? role_override[i] : *(uint32_t *)((uint8_t *)&T + roles[i].off)) : 0; }
+void theme_role_set(int i, uint32_t color) { if (i >= 0 && i < NROLES) { role_override[i] = color ? (0xFF000000u | (color & 0xFFFFFFu)) : 0; } }
+void theme_role_clear(int i) { if (i >= 0 && i < NROLES) role_override[i] = 0; }
+void theme_role_clear_all(void) { memset(role_override, 0, sizeof role_override); }
+void theme_overrides_load(void) {
+    uint32_t len = 0;
+    uint8_t *b = vfs_read_file(OVERRIDE_FILE, &len);
+    if (!b || len < 12) { kfree(b); return; }
+    uint32_t magic = *(uint32_t *)b, ver = *(uint32_t *)(b + 4), n = *(uint32_t *)(b + 8);
+    if (magic != OVERRIDE_MAGIC || ver != 1 || n > (uint32_t)NROLES || len < 12 + n * 4) { kfree(b); return; }
+    memset(role_override, 0, sizeof role_override);
+    memcpy(role_override, b + 12, n * 4);
+    kfree(b);
+}
+void theme_overrides_save(void) {
+    uint8_t buf[12 + NROLES * 4];
+    *(uint32_t *)buf = OVERRIDE_MAGIC; *(uint32_t *)(buf + 4) = 1; *(uint32_t *)(buf + 8) = NROLES;
+    memcpy(buf + 12, role_override, sizeof role_override);
+    vfs_write_file(OVERRIDE_FILE, buf, sizeof buf);
+}
+
 /* Dark mode keeps the selected style's renderer (Luna, Aero, Plex, Classic)
  * but replaces its surfaces and text with dark equivalents.  Applied before
  * the hue adjustment so the accent colours still respond to the sliders. */
@@ -39,6 +105,8 @@ static void apply_dark(theme_t *t) {
     t->sm_accent = HEX(0x4A7AB5); t->sm_foot_text = HEX(0xE6E8EC);
     t->btn_border = HEX(0x080C12); t->btn_top = HEX(0x2A3240); t->btn_bot = HEX(0x161C26);
     t->btn_hot_a = HEX(0x3A4A60); t->btn_hot_b = HEX(0x243040); t->btn_focus = HEX(0x4A7AB5);
+    t->sb_track = HEX(0x14171D); t->sb_thumb_top = HEX(0x3A4A60); t->sb_thumb_bot = HEX(0x222C3A);
+    t->sb_border = HEX(0x080C12); t->check = HEX(0x7CE07C);
     t->pane_top = HEX(0x20242B); t->pane_bot = HEX(0x181B21);
     t->pane_head_top = HEX(0x2A3240); t->pane_head_bot = HEX(0x1B2430);
     t->pane_head_text = HEX(0xE6E8EC); t->pane_body = HEX(0x181B21); t->pane_link = HEX(0x6FB3FF);
@@ -90,6 +158,7 @@ static const struct { const char *name; uint16_t off; char kind; bool shift; } f
     F(sm_head_top, 'c', 1), F(sm_head_bot, 'c', 1), F(sm_head_text, 'c', 0), F(sm_border, 'c', 1), F(sm_left, 'c', 0), F(sm_left_text, 'c', 0),
     F(sm_right, 'c', 1), F(sm_right_line, 'c', 1), F(sm_right_text, 'c', 0), F(sm_foot_top, 'c', 1), F(sm_foot_bot, 'c', 1), F(sm_accent, 'c', 0), F(sm_foot_text, 'c', 0),
     F(btn_border, 'c', 1), F(btn_top, 'c', 0), F(btn_bot, 'c', 0), F(btn_hot_a, 'c', 0), F(btn_hot_b, 'c', 0), F(btn_focus, 'c', 1),
+    F(sb_track, 'c', 0), F(sb_thumb_top, 'c', 1), F(sb_thumb_bot, 'c', 1), F(sb_border, 'c', 1), F(check, 'c', 1),
     F(pane_top, 'c', 1), F(pane_bot, 'c', 1), F(pane_head_top, 'c', 0), F(pane_head_bot, 'c', 1), F(pane_head_text, 'c', 1), F(pane_body, 'c', 1), F(pane_link, 'c', 1),
     F(link, 'c', 0), F(link_head, 'c', 0), F(desktop_bg, 'c', 1), F(menu_bg, 'c', 0), F(menu_border, 'c', 0),
 };
@@ -157,6 +226,11 @@ static void sanitize(theme_t *t) {
     t->glass_alpha = CLAMP(t->glass_alpha, 0, 255); t->iglass_alpha = CLAMP(t->iglass_alpha, 0, 255); t->glass_blur = CLAMP(t->glass_blur, 0, 16);
     if (!t->sm_right_text) t->sm_right_text = t->classic ? BLACK : HEX(0x00136B);
     if (!t->sm_left_text) t->sm_left_text = BLACK;
+    if (!t->sb_track) t->sb_track = t->classic ? t->face : HEX(0xF4F3EE);
+    if (!t->sb_thumb_top) t->sb_thumb_top = t->classic ? t->face_light : HEX(0xD8E4FC);
+    if (!t->sb_thumb_bot) t->sb_thumb_bot = t->classic ? t->face : HEX(0xB9CDF5);
+    if (!t->sb_border) t->sb_border = t->classic ? t->face_dark : HEX(0xA9BCE8);
+    if (!t->check) t->check = t->classic ? BLACK : HEX(0x21A121);
 }
 static void add_style(const char *file) {
     if (nstyles >= (int)ARRAY_LEN(styles)) return;
@@ -210,6 +284,8 @@ void theme_compute(int id, int hue, theme_t *t) {
         uint32_t *c = (uint32_t *)((uint8_t *)t + fields[i].off);
         if (*c) *c = color_adjust(hue_shift(*c, hue), theme_sat, theme_light);
     }
+    for (int i = 0; i < NROLES; i++)
+        if (role_override[i]) *(uint32_t *)((uint8_t *)t + roles[i].off) = role_override[i];
 }
 void theme_set_tone(int sat, int light) {
     theme_sat = CLAMP(sat, -100, 100); theme_light = CLAMP(light, -60, 60);
@@ -481,7 +557,7 @@ void draw_check(canvas_t *c, int x, int y, bool checked, bool hot) {
         if (hot) { draw_rect(c, x + 1, y + 1, 11, 11, HEX(0xF8B330)); draw_rect(c, x + 2, y + 2, 9, 9, HEX(0xFFE0A0)); }
     }
     if (checked) {
-        uint32_t k = T.classic ? T.text : (dark_mode ? HEX(0x7CE07C) : HEX(0x21A121));
+        uint32_t k = T.check;
         for (int i = 0; i < 3; i++) { vline(c, x + 3 + i, y + 5 + i, 3, k); }
         for (int i = 0; i < 4; i++) { vline(c, x + 6 + i, y + 6 - i, 3, k); }
     }
@@ -493,11 +569,11 @@ void draw_radio(canvas_t *c, int x, int y, bool checked, bool hot) {
         fill_circle(c, x + 6, y + 6, 6, dark_mode ? T.face_dark : HEX(0x1C5180)); fill_circle(c, x + 6, y + 6, 5, dark_mode ? T.face : HEX(0xE4E3DB)); fill_circle(c, x + 6, y + 6, 4, T.window_bg);
         if (hot) draw_circle(c, x + 6, y + 6, 4, HEX(0xF8B330));
     }
-    if (checked) fill_circle(c, x + 6, y + 6, 2, T.classic ? T.text : (dark_mode ? HEX(0x7CE07C) : HEX(0x21A121)));
+    if (checked) fill_circle(c, x + 6, y + 6, 2, T.check);
 }
 void draw_scrollbar(canvas_t *c, rect_t r, int total, int visible, int pos, bool vertical) {
     int len = vertical ? r.h : r.w, thick = vertical ? r.w : r.h;
-    uint32_t track = dark_mode ? T.face : (T.classic ? HEX(0xE6E3DD) : HEX(0xF4F3EE));
+    uint32_t track = T.sb_track;
     fill_rect(c, r.x, r.y, r.w, r.h, track);
     int avail = len - 2 * thick;
     int tl = total > visible && total > 0 ? MAX(12, avail * visible / total) : avail;
@@ -510,16 +586,15 @@ void draw_scrollbar(canvas_t *c, rect_t r, int total, int visible, int pos, bool
     for (int i = 0; i < 3; i++) {
         rect_t p = parts[i];
         if (T.classic) { fill_rect(c, p.x, p.y, p.w, p.h, T.face); bevel_deep(c, p.x, p.y, p.w, p.h, true); }
-        else if (dark_mode) { fill_round_rect(c, p.x, p.y, p.w, p.h, 2, T.btn_border); gradient_round_rect(c, p.x + 1, p.y + 1, p.w - 2, p.h - 2, 2, T.btn_top, T.btn_bot); }
-        else { fill_round_rect(c, p.x, p.y, p.w, p.h, 2, HEX(0xA9BCE8)); gradient_round_rect(c, p.x + 1, p.y + 1, p.w - 2, p.h - 2, 2, HEX(0xD8E4FC), HEX(0xB9CDF5)); }
+        else { fill_round_rect(c, p.x, p.y, p.w, p.h, 2, T.sb_border); gradient_round_rect(c, p.x + 1, p.y + 1, p.w - 2, p.h - 2, 2, T.sb_thumb_top, T.sb_thumb_bot); }
     }
     uint32_t ac = T.text;
     if (vertical) { draw_arrow(c, a1.x + thick / 2, a1.y + thick / 2 - 2, 0, ac); draw_arrow(c, a2.x + thick / 2, a2.y + thick / 2 - 1, 1, ac); }
     else { draw_arrow(c, a1.x + thick / 2 - 2, a1.y + thick / 2, 2, ac); draw_arrow(c, a2.x + thick / 2 - 1, a2.y + thick / 2, 3, ac); }
     if (!T.classic && tl > 14) {
         for (int i = -2; i <= 2; i += 2) {
-            if (vertical) hline(c, th.x + 4, th.y + tl / 2 + i, thick - 8, dark_mode ? T.gray_text : HEX(0x8AA4D6));
-            else vline(c, th.x + tl / 2 + i, th.y + 4, thick - 8, dark_mode ? T.gray_text : HEX(0x8AA4D6));
+            if (vertical) hline(c, th.x + 4, th.y + tl / 2 + i, thick - 8, T.gray_text);
+            else vline(c, th.x + tl / 2 + i, th.y + 4, thick - 8, T.gray_text);
         }
     }
 }

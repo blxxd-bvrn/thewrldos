@@ -24,7 +24,9 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
 - **Sound:** drivers for Intel HD Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI
   (ES1370, ES1371/ES1373), Sound Blaster 16 and USB audio (class 1 and 2). A startup sound plays when
-  you log on and a shutdown sound plays before the computer turns off.
+  you log on and a shutdown sound plays before the computer turns off. The Sound page lists the
+  playback endpoints and every detected audio-class device with its driver state; **Scan again**
+  refreshes the list after plugging in a device.
 - **Graphics:** drivers for the Bochs/QEMU, VirtualBox and VMware display adapters, so the
   resolution can be changed at runtime (1024×768 up to 1920×1200 or more).
 - **Text:** scalable TrueType fonts (Liberation Sans and Mono, read from `C:\WRLD\Fonts`) with
@@ -48,7 +50,7 @@ from; open it in a browser to watch it live.
 | ![Shell script](docs/screenshots/shell-script.png) | ![Mounted .dmg disk image](docs/screenshots/dmg-mounted.png) |
 | ![Aero](docs/screenshots/aero.png) | ![Plex](docs/screenshots/plex.png) |
 | ![Dark mode](docs/screenshots/dark.png) | ![Explorer in dark mode](docs/screenshots/dark-explorer.png) |
-| ![Sound settings](docs/screenshots/sound.png) | ![Running at 1280x800](docs/screenshots/resolution-1280x800.png) |
+| ![Advanced appearance](docs/screenshots/advanced.png) | ![Sound settings](docs/screenshots/sound.png) |
 
 ### XplorerLite
 
@@ -694,6 +696,12 @@ device manager's job is to say what the computer has and which driver runs it.
     built-in apps (Explorer, Control Panel, Notepad, Task Manager) dark with light text. It
     keeps the selected style's renderer, so it works with Luna, Aero, Plex or Classic, and it is
     saved with your settings.
+  - **Advanced Appearance:** a page in Personalization with a per-role colour editor (window
+    face, background, text, hyperlinks, buttons, scrollbars, check/radio accent, menus, taskbar,
+    title bars and more) that previews changes live and can reset individual colours or all of
+    them.
+  - **Cursor sets:** drop folders of standard Windows `.cur` files into `C:\WRLD\Cursors` and
+    choose the set in Advanced Appearance. Missing roles fall back to the built-in cursors.
   - **Hue (0–359°), saturation and lightness** sliders recolour any style; they are saved with
     your settings.
 - **`.wrldstyle` format:** plain INI text.

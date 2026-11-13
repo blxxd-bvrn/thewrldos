@@ -219,11 +219,13 @@ void settings_load(void) {
     if (rs && video_can_set_mode()) { int rw = atoi(rs); const char *xx = strchr(rs, 'x'); int rh = xx ? atoi(xx + 1) : 0; if (rw && rh) gfx_set_resolution(rw, rh); }
     const char *th = settings_get("theme");
     dark_mode = !boot_safe_mode && geti("dark", dark_mode ? 1 : 0) != 0;
+    theme_overrides_load();
+    cursor_set_load(settings_get("cursor"));
     if (!boot_safe_mode && th) {
         int id = isdigit(th[0]) ? atoi(th) : style_find(th);    /* numbers: older wrld.ini */
         theme_sat = CLAMP(geti("saturation", 0), -100, 100); theme_light = CLAMP(geti("lightness", 0), -60, 60);
         if (id >= 0 && id < THEME_COUNT) theme_apply(id, geti("hue", 0));
-    }
+    } else if (!boot_safe_mode) theme_apply(theme_id, geti("hue", 0));
     wallpaper_fit = CLAMP(geti("wallpaper_fit", wallpaper_fit), 0, 2);
     sidebar_open = geti("sidebar", sidebar_open);
     sidebar_tiles = geti("side_tiles", sidebar_tiles);
@@ -250,6 +252,7 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", audio_volume); settings_set("volume", b);
     snprintf(b, sizeof b, "%d", system_sounds); settings_set("sounds", b);
     snprintf(b, sizeof b, "%d", dark_mode ? 1 : 0); settings_set("dark", b);
+    settings_set("cursor", cursor_set_active());
 }
 void settings_save(void) {
     capture();

@@ -116,14 +116,14 @@ bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi) {
     if (hot && u->wheel) { *v = CLAMP(*v - u->wheel * MAX(1, (hi - lo) / 20), lo, hi); changed = true; }
     canvas_t *c = w->surf;
     int cy = r.y + r.h / 2;
-    if (T.classic) { fill_rect(c, r.x, cy - 2, r.w, 4, WHITE); bevel_deep(c, r.x, cy - 2, r.w, 4, false); }
-    else { fill_rect(c, r.x, cy - 2, r.w, 4, HEX(0xF3F3EF)); draw_rect(c, r.x, cy - 2, r.w, 4, HEX(0x9D9C99)); }
-    for (int i = 0; i <= 10; i++) vline(c, r.x + 5 + (r.w - 10) * i / 10, r.y + r.h - 3, 3, HEX(0xA1A192));
+    if (T.classic) { fill_rect(c, r.x, cy - 2, r.w, 4, T.window_bg); bevel_deep(c, r.x, cy - 2, r.w, 4, false); }
+    else { fill_rect(c, r.x, cy - 2, r.w, 4, T.sb_track); draw_rect(c, r.x, cy - 2, r.w, 4, T.sb_border); }
+    for (int i = 0; i <= 10; i++) vline(c, r.x + 5 + (r.w - 10) * i / 10, r.y + r.h - 3, 3, T.gray_text);
     int tx = r.x + 5 + (r.w - 10) * (*v - lo) / MAX(1, hi - lo);
     if (T.classic) { fill_rect(c, tx - 5, r.y + 2, 11, r.h - 7, T.face); bevel_deep(c, tx - 5, r.y + 2, 11, r.h - 7, true); }
     else {
-        fill_round_rect(c, tx - 5, r.y + 2, 11, r.h - 7, 2, hot || u->active == id ? HEX(0xE5A03C) : HEX(0x3D8B3D));
-        gradient_round_rect(c, tx - 4, r.y + 3, 9, r.h - 9, 2, WHITE, HEX(0xE3E3DB));
+        fill_round_rect(c, tx - 5, r.y + 2, 11, r.h - 7, 2, hot || u->active == id ? HEX(0xE5A03C) : T.check);
+        gradient_round_rect(c, tx - 4, r.y + 3, 9, r.h - 9, 2, T.face_light, T.face);
     }
     return changed;
 }

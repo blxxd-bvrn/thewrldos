@@ -295,6 +295,7 @@ int pci_scan(pci_dev_t *out, int max) {
     memcpy(out, all, n * sizeof *out);
     return n;
 }
+void pci_rescan(void) { pci_ncache = -1; }
 /* a BAR's address (memory or I/O); 64-bit memory BARs above 4 GiB are refused */
 uintptr_t pci_bar(const pci_dev_t *p, int i, bool *is_io) {
     uint32_t v = pci_cfg_read(p->bus, p->dev, p->fn, 0x10 + i * 4);

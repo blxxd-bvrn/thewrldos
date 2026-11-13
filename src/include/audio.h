@@ -6,6 +6,7 @@
 typedef struct { int16_t *pcm; uint32_t frames; } sound_t;
 
 void audio_init(void);
+void audio_rescan(void);                        /* re-scan the bus / refresh the endpoint list */
 bool audio_present(void);
 const char *audio_device_name(void);
 const char *audio_controller_name(void);    /* HDA (virtual) when the kernel emulates one */

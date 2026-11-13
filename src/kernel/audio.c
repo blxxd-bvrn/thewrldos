@@ -1117,6 +1117,18 @@ void audio_diag(char *buf, int cap) {
              dev == DEV_HDA ? hda_diag : "", r0, r1, st, a, b, underruns, bad_positions, audio_volume, audio_muted ? " (muted)" : "");
 }
 bool audio_present(void) { return dev != DEV_NONE; }
+/* Refresh detection after a hot-plug or a user request.  A controller that
+ * was not present at boot needs a full driver init, which is only safe at
+ * startup; this rebuilds the endpoint list and lets the Sound page show what
+ * the bus scan found now. */
+void audio_rescan(void) {
+    pci_rescan();
+    if (dev) { eps_build(); return; }
+    /* Nothing was found at boot: free the mixer ring and probe again, so a
+     * card that was disabled or not ready then can still be picked up. */
+    if (ring && ring != (int16_t *)(uintptr_t)ISA_DMA_AREA) { kfree_aligned(ring); ring = NULL; }
+    audio_init();
+}
 const char *audio_device_name(void) { return neps ? eps[ep_sel].name : devname; }
 const char *audio_controller_name(void) {
     if (vhda.on) return "HDA (virtual)";

@@ -38,6 +38,8 @@ typedef struct {
     uint32_t face, face_dark, face_light, window_bg, text, gray_text;
     uint32_t select, select_text, hot, hot_text;
     uint32_t btn_border, btn_top, btn_bot, btn_hot_a, btn_hot_b, btn_focus;
+    uint32_t sb_track, sb_thumb_top, sb_thumb_bot, sb_border;   /* scrollbar */
+    uint32_t check;                                            /* check/radio accent */
     uint32_t pane_top, pane_bot, pane_head_top, pane_head_bot, pane_head_text, pane_body, pane_link;
     uint32_t link, link_head;
     uint32_t desktop_bg;
@@ -51,6 +53,17 @@ void theme_apply(int id, int hue);
 extern int theme_sat, theme_light;             /* -100..100 / -60..60, applied with the hue */
 void theme_set_tone(int sat, int light);
 void theme_compute(int id, int hue, theme_t *out);
+/* advanced per-role colour overrides */
+int theme_role_count(void);
+const char *theme_role_name(int i);
+uint32_t theme_role_color(int i);              /* 0 = automatic */
+bool theme_role_is_set(int i);
+uint32_t theme_role_effective(int i);          /* override or the current style colour */
+void theme_role_set(int i, uint32_t color);
+void theme_role_clear(int i);
+void theme_role_clear_all(void);
+void theme_overrides_load(void);
+void theme_overrides_save(void);
 
 /* decorated drawing helpers */
 void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool active, int flags, int hot_btn, int pressed_btn, int state);
