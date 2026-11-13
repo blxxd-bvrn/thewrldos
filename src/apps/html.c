@@ -178,8 +178,118 @@ static void css_sides(const char *v, int16_t out[4], uint8_t *set, uint8_t *auto
     for (int i = 0; i < 4; i++) { out[i] = (int16_t)vals[idx[i]]; if (autos) { if (aut[idx[i]]) *autos |= 1 << i; else *autos &= ~(1 << i); } }
     *set = 0xF;
 }
+/* ---- CSS custom properties ---- */
+static doc_t *var_doc;                        /* the document whose variables var() reads */
+static const char *var_lookup(const char *name, int nl) {
+    doc_t *d = var_doc;
+    if (!d) return NULL;
+    for (int i = d->nvars - 1; i >= 0; i--) if ((int)strlen(d->vnames[i]) == nl && !strncmp(d->vnames[i], name, nl)) return d->vvals[i];
+    return NULL;
+}
+static void var_set(doc_t *d, const char *name, int nl, const char *val, int vl, int prio) {
+    while (vl > 0 && isspace(val[vl - 1])) vl--;
+    while (vl > 0 && isspace(*val)) { val++; vl--; }
+    if (vl > 10 && !strncasecmp(val + vl - 10, "!important", 10)) { vl -= 10; while (vl > 0 && isspace(val[vl - 1])) vl--; }
+    for (int i = 0; i < d->nvars; i++) if ((int)strlen(d->vnames[i]) == nl && !strncmp(d->vnames[i], name, nl)) {
+        if (prio < d->vprio[i]) return;                  /* a component's value does not replace the page's */
+        d->vvals[i] = arena_strdup(&d->arena, val, vl); d->vprio[i] = (uint8_t)prio; return;
+    }
+    if (d->nvars == d->capvars) {
+        d->capvars = d->capvars ? d->capvars * 2 : 64;
+        d->vnames = krealloc(d->vnames, sizeof(char *) * d->capvars); d->vvals = krealloc(d->vvals, sizeof(char *) * d->capvars);
+        d->vprio = krealloc(d->vprio, d->capvars);
+    }
+    d->vnames[d->nvars] = arena_strdup(&d->arena, name, nl); d->vvals[d->nvars] = arena_strdup(&d->arena, val, vl); d->vprio[d->nvars] = (uint8_t)prio;
+    d->nvars++;
+}
+/* copy v to out with every var(--name[, fallback]) replaced; false if a variable is unknown and has no fallback */
+static bool subst_vars(const char *v, char *out, int cap, int depth) {
+    int o = 0; bool ok = true;
+    while (*v && o < cap - 1) {
+        if (strncmp(v, "var(", 4)) { out[o++] = *v++; continue; }
+        const char *p = v + 4; while (*p == ' ') p++;
+        const char *ne = p; while (*ne && *ne != ',' && *ne != ')' && *ne != ' ') ne++;
+        /* the matching ')' and the fallback after the first top-level comma */
+        const char *q = ne, *fb = NULL; int dep = 1;
+        while (*q && dep) { if (*q == '(') dep++; else if (*q == ')') { if (!--dep) break; } else if (*q == ',' && dep == 1 && !fb) fb = q + 1; q++; }
+        const char *val = var_lookup(p, (int)(ne - p));
+        char tmp[512];
+        if (val && depth < 8) { if (!subst_vars(val, tmp, sizeof tmp, depth + 1)) ok = false; }
+        else if (fb) { int fl = MIN((int)(q - fb), (int)sizeof tmp - 1); memcpy(tmp, fb, fl); tmp[fl] = 0; char t2[512]; if (!subst_vars(tmp, t2, sizeof t2, depth + 1)) ok = false; strlcpy(tmp, t2, sizeof tmp); }
+        else { tmp[0] = 0; ok = false; }
+        const char *t = tmp; while (*t == ' ') t++;
+        while (*t && o < cap - 1) out[o++] = *t++;
+        v = *q ? q + 1 : q;
+    }
+    out[o] = 0;
+    return ok;
+}
+/* calc(): the common forms, a length plus or minus a length, or a length times a number */
+static int css_calc(const char *v, int pct_base) {
+    const char *p = strchr(v, '('); if (!p) return 0;
+    p++;
+    int acc = 0, sign = 1; bool first = true;
+    while (*p && *p != ')') {
+        while (*p == ' ') p++;
+        if (*p == '+' && p[1] == ' ') { sign = 1; p++; continue; }
+        if (*p == '-' && p[1] == ' ') { sign = -1; p++; continue; }
+        if (*p == '*' || *p == '/') {
+            char op = *p++; while (*p == ' ') p++;
+            int whole = atoi(p), frac = 0; const char *dot = strchr(p, '.'); if (dot && dot < p + 8 && isdigit(dot[1])) frac = dot[1] - '0';
+            int x10 = whole * 10 + frac;
+            if (op == '*') acc = acc * x10 / 10; else if (x10) acc = acc * 10 / x10;
+            while (*p && *p != ' ' && *p != ')') p++;
+            continue;
+        }
+        bool pct = false; int whole = 0, frac = 0, fd = 0; bool neg = false;
+        if (*p == '-') { neg = true; p++; }
+        while (isdigit(*p)) whole = whole * 10 + (*p++ - '0');
+        if (*p == '.') { p++; while (isdigit(*p)) { if (fd < 2) { frac = frac * 10 + (*p - '0'); fd++; } p++; } }
+        while (fd < 2) { frac *= 10; fd++; }
+        int x100 = whole * 100 + frac, px;
+        if (!strncmp(p, "rem", 3) || !strncmp(p, "em", 2)) px = x100 * 16 / 100;
+        else if (*p == '%' || !strncmp(p, "vw", 2)) { px = pct_base * x100 / 10000; pct = true; }
+        else px = x100 / 100;
+        (void)pct;
+        if (neg) px = -px;
+        acc = first ? px : acc + sign * px;
+        first = false; sign = 1;
+        while (*p && *p != ' ' && *p != ')') p++;
+    }
+    return acc;
+}
+static int8_t parse_justify(const char *v) {
+    return !strncmp(v, "center", 6) ? FJ_CENTER : !strncmp(v, "flex-end", 8) || !strncmp(v, "end", 3) || !strncmp(v, "right", 5) ? FJ_END
+         : !strncmp(v, "space-between", 13) ? FJ_BETWEEN : !strncmp(v, "space-around", 12) ? FJ_AROUND : !strncmp(v, "space-evenly", 12) ? FJ_EVENLY : FJ_START;
+}
+static int8_t parse_align(const char *v) {
+    return !strncmp(v, "center", 6) ? FA_CENTER : !strncmp(v, "flex-end", 8) || !strncmp(v, "end", 3) || !strncmp(v, "self-end", 8) ? FA_END
+         : !strncmp(v, "flex-start", 10) || !strncmp(v, "start", 5) || !strncmp(v, "self-start", 10) || !strncmp(v, "baseline", 8) ? FA_START : FA_STRETCH;
+}
+/* grid-template-columns: a count of tracks, or repeat(auto-fill|auto-fit, minmax(N, 1fr)) */
+static void parse_grid_cols(const char *v, css_t *c) {
+    c->gcols = 0; c->gmin = 0;
+    if (!strncmp(v, "repeat(", 7)) {
+        const char *p = v + 7; while (*p == ' ') p++;
+        if (!strncmp(p, "auto-fill", 9) || !strncmp(p, "auto-fit", 8)) {
+            const char *m = strstr(p, "minmax("); const char *len = m ? m + 7 : strchr(p, ',') ? strchr(p, ',') + 1 : NULL;
+            if (len) { while (*len == ' ') len++; c->gmin = (int16_t)CLAMP(css_len(len, NULL, NULL), 20, 2000); }
+            if (!c->gmin) c->gmin = 200;
+        } else c->gcols = (int16_t)CLAMP(atoi(p), 1, 24);
+    } else {
+        int n = 0, dep = 0; bool in = false;
+        for (const char *p = v; *p && *p != '!'; p++) {
+            if (*p == '(') dep++; else if (*p == ')') dep--;
+            else if (*p == '[') { while (*p && *p != ']') p++; if (!*p) break; continue; }   /* [line-names] */
+            bool sp = *p == ' ' || *p == '\t';
+            if (!sp && !in && !dep) { n++; in = true; } else if (sp && !dep) in = false;
+        }
+        c->gcols = (int16_t)CLAMP(n, 1, 24);
+    }
+    c->set |= ST_FLEX; c->fset |= F_GCOLS;
+}
 static void css_decls(const char *s, int n, css_t *c) {
-    char buf[1024]; n = MIN(n, 1023); memcpy(buf, s, n); buf[n] = 0;
+    static char buf[8192]; n = MIN(n, (int)sizeof buf - 1); memcpy(buf, s, n); buf[n] = 0;
     for (char *d = strtok(buf, ";"); d; d = strtok(NULL, ";")) {
         char *colon = strchr(d, ':'); if (!colon) continue;
         *colon = 0; char *k = d, *v = colon + 1;
@@ -189,6 +299,18 @@ static void css_decls(const char *s, int n, css_t *c) {
         for (char *p = k; *p; p++) *p = tolower(*p);
         bool imp = strstr(v, "!important") != NULL;
         (void)imp;
+        if (k[0] == '-' && k[1] == '-') continue;                  /* custom properties: collected per sheet */
+        static char vbuf[1024];
+        if (strstr(v, "var(")) { if (!subst_vars(v, vbuf, sizeof vbuf, 0)) continue; v = vbuf; }
+        static char cbuf[32];
+        if (!strncmp(v, "calc(", 5) || !strncmp(v, "min(", 4) || !strncmp(v, "max(", 4) || !strncmp(v, "clamp(", 6)) {
+            /* lengths only: min/max/clamp take their first argument, calc is worked out */
+            if (v[0] == 'c' && v[1] == 'a') snprintf(cbuf, sizeof cbuf, "%dpx", css_calc(v, 800));
+            else if (v[1] == 'l') { const char *a = strchr(v, ','); snprintf(cbuf, sizeof cbuf, "%dpx", a ? css_len(a + 1, NULL, NULL) : 0); }
+            else snprintf(cbuf, sizeof cbuf, "%dpx", css_len(strchr(v, '(') + 1, NULL, NULL));
+            if (strchr(v, '%') && !strstr(v, "px") && !strstr(v, "em") && v[0] != 'c') snprintf(cbuf, sizeof cbuf, "%d%%", atoi(strchr(v, '(') + 1));
+            v = cbuf;
+        }
         if (!strcmp(k, "color")) { if (parse_color(v, &c->color)) c->set |= ST_COLOR; }
         else if (!strcmp(k, "background") || !strcmp(k, "background-image")) {
             if (!parse_gradient(v, c) && !strcmp(k, "background") && parse_color(v, &c->bg)) c->set |= ST_BG;
@@ -225,10 +347,59 @@ static void css_decls(const char *s, int n, css_t *c) {
             }
         }
         else if (!strcmp(k, "width")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && px > 0) { c->width = (int16_t)px; c->wpct = pc; c->set |= ST_WIDTH; } }
+        else if (!strcmp(k, "height")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && !pc && px > 0) { c->height = (int16_t)px; c->set |= ST_HEIGHT; } }
+        else if (!strcmp(k, "min-height")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && !pc && px > 0) { c->minh = (int16_t)px; c->set |= ST_HEIGHT; } }
         else if (!strcmp(k, "max-width")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && px > 0) { c->maxw = (int16_t)px; c->mpct = pc; c->set |= ST_MAXW; } }
         else if (!strcmp(k, "border-width")) { c->set |= ST_BORDER; c->border = (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 32); if (!c->border_color) c->border_color = BLACK; }
         else if (!strcmp(k, "border-color")) { uint32_t bc; if (parse_color(v, &bc)) { c->border_color = bc; c->set |= ST_BCOLOR; } }
-        else if (!strcmp(k, "display")) { c->set |= ST_DISPLAY; c->display = !strncmp(v, "none", 4) ? 0 : !strncmp(v, "inline", 6) ? 2 : 1; }
+        else if (!strcmp(k, "display")) {
+            c->set |= ST_DISPLAY;
+            c->display = !strncmp(v, "none", 4) ? DISP_NONE : strstr(v, "flex") ? DISP_FLEX : strstr(v, "grid") ? DISP_GRID
+                       : !strncmp(v, "inline-block", 12) || !strncmp(v, "inline-table", 12) ? DISP_BLOCK
+                       : !strncmp(v, "inline", 6) || !strncmp(v, "contents", 8) ? DISP_INLINE : DISP_BLOCK;
+            /* inline-block is laid out as a block (no floats or inline boxes yet) */
+        }
+        else if (!strcmp(k, "flex-direction")) { c->set |= ST_FLEX; c->fset |= F_DIR; c->fdir = (int8_t)((strstr(v, "column") ? 1 : 0) | (strstr(v, "reverse") ? 2 : 0)); }
+        else if (!strcmp(k, "flex-wrap")) { c->set |= ST_FLEX; c->fset |= F_WRAP; c->fwrap = !strncmp(v, "wrap", 4); }
+        else if (!strcmp(k, "flex-flow")) {
+            c->set |= ST_FLEX; c->fset |= F_DIR | F_WRAP;
+            c->fdir = (int8_t)((strstr(v, "column") ? 1 : 0) | (strstr(v, "reverse") && !strstr(v, "wrap-reverse") ? 2 : 0));
+            c->fwrap = strstr(v, "wrap") && !strstr(v, "nowrap");
+        }
+        else if (!strcmp(k, "justify-content")) { c->set |= ST_FLEX; c->fset |= F_JUST; c->fjust = parse_justify(v); }
+        else if (!strcmp(k, "align-items")) { c->set |= ST_FLEX; c->fset |= F_ALIGN; c->falign = parse_align(v); }
+        else if (!strcmp(k, "place-items")) { c->set |= ST_FLEX; c->fset |= F_ALIGN; c->falign = parse_align(v); }
+        else if (!strcmp(k, "align-self")) { c->set |= ST_FLEX; c->fset |= F_ASELF; c->aself = !strncmp(v, "auto", 4) ? -1 : parse_align(v); }
+        else if (!strcmp(k, "gap") || !strcmp(k, "grid-gap")) {
+            c->set |= ST_FLEX; c->fset |= F_GAP | F_RGAP;
+            c->rgap = (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 400);
+            const char *sp = strchr(v, ' '); c->gap = sp && sp[1] && sp[1] != '!' ? (int16_t)CLAMP(css_len(sp + 1, NULL, NULL), 0, 400) : c->rgap;
+        }
+        else if (!strcmp(k, "column-gap") || !strcmp(k, "grid-column-gap")) { c->set |= ST_FLEX; c->fset |= F_GAP; c->gap = (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 400); }
+        else if (!strcmp(k, "row-gap") || !strcmp(k, "grid-row-gap")) { c->set |= ST_FLEX; c->fset |= F_RGAP; c->rgap = (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 400); }
+        else if (!strcmp(k, "flex-grow")) { c->set |= ST_FLEX; c->fset |= F_GROW; c->grow = (int8_t)CLAMP(atoi(v), 0, 100); }
+        else if (!strcmp(k, "flex-shrink")) { c->set |= ST_FLEX; c->fset |= F_SHRINK; c->shrink = (int8_t)CLAMP(atoi(v), 0, 100); }
+        else if (!strcmp(k, "flex-basis")) { c->set |= ST_FLEX; c->fset |= F_BASIS; bool pc; c->basis = !strncmp(v, "auto", 4) || !strncmp(v, "content", 7) ? -1 : (int16_t)css_len(v, &pc, NULL); c->bpct = !strncmp(v, "auto", 4) ? false : pc; }
+        else if (!strcmp(k, "flex")) {
+            c->set |= ST_FLEX; c->fset |= F_GROW | F_SHRINK | F_BASIS; c->bpct = false;
+            if (!strncmp(v, "none", 4)) { c->grow = 0; c->shrink = 0; c->basis = -1; }
+            else if (!strncmp(v, "auto", 4)) { c->grow = 1; c->shrink = 1; c->basis = -1; }
+            else {
+                /* flex: <grow> [<shrink>] [<basis>]; a lone number means basis 0 */
+                const char *p = v; int nums = 0; c->grow = 0; c->shrink = 1; c->basis = 0;
+                while (*p && *p != '!') {
+                    while (*p == ' ') p++;
+                    if (!*p || *p == '!') break;
+                    const char *e = p; while (*e && *e != ' ') e++;
+                    bool unit = false; for (const char *q = p; q < e; q++) if (isalpha(*q) || *q == '%') unit = true;
+                    if (!unit && nums == 0) { c->grow = (int8_t)CLAMP(atoi(p), 0, 100); nums++; }
+                    else if (!unit && nums == 1) { c->shrink = (int8_t)CLAMP(atoi(p), 0, 100); nums++; }
+                    else { bool pc; c->basis = !strncmp(p, "auto", 4) ? -1 : (int16_t)css_len(p, &pc, NULL); c->bpct = pc && strncmp(p, "auto", 4); }
+                    p = e;
+                }
+            }
+        }
+        else if (!strcmp(k, "grid-template-columns")) parse_grid_cols(v, c);
         else if (!strcmp(k, "visibility")) { if (!strncmp(v, "hidden", 6)) { c->set |= ST_DISPLAY; c->display = 0; } }
         else if (!strcmp(k, "text-align")) { c->set |= ST_ALIGN; c->align = !strncmp(v, "center", 6) ? 1 : !strncmp(v, "right", 5) ? 2 : 0; }
         else if (!strcmp(k, "font-weight")) { c->set |= ST_BOLD; c->bold = !strncmp(v, "bold", 4) || atoi(v) >= 600; }
@@ -264,6 +435,22 @@ static void css_merge(css_t *dst, const css_t *src) {
     }
     if (src->set & ST_WIDTH) { dst->width = src->width; dst->wpct = src->wpct; }
     if (src->set & ST_MAXW) { dst->maxw = src->maxw; dst->mpct = src->mpct; }
+    if (src->set & ST_HEIGHT) { if (src->height) dst->height = src->height; if (src->minh) dst->minh = src->minh; }
+    if (src->set & ST_FLEX) {
+        uint16_t f = src->fset;
+        if (f & F_DIR) dst->fdir = src->fdir;
+        if (f & F_WRAP) dst->fwrap = src->fwrap;
+        if (f & F_JUST) dst->fjust = src->fjust;
+        if (f & F_ALIGN) dst->falign = src->falign;
+        if (f & F_ASELF) dst->aself = src->aself;
+        if (f & F_GAP) dst->gap = src->gap;
+        if (f & F_RGAP) dst->rgap = src->rgap;
+        if (f & F_GROW) dst->grow = src->grow;
+        if (f & F_SHRINK) dst->shrink = src->shrink;
+        if (f & F_BASIS) { dst->basis = src->basis; dst->bpct = src->bpct; }
+        if (f & F_GCOLS) { dst->gcols = src->gcols; dst->gmin = src->gmin; }
+        dst->fset |= f;
+    }
     dst->set |= src->set;
 }
 /* ---------------- tree building (Lexbor's HTML5 parser) ---------------- */
@@ -530,7 +717,24 @@ static int css_block_end(const char *s, int n, int i) {
     }
     return n;
 }
-static void parse_rules(doc_t *d, const char *s, int n, int sheet, int *rule_no, int level) {
+/* the custom properties in one rule body; :root, html and body set the page's values */
+static void collect_vars(doc_t *d, const char *sel, int sl, const char *b, int bl) {
+    int prio = 1;
+    for (int i = 0; i < sl; i++) if (!strncmp(sel + i, ":root", 5) || ((i == 0 || sel[i - 1] == ',' || sel[i - 1] == ' ') && (!strncmp(sel + i, "html", 4) || !strncmp(sel + i, "body", 4)) && (i + 4 >= sl || !isalnum(sel[i + 4]) )) ) { prio = 2; break; }
+    int i = 0;
+    while (i < bl) {
+        while (i < bl && (isspace(b[i]) || b[i] == ';')) i++;
+        int ks = i; while (i < bl && b[i] != ':' && b[i] != ';') i++;
+        if (i >= bl || b[i] != ':') { while (i < bl && b[i] != ';') i++; continue; }
+        int ke = i; while (ke > ks && isspace(b[ke - 1])) ke--;
+        int vs = ++i, dep = 0;
+        while (i < bl && (dep || b[i] != ';')) { if (b[i] == '(' || b[i] == '{' || b[i] == '[') dep++; else if ((b[i] == ')' || b[i] == '}' || b[i] == ']') && dep) dep--; i++; }
+        if (ke - ks > 2 && b[ks] == '-' && b[ks + 1] == '-') var_set(d, b + ks, ke - ks, b + vs, i - vs, prio);
+    }
+}
+static void parse_rules_mode(doc_t *d, const char *s, int n, int sheet, int *rule_no, int level, bool collect);
+static void parse_rules(doc_t *d, const char *s, int n, int sheet, int *rule_no, int level) { parse_rules_mode(d, s, n, sheet, rule_no, level, false); }
+static void parse_rules_mode(doc_t *d, const char *s, int n, int sheet, int *rule_no, int level, bool collect) {
     int i = 0;
     while (i < n) {
         while (i < n && (isspace(s[i]) || s[i] == ';')) i++;
@@ -548,24 +752,49 @@ static void parse_rules(doc_t *d, const char *s, int n, int sheet, int *rule_no,
             bool nest = false;
             if (kl == 5 && !strncasecmp(kw, "media", 5)) nest = media_ok(kw + 5, pre_end - (pre + 6));
             else if ((kl == 8 && !strncasecmp(kw, "supports", 8)) || (kl == 5 && !strncasecmp(kw, "layer", 5)) || (kl == 8 && !strncasecmp(kw, "document", 8))) nest = true;
-            if (nest && level < 8) parse_rules(d, s + body, body_end - body, sheet, rule_no, level + 1);
+            if (nest && level < 8) parse_rules_mode(d, s + body, body_end - body, sheet, rule_no, level + 1, collect);
             continue;                                    /* @font-face, @keyframes, @page... */
         }
+        int pl = pre_end - pre; while (pl > 0 && isspace(s[pre + pl - 1])) pl--;
+        if (collect) { collect_vars(d, s + pre, pl, s + body, body_end - body); continue; }
         css_t c = { 0 };
+        var_doc = d;
         css_decls(s + body, body_end - body, &c);
         if (!c.set) continue;
-        int pl = pre_end - pre; while (pl > 0 && isspace(s[pre + pl - 1])) pl--;
         addctx_t a = { d, c, ((uint32_t)sheet << 20) | (uint32_t)MIN(*rule_no, 0xFFFFF) };
         (*rule_no)++;
         if (!d->selpool) d->selpool = lxg_pool_new();
         lxg_selectors(d->selpool, s + pre, pl, add_rule, &a);
     }
 }
+static void store_sheet(doc_t *d, const char *s, int n, int sheet) {
+    if (d->nsheet_text == d->capsheet_text) { d->capsheet_text = d->capsheet_text ? d->capsheet_text * 2 : 8; d->sheets = krealloc(d->sheets, sizeof *d->sheets * d->capsheet_text); }
+    d->sheets[d->nsheet_text].text = arena_strdup(&d->arena, s, n);
+    d->sheets[d->nsheet_text].len = n; d->sheets[d->nsheet_text].sheet = sheet;
+    d->nsheet_text++;
+    int rn = 0;
+    parse_rules_mode(d, s, n, sheet, &rn, 0, true);      /* its variables first, so the rules can use them */
+}
 static void parse_stylesheet(doc_t *d, const char *s, int n, int sheet) {
+    store_sheet(d, s, n, sheet);
     int rule_no = 0;
     parse_rules(d, s, n, sheet, &rule_no, 0);
 }
-void html_add_stylesheet(doc_t *d, const char *css, uint32_t len, int sheet) { parse_stylesheet(d, css, len, sheet); }
+/* a linked sheet arrived: its variables may be used by sheets parsed before it, so every
+ * sheet's rules are parsed again, in document order */
+void html_add_stylesheet(doc_t *d, const char *css, uint32_t len, int sheet) {
+    store_sheet(d, css, (int)len, sheet);
+    for (int i = 0; i < CSS_BUCKETS; i++) { for (css_bucket_t *b = d->buckets[i]; b; b = b->next) kfree(b->idx); d->buckets[i] = NULL; }
+    d->nrules = 0;
+    if (d->selpool) { lxg_pool_free(d->selpool); d->selpool = NULL; }
+    /* sort by sheet number (insertion sort: a page has few sheets), then parse */
+    for (int i = 1; i < d->nsheet_text; i++) {
+        typeof(d->sheets[0]) t = d->sheets[i]; int j = i - 1;
+        while (j >= 0 && d->sheets[j].sheet > t.sheet) { d->sheets[j + 1] = d->sheets[j]; j--; }
+        d->sheets[j + 1] = t;
+    }
+    for (int i = 0; i < d->nsheet_text; i++) { int rn = 0; parse_rules(d, d->sheets[i].text, d->sheets[i].len, d->sheets[i].sheet, &rn, 0); }
+}
 
 /* the matcher's view of the tree: the root stands in for <body> */
 static void *tr_parent(void *n) { node_t *p = ((node_t *)n)->parent; return p; }
@@ -623,6 +852,7 @@ static css_t sheet_style(doc_t *d, node_t *n) {
     return c;
 }
 static void style_node(doc_t *d, node_t *n) {
+    var_doc = d;
     css_t c = sheet_style(d, n);
     const char *st = node_attr(n, "style");
     if (st) { css_t in = { 0 }; css_decls(st, strlen(st), &in); css_merge(&c, &in); }
@@ -736,6 +966,7 @@ void doc_free(doc_t *d) {
     if (!d) return;
     for (int i = 0; i < CSS_BUCKETS; i++) for (css_bucket_t *b = d->buckets[i]; b; b = b->next) kfree(b->idx);
     kfree(d->rules);
+    kfree(d->sheets); kfree(d->vnames); kfree(d->vvals); kfree(d->vprio);
     lxg_pool_free(d->selpool);
     arena_free(&d->arena); kfree(d);
 }

@@ -231,7 +231,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **The WRLD Browser** (Start menu > Internet, or the globe on Quick Launch):
   - Tabs: Ctrl+T opens one, Ctrl+W closes it, Ctrl+Tab and Ctrl+1..9 switch, and a middle-click
     opens a link in a new tab. Ctrl+L selects the address bar.
-  - Try `C:\Samples\CSS demo.html` for boxes, margins and a linked style sheet.
+  - Try `C:\Samples\CSS demo.html` for boxes, margins and a linked style sheet, and
+    `C:\Samples\Modern layout.html` for flexbox, grid and CSS variables.
   - It runs **JavaScript** (QuickJS) and has a built-in **ad blocker**. Try
     `C:\Samples\JavaScript demo.html` (linked from the home page).
   - The home page links to sites that work well, such as Wikipedia, Hacker News, CNN Lite and
@@ -566,6 +567,16 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **CSS boxes:** `margin` (including `auto` to centre a box), `padding`, `border` /
   `border-width` / `border-color`, `width` and `max-width` in px, em, pt or %, on blocks and on
   `<body>`; borders without a background are drawn as outlines.
+- **Flexbox and grid:** `display: flex` with `flex-direction` (and `-reverse`), `flex-wrap`,
+  `justify-content`, `align-items`/`align-self`, `gap`, and `flex`/`flex-grow`/`flex-shrink`/
+  `flex-basis`; `display: grid` with `grid-template-columns` (a track count, `repeat(N, ...)` or
+  `repeat(auto-fill, minmax(...))`). Items are made blocks, as in the specification. Nested
+  containers are measured with a depth guard, so deep component trees stay fast.
+- **CSS variables and maths:** `--name: value` custom properties with `var(--name, fallback)`
+  (values set on `:root`, `html` or `body` win, as on real sites; linked sheets are parsed again
+  so their variables reach earlier sheets), and `calc()`, `min()`, `max()` and `clamp()` for
+  lengths. `height`/`min-height`, CSS `width`/`max-width` on images, and `text-decoration: none`
+  on links.
 - **Linked style sheets:** `<link rel="stylesheet">` files are fetched (HTTP, HTTPS or `file:`)
   in document order before the first layout, filtered by the ad blocker, and cascaded with the
   page's `<style>` sheets.
@@ -879,7 +890,7 @@ used to test every screen above, including a full install from a blank disk.
     Devices (disks included) can be plugged in and
     removed while the system runs.
   - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
-    shadows or canvas, and CSS layout is block boxes and tables (no floats, flexbox or grid).
+    shadows or canvas, and CSS layout is block boxes, flexbox, simple grids and tables (no floats, positioning or inline boxes with their own backgrounds).
   - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.

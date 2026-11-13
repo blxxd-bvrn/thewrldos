@@ -170,15 +170,17 @@ static void apply_css_style(node_t *n, sty_t *s) {
     if (n->css.set & ST_COLOR) s->color = n->css.color;
     if (n->css.set & ST_BOLD) s->bold = n->css.bold;
     if (n->css.set & ST_ITALIC) s->italic = n->css.italic;
-    if (n->css.set & ST_UNDER) s->under = n->css.under || s->link >= 0;
+    if (n->css.set & ST_UNDER) s->under = n->css.under;            /* text-decoration: none works on links too */
     if (n->css.set & ST_SIZE) s->size = n->css.size;
 }
 
+static node_t *blockify;                     /* a flex or grid item: laid out as a block whatever its tag */
 static bool is_block(node_t *n) {
+    if (n == blockify) return true;
     static const char *b[] = { "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "dl", "dt", "dd", "blockquote", "pre", "table",
         "form", "center", "header", "footer", "nav", "section", "article", "main", "aside", "figure", "figcaption", "address", "fieldset", "legend",
         "hr", "details", "summary", "noscript", "caption", "menu", "dir", "listing", "xmp", "hgroup", "search" };
-    if (n->css.set & ST_DISPLAY) return n->css.display == 1;
+    if (n->css.set & ST_DISPLAY) return n->css.display == DISP_BLOCK || n->css.display == DISP_FLEX || n->css.display == DISP_GRID;
     for (unsigned i = 0; i < ARRAY_LEN(b); i++) if (!strcmp(n->tag, b[i])) return true;
     return false;
 }
@@ -192,14 +194,44 @@ static int text_content(node_t *n, char *buf, int cap, int len) {
 
 /* tables: two measuring passes (min/max content width) per cell, then placement */
 typedef struct { node_t *n; int span, minw, maxw; } cell_t;
+static int measuring;                        /* > 0 while laying out only to measure */
 static void measure(lay_t *L, node_t *cell, sty_t *s, int width, int *out_w) {
     page_t *p = L->pg;
     int save_items = p->nitems, save_links = p->nlinks;
     lay_t M = { p, 0, width, 0, 0, p->nitems, 0, 0, 0, 0, 0, false };
+    measuring++;
     layout_children(&M, cell, s);
     newline(&M, false, FONT_WEB);
+    measuring--;
     *out_w = M.maxx;
     p->nitems = save_items; p->nlinks = save_links;
+}
+/* the width a node wants when laid out alone at `width` (its own box included) */
+static void layout_node(lay_t *L, node_t *n, sty_t *parent);
+static int measure_node(lay_t *L, node_t *n, sty_t *s, int width) {
+    page_t *p = L->pg;
+    int save_items = p->nitems, save_links = p->nlinks, save_anchors = p->nanchors;
+    lay_t M = { p, 0, width, 0, 0, p->nitems, 0, 0, 0, 0, 0, false };
+    measuring++;
+    node_t *ob = blockify; blockify = n->type ? NULL : n;   /* measured as it will be placed: a flex item is a block */
+    layout_node(&M, n, s);
+    blockify = ob;
+    newline(&M, false, FONT_WEB);
+    measuring--;
+    int w = M.maxx;
+    if (!n->type) {                                   /* the right-hand side of its box */
+        const css_t *c = &n->css;
+        if (c->pset & 2) w += c->pad[1];
+        if ((c->set & ST_BORDER)) w += c->border;
+        if ((c->mset & 2) && !(c->mauto & 2)) w += MAX(0, c->m[1]);
+        if ((c->set & ST_WIDTH) && !c->wpct) {
+            int ww = c->width + ((c->pset & 8) ? c->pad[3] : 0) + ((c->pset & 2) ? c->pad[1] : 0) + 2 * ((c->set & ST_BORDER) ? c->border : 0);
+            if (!(c->set & ST_MAXW) || c->mpct || ww <= c->maxw) w = ww;
+        }
+        /* images and controls report their own size through maxx already */
+    }
+    p->nitems = save_items; p->nlinks = save_links; p->nanchors = save_anchors;
+    return MIN(w + 1, width);                         /* + 1: placing the same text at exactly this width must not wrap */
 }
 static int attr_int(node_t *n, const char *a, int def) { const char *v = node_attr(n, a); return v && isdigit(*v) ? atoi(v) : def; }
 static bool attr_pct(node_t *n, const char *a, int *pct) { const char *v = node_attr(n, a); if (v && strchr(v, '%')) { *pct = atoi(v); return true; } return false; }
@@ -346,6 +378,7 @@ static void layout_image(lay_t *L, node_t *n, sty_t *s) {
     pimg_t *im = &p->imgs[n->aux - 1];
     int aw = attr_int(n, "width", 0), ah = attr_int(n, "height", 0), w, h;
     const char *ws = node_attr(n, "width"); if (ws && strchr(ws, '%')) aw = L->w * atoi(ws) / 100;
+    if (n->css.set & ST_WIDTH) { aw = n->css.wpct ? L->w * n->css.width / 100 : n->css.width; ah = 0; }
     if (im->state == 1) {
         int iw = im->img->w, ih = im->img->h;
         if (aw && ah) { w = aw; h = ah; } else if (aw) { w = aw; h = ih * aw / MAX(1, iw); } else if (ah) { h = ah; w = iw * ah / MAX(1, ih); } else { w = iw; h = ih; }
@@ -353,6 +386,7 @@ static void layout_image(lay_t *L, node_t *n, sty_t *s) {
     else if (im->state == 2 && im->alt && im->alt[0]) { w = MIN(text_width(FONT_WEB_SMALL, im->alt) + 24, L->w); h = 20; }
     else if (im->state == 2) return;
     else { w = aw ? aw : 20; h = ah ? ah : 20; }
+    if (n->css.set & ST_MAXW) { int cap = n->css.mpct ? L->w * n->css.maxw / 100 : n->css.maxw; if (w > cap) { h = h * cap / MAX(1, w); w = cap; } }
     if (w > L->w) { h = h * L->w / MAX(1, w); w = L->w; }
     if (w <= 0 || h <= 0) return;
     item_t *it = add_item(p, IT_IMG);
@@ -378,6 +412,168 @@ static void layout_control(lay_t *L, node_t *n, sty_t *s) {
     L->pending_space = true;
 }
 static void layout_children(lay_t *L, node_t *n, sty_t *s) { for (node_t *c = n->first; c; c = c->next) layout_node(L, c, s); }
+
+/* ---------------- flexbox and grid ----------------
+ * Items are laid out one by one in a sub-layout of their own width, like table cells.
+ * Rows: widths from flex-basis, width or the content's own width; free space goes to
+ * flex-grow, overflow is taken back by flex-shrink (never below the content's minimum),
+ * lines wrap with flex-wrap; then justify-content and align-items place them.
+ * Columns: items stacked with the gap, aligned across. Grid: equal columns. */
+static bool flex_item_node(node_t *c) {
+    if (c->type == 1) { for (const char *t = c->text; t && *t; t++) if (!isspace((uint8_t)*t)) return true; return false; }
+    if ((c->css.set & ST_DISPLAY) && c->css.display == DISP_NONE) return false;
+    static const char *skip[] = { "script", "style", "template", "head", "datalist", "map" };
+    for (unsigned i = 0; i < ARRAY_LEN(skip); i++) if (!strcmp(c->tag, skip[i])) return false;
+    return true;
+}
+/* lay item n out at (x, y) in width w; returns its height; items[] start/end are recorded */
+static int flex_place(lay_t *L, node_t *n, sty_t *s, int x, int y, int w, int *start, int *end, int *maxx) {
+    page_t *p = L->pg;
+    *start = p->nitems;
+    lay_t C = { p, x, MAX(1, w), y, x, p->nitems, 0, 0, 0, 0, 0, false };
+    C.align = L->align;
+    node_t *ob = blockify; blockify = n->type ? NULL : n;
+    layout_node(&C, n, s);
+    blockify = ob;
+    newline(&C, false, FONT_WEB);
+    *end = p->nitems;
+    if (maxx) *maxx = C.maxx;
+    return C.y - y;
+}
+static void shift_items(page_t *p, int a, int b, int dx, int dy) { for (int i = a; i < b; i++) { p->items[i].x += dx; p->items[i].y += dy; } }
+/* stretch: the item's own background box takes the line's height */
+static void stretch_item(page_t *p, node_t *n, int a, int b, int line_bottom) {
+    if (n->type) return;
+    int mb = (n->css.mset & 4) ? MAX(0, n->css.m[2]) : 0;
+    for (int i = a; i < b; i++) if (p->items[i].kind == IT_RECT && p->items[i].node == n) { int h = line_bottom - mb - p->items[i].y; if (h > p->items[i].h) p->items[i].h = h; break; }
+}
+static void layout_flex(lay_t *L, node_t *box, sty_t *s) {
+    page_t *p = L->pg;
+    const css_t *fc = &box->css;
+    bool grid = fc->display == DISP_GRID;
+    newline(L, false, pick_font(s));
+    /* per call, on the heap and sized to the container: flex containers nest (a grid inside a
+     * flex row inside...), and a list can hold thousands of items */
+    int n = 0;
+    for (node_t *c = box->first; c; c = c->next) if (flex_item_node(c)) n++;
+    if (!n) return;
+    node_t **items = kmalloc(sizeof(node_t *) * n);
+    int *fw = kmalloc(sizeof(int) * n * 8);
+    if (!items || !fw) { kfree(items); kfree(fw); layout_children(L, box, s); return; }
+    n = 0;
+    for (node_t *c = box->first; c; c = c->next) if (flex_item_node(c)) items[n++] = c;
+    int W = L->w, x0 = L->x0, y = L->y;
+    int gap = (fc->fset & F_GAP) ? fc->gap : 0, rgap = (fc->fset & F_RGAP) ? fc->rgap : 0;
+    int align = (fc->fset & F_ALIGN) ? fc->falign : FA_STRETCH, just = (fc->fset & F_JUST) ? fc->fjust : FJ_START;
+    bool column = !grid && (fc->fset & F_DIR) && (fc->fdir & 1), reverse = !grid && (fc->fset & F_DIR) && (fc->fdir & 2);
+    if (reverse && n > 1) for (int i = 0; i < n / 2; i++) { node_t *t = items[i]; items[i] = items[n - 1 - i]; items[n - 1 - i] = t; }
+    int maxx = x0;
+    int *st = fw, *en = fw + n, *hh = fw + 2 * n, *ww = fw + 3 * n;
+
+    if (column) {
+        for (int i = 0; i < n; i++) {
+            int a = align, iw = W, ix = x0;
+            if (!items[i]->type && (items[i]->css.fset & F_ASELF) && items[i]->css.aself >= 0) a = items[i]->css.aself;
+            if (a != FA_STRETCH) { iw = measure_node(L, items[i], s, W); ix = x0 + (a == FA_CENTER ? (W - iw) / 2 : a == FA_END ? W - iw : 0); }
+            int mx; int h = flex_place(L, items[i], s, ix, y, iw, &st[i], &en[i], &mx);
+            maxx = MAX(maxx, mx);
+            y += h + (i + 1 < n ? rgap : 0);
+        }
+    } else if (measuring > 1) {
+        /* inside a measurement: one pass, items side by side at their content width (no
+         * re-measuring, so nested flex containers stay linear) */
+        int x = x0, lineh = 0;
+        for (int i = 0; i < n; i++) {
+            int mx; int h = flex_place(L, items[i], s, x, y, 100000, &st[i], &en[i], &mx);
+            int w = MAX(0, mx - x);
+            if (fc->fwrap && x > x0 && x + w > x0 + W) { shift_items(p, st[i], en[i], x0 - x, lineh + rgap); y += lineh + rgap; lineh = 0; x = x0; }
+            lineh = MAX(lineh, h); x += w + gap; maxx = MAX(maxx, x - gap);
+        }
+        y += lineh;
+    } else {
+        /* base sizes */
+        int *base = fw + 4 * n, *minw = fw + 5 * n, *grow = fw + 6 * n, *shrink = fw + 7 * n;
+        int ncols = 0;
+        if (grid) {
+            ncols = (fc->fset & F_GCOLS) ? (fc->gcols ? fc->gcols : MAX(1, (W + gap) / MAX(1, fc->gmin + gap))) : 1;
+            ncols = CLAMP(ncols, 1, 24);
+        }
+        for (int i = 0; i < n; i++) {
+            node_t *it = items[i];
+            const css_t *c = it->type ? NULL : &it->css;
+            grow[i] = c && (c->fset & F_GROW) ? c->grow : 0;
+            shrink[i] = c && (c->fset & F_SHRINK) ? c->shrink : 1;
+            if (grid) { base[i] = (W - gap * (ncols - 1)) / ncols; minw[i] = 0; continue; }
+            if (c && (c->fset & F_BASIS) && c->basis >= 0) base[i] = c->bpct ? W * c->basis / 100 : c->basis;
+            else if (c && (c->set & ST_WIDTH)) base[i] = c->wpct ? W * c->width / 100 : measure_node(L, it, s, W);
+            else base[i] = measure_node(L, it, s, W);
+            if (c && (c->set & ST_MAXW)) base[i] = MIN(base[i], c->mpct ? W * c->maxw / 100 : c->maxw);
+            base[i] = MIN(base[i], W);
+            minw[i] = shrink[i] ? measure_node(L, it, s, 1) : base[i];
+            minw[i] = MIN(minw[i], base[i]);
+        }
+        /* lines */
+        int i0 = 0;
+        while (i0 < n) {
+            int i1 = i0, used = 0;
+            if (grid) i1 = MIN(n, i0 + ncols);
+            else if (fc->fwrap) { while (i1 < n && (i1 == i0 || used + gap + base[i1] <= W)) { used += (i1 > i0 ? gap : 0) + base[i1]; i1++; } }
+            else i1 = n;
+            if (i1 == i0) i1 = i0 + 1;
+            int cnt = i1 - i0, sum = 0, gsum = 0;
+            for (int i = i0; i < i1; i++) { ww[i] = base[i]; sum += base[i]; gsum += grow[i]; }
+            int free = W - sum - gap * (cnt - 1);
+            if (!grid && free > 0 && gsum) {
+                int left = free;
+                for (int i = i0; i < i1; i++) { int add = (int)((int64_t)free * grow[i] / gsum); ww[i] += add; left -= add; }
+                for (int i = i1 - 1; i >= i0 && left > 0; i--) if (grow[i]) { ww[i] += left; left = 0; }
+                free = 0;
+            } else if (!grid && free < 0) {
+                for (int pass = 0; pass < 4 && free < 0; pass++) {     /* shrink, respecting minimums */
+                    int64_t wsum = 0;
+                    for (int i = i0; i < i1; i++) if (ww[i] > minw[i]) wsum += (int64_t)ww[i] * shrink[i];
+                    if (!wsum) break;
+                    int need = -free;
+                    for (int i = i0; i < i1; i++) if (ww[i] > minw[i]) {
+                        int take = (int)((int64_t)need * ww[i] * shrink[i] / wsum + 1);
+                        take = MIN(take, ww[i] - minw[i]);
+                        ww[i] -= take; free += take;
+                    }
+                }
+                if (free < 0) free = 0;                                /* still too wide: overflow */
+            }
+            if (free < 0) free = 0;
+            /* justify-content */
+            int x = x0, between = gap;
+            if (!grid && free > 0) {
+                if (just == FJ_CENTER) x += free / 2;
+                else if (just == FJ_END) x += free;
+                else if (just == FJ_BETWEEN && cnt > 1) between = gap + free / (cnt - 1);
+                else if (just == FJ_AROUND) { between = gap + free / cnt; x += free / cnt / 2; }
+                else if (just == FJ_EVENLY) { between = gap + free / (cnt + 1); x += free / (cnt + 1); }
+            }
+            int lineh = 0;
+            for (int i = i0; i < i1; i++) {
+                int mx; hh[i] = flex_place(L, items[i], s, x, y, ww[i], &st[i], &en[i], &mx);
+                lineh = MAX(lineh, hh[i]);
+                x += ww[i] + between;
+                maxx = MAX(maxx, x - between);
+            }
+            for (int i = i0; i < i1; i++) {
+                int a = align;
+                if (!items[i]->type && (items[i]->css.fset & F_ASELF) && items[i]->css.aself >= 0) a = items[i]->css.aself;
+                if (a == FA_CENTER) shift_items(p, st[i], en[i], 0, (lineh - hh[i]) / 2);
+                else if (a == FA_END) shift_items(p, st[i], en[i], 0, lineh - hh[i]);
+                else if (a == FA_STRETCH) stretch_item(p, items[i], st[i], en[i], y + lineh);
+            }
+            y += lineh + (i1 < n ? rgap : 0);
+            i0 = i1;
+        }
+    }
+    kfree(fw); kfree(items);
+    if (maxx > L->maxx) L->maxx = maxx;
+    L->y = y; L->trail = 0; L->cx = L->x0; L->line_start = p->nitems; L->line_h = 0; L->line_asc = 0;
+}
 static int list_counter;
 static void layout_node_el(lay_t *L, node_t *n, sty_t *parent);
 static void layout_node(lay_t *L, node_t *n, sty_t *parent) {
@@ -499,8 +695,13 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
         if (font_ascent(f) > L->line_asc) L->line_asc = font_ascent(f);
     }
     if (bw + pt) { L->y += bw + pt; L->trail = pt ? 0 : L->trail; }
-    layout_children(L, n, &s);
+    if ((cs->set & ST_DISPLAY) && (cs->display == DISP_FLEX || cs->display == DISP_GRID)) layout_flex(L, n, &s);
+    else layout_children(L, n, &s);
     newline(L, false, pick_font(&s));
+    if (cs->set & ST_HEIGHT) {                         /* height / min-height: the content box at least this tall */
+        int want = MAX(cs->height, cs->minh), top_y = y0 + bw + pt;
+        if (L->y < top_y + want) { L->y = top_y + want; L->trail = 0; }
+    }
     if (bw + pb) { L->y += bw + pb; L->trail = 0; }
     if (!strcmp(t, "li") && L->line_start == p->nitems && p->nitems && p->items[p->nitems - 1].kind == IT_BULLET) { /* empty item */ }
     if (bg_item >= 0) p->items[bg_item].h = L->y - y0;
@@ -704,6 +905,7 @@ static const char *home_html =
     "<div class=\"card\"><h3>On this computer</h3>"
     "<a href=\"file:///C:/Samples/Welcome.html\">Welcome page</a> - what the browser can show<br>"
     "<a href=\"file:///C:/Samples/CSS%20demo.html\">CSS demo</a> - boxes, margins and a linked style sheet<br>"
+    "<a href=\"file:///C:/Samples/Modern%20layout.html\">Modern layout</a> - flexbox, grid and CSS variables<br>"
     "<a href=\"file:///C:/Samples/JavaScript%20demo.html\">JavaScript demo</a> - scripts, events and timers<br>"
     "<a href=\"file:///C:/\">Browse drive C:</a></div>"
     "<div class=\"card\"><h3>What's new</h3>Tabs (middle-click a link to open it in one), a new toolbar and bookmarks bar, "

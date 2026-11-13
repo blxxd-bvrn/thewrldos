@@ -28,12 +28,37 @@ void arena_free(arena_t *a);
 #define ST_WIDTH    0x2000
 #define ST_MAXW     0x4000
 #define ST_BCOLOR   0x8000    /* border-color on its own */
+#define ST_HEIGHT   0x20000   /* height / min-height (px) */
+#define ST_FLEX     0x10000   /* flexbox / grid properties: which ones are in fset */
+/* fset bits */
+#define F_DIR 0x01
+#define F_WRAP 0x02
+#define F_JUST 0x04
+#define F_ALIGN 0x08
+#define F_GAP 0x10
+#define F_GROW 0x20
+#define F_SHRINK 0x40
+#define F_BASIS 0x80
+#define F_GCOLS 0x100
+#define F_RGAP 0x200
+#define F_ASELF 0x400
+/* display values */
+enum { DISP_NONE, DISP_BLOCK, DISP_INLINE, DISP_FLEX, DISP_GRID };
+enum { FJ_START, FJ_CENTER, FJ_END, FJ_BETWEEN, FJ_AROUND, FJ_EVENLY };
+enum { FA_STRETCH, FA_START, FA_CENTER, FA_END };
 typedef struct { uint32_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 block, 2 inline */ int8_t align; bool bold, italic, under; int8_t size;
                  int16_t radius; uint32_t bg2; int8_t grad, grad_dir; int16_t border; uint32_t border_color;
                  int16_t m[4], pad[4];        /* margin and padding: top, right, bottom, left (px) */
                  uint8_t mset, pset, mauto;   /* bit per side set; mauto: bit 1 right, bit 3 left are "auto" */
                  int16_t width, maxw;         /* px, or percent of the container when wpct/mpct */
-                 bool wpct, mpct; } css_t;
+                 bool wpct, mpct;
+                 /* flexbox and grid */
+                 uint16_t fset;
+                 int8_t fdir, fwrap, fjust, falign, aself, grow, shrink;   /* fdir: 0 row, 1 column (+2 reversed) */
+                 int16_t gap, rgap, basis;    /* basis: px, -1 auto */
+                 int16_t gcols, gmin;         /* grid: column count, or the minimum track width of repeat(auto-fill, minmax(gmin, 1fr)) */
+                 bool bpct;
+                 int16_t height, minh; } css_t;
 
 typedef struct node {
     uint8_t type;                 /* 0 element, 1 text */
@@ -62,6 +87,10 @@ typedef struct {
     void *selpool;
     int nsheets;                  /* <style> and <link> sheets seen, in document order */
     struct { char *href; int sheet; } links[MAX_LINKED_SHEETS]; int nlinks;
+    /* every sheet's text, so the rules can be parsed again when a linked sheet arrives */
+    struct { char *text; int len, sheet; } *sheets; int nsheet_text, capsheet_text;
+    /* CSS custom properties (--name: value), document-wide */
+    char **vnames, **vvals; uint8_t *vprio; int nvars, capvars;
 } doc_t;
 
 doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char *url);
