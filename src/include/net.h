@@ -55,6 +55,10 @@ bool fw_allow_port(uint16_t p);
 void fw_clear_ports(void);
 int fw_port_count(void);
 uint16_t fw_port_at(int i);
+bool fw_remove_port(uint16_t p);
+typedef struct { uint32_t when, src; uint16_t port; uint8_t proto; } fw_event_t;
+int fw_log_count(void);
+const fw_event_t *fw_log_at(int i);             /* 0 = the most recent blocked attempt */
 uint16_t ip_checksum(const void *data, uint32_t len, uint32_t initial);
 int icmp_ping(uint32_t dst, uint16_t seq, uint32_t timeout_ms);   /* round-trip ms, or -1 */
 typedef void (*udp_handler_t)(uint32_t src, uint16_t sport, const uint8_t *data, uint32_t len, void *ctx);

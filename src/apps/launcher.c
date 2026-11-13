@@ -17,7 +17,7 @@ const app_info_t app_table[] = {
     { "snake", "Snake", "A small arcade game", ICON_GAME },
     { "minesweeper", "Minesweeper", "Clear the minefield", ICON_GAME },
     { "pong", "Pong", "Two-paddle arcade game", ICON_GAME },
-    { "security", "Security Center", "Firewall, password and shell status", ICON_CP_SYSTEM },
+    { "security", "WRLD Security Center", "Firewall, password, web protection and system health", ICON_CP_SYSTEM },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
     { "setup", "Install " OS_NAME, "Install to a hard disk", ICON_SETUP },

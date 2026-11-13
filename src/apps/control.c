@@ -577,7 +577,7 @@ static void page_admin(window_t *w, cp_t *c, int ox, int oy) {
         { "Programs and Features", "Installed and built-in programs", ICON_CP_PROGRAMS, 6 },
         { "Command Prompt", "A shell with administration commands", ICON_TERMINAL, 7 },
         { "Restart Shell Manager", "Recover the desktop, taskbar and window manager", ICON_RESTART, 8 },
-        { "Security Center", "Firewall, password and shell status", ICON_CP_SYSTEM, 9 },
+        { "WRLD Security Center", "Firewall, password, web protection and system health", ICON_CP_SYSTEM, 9 },
     };
     int act = 0, y = oy + 72;
     for (unsigned i = 0; i < ARRAY_LEN(tools); i++) {

@@ -10,6 +10,7 @@
 #include "browser.h"
 
 bool adblock_enabled = true;
+uint32_t adblock_total;                       /* requests refused since start-up */
 
 /* matched against the end of the host name: "doubleclick.net" also blocks
  * "ad.doubleclick.net" but not "notdoubleclick.net" */
@@ -124,14 +125,14 @@ bool adblock_blocks(const char *url, const char *page_url) {
     load_user_list();
     char h[256]; host_of(url, h, sizeof h);
     if (!h[0]) return false;
-    for (unsigned i = 0; i < ARRAY_LEN(builtin_hosts); i++) if (host_matches(h, builtin_hosts[i])) return true;
-    for (int i = 0; i < n_hosts; i++) if (host_matches(h, u_hosts[i])) return true;
+    for (unsigned i = 0; i < ARRAY_LEN(builtin_hosts); i++) if (host_matches(h, builtin_hosts[i])) { adblock_total++; return true; }
+    for (int i = 0; i < n_hosts; i++) if (host_matches(h, u_hosts[i])) { adblock_total++; return true; }
     const char *path = strchr(strstr(url, "://") + 3, '/');
     if (path) {
         char low[512]; int k = 0;
         for (; path[k] && k < 511; k++) low[k] = tolower(path[k]);
         low[k] = 0;
-        for (unsigned i = 0; i < ARRAY_LEN(builtin_paths); i++) if (strstr(low, builtin_paths[i])) return true;
+        for (unsigned i = 0; i < ARRAY_LEN(builtin_paths); i++) if (strstr(low, builtin_paths[i])) { adblock_total++; return true; }
     }
     return false;
 }
@@ -157,4 +158,5 @@ bool adblock_hides(const char *cls, const char *id) {
     }
     return false;
 }
+int adblock_rule_count(void) { load_user_list(); return (int)(ARRAY_LEN(builtin_hosts) + ARRAY_LEN(builtin_paths) + ARRAY_LEN(builtin_hide)) + n_hosts + n_hide; }
 void adblock_reload(void) { list_gen = 0xFFFFFFFF; load_user_list(); }

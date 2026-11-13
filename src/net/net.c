@@ -174,6 +174,21 @@ bool fw_allow_port(uint16_t p) { if (fw_port_allowed(p)) return true; if (fw_npo
 void fw_clear_ports(void) { fw_nports = 0; }
 int fw_port_count(void) { return fw_nports; }
 uint16_t fw_port_at(int i) { return i >= 0 && i < fw_nports ? fw_ports[i] : 0; }
+bool fw_remove_port(uint16_t p) {
+    for (int i = 0; i < fw_nports; i++) if (fw_ports[i] == p) { fw_ports[i] = fw_ports[--fw_nports]; return true; }
+    return false;
+}
+/* the last blocked attempts, newest first, for Security Center */
+#define FW_LOG 32
+static fw_event_t fw_log[FW_LOG]; static int fw_log_n, fw_log_head;
+static void fw_note(uint32_t src, uint16_t port, uint8_t proto) {
+    fw_blocked++;
+    fw_event_t *e = &fw_log[fw_log_head]; fw_log_head = (fw_log_head + 1) % FW_LOG;
+    if (fw_log_n < FW_LOG) fw_log_n++;
+    e->when = timer_ticks(); e->src = src; e->port = port; e->proto = proto;
+}
+int fw_log_count(void) { return fw_log_n; }
+const fw_event_t *fw_log_at(int i) { return i >= 0 && i < fw_log_n ? &fw_log[(fw_log_head - 1 - i + FW_LOG) % FW_LOG] : NULL; }
 
 /* ---------------- frame dispatch ---------------- */
 static void ip_input(const uint8_t *p, uint32_t len) {
@@ -190,10 +205,10 @@ static void ip_input(const uint8_t *p, uint32_t len) {
             uint16_t dport = get16(p + hl + 2); uint8_t flags = p[hl + 13];
             /* a pure SYN is a new inbound connection; ACK/SYN-ACK belongs to
              * an existing connection and is allowed */
-            if ((flags & 0x02) && !(flags & 0x10) && !fw_port_allowed(dport)) { fw_blocked++; return; }
+            if ((flags & 0x02) && !(flags & 0x10) && !fw_port_allowed(dport)) { fw_note(src, dport, IPPROTO_TCP); return; }
         } else if (proto == IPPROTO_UDP && fw_block_udp && tot >= hl + 8) {
             uint16_t dport = get16(p + hl + 2);
-            if (!udp_is_bound(dport) && !fw_port_allowed(dport) && dport != 68) { fw_blocked++; return; }
+            if (!udp_is_bound(dport) && !fw_port_allowed(dport) && dport != 68) { fw_note(src, dport, IPPROTO_UDP); return; }
         }
     }
     switch (p[9]) {
