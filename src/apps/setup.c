@@ -1392,7 +1392,7 @@ static void oobe_paint(window_t *w) {
         page_header(s, "Choose a Look", "Pick a visual style and an account picture. You can change both later in Control Panel.");
         draw_text(s, FONT_UI_BOLD, bx, by - 6, "Visual style", BLACK);
         for (int i = 0; i < THEME_BUILTIN && i < THEME_COUNT; i++) {
-            int x = bx + 4 + (i % 3) * 140, y = by + 12 + (i / 3) * 106;
+            int x = bx + 4 + (i % 3) * 140, y = by + 10 + (i / 3) * 100;
             cp_theme_thumb(s, x, y, i, theme_id == i ? theme_hue : 0, theme_id == i);
             draw_text_centered(s, FONT_UI, R(x - 4, y + 83, 128, 16), style_name(i), BLACK);
             if (ui_click_area(w, R(x - 4, y - 4, 128, 104))) {

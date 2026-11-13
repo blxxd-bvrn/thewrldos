@@ -183,7 +183,7 @@ static const struct { const char *name; uint16_t off; char kind; bool shift; } f
 typedef struct { char file[64], name[48], desc[160], wallpaper[24]; theme_t base; } style_t;
 static style_t styles[24];
 static int nstyles;
-static const char *builtin_files[THEME_BUILTIN] = { "Luna Blue", "Olive Green", "Silver", "WRLD Classic", "Aero", "Plex" };
+static const char *builtin_files[THEME_BUILTIN] = { "Luna Blue", "Olive Green", "Silver", "WRLD Classic", "Aero", "Plex", "Vista Aero", "Royale", "Metro" };
 
 static uint32_t parse_color(const char *v) {
     while (*v == ' ') v++;
@@ -225,7 +225,7 @@ static bool parse_style(const char *file, theme_t *t, style_t *meta, int depth) 
             else if (!strcasecmp(k, "Description")) { if (meta) strlcpy(meta->desc, v, sizeof meta->desc); }
             else if (!strcasecmp(k, "Wallpaper")) { if (meta) strlcpy(meta->wallpaper, v, sizeof meta->wallpaper); }
             else if (!strcasecmp(k, "Renderer"))
-                t->renderer = !strcasecmp(v, "classic") ? RENDER_CLASSIC : !strcasecmp(v, "aero") ? RENDER_AERO : !strcasecmp(v, "plex") ? RENDER_PLEX : RENDER_LUNA;
+                t->renderer = !strcasecmp(v, "classic") ? RENDER_CLASSIC : !strcasecmp(v, "aero") ? RENDER_AERO : !strcasecmp(v, "plex") ? RENDER_PLEX : !strcasecmp(v, "metro") ? RENDER_METRO : RENDER_LUNA;
             else for (unsigned i = 0; i < ARRAY_LEN(fields); i++) if (!strcasecmp(k, fields[i].name)) {
                 if (fields[i].kind == 'i') *(int *)((uint8_t *)t + fields[i].off) = atoi(v);
                 else *(uint32_t *)((uint8_t *)t + fields[i].off) = parse_color(v);
@@ -339,6 +339,14 @@ rect_t caption_button_rect(rect_t win, int flags, int kind) {
         if (kind == 0) return nomin ? none : R(cx - 26 - (nomax ? 0 : 27), top, 27, h);
         return none;
     }
+    if (T.renderer == RENDER_METRO) {   /* flat buttons hanging from the top edge */
+        int top = win.y + 1, h = 21, cx = win.x + win.w - T.border - 46;
+        if (kind == 3) return (flags & WF_NOCLOSE) ? none : R(cx, top, 46, h);
+        if (nomin && nomax) return none;
+        if (kind == 1) return nomax ? none : R(cx - 27, top, 27, h);
+        if (kind == 0) return nomin ? none : R(cx - 27 - (nomax ? 0 : 27), top, 27, h);
+        return none;
+    }
     int s = T.cap_btn;
     int bx = win.x + win.w - (T.classic ? 6 : 5) - s, by = win.y + (T.classic ? 6 : (T.title_h - s) / 2 + 1);
     if (kind == 3) return (flags & WF_NOCLOSE) ? none : R(bx, by, s, s);
@@ -390,6 +398,22 @@ static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, b
         int cx = x + r.w / 2, cy = y + r.h / 2 - 1;
         glyph(c, cx + 1, cy + 1, kind, HEX(0x202830), 2);
         glyph(c, cx, cy, kind, WHITE, 2);
+        return;
+    }
+    if (T.renderer == RENDER_METRO) {   /* flat: min/max show on hover, close is always red when active */
+        bool close = kind == 3;
+        uint32_t title = active ? T.title_top : T.ititle_top;
+        if (pressed) fill_rect(c, x, y, r.w, r.h, close ? darken(T.close_bot, 50) : darken(title, 40));
+        else if (hot) fill_rect(c, x, y, r.w, r.h, close ? lighten(T.close_bot, 35) : T.cap_top);
+        else if (close && active) fill_rect(c, x, y, r.w, r.h, T.close_bot);
+        uint32_t g = (close && (active || hot)) || hot || pressed ? WHITE : active ? T.cap_glyph : T.ititle_text;
+        int cx = x + r.w / 2, cy = y + r.h / 2 - 1;
+        switch (kind) {                                       /* thin line glyphs */
+        case 0: hline(c, cx - 4, cy + 3, 9, g); hline(c, cx - 4, cy + 4, 9, g); break;
+        case 1: draw_rect(c, cx - 4, cy - 4, 9, 9, g); hline(c, cx - 4, cy - 3, 9, g); break;
+        case 2: draw_rect(c, cx - 2, cy - 5, 7, 7, g); fill_rect(c, cx - 5, cy - 2, 7, 7, close ? T.close_bot : (hot ? T.cap_top : title)); draw_rect(c, cx - 5, cy - 2, 7, 7, g); break;
+        case 3: for (int i = 0; i < 9; i++) { put_pixel(c, cx - 4 + i, cy - 4 + i, g); put_pixel(c, cx - 3 + i, cy - 4 + i, g); put_pixel(c, cx + 4 - i, cy - 4 + i, g); put_pixel(c, cx + 5 - i, cy - 4 + i, g); } break;
+        }
         return;
     }
     if (T.renderer == RENDER_PLEX) {   /* Longhorn: bare glyphs on the title bar, glow on hover */
@@ -497,6 +521,23 @@ void draw_window_frame(canvas_t *c, rect_t r, const char *title, int icon, bool 
     int th = T.title_h, b = T.border;
     bool maxed = state == WS_MAXIMIZED;
     if (T.renderer == RENDER_AERO) aero_frame(c, r, title, icon, active, maxed);
+    else if (T.renderer == RENDER_METRO) {   /* one flat colour, square corners, centred title */
+        uint32_t col = active ? T.title_top : T.ititle_top, fo = active ? T.frame_out : T.iframe_out;
+        fill_rect(c, x, y, w, th, col);
+        fill_rect(c, x, y + th, b, h - th, col); fill_rect(c, x + w - b, y + th, b, h - th, col);
+        fill_rect(c, x, y + h - b, w, b, col);
+        draw_rect(c, x, y, w, h, fo);
+        draw_rect(c, x + b - 1, y + th - 1, w - 2 * b + 2, h - th - b + 2, mix(col, BLACK, 40));
+        if (icon >= 0) draw_icon(c, icon, 16, x + 8, y + (th - 16) / 2);
+        int fh = font_height(FONT_UI), tw = text_width(FONT_UI, title);
+        int left = x + (icon >= 0 ? 30 : 10), right = x + w - 140;
+        int tx = x + (w - tw) / 2;
+        if (tx + tw > right) tx = right - tw;
+        if (tx < left) tx = left;
+        rect_t old = canvas_push_clip(c, R(left, y, MAX(0, right - left), th));
+        draw_text(c, FONT_UI, tx, y + (th - fh) / 2, title, active ? T.title_text : T.ititle_text);
+        c->clip = old;
+    }
     else if (T.classic) {
         fill_rect(c, x, y, w, h, T.face);
         bevel_deep(c, x, y, w, h, true);
@@ -560,6 +601,15 @@ void draw_button(canvas_t *c, rect_t r, const char *label, bool hot, bool presse
         if (!enabled) draw_text_centered(c, FONT_UI, R(r.x + 1, r.y + 1, r.w, r.h), label, T.face_light);
         draw_text_centered(c, FONT_UI, R(r.x + o, r.y + o, r.w, r.h), label, enabled ? T.text : T.gray_text);
         if (focus) dotted_rect(c, r.x + 4, r.y + 4, r.w - 8, r.h - 8, T.text);
+        return;
+    }
+    if (T.renderer == RENDER_METRO) {
+        uint32_t fill = !enabled ? T.face : pressed ? T.btn_hot_b : hot ? T.btn_hot_a : T.btn_top;
+        uint32_t edge = !enabled ? T.face_dark : hot || pressed || focus ? T.btn_hot_b : T.btn_border;
+        fill_rect(c, r.x, r.y, r.w, r.h, fill);
+        draw_rect(c, r.x, r.y, r.w, r.h, edge);
+        if (focus && !hot) draw_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, edge);
+        draw_text_centered(c, FONT_UI, r, label, !enabled ? T.gray_text : pressed ? WHITE : T.text);
         return;
     }
     fill_round_rect(c, r.x, r.y, r.w, r.h, 3, enabled ? T.btn_border : T.face_dark);

@@ -10,8 +10,10 @@ GETTING AROUND
 
 VISUAL STYLES
   Control Panel > Appearance and Personalization > Personalization
-  - Luna (Blue), Olive Green, Silver, WRLD Classic, Aero (translucent
-    blurred glass) and Plex (Longhorn-style glossy blue)
+  - Luna (Blue), Olive Green, Silver, Royale (deeper XP blue), WRLD
+    Classic, Aero (translucent blurred glass), Vista Aero (smoky glass,
+    black taskbar), Plex (Longhorn-style glossy blue) and Metro (flat,
+    square, Windows 8-style)
   - Colour hue slider (0-359 degrees), saturation and lightness sliders
     recolour any style
   - Desktop backgrounds: Meadow, Azure, Sunset, Aurora, Dunes or a solid colour

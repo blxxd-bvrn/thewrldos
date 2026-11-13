@@ -4,10 +4,10 @@
 
 /* Visual styles are .wrldstyle files in C:\WRLD\Resources\Themes. The built-in
  * ones always come first, in this order; files added by the user follow. */
-enum { THEME_LUNA_BLUE, THEME_OLIVE, THEME_SILVER, THEME_CLASSIC, THEME_AERO, THEME_PLEX, THEME_BUILTIN };
+enum { THEME_LUNA_BLUE, THEME_OLIVE, THEME_SILVER, THEME_CLASSIC, THEME_AERO, THEME_PLEX, THEME_VISTA, THEME_ROYALE, THEME_METRO, THEME_BUILTIN };
 #define THEME_COUNT style_count()
 #define STYLE_DIR "C:\\WRLD\\Resources\\Themes"
-enum { RENDER_LUNA, RENDER_CLASSIC, RENDER_AERO, RENDER_PLEX };
+enum { RENDER_LUNA, RENDER_CLASSIC, RENDER_AERO, RENDER_PLEX, RENDER_METRO };
 void styles_load(void);                 /* (re)scan STYLE_DIR */
 int style_count(void);
 const char *style_name(int i);          /* display name, e.g. "Luna (Blue)" */

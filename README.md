@@ -15,8 +15,8 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 - Runs **live from the CD** or **installs to a hard disk** with a graphical Setup (a detailed
   disk list, confirmations before formatting and a progress page), after which every file and
   setting is saved to the disk.
-- Visual styles **Luna (Blue), Olive Green, Silver, WRLD Classic, Aero** (translucent
-  blurred glass) and **Plex** (Longhorn-style). Each one is a `.wrldstyle` text file you can edit
+- Visual styles **Luna (Blue), Olive Green, Silver, Royale, WRLD Classic, Aero** (translucent
+  blurred glass), **Vista Aero**, **Plex** (Longhorn-style) and **Metro** (flat, Windows 8-style). Each one is a `.wrldstyle` text file you can edit
   or copy, and each can be recoloured with **hue, saturation and lightness** sliders.
 - **Networking:** drivers for Intel (PRO/1000, e1000e, I217-I219, I210/I211/I350), Realtek
   (RTL8111/8168/8125, RTL8139), AMD PCnet, VMware VMXNET3 and virtio-net cards, a TCP/IP stack
@@ -806,6 +806,7 @@ device manager's job is to say what the computer has and which driver runs it.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
 - **Visual styles**, all `.wrldstyle` files in `C:\WRLD\Resources\Themes`:
   - **Luna (Blue), Olive Green, Silver:** XP Luna.
+  - **Royale:** XP's deeper, glossier blue with a dark navy taskbar (Luna renderer).
   - **WRLD Classic:** also the built-in safe-mode fallback.
   - **Aero:**
     - Window frames are drawn on real **blurred, tinted glass**, with reflection streaks.
@@ -814,6 +815,12 @@ device manager's job is to say what the computer has and which driver runs it.
       Start menu.
     - The sidebar is glass too: the wallpaper shows through a blurred blue tint, and the
       account photo fades into those glass pixels instead of ending on a solid strip.
+  - **Vista Aero:** the first Aero glass: smokier, darker glass, a black glass taskbar and the
+    glowing orb (Aero renderer).
+  - **Metro:** the flat Windows 8 look (its own `metro` renderer): window frames in one solid
+    accent colour with square corners and a centred title, thin-line caption glyphs that light up
+    on hover beside an always-red close button, flat push buttons, a flat taskbar with a tiled
+    Start button, and a square Start menu.
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.
@@ -835,7 +842,7 @@ device manager's job is to say what the computer has and which driver runs it.
   - **Hue (0–359°), saturation and lightness** sliders recolour any style; they are saved with
     your settings.
 - **`.wrldstyle` format:** plain INI text.
-  - `[Style]` holds `Name`, `Renderer` (luna, classic, aero or plex), `Description`, a
+  - `[Style]` holds `Name`, `Renderer` (luna, classic, aero, plex or metro), `Description`, a
     suggested `Wallpaper`, and `Base` (inherit everything from another style).
   - It is followed by metrics (`title_h`, `border`, `taskbar_h`, …) and about 90 named colours.
   - Personalization's **Create a style...** writes a new file based on the current style and

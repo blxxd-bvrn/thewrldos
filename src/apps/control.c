@@ -246,7 +246,9 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     theme_compute(id, hue, &T);
     canvas_t *pre = canvas_new(120, 80);
     gfx_clear(pre, id == THEME_OLIVE ? HEX(0x6E7F48) : id == THEME_SILVER ? HEX(0x8A90A8) : HEX(0x3A6EA5));
-    wallpaper_render(pre, id == THEME_CLASSIC ? wallpaper_count - 1 : 0);
+    int wp = id == THEME_CLASSIC ? wallpaper_count - 1 : 0;
+    for (int j = 0; style_wallpaper(id)[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], style_wallpaper(id))) wp = j;
+    wallpaper_render(pre, wp);
     draw_window_frame(pre, R(10, 8, 100, 56), "Window", -1, true, 0, -1, -1, 0);
     fill_rect(pre, 10 + T.border, 8 + T.title_h, 100 - 2 * T.border, 56 - T.title_h - T.border, T.face);
     if (T.classic) fill_rect(pre, 0, 70, 120, 10, T.face); else gradient_v(pre, 0, 70, 120, 10, T.tb_top, T.tb_bot);

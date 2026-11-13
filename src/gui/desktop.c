@@ -797,7 +797,7 @@ void desktop_mouse(int type, int x, int y, int btn) {
 /* ---------------- taskbar ---------------- */
 #define START_W_LUNA 99
 #define START_W_CLASSIC 56
-static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? T.taskbar_h + 8 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
+static int start_w(void) { return T.classic ? START_W_CLASSIC : T.renderer == RENDER_AERO ? T.taskbar_h + 8 : T.renderer == RENDER_METRO ? T.taskbar_h + 8 : T.renderer == RENDER_PLEX ? 70 : START_W_LUNA; }
 static void fmt_clock(char *b, int n);
 static int tray_clock_w(void) {
     if (!show_clock) return 0;
@@ -870,6 +870,14 @@ static void paint_start_button(canvas_t *c, bool hot, bool down) {
         draw_text(c, FONT_LARGE, r.x + 27, r.y + (r.h - font_height(FONT_LARGE)) / 2, "start", T.start_text);
         return;
     }
+    if (T.renderer == RENDER_METRO) {   /* a flat square with four tiles */
+        int w = start_w(), h = T.taskbar_h;
+        if (hot || down) fill_rect(c, 0, y, w, h, down ? T.start_top : lighten(T.tb_top, 40));
+        int s = h >= 36 ? 9 : 7, g = 2, ox = (w - 2 * s - g) / 2, oy = y + (h - 2 * s - g) / 2;
+        uint32_t tile = hot || down ? WHITE : T.start_top;
+        for (int k = 0; k < 4; k++) fill_rect(c, ox + (k & 1) * (s + g), oy + (k >> 1) * (s + g), s, s, tile);
+        return;
+    }
     if (T.classic) {
         rect_t r = R(2, y + 4, START_W_CLASSIC - 2, T.taskbar_h - 6);
         fill_rect(c, r.x, r.y, r.w, r.h, T.face);
@@ -898,8 +906,11 @@ static void paint_start_button(canvas_t *c, bool hot, bool down) {
 }
 void taskbar_paint(canvas_t *c) {
     int y = tb_y(), h = T.taskbar_h;
-    bool aero = T.renderer == RENDER_AERO, plex = T.renderer == RENDER_PLEX;
-    if (T.classic) {
+    bool aero = T.renderer == RENDER_AERO, plex = T.renderer == RENDER_PLEX, metro = T.renderer == RENDER_METRO;
+    if (metro) {
+        fill_rect(c, 0, y, SCREEN_W, h, T.tb_top);
+        hline(c, 0, y, SCREEN_W, T.tray_border);
+    } else if (T.classic) {
         fill_rect(c, 0, y, SCREEN_W, h, T.face);
         hline(c, 0, y, SCREEN_W, T.face); hline(c, 0, y + 1, SCREEN_W, WHITE);
     } else if (aero) {
@@ -920,7 +931,7 @@ void taskbar_paint(canvas_t *c) {
     int qx = ql_x();
     if (T.classic) { vline(c, qx - 3, y + 4, h - 6, HEX(0x808080)); vline(c, qx - 2, y + 4, h - 6, WHITE); }
     else if (plex) { vline(c, qx - 3, y + 5, h - 9, T.tray_border); blend_rect(c, qx - 2, y + 5, 1, h - 9, WHITE, 110); }
-    else if (!aero) { vline(c, qx - 3, y + 3, h - 5, darken(T.tb_top, 50)); vline(c, qx - 2, y + 3, h - 5, lighten(T.tb_top, 60)); }
+    else if (!aero && !metro) { vline(c, qx - 3, y + 3, h - 5, darken(T.tb_top, 50)); vline(c, qx - 2, y + 3, h - 5, lighten(T.tb_top, 60)); }
     for (int i = 0; i < QL_N; i++) {
         rect_t r = R(qx + i * 24, y + (h - 22) / 2, 22, 22);
         if (tb_hot == 2000 + i) { if (T.classic) bevel(c, r.x, r.y, r.w, r.h, true); else { blend_rect(c, r.x, r.y, r.w, r.h, WHITE, 60); draw_rect(c, r.x, r.y, r.w, r.h, lighten(T.tb_top, 120)); } }
@@ -937,6 +948,11 @@ void taskbar_paint(canvas_t *c) {
             bevel_deep(c, r.x, r.y, r.w, r.h, !act);
             draw_icon(c, w->icon >= 0 ? w->icon : ICON_EXE, 16, r.x + 4 + act, r.y + (r.h - 16) / 2 + act);
             draw_text_ellipsis(c, act ? FONT_UI_BOLD : FONT_UI, r.x + 24 + act, r.y + (r.h - 14) / 2 + act, r.w - 30, w->title, BLACK);
+        } else if (metro) {   /* flat tiles: the active one is lighter with an accent line */
+            if (act || hot) fill_rect(c, r.x, r.y, r.w, r.h, act ? T.tbtn_act_top : T.tbtn_hot);
+            if (act) draw_rect(c, r.x, r.y, r.w, r.h, T.tbtn_border);
+            draw_icon(c, w->icon >= 0 ? w->icon : ICON_EXE, 16, r.x + 6, r.y + (r.h - 16) / 2);
+            draw_text_ellipsis(c, FONT_UI, r.x + 26, r.y + (r.h - 14) / 2, r.w - 32, w->title, T.tbtn_text);
         } else if (plex) {   /* flat buttons, only the active/hot one has a frame */
             if (act || hot) {
                 fill_round_rect(c, r.x, r.y, r.w, r.h, 3, T.tbtn_border);
@@ -969,6 +985,7 @@ void taskbar_paint(canvas_t *c) {
     if (T.classic) {
         rect_t r = R(tx, y + 4, tw - 3, h - 6);
         fill_rect(c, r.x, r.y, r.w, r.h, T.face); bevel(c, r.x, r.y, r.w, r.h, false);
+    } else if (metro) {
     } else if (aero || plex) {
         blend_rect(c, tx, y + 4, 1, h - 8, plex ? T.tray_border : BLACK, plex ? 255 : 90); blend_rect(c, tx + 1, y + 4, 1, h - 8, WHITE, plex ? 200 : 50);
     } else {
@@ -1192,18 +1209,20 @@ static void paint_startmenu_body(canvas_t *c) {
         return;
     }
     /* Luna two-column menu (Aero: the same layout on glass) */
-    bool aero = T.renderer == RENDER_AERO;
+    bool aero = T.renderer == RENDER_AERO, flat = T.renderer == RENDER_METRO;
+    int corner = flat ? 0 : 7;
     blend_rect(c, m.x + m.w, m.y + 6, 3, m.h - 6, BLACK, 60);
     if (aero) {
         draw_glass(c, m.x, m.y, m.w, m.h, T.sm_head_bot, 200, 8);
         for (int j = 0; j < 40; j++) blend_rect(c, m.x, m.y + j, m.w, 1, WHITE, 50 - j);
         draw_rect(c, m.x, m.y, m.w, m.h, T.sm_border);
         blend_rect(c, m.x + 1, m.y + 1, m.w - 2, 1, WHITE, 120);
-    } else fill_round_rect(c, m.x, m.y, m.w, m.h, 7, T.sm_border);
+    } else if (flat) fill_rect(c, m.x, m.y, m.w, m.h, T.sm_border);
+    else fill_round_rect(c, m.x, m.y, m.w, m.h, 7, T.sm_border);
     /* header */
     for (int j = 0; j < SM_HEAD && !aero; j++) {
-        int in = 0, rr = 7; if (j < rr) { int dy = rr - j, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rr * rr) dx++; in = rr - dx; }
-        uint32_t col = j < 6 ? mix(lighten(T.sm_head_top, 80), T.sm_head_top, j * 42) : mix(T.sm_head_top, T.sm_head_bot, (j - 6) * 255 / (SM_HEAD - 6));
+        int in = 0, rr = corner; if (j < rr) { int dy = rr - j, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rr * rr) dx++; in = rr - dx; }
+        uint32_t col = flat ? T.sm_head_top : j < 6 ? mix(lighten(T.sm_head_top, 80), T.sm_head_top, j * 42) : mix(T.sm_head_top, T.sm_head_bot, (j - 6) * 255 / (SM_HEAD - 6));
         hline(c, m.x + in + 1, m.y + j + 1, m.w - 2 * in - 2, col);
     }
     int px = m.x + 8, py = m.y + 8;
@@ -1269,7 +1288,7 @@ static void paint_startmenu_body(canvas_t *c) {
     /* footer */
     int fy = m.y + m.h - SM_FOOT;
     for (int j = 0; j < SM_FOOT - 1 && !aero; j++) {
-        int in = 0, rr = 7, jj = SM_FOOT - 2 - j; if (jj < rr) { int dy = rr - jj, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rr * rr) dx++; in = rr - dx; }
+        int in = 0, rr = corner, jj = SM_FOOT - 2 - j; if (jj < rr) { int dy = rr - jj, dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= rr * rr) dx++; in = rr - dx; }
         hline(c, m.x + 1 + in, fy + j, m.w - 2 - 2 * in, mix(T.sm_foot_top, T.sm_foot_bot, j * 255 / SM_FOOT));
     }
     const char *fl[2] = { "Log Off", "Turn Off Computer" }; int fi[2] = { ICON_LOGOFF, ICON_POWER };

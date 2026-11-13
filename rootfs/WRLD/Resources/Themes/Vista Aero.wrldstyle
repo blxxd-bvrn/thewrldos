@@ -1,0 +1,68 @@
+; THE WRLD OS visual style. Edit the values below, or copy this file under a new
+; name (and change Name=) to create your own style. Colours are #RRGGBB or "none".
+; Vista Aero: the first Aero glass - darker, smokier glass and a black glass taskbar.
+
+[Style]
+Name=Vista Aero
+Renderer=aero
+Description=Smoky dark glass, a black glass taskbar and a glowing orb.
+Base=Aero
+Wallpaper=Northern lights
+
+[Metrics]
+title_h=30
+border=8
+cap_btn=20
+menubar_h=20
+taskbar_h=30
+
+[Glass]
+glass=#46709C
+iglass=#A8BCD0
+glass_alpha=150
+iglass_alpha=95
+glass_blur=8
+
+[Colors]
+title_top=#46709C
+title_mid=#46709C
+title_bot=#46709C
+ititle_top=#A8BCD0
+ititle_mid=#A8BCD0
+ititle_bot=#A8BCD0
+frame_out=#141C26
+frame_mid=#46709C
+frame_in=#DCE6F0
+iframe_out=#5A6A7C
+iframe_mid=#A8BCD0
+iframe_in=#EEF2F6
+cap_top=#D4DEE8
+cap_bot=#6C849C
+cap_border=#1C2A3A
+close_top=#E89C8C
+close_bot=#B82A18
+tb_hi=#5A5A5A
+tb_top=#101010
+tb_mid=#0A0A0A
+tb_bot=#000000
+tray_hi=#5A5A5A
+tray_top=#101010
+tray_bot=#000000
+tray_border=#000000
+tbtn_top=#3C4450
+tbtn_bot=#14181E
+tbtn_border=#000000
+tbtn_act_top=#7088A0
+tbtn_act_bot=#2C3C50
+tbtn_hot=#58687C
+sm_head_top=#2A3A4C
+sm_head_bot=#101820
+sm_border=#0A0E14
+sm_right=#141C26
+sm_right_line=#3C4C60
+sm_foot_top=#202A36
+sm_foot_bot=#080C10
+sm_accent=#7CB4F0
+select=#3399FF
+hot=#3399FF
+desktop_bg=#14324E
