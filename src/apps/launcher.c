@@ -18,6 +18,7 @@ const app_info_t app_table[] = {
     { "minesweeper", "Minesweeper", "Clear the minefield", ICON_GAME },
     { "pong", "Pong", "Two-paddle arcade game", ICON_GAME },
     { "wmplayer", "THE WRLD Media Player", "Play music and sounds", ICON_MEDIA_PLAYER },
+    { "wrld3d", "WRLD 3D", "Test the 3D engine", ICON_CP_DISPLAY },
     { "security", "WRLD Security Center", "Firewall, password, web protection and system health", ICON_CP_SYSTEM },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
@@ -41,6 +42,7 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "minesweeper") || !strcasecmp(name, "mine")) minesweeper_open();
     else if (!strcasecmp(name, "pong")) pong_open();
     else if (!strcasecmp(name, "wmplayer") || !strcasecmp(name, "mediaplayer") || !strcasecmp(name, "wmplayer.exe")) mediaplayer_open(arg);
+    else if (!strcasecmp(name, "wrld3d") || !strcasecmp(name, "3d")) demo3d_open();
     else if (!strcasecmp(name, "security") || !strcasecmp(name, "firewall")) security_open();
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
     else if (!strcasecmp(name, "help")) notepad_open("C:\\WRLD\\Help.txt");

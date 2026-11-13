@@ -65,6 +65,13 @@ MUSIC
   click the arrows under it to change it. Keys: Space play/pause, Ctrl+F
   next, Ctrl+B previous, Ctrl+S stop, F8 mute, F9/F10 volume.
 
+3D
+  Control Panel > Visual Effects > Enable 3D acceleration turns the WRLD 3D
+  engine on or off. With it on, Alt+Tab shows your windows in Flip 3D: Tab
+  or the mouse wheel moves through them, letting go of Alt picks one, Esc
+  goes back (Ctrl+Alt+Tab keeps it open). Start > All Programs > WRLD 3D
+  shows a 3D test scene. The engine runs on the processor.
+
 SOUND AND DISPLAY
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
   shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High

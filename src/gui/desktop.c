@@ -1053,7 +1053,7 @@ static const sm_item_t all_programs[] = {
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
     { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },
-    { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer" },
+    { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer" }, { "WRLD 3D", NULL, ICON_CP_DISPLAY, "wrld3d" },
     { "WRLD Security Center", NULL, ICON_CP_SYSTEM, "security" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },
     { NULL },
     { "Samples (EXE / DMG / SH)", NULL, ICON_FOLDER, "explorer:C:\\Samples" },

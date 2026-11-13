@@ -257,6 +257,7 @@ void settings_load(void) {
     sidebar_open = geti("sidebar", sidebar_open);
     sidebar_tiles = geti("side_tiles", sidebar_tiles);
     wm_animations = !boot_safe_mode && geti("animations", wm_animations ? 1 : 0) != 0;
+    { extern bool accel3d; accel3d = !boot_safe_mode && geti("accel3d", accel3d ? 1 : 0) != 0; }
     wm_animation_style = CLAMP(geti("window_anim", wm_animation_style), WINDOW_ANIM_NONE, WINDOW_ANIM_COUNT - 1);
     startmenu_animation = CLAMP(geti("start_anim", startmenu_animation), MENU_ANIM_NONE, MENU_ANIM_COUNT - 1);
     sidebar_slide = geti("sidebar_slide", sidebar_slide ? 1 : 0) != 0;
@@ -279,6 +280,7 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", sidebar_open ? 1 : 0); settings_set("sidebar", b);
     snprintf(b, sizeof b, "%d", sidebar_tiles); settings_set("side_tiles", b);
     settings_set("animations", wm_animations ? "1" : "0");
+    { extern bool accel3d; settings_set("accel3d", accel3d ? "1" : "0"); }
     snprintf(b, sizeof b, "%d", wm_animation_style); settings_set("window_anim", b);
     snprintf(b, sizeof b, "%d", startmenu_animation); settings_set("start_anim", b);
     settings_set("sidebar_slide", sidebar_slide ? "1" : "0"); settings_set("tile_fade", sidebar_tile_fade ? "1" : "0");

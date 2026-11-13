@@ -702,6 +702,20 @@ device manager's job is to say what the computer has and which driver runs it.
   the log-on screen, using the normal widgets.
 
 ### Desktop (`src/gui`)
+- **3D acceleration (WRLD 3D, `src/gui/r3d.c`):** a software 3D engine with an on/off toggle in
+  Control Panel > Visual Effects (saved as `accel3d`). It is a fixed-function pipeline like
+  early OpenGL: 4x4 matrices, per-vertex lighting, near-plane clipping, a depth buffer,
+  perspective-correct texture mapping with bilinear filtering, and alpha blending. Rows are
+  filled as exact spans with one perspective division per 16 pixels. It runs on the processor:
+  THE WRLD OS has no graphics card driver, so this is 3D rendering rather than GPU acceleration.
+  - **Flip 3D** (`flip3d.c`): with 3D on, Alt+Tab shows the open windows as a tilted stack of
+    cards. Tab, Shift+Tab, the arrow keys or the wheel move through it; releasing Alt, Enter or a
+    click picks a window; Esc goes back. Ctrl+Alt+Tab keeps the stack open. With 3D off, Alt+Tab
+    switches windows directly.
+  - **WRLD 3D** (`src/apps/demo3d.c`, Start > All Programs, or `wrld3d`): a textured, lit
+    scene with a frame counter and toggles for lighting, textures and filtering. Under QEMU's
+    emulation it draws about 170,000 pixels a frame at about 24 frames/s on the 64-bit edition
+    and about 7 on the 32-bit one, which uses x87 floating point.
 - **Rendering:**
   - Double-buffered framebuffer renderer (1024×768×32).
   - **TrueType text** (`src/gui/ttf.c`): a small engine with no library dependencies that reads

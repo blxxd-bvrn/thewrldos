@@ -38,7 +38,7 @@ static const applet_t applets[] = {
     { "personalization", "Personalization", "Theme, colour hue and background", ICON_CP_APPEARANCE, CAT_APPEARANCE },
     { "advanced", "Advanced Appearance", "Individual colours, scrollbars, buttons and cursors", ICON_CP_APPEARANCE, CAT_APPEARANCE },
     { "display", "Display", "Screen resolution and effects", ICON_CP_DISPLAY, CAT_APPEARANCE },
-    { "effects", "Visual Effects", "Window, Start menu and sidebar animations", ICON_CP_DISPLAY, CAT_APPEARANCE },
+    { "effects", "Visual Effects", "Animations and 3D acceleration", ICON_CP_DISPLAY, CAT_APPEARANCE },
     { "taskbar", "Taskbar and Start Menu", "Customise the taskbar", ICON_CP_TASKBAR, CAT_APPEARANCE },
     { "fonts", "Fonts", "View installed fonts", ICON_CP_FONTS, CAT_APPEARANCE },
     { "datetime", "Date and Time", "Set the time zone and clock", ICON_CP_DATETIME, CAT_CLOCK },
@@ -543,7 +543,19 @@ static void page_effects(window_t *w, cp_t *c, int ox, int oy) {
     bool changed = ui_checkbox(w, x + 8, y, "Slide the sidebar in and out", &sidebar_slide); y += 28;
     changed |= ui_checkbox(w, x + 8, y, "Fade sidebar tiles when opening, adding or removing", &sidebar_tile_fade);
     if (changed) { wm_effects_changed(); settings_save(); }
-    y += 48;
+    y += 40;
+    hline(s, x, y - 12, width, T.face_dark);
+    {   /* the 3D engine */
+        extern bool accel3d;
+        draw_text(s, FONT_UI_BOLD, x, y, "3D", T.text); y += 26;
+        if (ui_checkbox(w, x + 8, y, "Enable 3D acceleration (WRLD 3D engine)", &accel3d)) { wm_effects_changed(); settings_save(); }
+        y += 24;
+        y += draw_text_wrapped(s, FONT_UI, x + 30, y, width - 30, accel3d
+            ? "On: Alt+Tab shows your windows in Flip 3D, and programs can draw 3D scenes. The engine runs on the processor, since THE WRLD OS has no graphics card driver."
+            : "Off: Alt+Tab switches windows directly, and 3D programs show a message instead.", W7_TEXT, 2) + 6;
+        if (ui_button(w, R(x + 30, y, 150, 26), "Test 3D (WRLD 3D)")) demo3d_open();
+        y += 44;
+    }
     int bw = MIN(140, (width - 20) / 3);
     if (ui_button(w, R(x, y, bw, 26), "Preview window")) notepad_open(NULL);
     if (ui_button(w, R(x + bw + 10, y, bw, 26), "Preview Start menu")) startmenu_toggle();

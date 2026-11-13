@@ -580,8 +580,25 @@ static int current_cursor(void) {
     if (ht == HT_CLIENT) return w->ui.cursor ? w->ui.cursor : w->cursor;
     return CURSOR_ARROW;
 }
+/* for Flip 3D (flip3d.c): a window painted at (x, y) of another canvas */
+void wm_paint_window_to(canvas_t *c, window_t *w, int x, int y) { paint_window_at(c, w, x, y); }
+bool flip3d_start(window_t **list, int count, window_t *active, bool sticky);
+bool flip3d_active(void);
+bool flip3d_animating(void);
+void flip3d_key(key_event_t *e);
+void flip3d_mouse(int x, int y, int pressed, int wheel);
+bool flip3d_paint(canvas_t *screen);
 static void compose(void) {
     gui_composes++;
+    if (flip3d_active()) {                       /* Flip 3D draws the whole screen */
+        canvas_reset_clip(&screen);
+        if (flip3d_paint(&screen)) {
+            taskbar_paint(&screen);
+            gfx_present(CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
+            wm_need_redraw = false;
+            return;
+        }
+    }
     canvas_reset_clip(&screen);
     desktop_paint(&screen);
     for (int i = 0; i < nwin; i++) {
@@ -632,6 +649,7 @@ static void handle_mouse(mouse_state_t *ms) {
     int changed = ms->buttons ^ prev_buttons;
     int pressed = changed & ms->buttons, released = changed & prev_buttons;
     prev_buttons = ms->buttons;
+    if (flip3d_active()) { flip3d_mouse(mx, my, pressed, ms->wheel); if (moved) wm_need_redraw = true; return; }
 
     /* popup menus are modal */
     if (pm.open) {
@@ -791,10 +809,15 @@ static void cycle_windows(void) {
 }
 extern void app_launch(const char *name, const char *arg);
 static void handle_key(key_event_t *e) {
+    if (flip3d_active()) { flip3d_key(e); return; }
     if (e->pressed && wm_active) effect_cancel_window(wm_active);
     if (e->pressed) {
         if ((e->key == KEY_DELETE && (e->mods & MOD_CTRL) && (e->mods & MOD_ALT)) || (e->key == KEY_ESC && (e->mods & MOD_CTRL) && (e->mods & MOD_SHIFT))) { app_launch("taskmgr", NULL); return; }
-        if (e->key == KEY_TAB && (e->mods & MOD_ALT)) { cycle_windows(); return; }
+        if (e->key == KEY_TAB && (e->mods & MOD_ALT)) {
+            /* with 3D acceleration on: Flip 3D (Ctrl+Alt+Tab keeps it open) */
+            if (!boot_safe_mode && flip3d_start(wins, nwin, wm_active, (e->mods & MOD_CTRL) != 0)) return;
+            cycle_windows(); return;
+        }
         if (e->key == KEY_F4 && (e->mods & MOD_ALT)) { if (wm_active) wm_close(wm_active); else shell_show_shutdown(); return; }
         if (pm.open) {
             if (e->key == KEY_ESC) { popup_close(); return; }
@@ -985,6 +1008,7 @@ void wm_run(void) {
         while (defn) { defer_t d = defq[0]; memmove(defq, defq + 1, (--defn) * sizeof(defer_t)); d.fn(d.arg); }
         now = timer_ticks();
         effects_tick(now);
+        if (flip3d_animating()) wm_need_redraw = true;
         shell_animate(now);
         if (now - last_tick >= 250) { last_tick = now; shell_tick(); }
         for (int i = 0; i < nwin; i++) {
