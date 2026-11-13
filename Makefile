@@ -189,11 +189,21 @@ samples: $(SAMPLE_EXES) $(SAMPLE_EXES64)
 rootfs64/Samples/winhello.exe: samples/winhello.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -mwindows -o $@ $< -lgdi32
+rootfs64/Samples/glcube.exe: samples/glcube.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -mwindows -o $@ $< -lopengl32 -lglu32 -lgdi32
+rootfs64/Samples/d3dcube.exe: samples/d3dcube.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d9
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<
 rootfs/Samples/winhello.exe: samples/winhello.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -lgdi32
+rootfs/Samples/glcube.exe: samples/glcube.c
+	$(MINGW) -O2 -s -mwindows -o $@ $< -lopengl32 -lglu32 -lgdi32
+rootfs/Samples/d3dcube.exe: samples/d3dcube.c
+	$(MINGW) -O2 -s -mwindows -o $@ $< -ld3d9
 rootfs/Samples/%.exe: samples/%.c
 	$(MINGW) -O2 -s -o $@ $<
 

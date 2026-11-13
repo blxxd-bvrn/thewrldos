@@ -58,6 +58,27 @@ static int zcap;
 const char *r3d_renderer(void) {
     return ARCH_BITS == 64 ? "WRLD 3D software renderer (x64, SSE floating point)" : "WRLD 3D software renderer (x86, x87 floating point)";
 }
+static void defaults(r3d_t *r) {
+    r->proj = m4_perspective(PI_F / 3, (float)r->view.w / r->view.h, 0.1f, 100);
+    r->view_m = m4_identity(); r->model = m4_identity();
+    r->light[0] = -0.4f; r->light[1] = 0.6f; r->light[2] = 0.7f;
+    float l = r3d_sqrt(r->light[0] * r->light[0] + r->light[1] * r->light[1] + r->light[2] * r->light[2]);
+    for (int i = 0; i < 3; i++) r->light[i] /= l;
+    r->ambient = 0.35f; r->diffuse = 0.75f;
+    r->bilinear = true; r->depth_test = r->depth_write = true; r->cull_back = true;
+    r->alpha = 255;
+}
+bool r3d_begin_with(r3d_t *r, canvas_t *target, rect_t view, float *depth, bool clear) {
+    if (!accel3d || !depth) return false;
+    memset(r, 0, sizeof *r);
+    r->target = target;
+    r->view = rect_intersect(view, R(0, 0, target->w, target->h));
+    if (r->view.w <= 0 || r->view.h <= 0 || r->view.w != view.w || r->view.h != view.h) return false;
+    r->depth = depth;
+    defaults(r);
+    if (clear) r3d_clear_depth(r);
+    return true;
+}
 bool r3d_begin(r3d_t *r, canvas_t *target, rect_t view) {
     if (!accel3d) return false;
     memset(r, 0, sizeof *r);
@@ -70,18 +91,12 @@ bool r3d_begin(r3d_t *r, canvas_t *target, rect_t view) {
         if (!nz) return false;
         zbuf = nz; zcap = need;
     }
-    r->proj = m4_perspective(PI_F / 3, (float)r->view.w / r->view.h, 0.1f, 100);
-    r->view_m = m4_identity(); r->model = m4_identity();
-    r->light[0] = -0.4f; r->light[1] = 0.6f; r->light[2] = 0.7f;
-    float l = r3d_sqrt(r->light[0] * r->light[0] + r->light[1] * r->light[1] + r->light[2] * r->light[2]);
-    for (int i = 0; i < 3; i++) r->light[i] /= l;
-    r->ambient = 0.35f; r->diffuse = 0.75f;
-    r->bilinear = true; r->depth_test = r->depth_write = true; r->cull_back = true;
-    r->alpha = 255;
+    r->depth = zbuf;
+    defaults(r);
     r3d_clear_depth(r);
     return true;
 }
-void r3d_clear_depth(r3d_t *r) { for (int i = 0; i < r->view.w * r->view.h; i++) zbuf[i] = 0; }
+void r3d_clear_depth(r3d_t *r) { for (int i = 0; i < r->view.w * r->view.h; i++) r->depth[i] = 0; }
 
 /* ---------------- pipeline ---------------- */
 typedef struct { float x, y, z, w; float u, v; float r, g, b, a; } cv_t;   /* clip-space vertex with attributes */
@@ -89,10 +104,11 @@ typedef struct { float x, y, z, w; float u, v; float r, g, b, a; } cv_t;   /* cl
 static cv_t transform(r3d_t *r, const mat4 *mvp, const r3d_vertex_t *v) {
     const float *m = mvp->m;
     cv_t o;
-    o.x = m[0] * v->x + m[4] * v->y + m[8] * v->z + m[12];
-    o.y = m[1] * v->x + m[5] * v->y + m[9] * v->z + m[13];
-    o.z = m[2] * v->x + m[6] * v->y + m[10] * v->z + m[14];
-    o.w = m[3] * v->x + m[7] * v->y + m[11] * v->z + m[15];
+    float W = v->w != 0 ? v->w : 1;
+    o.x = m[0] * v->x + m[4] * v->y + m[8] * v->z + m[12] * W;
+    o.y = m[1] * v->x + m[5] * v->y + m[9] * v->z + m[13] * W;
+    o.z = m[2] * v->x + m[6] * v->y + m[10] * v->z + m[14] * W;
+    o.w = m[3] * v->x + m[7] * v->y + m[11] * v->z + m[15] * W;
     o.u = v->u; o.v = v->v;
     float k = 1;
     if (r->lighting) {                                        /* normal through the model matrix (no scaling assumed) */
@@ -151,7 +167,7 @@ typedef struct { float sx, sy, iz, uw, vw, rw, gw, bw, aw; } sv_t;   /* screen v
 static void raster(r3d_t *r, const sv_t *a, const sv_t *b, const sv_t *c) {
     float area = (b->sx - a->sx) * (c->sy - a->sy) - (b->sy - a->sy) * (c->sx - a->sx);
     if (area > -1e-6f && area < 1e-6f) return;
-    if (r->cull_back && area > 0) return;                     /* screen y points down: counter-clockwise faces are negative */
+    if (r->cull_back && (r->front_cw ? area < 0 : area > 0)) return;   /* screen y points down: counter-clockwise faces are negative */
     canvas_t *t = r->target;
     rect_t cl = rect_intersect(r->view, t->clip);
     float miny = MIN(a->sy, MIN(b->sy, c->sy)), maxy = MAX(a->sy, MAX(b->sy, c->sy));
@@ -193,7 +209,7 @@ static void raster(r3d_t *r, const sv_t *a, const sv_t *b, const sv_t *c) {
         if (xe > cx1) xe = cx1;
         if (xs > xe) continue;
         uint32_t *row = t->px + (size_t)y * t->stride;
-        float *zrow = zbuf + (size_t)(y - r->view.y) * r->view.w - r->view.x;
+        float *zrow = r->depth + (size_t)(y - r->view.y) * r->view.w - r->view.x;
         float px0 = xs + 0.5f;
         float at[NATTR];
         for (int k = 0; k < NATTR; k++) at[k] = va[k] + dx[k] * (px0 - a->sx) + dy[k] * (py - a->sy);

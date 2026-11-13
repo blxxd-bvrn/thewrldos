@@ -551,7 +551,7 @@ static void page_effects(window_t *w, cp_t *c, int ox, int oy) {
         if (ui_checkbox(w, x + 8, y, "Enable 3D acceleration (WRLD 3D engine)", &accel3d)) { wm_effects_changed(); settings_save(); }
         y += 24;
         y += draw_text_wrapped(s, FONT_UI, x + 30, y, width - 30, accel3d
-            ? "On: Alt+Tab shows your windows in Flip 3D, and programs can draw 3D scenes. The engine runs on the processor, since THE WRLD OS has no graphics card driver."
+            ? "On: Alt+Tab shows your windows in Flip 3D, and Windows programs can draw 3D with OpenGL and Direct3D 9. The engine runs on the processor, since THE WRLD OS has no graphics card driver."
             : "Off: Alt+Tab switches windows directly, and 3D programs show a message instead.", W7_TEXT, 2) + 6;
         if (ui_button(w, R(x + 30, y, 150, 26), "Test 3D (WRLD 3D)")) demo3d_open();
         y += 44;

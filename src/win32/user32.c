@@ -146,6 +146,7 @@ static dc_t *newdc(w32win_t *w) {
 }
 static HDC WINAPI GetDC(HWND h) { w32win_t *w = W(h); if (h && !w) return 0; if (!w) { dc_t *d = newdc(NULL); d->surf = &screen; d->clip = R(0, 0, SCREEN_W, SCREEN_H); return (HDC)d; } return (HDC)newdc(w); }
 static HDC WINAPI GetWindowDC(HWND h) { return GetDC(h); }
+static HWND WINAPI WindowFromDC(HDC hdc) { dc_t *d = DC(hdc); return d && d->win ? (HWND)d->win : 0; }
 static int WINAPI ReleaseDC(HWND h, HDC hdc) { dc_t *d = DC(hdc); if (!d) return 0; d->magic = 0; w32_free(P, d); wm_need_redraw = true; return 1; }
 static HDC WINAPI CreateCompatibleDC(HDC h) { dc_t *d = newdc(NULL); d->memdc = true; static canvas_t one; static uint32_t px; canvas_init(&one, &px, 1, 1); d->surf = &one; d->clip = R(0, 0, 1, 1); return (HDC)d; }
 static BOOL WINAPI DeleteDC(HDC h) { dc_t *d = DC(h); if (!d) return 0; d->magic = 0; w32_free(P, d); return 1; }
@@ -983,6 +984,18 @@ static int WINAPI GetScrollPos(HWND h, int b) { return 0; }
 static BOOL WINAPI ShowScrollBar(HWND h, int b, BOOL s) { return 1; }
 static HANDLE WINAPI BeginDeferWindowPos(int n) { return 1; }
 
+/* for opengl32/d3d9 (gl.c, d3d9.c): the window behind a DC, and a window's client pixels */
+uintptr_t w32_dc_hwnd(uintptr_t hdc) { dc_t *d = DC(hdc); return d && d->win ? (uintptr_t)d->win : 0; }
+bool w32_hwnd_client(uintptr_t hwnd, canvas_t **surf, rect_t *client) {
+    w32win_t *w = W(hwnd);
+    if (!w) return false;
+    w32win_t *t = top_of(w);
+    if (!t || !t->top || !t->top->surf) return false;
+    int ox, oy; abs_origin(w, &ox, &oy);
+    *surf = t->top->surf;
+    *client = w->parent ? R(ox, oy, w->w, w->h) : R(0, 0, t->top->surf->w, t->top->surf->h);
+    return true;
+}
 void w32_user_cleanup(w32_proc_t *p) {
     for (int i = 0; i < 64; i++) if (timers[i].proc == p) timers[i].used = false;
     for (w32win_t **pp = &all_wins; *pp;) {
@@ -1019,7 +1032,7 @@ const w32_export_t user32_exports[] = {
     { "GetMessageW", (void *)GetMessageA }, { "PeekMessageW", (void *)PeekMessageA }, { "DispatchMessageW", (void *)DispatchMessageA }, { "DefWindowProcW", (void *)DefWindowProcA },
     { "SendMessageW", (void *)SendMessageA }, { "PostMessageW", (void *)PostMessageA },
     E(IsDialogMessageA), E(TranslateAcceleratorA), E(LoadAcceleratorsA), E(CallWindowProcA), E(GetMessageTime), E(GetMessagePos), E(InSendMessage), E(MsgWaitForMultipleObjects),
-    E(BeginPaint), E(EndPaint), E(DefWindowProcA), E(GetDC), E(GetWindowDC), E(ReleaseDC), E(FillRect), E(FrameRect), E(InvertRect), E(DrawFocusRect), E(DrawEdge), E(DrawTextA),
+    E(BeginPaint), E(EndPaint), E(DefWindowProcA), E(GetDC), E(GetWindowDC), E(WindowFromDC), E(ReleaseDC), E(FillRect), E(FrameRect), E(InvertRect), E(DrawFocusRect), E(DrawEdge), E(DrawTextA),
     E(SetRect), E(SetRectEmpty), E(CopyRect), E(OffsetRect), E(InflateRect), E(IsRectEmpty), E(PtInRect), E(EqualRect), E(IntersectRect), E(UnionRect),
     E(SetTimer), E(KillTimer), E(MessageBoxA), E(MessageBoxW), E(MessageBoxExA), E(MessageBeep), E(DialogBoxParamA), E(CreateDialogParamA), E(EndDialog),
     E(CreateMenu), E(CreatePopupMenu), E(AppendMenuA), E(DestroyMenu), E(DrawMenuBar), E(SetMenu), E(GetMenu), E(GetSubMenu), E(CheckMenuItem), E(EnableMenuItem), E(LoadMenuA), E(GetSystemMenu),
@@ -1030,10 +1043,18 @@ const w32_export_t user32_exports[] = {
     E(GetScrollPos), E(ShowScrollBar), E(BeginDeferWindowPos),
 };
 const int user32_count = ARRAY_LEN(user32_exports);
+int WINAPI w32_ChoosePixelFormat(HDC dc, const void *p);
+BOOL WINAPI w32_SetPixelFormat(HDC dc, int fmt, const void *p);
+int WINAPI w32_GetPixelFormat(HDC dc);
+int WINAPI w32_DescribePixelFormat(HDC dc, int fmt, UINT bytes, void *p);
+BOOL WINAPI w32_SwapBuffers(HDC dc);
 const w32_export_t gdi32_exports[] = {
     E(GetStockObject), E(CreatePen), E(CreateSolidBrush), E(CreateHatchBrush), E(CreateBrushIndirect), E(CreateFontA), E(CreateFontIndirectA), E(DeleteObject), E(SelectObject), E(GetObjectA),
     E(CreateCompatibleDC), E(DeleteDC), E(CreateCompatibleBitmap), E(CreateBitmap), E(SetBkMode), E(SetBkColor), E(SetTextColor), E(SetTextAlign), E(SetROP2), E(SetMapMode),
     E(TextOutA), E(ExtTextOutA), E(GetTextExtentPoint32A), { "GetTextExtentPointA", (void *)GetTextExtentPoint32A }, E(GetTextMetricsA), E(MoveToEx), E(LineTo), E(Polyline), E(Polygon),
     E(Rectangle), E(RoundRect), E(Ellipse), E(SetPixel), E(SetPixelV), E(GetPixel), E(BitBlt), E(StretchBlt), E(PatBlt), E(GetDeviceCaps),
+    /* pixel formats for OpenGL (gl.c) */
+    { "ChoosePixelFormat", (void *)w32_ChoosePixelFormat }, { "SetPixelFormat", (void *)w32_SetPixelFormat }, { "GetPixelFormat", (void *)w32_GetPixelFormat },
+    { "DescribePixelFormat", (void *)w32_DescribePixelFormat }, { "SwapBuffers", (void *)w32_SwapBuffers },
 };
 const int gdi32_count = ARRAY_LEN(gdi32_exports);

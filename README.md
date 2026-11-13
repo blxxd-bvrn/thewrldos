@@ -227,6 +227,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Samples** in `C:\Samples`:
   - `hello.exe`, a Win32 console program;
   - `winhello.exe`, a Win32 GUI program;
+  - `glcube.exe` and `d3dcube.exe`, spinning cubes drawn through OpenGL and Direct3D 9
+    (3D acceleration must be on);
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
 - **The WRLD Browser** (Start menu > Internet, or the globe on Quick Launch):
@@ -716,6 +718,27 @@ device manager's job is to say what the computer has and which driver runs it.
     scene with a frame counter and toggles for lighting, textures and filtering. Under QEMU's
     emulation it draws about 170,000 pixels a frame at about 24 frames/s on the 64-bit edition
     and about 7 on the 32-bit one, which uses x87 floating point.
+  - **3D for Windows programs** (`src/win32/gl.c`, `d3d9.c`, `vulkan.c`), on the same engine:
+    - **OpenGL 1.1** (`opengl32.dll`, `glu32.dll`): WGL contexts (`ChoosePixelFormat`,
+      `wglCreateContext`, `SwapBuffers`), `glBegin`/`glEnd` with every primitive type, vertex
+      arrays, display lists, the matrix stacks, textures (RGB, RGBA, BGR(A), luminance), one
+      directional light, culling, depth and blending; `gluPerspective`, `gluLookAt` and friends.
+    - **Direct3D 9** (`d3d9.dll`, fixed function): `Direct3DCreate9`, devices, `Clear`,
+      `Present`, transforms, viewport, material, one directional light, render and sampler
+      states, flexible vertex formats (`XYZ` or pre-transformed `XYZRHW`, normal, diffuse, one
+      texture set), all four `Draw*Primitive` calls, vertex and index buffers, and 32-bit
+      textures with `LockRect`. The COM method tables are generated from mingw-w64's `d3d9.h`
+      (`tools/gen_d3d9.py`), so methods that are not implemented return `D3DERR_INVALIDCALL`
+      with the stack intact. A few `d3dx9` matrix helpers are exported too. Shaders are not
+      supported: `SetVertexShader`/`SetPixelShader` accept only NULL.
+    - **Vulkan** is not feasible: it draws only with SPIR-V shader programs. `vulkan-1.dll`
+      exists so that programs can ask, and `vkCreateInstance` answers
+      `VK_ERROR_INCOMPATIBLE_DRIVER` so that they fall back to Direct3D 9 or OpenGL.
+    - With 3D acceleration off, `wglCreateContext` and `Direct3DCreate9` fail as on a computer
+      without 3D support. `glcube.exe` and `d3dcube.exe` in `C:\Samples` run at about 40-50
+      frames/s on the 64-bit edition under QEMU and 18-28 on the 32-bit one.
+    - Linux programs do not get OpenGL yet (that would be Mesa's software renderer on
+      `/dev/wrld/window`).
 - **Rendering:**
   - Double-buffered framebuffer renderer (1024×768×32).
   - **TrueType text** (`src/gui/ttf.c`): a small engine with no library dependencies that reads
@@ -856,8 +879,8 @@ device manager's job is to say what the computer has and which driver runs it.
   - On x64 every exported function uses the Microsoft x64 calling convention (GCC's
     `ms_abi`), variadic ones (`printf`, `wsprintfA`) the matching `va_list`; handles,
     `WPARAM`/`LPARAM` and `*LongPtr` values are pointer-sized while `long` stays 32-bit (LLP64).
-  - About 190 kernel32, 190 msvcrt, 160 user32 and 40 gdi32 functions, plus advapi32/shell32
-    basics.
+  - About 190 kernel32, 190 msvcrt, 160 user32 and 45 gdi32 functions, plus advapi32/shell32
+    basics, and opengl32, glu32, d3d9 and vulkan-1 (see 3D for Windows programs).
   - Console programs use the terminal for stdin/stdout.
   - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX
     controls, menus, MessageBox and GDI drawing.
@@ -982,7 +1005,7 @@ src/apps           explorer, notepad, terminal, control panel, accessories, laun
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          sh interpreter
-src/win32          PE loader, kernel32, msvcrt, user32/gdi32
+src/win32          PE loader, kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 9
 src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 licence
 third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this OS
@@ -990,7 +1013,7 @@ third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against
 third_party/minimp3  minimp3 (MP3 decoding for the media player), public domain (CC0)
 src/media          MP3 glue for minimp3 (mp3.c)
-samples/           Win32 sample sources (hello.c, winhello.c)
+samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)
 rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrldstyle;

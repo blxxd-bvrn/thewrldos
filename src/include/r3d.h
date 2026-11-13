@@ -30,6 +30,7 @@ typedef struct {
     float u, v;                          /* texture coordinates, 0..1 */
     float nx, ny, nz;                    /* normal (for lighting) */
     uint32_t color;                      /* 0xAARRGGBB, multiplied with the texture */
+    float w;                             /* homogeneous w of the position; 0 means 1 */
 } r3d_vertex_t;
 
 typedef struct {
@@ -42,6 +43,8 @@ typedef struct {
     float light[3];                      /* direction towards the light, normalised */
     float ambient, diffuse;
     bool cull_back;                      /* skip triangles facing away */
+    bool front_cw;                       /* front faces wind clockwise on screen (Direct3D); OpenGL is counter-clockwise */
+    float *depth;                        /* this context's depth buffer (view.w * view.h), or NULL for the shared one */
     bool depth_test, depth_write;
     int alpha;                           /* 0..255, multiplied with texture and vertex alpha */
     uint32_t triangles, pixels;          /* statistics for the frame */
@@ -51,6 +54,9 @@ typedef struct {
  * Returns false when 3D acceleration is turned off or memory is short. */
 bool r3d_begin(r3d_t *r, canvas_t *target, rect_t view);
 void r3d_clear_depth(r3d_t *r);
+/* like r3d_begin, but with a depth buffer of the caller's (view.w * view.h floats) that is
+ * cleared only if `clear`: for APIs whose frames span many draw calls (OpenGL, Direct3D) */
+bool r3d_begin_with(r3d_t *r, canvas_t *target, rect_t view, float *depth, bool clear);
 void r3d_triangles(r3d_t *r, const r3d_vertex_t *v, int count);   /* count: multiple of 3 */
 void r3d_quad(r3d_t *r, const r3d_vertex_t q[4]);                   /* two triangles, q in order */
 const char *r3d_renderer(void);                                    /* a description for the UI */

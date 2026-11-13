@@ -71,6 +71,12 @@ MUSIC
   or the mouse wheel moves through them, letting go of Alt picks one, Esc
   goes back (Ctrl+Alt+Tab keeps it open). Start > All Programs > WRLD 3D
   shows a 3D test scene. The engine runs on the processor.
+  Windows programs can draw 3D through OpenGL 1.1 (opengl32.dll, glu32.dll)
+  and Direct3D 9 (d3d9.dll, fixed function), both drawn by the WRLD 3D
+  engine. Try C:\Samples\glcube.exe and d3dcube.exe. Vulkan is not
+  available: vulkan-1.dll reports no device, so programs that try it fall
+  back to Direct3D or OpenGL. With 3D acceleration off, these programs are
+  told 3D is unavailable.
 
 SOUND AND DISPLAY
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /

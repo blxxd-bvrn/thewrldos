@@ -150,7 +150,10 @@ Already working, and not on the list below:
 - The GUI also has its own **software rasteriser** (`src/gui/raster.c`): path fills and strokes,
   anti-aliasing, round joins, linear and radial gradients and clipping, used by The WRLD Browser for
   `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
-- No GPU or 3D, so a real Skia would have to use its software backend. Missing from the raster
+- 3D is a software engine (`src/gui/r3d.c`) behind OpenGL 1.1 and fixed-function Direct3D 9 for
+  Win32 programs; Vulkan and shaders would need a SPIR-V/HLSL compiler (a llvmpipe-class JIT) and
+  are not planned. Linux programs could get OpenGL through Mesa's software renderer on
+  `/dev/wrld/window`. There is no GPU driver, so a real Skia would have to use its software backend. Missing from the raster
   stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
   engine.
 - The display path starts with the GRUB/UEFI linear framebuffer and a write-combining mapping.
