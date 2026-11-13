@@ -563,6 +563,17 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
         p->fds[a0] = NULL; lx_file_put(f); return 0;
     }
+    case 436: {                                                                                             /* close_range */
+        if (a0 > a1) return -EINVAL;
+        if (a2 & ~6ull) return -EINVAL;                       /* CLOSE_RANGE_UNSHARE (2) needs no work: tables are per process */
+        uint64_t last = MIN(a1, (uint64_t)LX_MAXFD - 1);
+        for (uint64_t fd = a0; fd <= last && fd < LX_MAXFD; fd++) {
+            if (!p->fds[fd]) continue;
+            if (a2 & 4) { p->fdflags[fd] = 1; continue; }     /* CLOSE_RANGE_CLOEXEC */
+            lxfile_t *f = p->fds[fd]; p->fds[fd] = NULL; lx_file_put(f);
+        }
+        return 0;
+    }
     case 8: {                                                                                               /* lseek */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
         if (f->type == FD_CONSOLE || f->type >= FD_PIPE) return -ESPIPE;
@@ -672,6 +683,21 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
         if (!dn || !dn->dir) return -ENOENT;
         if (n->parent != dn && !vfs_move(n, dn)) return -EXDEV;
         return vfs_rename(n, path_basename(wt)) ? 0 : -EACCES;
+    }
+    case 86: case 265: {                                                                                    /* link, linkat */
+        /* The VFS has no shared inodes, so a hard link is a copy made at link time: enough for
+         * lock files (Fontconfig, SQLite's fallback) and write-then-link saves, which only need
+         * the new name to appear atomically and to fail if it exists. */
+        char from[512], to[512];
+        int rr = ustr(from, nr == 86 ? a0 : a1, sizeof from); if (rr < 0) return rr;
+        rr = ustr(to, nr == 86 ? a1 : a3, sizeof to); if (rr < 0) return rr;
+        int kind; char la[512], lb[512];
+        vnode_t *n = resolve(p, nr == 86 ? AT_FDCWD : (int)a0, from, &kind, la, sizeof la);
+        if (!n) return -ENOENT;
+        if (n->dir) return -EPERM;
+        char wt[512]; lx_path2(p, nr == 86 ? AT_FDCWD : (int)a2, to, wt, sizeof wt, lb, sizeof lb);
+        if (vfs_resolve(wt, NULL)) return -EEXIST;
+        return vfs_write_file(wt, n->data, n->size) ? 0 : -ENOENT;
     }
     case 76: case 77: {                                                                                     /* truncate, ftruncate */
         vnode_t *n;

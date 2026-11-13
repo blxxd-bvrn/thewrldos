@@ -52,6 +52,7 @@ typedef struct uvm {
 } uvm_t;
 uvm_t *uvm_new(void);
 uvm_t *uvm_clone(uvm_t *src);                  /* copy every mapping and resident page */
+bool uvm_poke32(uvm_t *vm, uint64_t va, uint32_t v);   /* write into another process's memory */
 void uvm_free(uvm_t *vm);
 uintptr_t uvm_cr3(uvm_t *vm);
 vma_t *uvm_find(uvm_t *vm, uint64_t addr);

@@ -1,8 +1,21 @@
 # Roadmap: from Linux programs to a browser engine
 
 The 64-bit edition runs unmodified x86-64 Linux programs in ring 3. This file lists what is
-still missing between that and running WPE WebKit as The WRLD Browser, in the order the pieces
-have to be built.
+still missing between that and running WPE WebKit as a browser on THE WRLD OS, in the order the
+pieces have to be built.
+
+**Where it stands (November 2026):** WebKit is *not* running yet. What runs today, verified by
+the test programs below inside the OS:
+
+- the C++ runtime (glibc's `libstdc++`): exceptions, RTTI, threads, `thread_local`, iostreams,
+  `std::filesystem` (`samples/linux-cxx/cxxtest.cpp`, 14 checks);
+- the GNOME platform layer WPE is built on: the GLib main loop, `GThread`, `g_spawn` child
+  processes, GIO files, Fontconfig, FreeType and Cairo drawing text into a PNG
+  (`samples/linux-gnome/platform.c`, 6 checks);
+- **WebKit's JavaScript engine**, JavaScriptCore 2.52 from WebKitGTK, JIT included: modern
+  JavaScript through its C API and a hot loop that speeds up 4x as the JIT tiers kick in
+  (`samples/linux-webkit/jsctest.c`, 12 checks; built with `make ARCH=x86_64 LX_WEBKIT=1`
+  because it adds about 70 MB with ICU).
 
 ## Where the port stands
 
@@ -23,8 +36,13 @@ Already working, and not on the list below:
 ### 1. Process model
 
 - `fork`, `vfork`, `execve` and `wait4` are in place, and `getppid` reports the real parent.
-- Missing: `waitid`, process groups and sessions (`setpgid` is a stub), `posix_spawn`'s
-  `POSIX_SPAWN_SETSIGDEF` details, and a `/proc` to look at processes through.
+- `clone()` creates processes as well as threads: `fork` is `clone(SIGCHLD)`, and
+  `posix_spawn` (what `g_spawn` and WebKit's process launcher use) is `clone(CLONE_VM |
+  CLONE_VFORK)` on a stack of its own. Processes cannot share an address space here, so that
+  child gets a copy; a failed `exec` then shows as exit status 127 instead of an error from
+  `posix_spawn` itself. `close_range` closes or marks inherited descriptors.
+- Missing: `waitid`, process groups and sessions (`setpgid` is a stub), `clone3` (glibc falls
+  back to `clone`), and a `/proc` to look at other processes through.
 - Needed by shell pipelines with job control and WebKit's process launcher.
 
 ### 2. Signals
@@ -85,7 +103,12 @@ Already working, and not on the list below:
 - The test programs in `samples/linux` are built against **musl** as static PIE when `musl-gcc`
   is installed, so the image carries no C library at all; with only gcc, the build machine's
   glibc is copied instead (dynamic linking still works: the kernel loads `ld-linux` and glibc).
-- No C++ runtime: libstdc++ needs unwinding (`_Unwind_*`), `__cxa_*` and thread-safe statics.
+- C++ works with the distribution's runtime: programs in `samples/linux-cxx` are built with g++
+  against glibc and `libstdc++`, and the build copies in every shared library `ldd` lists (the
+  same is done for `samples/linux-gnome`, which links GLib, GIO, Cairo, Fontconfig and FreeType).
+  musl-built programs still have no C++ runtime of their own.
+- `link`/`linkat` make a copy (the VFS has no shared inodes): enough for lock files and
+  write-then-link saves, not for two names that must stay one file.
 - `getaddrinfo` resolves through the C library and the kernel's UDP stack (section 4);
   `getpwnam` has only `/etc/passwd`; no `iconv`, no locale past Latin-1.
 
@@ -168,6 +191,22 @@ Already working, and not on the list below:
 - The Linux ABI is covered by the test programs in `samples/linux`: `hello.c`, `threads.c`,
   `ipc.c`, `procs.c`, `socket.c` and `sysinfo.c`.
 
+## The next steps to WebKit
+
+1. **Real shared memory.** `MAP_SHARED` is a private snapshot and `memfd_create` is missing.
+   WebKit's processes exchange tiles, shared buffers and IPC messages through shared memory, so
+   this is the first hard blocker: shared pages between address spaces, and `memfd_create`.
+2. **WPE WebKit itself.** Ubuntu 24.04 packages WebKitGTK (which needs GTK and a Wayland or X11
+   server) but not WPE. The plan is to build WPE WebKit 2.x on the build machine with its CPU
+   Skia renderer and the headless WPE platform, then add a small WRLD backend that hands each
+   rendered frame to a desktop window through shared memory.
+3. **Networking for libsoup.** HTTP through libsoup 3 and TLS through glib-networking/GnuTLS,
+   on the existing socket layer; then IPv6 and loopback, which WebKit probes for.
+4. **Memory.** WebKit wants 1-2 GB per web process; the 3.75 GB ceiling and the in-RAM root file
+   system make a single web process the realistic target at first.
+5. **Input and lifecycle.** Keyboard and mouse events from the desktop window into WPE, resizing,
+   and tearing the processes down with the window.
+
 ## Milestones
 
 1. [x] **`fork`, `execve`, `wait4`** - process creation and replacement.
@@ -185,11 +224,18 @@ Already working, and not on the list below:
 8. [x] **Software rasterisation** - the GUI's own path engine (`src/gui/raster.c`): anti-aliased
     fills and strokes, round joins, linear/radial gradients and clipping, used by The WRLD Browser for
    `border-radius` and gradient backgrounds. Skia itself is not used.
-9. [ ] **libjpeg/libpng and SQLite** - media and storage.
+9. [ ] **libjpeg/libpng and SQLite** - media and storage (libpng runs, through Cairo).
 10. [x] **`/proc`, `/sys`, honest `prctl`** - `/proc/self/{maps,stat,status,cmdline,fd}`,
    `/proc/{meminfo,cpuinfo,uptime,version}`, a minimal `/sys` CPU/kernel tree, per-process
    rlimits (NOFILE and FSIZE enforced) and a `prctl` that returns `EINVAL` for what it does not
    implement, including `PR_SET_SECCOMP`.
+
+11. [x] **C++ runtime** - glibc's `libstdc++` (`samples/linux-cxx`).
+12. [x] **GNOME platform layer** - GLib, GIO, `g_spawn`, Fontconfig, FreeType, Cairo
+   (`samples/linux-gnome`).
+13. [x] **JavaScriptCore** - WebKit's JavaScript engine with its JIT (`samples/linux-webkit`).
+14. [ ] **Shared memory between processes** - real `MAP_SHARED`, `memfd_create`.
+15. [ ] **WPE WebKit** with a WRLD display backend.
 
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
 `fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.

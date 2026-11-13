@@ -394,7 +394,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   settings file.
 
 ### Linux programs (`src/linux`, 64-bit edition)
-The first step towards running WPE WebKit as The WRLD Xplorer: unmodified x86-64 Linux
+The first step towards running WPE WebKit as a browser on THE WRLD OS: unmodified x86-64 Linux
 programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Address space:** programs live above 512 GiB, so the kernel's identity map of the low
   4 GiB stays untouched; pages are allocated on first touch (`uvm.c`, `pmm.c`).
@@ -449,9 +449,16 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   ends, `SIGPIPE` from a pipe or socket with no reader, and dispatch of `SIGSEGV`/`SIGFPE`/
   `SIGILL`/`SIGBUS`/`SIGTRAP` to a handler installed for them. `kill`, `tkill` and `tgkill`
   deliver to a whole process or to one thread.
+- **C++ and the platform stack:** `C:/Linux/usr/local/bin/cxxtest` runs the C++ runtime
+  (exceptions, threads, iostreams, `std::filesystem`) and `platform` runs GLib's main loop,
+  `g_spawn` child processes, GIO, Fontconfig, FreeType and Cairo (it draws `C:\cairo-test.png`).
+  Both use the distribution's own glibc, `libstdc++` and libraries, copied in by the build.
+- **WebKit's JavaScript engine:** built with `make ARCH=x86_64 LX_WEBKIT=1`, the image also
+  carries JavaScriptCore from WebKitGTK (about 70 MB with ICU) and `jsctest`, which runs modern
+  JavaScript through it, JIT included. Give the VM 1 GB for that image.
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
-  loopback interface, and a real `vfork` (it does not suspend the parent). See `ROADMAP.md` for
-  the rest of the way to WPE WebKit.
+  loopback interface, real shared memory between processes, and a real `vfork` (the child gets
+  a copy of the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
 
 ### USB (`src/usb`)
 - **Host controllers:** all four kinds a PC uses. **xHCI** (`xhci.c`, USB 3.x, what every

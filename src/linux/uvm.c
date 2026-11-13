@@ -214,6 +214,15 @@ bool uvm_fault(uvm_t *vm, uint64_t addr, bool write) {
     vm->pages++;
     return true;
 }
+/* write 4 bytes into another process's memory (it need not be the current one) */
+bool uvm_poke32(uvm_t *vm, uint64_t va, uint32_t v) {
+    if ((va & (PAGE - 1)) > PAGE - 4) return false;
+    uint64_t *e = pte_of(vm, va & ~(PAGE - 1), false);
+    if (!e || !(*e & PTE_P)) { if (!uvm_fault(vm, va, true)) return false; e = pte_of(vm, va & ~(PAGE - 1), false); }
+    if (!e || !(*e & PTE_P)) return false;
+    *(volatile uint32_t *)(uintptr_t)(ADDR(*e) + (va & (PAGE - 1))) = v;
+    return true;
+}
 bool uvm_check(uvm_t *vm, uint64_t addr, uint64_t len, bool write) {
     if (!len) return true;
     if (addr < USER_LO || addr + len > USER_HI || addr + len < addr) return false;

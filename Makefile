@@ -232,7 +232,34 @@ else
 	gcc -O2 -Wall -o $@ $< -lpthread
 	gcc -O2 -Wall -static-pie -o $@-static $< -lpthread
 endif
-$(LXROOT)/.stamp: $(LXBINS)
+# C++ programs (samples/linux-cxx) are built against the build machine's glibc and libstdc++,
+# as a distribution's packages are, and every shared library they load is copied in
+LXCXX   := $(patsubst samples/linux-cxx/%.cpp,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-cxx/*.cpp))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux-cxx/%.cpp
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64
+	g++ -O2 -Wall -std=c++17 -pthread -o $@ $<
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+# programs on the GNOME platform layer WPE WebKit is built on (GLib, GIO, Cairo, Fontconfig,
+# FreeType), linked against the build machine's libraries, which are copied in the same way
+GNOME_PKGS := glib-2.0 gio-2.0 cairo cairo-ft fontconfig freetype2
+LXGNOME := $(if $(shell pkg-config --exists $(GNOME_PKGS) 2>/dev/null && echo y),$(patsubst samples/linux-gnome/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gnome/*.c)))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux-gnome/%.c
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/fonts
+	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(GNOME_PKGS))
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+	@printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>/mnt/c/WRLD/Fonts</dir>\n  <cachedir>/tmp/fontconfig</cachedir>\n  <config></config>\n</fontconfig>\n' > $(LXROOT)/Linux/etc/fonts/fonts.conf
+# Pieces of WebKit itself (samples/linux-webkit), from the build machine's WebKitGTK packages:
+# about 70 MB with ICU, so only with  make ARCH=x86_64 LX_WEBKIT=1
+WEBKIT_PKGS := javascriptcoregtk-4.1
+LXWEBKIT := $(if $(LX_WEBKIT),$(if $(shell pkg-config --exists $(WEBKIT_PKGS) 2>/dev/null && echo y),$(patsubst samples/linux-webkit/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkit/*.c)),$(warning LX_WEBKIT=1 needs libjavascriptcoregtk-4.1-dev)))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkit/%.c
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64
+	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(WEBKIT_PKGS))
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXWEBKIT)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"

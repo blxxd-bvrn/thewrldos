@@ -118,7 +118,16 @@ int64_t lx_clone(regs_t *r, uint64_t flags, uint64_t stack, uint64_t ptid, uint6
     task_t *self = task_current();
     lxthread_t *th = LX(self);
     lxproc_t *p = th->proc;
-    if (!(flags & CLONE_VM) || !(flags & CLONE_THREAD)) return -ENOSYS;      /* new processes: phase 2 */
+    if (!(flags & CLONE_THREAD)) {
+        /* A new process. fork() is clone(SIGCHLD); posix_spawn() is clone(CLONE_VM |
+         * CLONE_VFORK) on a stack of its own, where the child only prepares and calls execve.
+         * Processes here cannot share one address space, so the child gets a copy either way,
+         * starting on the stack it was given. The parent of a failed posix_spawn exec then
+         * learns of it from the child's exit status (127) rather than from the call. */
+        extern int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid);
+        return lx_fork_ex(r, stack, (flags & CLONE_SETTLS) != 0, tls, flags, ptid, ctid);
+    }
+    if (!(flags & CLONE_VM)) return -EINVAL;                                /* a thread shares the memory */
     regs_t nr = *r;
     nr.eax = 0;                                                             /* the child sees 0 */
     if (stack) nr.esp = stack;
@@ -232,7 +241,9 @@ fail:
 
 /* fork(): a second process with a copy of this address space, the same open
  * files and the same thread state. The child returns 0 from the same call. */
-int64_t lx_fork(regs_t *r) {
+int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid);
+int64_t lx_fork(regs_t *r) { return lx_fork_ex(r, 0, false, 0, 0, 0, 0); }
+int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid) {
     task_t *self = task_current();
     lxthread_t *th = LX(self);
     lxproc_t *p = th->proc;
@@ -253,11 +264,16 @@ int64_t lx_fork(regs_t *r) {
     }
     regs_t nr = *r;
     nr.eax = 0;                                                 /* the child sees 0 */
+    if (stack) nr.esp = stack;
     char name[48]; snprintf(name, sizeof name, "%s:fork", self->name);
-    task_t *t = thread_new(c, name, &nr, th->fsbase);
+    task_t *t = thread_new(c, name, &nr, set_tls ? tls : th->fsbase);
     lxthread_t *ct = LX(t);
     ct->sigmask = th->sigmask;
     c->pid = t->pid;
+    /* the child's tid in the parent's memory (CLONE_PARENT_SETTID) and in the child's copy */
+    if ((flags & CLONE_PARENT_SETTID) && uvm_check(p->vm, ptid, 4, true)) *(volatile int32_t *)(uintptr_t)ptid = ct->tid;
+    if (flags & CLONE_CHILD_CLEARTID) ct->clear_child_tid = ctid;
+    if ((flags & CLONE_CHILD_SETTID) && ctid) uvm_poke32(c->vm, ctid, (uint32_t)ct->tid);
     klog("linux: pid %d forked pid %d", p->pid, c->pid);
     return c->pid;
 }

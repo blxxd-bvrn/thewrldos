@@ -32,7 +32,7 @@ static void handler_segv(int sig, siginfo_t *info, void *ucp) {
     (void)info;
     counts[sig]++;
     ucontext_t *uc = ucp;
-    uc->uc_mcontext.gregs[REG_RIP] += 6;        /* skip "xor %rax,%rax; movb $1,(%rax)" */
+    uc->uc_mcontext.gregs[REG_RIP] += 3;        /* the fault is reported at "movb $1,(%rax)" itself: skip its 3 bytes */
 }
 static void handler_chld(int sig) { counts[sig]++; }
 

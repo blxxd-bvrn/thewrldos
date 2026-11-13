@@ -272,6 +272,7 @@ bool lx_signal_fault(regs_t *r, int sig, int code, uint64_t addr) {
     if (a->handler == SIG_DFL_ || a->handler == SIG_IGN_) return false;
     if (th->sigmask & sig_bit(sig)) return false;               /* blocked: force the default instead */
     if (!push_frame(th, r, sig, a, code, addr, p->pid, 0)) {
+        klog("linux: pid %d: no room for the signal %d frame (stack %llx)", p->pid, sig, (unsigned long long)r->esp);
         p->term_sig = SIGSEGV;
         lx_exit_group(p, 128 + SIGSEGV);
     }
@@ -282,16 +283,18 @@ bool lx_signal_fault(regs_t *r, int sig, int code, uint64_t addr) {
 int64_t lx_rt_sigreturn(regs_t *r) {
     lxthread_t *th = lx_current();
     if (!th) return -EINVAL;
-    if (r->esp < 8) { th->proc->term_sig = SIGSEGV; lx_exit_group(th->proc, 128 + SIGSEGV); return 0; }
+    if (r->esp < 8) { klog("linux: pid %d: rt_sigreturn with no stack", th->proc->pid); th->proc->term_sig = SIGSEGV; lx_exit_group(th->proc, 128 + SIGSEGV); return 0; }
     uint64_t base = r->esp - 8;
     rtsigframe_t f;
     if (!uread(th->proc->vm, &f, base, sizeof f)) {
+        klog("linux: pid %d: rt_sigreturn frame at %llx unreadable", th->proc->pid, (unsigned long long)base);
         th->proc->term_sig = SIGSEGV;
         lx_exit_group(th->proc, 128 + SIGSEGV);
         return 0;
     }
     sigctx_t *mc = &f.uc.uc_mcontext;
     if (mc->rip < USER_LO || mc->rip >= USER_HI) {
+        klog("linux: pid %d: rt_sigreturn to %llx, outside the program", th->proc->pid, (unsigned long long)mc->rip);
         th->proc->term_sig = SIGSEGV;
         lx_exit_group(th->proc, 128 + SIGSEGV);
         return 0;
