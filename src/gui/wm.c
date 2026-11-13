@@ -335,6 +335,7 @@ static window_t *window_at(int sx, int sy) {
     }
     return NULL;
 }
+bool wm_window_at_point(int x, int y) { return window_at(x, y) != NULL; }
 
 /* ---------------- painting ---------------- */
 static void run_paint(window_t *w) {

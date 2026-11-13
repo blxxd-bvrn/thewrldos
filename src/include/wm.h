@@ -91,6 +91,7 @@ window_t *wm_find(int id);
 bool wm_alive(window_t *w);
 int wm_window_count(void);
 window_t *wm_window_at(int idx);    /* z order, 0 = bottom */
+bool wm_window_at_point(int x, int y);   /* a visible window covers this screen point */
 void wm_theme_changed(void);
 void wm_set_timer(window_t *w, uint32_t ms, void (*fn)(window_t *));
 rect_t wm_work_area(void);

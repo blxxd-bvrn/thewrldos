@@ -1266,6 +1266,14 @@ bool shell_mouse(int type, int x, int y, int btn) {
         return true;
     }
     if (sidebar_open && x >= SCREEN_W - SIDE_W && y < tb_y()) {
+        /* The sidebar lives on the desktop; a window dragged over it is above
+         * it.  Let that window take the click and hover instead of treating
+         * the click as a sidebar activation. */
+        if (wm_window_at_point(x, y)) {
+            if (side_hot != -1) { side_hot = -1; wm_need_redraw = true; }
+            if (type == ME_DOWN) side_search_focus = false;
+            return false;
+        }
         int sh = side_hit(x, y);
         if (type == ME_MOVE) { if (sh != side_hot) { side_hot = sh; wm_need_redraw = true; } return true; }
         if (type == ME_DOWN && (btn & MB_LEFT)) { side_click(sh); return true; }
