@@ -5,7 +5,7 @@
 #include "fs.h"
 
 #define MAX_BODY (24 * 1024 * 1024)
-#define USER_AGENT "Mozilla/5.0 (compatible; XplorerLite/1.0; THE WRLD OS 1.0)"
+#define USER_AGENT "Mozilla/5.0 (compatible; WRLDBrowser/2.0; THE WRLD OS 1.0)"
 
 bool url_parse(const char *url, char *scheme, char *host, int hostcap, uint16_t *port, char *path, int pathcap) {
     const char *p = strstr(url, "://");

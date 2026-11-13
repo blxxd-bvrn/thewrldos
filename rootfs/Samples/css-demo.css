@@ -1,0 +1,13 @@
+/* linked by CSS demo.html */
+body { background: #E9EEF5; margin: 0; }
+.page { max-width: 760px; margin: 0 auto; padding: 24px 20px; background: #FFFFFF; }
+h1 { color: #0E3C8C; margin: 0 0 6px 0; }
+.lead { color: #4A5870; margin: 0 0 20px 0; }
+.box { padding: 16px; border: 2px solid #9DB3D6; border-radius: 10px; margin: 0 0 16px 0; }
+.box h2 { margin: 0 0 6px 0; }
+.blue { background: #E3EEFF; }
+.green { background: #E2F6E6; border-color: #7CC48A; }
+.amber { background: #FFF3DA; border-color: #E2B55A; margin-left: 40px; }
+.narrow { width: 60%; margin: 0 auto 16px auto; }
+.note { border: 1px dashed #8A96A8; padding: 10px 14px; margin: 0 0 16px 0; color: #4A5870; }
+.foot { text-align: center; margin: 24px 0 0 0; }

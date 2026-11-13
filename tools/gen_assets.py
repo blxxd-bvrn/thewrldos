@@ -24,7 +24,7 @@ FONTS = [  # (enum name, file, pixel size)
     ("FONT_SMALL",     "LiberationSans-Regular.ttf", 10),
     ("FONT_XL",        "LiberationSans-Regular.ttf", 24),
     ("FONT_LOGO",      "LiberationSans-Bold.ttf", 46),
-    # web page fonts (XplorerLite)
+    # web page fonts (The WRLD Browser)
     ("FONT_WEB",       "LiberationSans-Regular.ttf", 14),
     ("FONT_WEB_B",     "LiberationSans-Bold.ttf", 14),
     ("FONT_WEB_I",     "LiberationSans-Italic.ttf", 14),
@@ -501,10 +501,11 @@ def ic_setup():
     poly(i, [(14, 18), (34, 18), (34, 8), (50, 26), (34, 44), (34, 34), (14, 34)], hexc("#7CE07C"), hexc("#1E8E1E"), ol=hexc("#106010"), ow=1.4)
     return i
 def ic_browser():
-    """XplorerLite: the globe with an orange orbit ring"""
+    """The WRLD Browser: the globe with a cyan orbit ring"""
     i = new(); logo_globe(i, 10, 10, 90, 90)
     ring = Image.new("RGBA", (SS, SS), (0, 0, 0, 0)); d = ImageDraw.Draw(ring)
-    d.ellipse(box(2, 34, 98, 70), outline=hexc("#F08A24"), width=int(P(6)))
+    d.ellipse(box(2, 34, 98, 70), outline=hexc("#2EC5FF"), width=int(P(6)))
+    d.ellipse(box(6, 37, 94, 67), outline=hexc("#E8FBFF"), width=int(P(1.5)))
     ring = ring.rotate(-24, resample=Image.BICUBIC, center=(SS / 2, SS / 2))
     # the ring passes behind the globe at the top: cut that part out
     m = Image.new("L", (SS, SS), 255); md = ImageDraw.Draw(m); md.rectangle(box(16, 0, 84, 47), fill=0)

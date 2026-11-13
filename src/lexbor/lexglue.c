@@ -1,5 +1,5 @@
-/* Lexbor glue for XplorerLite: HTML5 parsing (lexbor/html) and CSS selector
- * parsing (lexbor/css), with a selector matcher that runs on XplorerLite's own
+/* Lexbor glue for The WRLD Browser: HTML5 parsing (lexbor/html) and CSS selector
+ * parsing (lexbor/css), with a selector matcher that runs on The WRLD Browser's own
  * document tree through the callbacks in lexglue.h. Compiled against the C
  * library shim and Lexbor's headers only; see lexglue.h for the boundary. */
 #include "lexbor/html/html.h"
@@ -53,7 +53,7 @@ static void walk(lxb_dom_node_t *top, const lxg_sink_t *s) {
 int lxg_parse_html(const char *utf8, unsigned len, const lxg_sink_t *s) {
     lxb_html_document_t *doc = lxb_html_document_create();
     if (!doc) return -1;
-    /* scripting off: <noscript> content is parsed as markup, as XplorerLite always did;
+    /* scripting off: <noscript> content is parsed as markup, as The WRLD Browser always did;
      * the layout decides whether to show it */
     lxb_html_document_scripting_set(doc, false);
     if (lxb_html_document_parse(doc, (const lxb_char_t *)utf8, len) != LXB_STATUS_OK) { lxb_html_document_destroy(doc); return -1; }

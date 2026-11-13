@@ -1,4 +1,4 @@
-/* XplorerLite - web browser.
+/* The WRLD Browser - web browser.
  * Pages load on a worker task (DNS, TCP, TLS, HTTP), are parsed by html.c and
  * laid out here into a display list (text runs, boxes, images, form
  * controls). Images load after the text and the page is laid out again.
@@ -21,12 +21,14 @@ bool js_enabled = true;
 #define PAGE_MEM_STEP ((uint64_t)PAGE_MEM_STEP_MB * 1024 * 1024)   /* warn each time a page passes another 500 MB */
 
 #define HOME_URL "wrld://home"
-#define TOOLBAR_H 40
-#define ADDR_H 28
+#define TABS_H 34                              /* the tab strip */
+#define TOOLBAR_H 42                           /* back, forward, reload, home, address */
+#define BOOK_H 28                              /* bookmarks bar */
+#define CHROME_H (TABS_H + TOOLBAR_H + BOOK_H)
 #define STATUS_H 22
 #define SB_W 16
 
-enum { BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_JS, BM_CONSOLE, BM_FAV0 = 100 };
+enum { BM_NEWTAB = 50, BM_CLOSETAB, BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_JS, BM_CONSOLE, BM_FAV0 = 100 };
 static void br_menu(window_t *w, int id);
 
 typedef struct {
@@ -43,7 +45,21 @@ typedef struct {
     bool drag_sb; int drag_off;
     uint32_t prog_got, prog_total;
     char *con[64]; int ncon;                  /* script messages (View > Script Messages) */
+    void *win;                                /* brwin_t: the window this tab is in */
 } browser_t;
+
+/* a window holds tabs; each tab is a browser_t with its own page, history and worker */
+#define MAXTABS 12
+typedef struct { browser_t *tab[MAXTABS]; int n, cur; window_t *w; int addr_id; bool addr_was_focused, addr_all; } brwin_t;   /* addr_all: the whole address is selected */
+static browser_t *active_tab(window_t *w) { brwin_t *bw = w->data; return bw->tab[bw->cur]; }
+static bool tab_shown(browser_t *b) { brwin_t *bw = b->win; return bw && !b->closed && bw->tab[bw->cur] == b; }
+static void tab_title(browser_t *b) {
+    if (b->closed || !b->w) return;
+    b->w->dirty = true;
+    if (!tab_shown(b)) return;
+    char t[200]; snprintf(t, sizeof t, "%s - The WRLD Browser", b->page ? (b->page->title[0] ? b->page->title : b->page->url) : "New Tab");
+    wm_set_title(b->w, t);
+}
 
 /* ---------------- display list ---------------- */
 static node_t *lay_el;                       /* element being laid out (layout never yields) */
@@ -432,15 +448,40 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     else if (!strcmp(t, "pre") || !strcmp(t, "xmp") || !strcmp(t, "listing")) top = bottom = 10;
     else if (!strcmp(t, "form")) bottom = 12;
     else if (!strcmp(t, "fieldset")) { top = bottom = 8; indent = rindent = 10; }
+    /* the CSS box: margins (or the tag's defaults), border, padding, width */
+    const css_t *cs = &n->css;
+    int ml = indent, mr = rindent, pt = 0, pr = 0, pb = 0, pl = 0;
+    if (cs->mset & 1) top = MAX(0, cs->m[0]);
+    if (cs->mset & 2) mr = cs->m[1];
+    if (cs->mset & 4) bottom = MAX(0, cs->m[2]);
+    if (cs->mset & 8) ml = cs->m[3];
+    if (cs->pset & 1) pt = cs->pad[0];
+    if (cs->pset & 2) pr = cs->pad[1];
+    if (cs->pset & 4) pb = cs->pad[2];
+    if (cs->pset & 8) pl = cs->pad[3];
+    int bw = (cs->set & ST_BORDER) ? cs->border : 0;
+    int avail = L->w;
+    if (!(cs->mauto & 8)) ml = CLAMP(ml, -L->x0, avail / 2);
+    if (!(cs->mauto & 2)) mr = CLAMP(mr, -avail / 4, avail / 2);
+    int boxw = avail - (cs->mauto & 8 ? 0 : ml) - (cs->mauto & 2 ? 0 : mr);
+    if (cs->set & ST_WIDTH) { int want = cs->wpct ? avail * cs->width / 100 : cs->width + pl + pr + 2 * bw; boxw = MIN(boxw, want); }
+    if (cs->set & ST_MAXW) { int cap = cs->mpct ? avail * cs->maxw / 100 : cs->maxw + pl + pr + 2 * bw; boxw = MIN(boxw, cap); }
+    boxw = MAX(boxw, 20);
+    if ((cs->mauto & 8) && (cs->mauto & 2)) ml = (avail - boxw) / 2;          /* margin: 0 auto centres */
+    else if (cs->mauto & 8) ml = avail - boxw - mr;
+    else if (cs->mauto & 2) mr = avail - boxw - ml;
+    pl = MIN(pl, boxw / 3); pr = MIN(pr, boxw / 3);
     vspace(L, top, pick_font(&s));
     int ox0 = L->x0, ow = L->w, oal = L->align;
-    L->x0 += indent; L->w = MAX(20, L->w - indent - rindent); L->cx = L->x0;
+    int box_x = L->x0 + ml;
+    L->x0 = box_x + bw + pl; L->w = MAX(20, boxw - 2 * bw - pl - pr); L->cx = L->x0;
     if (!strcmp(t, "center")) L->align = 1;
     const char *al = node_attr(n, "align");
     if (al) L->align = !strcasecmp(al, "center") || !strcasecmp(al, "middle") ? 1 : !strcasecmp(al, "right") ? 2 : 0;
     if (n->css.set & ST_ALIGN) L->align = n->css.align;
     int bg_item = -1, y0 = L->y;
-    if ((n->css.set & ST_BG) && strcmp(t, "body")) { item_t *it = add_item(p, IT_RECT); it->x = L->x0 - indent; it->y = L->y; it->w = L->w + indent + rindent; it->color = n->css.bg; bg_item = p->nitems - 1; L->line_start = p->nitems;
+    if ((n->css.set & (ST_BG | ST_BORDER)) && (bw || (n->css.set & ST_BG)) && strcmp(t, "body")) {
+        item_t *it = add_item(p, IT_RECT); it->x = box_x; it->y = L->y; it->w = boxw; it->color = (n->css.set & ST_BG) ? n->css.bg : 0; bg_item = p->nitems - 1; L->line_start = p->nitems;
         if (n->css.set & ST_RADIUS) it->radius = n->css.radius;
         if (n->css.set & ST_GRAD) { it->grad = (uint8_t)n->css.grad; it->grad_dir = (uint8_t)n->css.grad_dir; it->color2 = n->css.bg2; }
         if (n->css.set & ST_BORDER) { it->border = n->css.border; it->border_color = n->css.border_color; }
@@ -457,8 +498,10 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
         if (font_height(f) > L->line_h) L->line_h = font_height(f);
         if (font_ascent(f) > L->line_asc) L->line_asc = font_ascent(f);
     }
+    if (bw + pt) { L->y += bw + pt; L->trail = pt ? 0 : L->trail; }
     layout_children(L, n, &s);
     newline(L, false, pick_font(&s));
+    if (bw + pb) { L->y += bw + pb; L->trail = 0; }
     if (!strcmp(t, "li") && L->line_start == p->nitems && p->nitems && p->items[p->nitems - 1].kind == IT_BULLET) { /* empty item */ }
     if (bg_item >= 0) p->items[bg_item].h = L->y - y0;
     list_counter = !strcmp(t, "ol") ? save_counter : list_counter;
@@ -469,7 +512,19 @@ static void page_layout(page_t *p, int width) {
     p->nitems = 0; p->nlinks = 0; p->nanchors = 0;
     p->lay_width = width;
     sty_t s = { FONT_WEB, p->fg, false, false, false, false, false, false, 0, -1, 0 };
-    lay_t L = { p, 10, MAX(100, width - 20), 10, 10, 0, 0, 0, 0, 0, 0, false };
+    /* body's box: default margin 10 px; CSS margins, padding, width and max-width */
+    const css_t *rc = &p->doc->root->css;
+    int mt = (rc->mset & 1) ? rc->m[0] : 10, mr = (rc->mset & 2) ? rc->m[1] : 10, ml = (rc->mset & 8) ? rc->m[3] : 10;
+    mt = CLAMP(mt, 0, 400); mr = CLAMP(mr, 0, width / 3); ml = CLAMP(ml, 0, width / 3);
+    if (rc->pset & 1) mt += rc->pad[0];
+    if (rc->pset & 2) mr += MIN(rc->pad[1], width / 4);
+    if (rc->pset & 8) ml += MIN(rc->pad[3], width / 4);
+    int bw = MAX(100, width - ml - mr);
+    if (rc->set & ST_WIDTH) bw = MIN(bw, rc->wpct ? width * rc->width / 100 : rc->width);
+    if (rc->set & ST_MAXW) bw = MIN(bw, rc->mpct ? width * rc->maxw / 100 : rc->maxw);
+    bw = MAX(bw, 100);
+    if ((rc->mauto & 10) == 10) ml = MAX(0, (width - bw) / 2);
+    lay_t L = { p, ml, bw, mt, ml, 0, 0, 0, 0, 0, 0, false };
     list_counter = 1;
     lay_el = p->doc->root;
     layout_children(&L, p->doc->root, &s);
@@ -623,30 +678,38 @@ uint64_t page_memory(page_t *p) {
 
 /* ---------------- built-in pages ---------------- */
 static const char *home_html =
-    "<html><head><title>Home</title></head><body bgcolor=\"#F2F6FC\">"
-    "<center><img src=\"wrld://logo\" width=\"96\" height=\"96\"><h1>XplorerLite</h1>"
-    "<form action=\"https://html.duckduckgo.com/html/\" method=\"get\"><input name=\"q\" size=\"46\"> <input type=\"submit\" value=\"Search the web\"></form>"
-    "<p><small>Search results by DuckDuckGo. Type an address in the Address bar to visit a website.</small></p></center>"
-    "<table width=\"100%\" cellpadding=\"10\"><tr><td valign=\"top\" width=\"50%\">"
-    "<h3>Websites that work well</h3><ul>"
-    "<li><a href=\"https://en.wikipedia.org/wiki/Main_Page\">Wikipedia</a> - the free encyclopedia</li>"
-    "<li><a href=\"https://news.ycombinator.com/\">Hacker News</a></li>"
-    "<li><a href=\"https://lite.cnn.com/\">CNN Lite</a> - text-only news</li>"
-    "<li><a href=\"https://text.npr.org/\">NPR text edition</a></li>"
-    "<li><a href=\"http://68k.news/\">68k.news</a> - news for vintage computers</li>"
-    "<li><a href=\"http://frogfind.com/\">FrogFind</a> - search that simplifies pages</li>"
-    "<li><a href=\"https://www.gutenberg.org/\">Project Gutenberg</a> - free books</li>"
-    "<li><a href=\"https://lite.duckduckgo.com/lite/\">DuckDuckGo Lite</a></li></ul>"
-    "</td><td valign=\"top\">"
-    "<h3>On this computer</h3><ul>"
-    "<li><a href=\"file:///C:/Samples/Welcome.html\">Welcome page</a> - what the browser can show</li>"
-    "<li><a href=\"file:///C:/Samples/JavaScript%20demo.html\">JavaScript demo</a> - scripts, events and timers</li>"
-    "<li><a href=\"file:///C:/\">Browse drive C:</a></li></ul>"
-    "<h3>About</h3><p>XplorerLite understands HTML, simple CSS, tables, forms, links and PNG, GIF, JPEG and BMP images, "
-    "over HTTP and HTTPS (TLS 1.3 and 1.2, certificates checked against the Mozilla root store).</p>"
-    "<p>Scripts run on the <b>QuickJS</b> JavaScript engine with a built-in DOM, events and timers. Large web apps may still not work; "
-    "text-heavy sites work best. Ads and trackers are blocked (Tools menu).</p>"
-    "</td></tr></table></body></html>";
+    "<html><head><title>New Tab</title><style>"
+    "body{background:#EEF3FA;margin:0;color:#1C2635}"
+    ".hero{background:linear-gradient(135deg,#0E3C8C,#2C7BE5);color:#FFFFFF;padding:28px 20px 30px 20px;text-align:center}"
+    ".hero h1{color:#FFFFFF;margin:6px 0 4px 0}"
+    ".hero p{color:#D6E6FF;margin:0 0 16px 0}"
+    ".search{max-width:560px;margin:0 auto;background:#FFFFFF;border-radius:22px;padding:8px 14px}"
+    ".wrap{max-width:860px;margin:22px auto;padding:0 16px}"
+    ".card{background:#FFFFFF;border:1px solid #D5DEEB;border-radius:10px;padding:12px 16px;margin:0 0 14px 0}"
+    ".card h3{margin:0 0 8px 0;color:#0E3C8C}"
+    ".foot{text-align:center;color:#6A7890;margin:10px 0 24px 0}"
+    "</style></head><body>"
+    "<div class=\"hero\"><img src=\"wrld://logo\" width=\"72\" height=\"72\"><h1>The WRLD Browser</h1>"
+    "<p>Search the web or type an address above. Ctrl+T opens a new tab.</p>"
+    "<div class=\"search\"><form action=\"https://html.duckduckgo.com/html/\" method=\"get\"><input name=\"q\" size=\"44\"> <input type=\"submit\" value=\"Search\"></form></div></div>"
+    "<div class=\"wrap\">"
+    "<div class=\"card\"><h3>Websites that work well</h3>"
+    "<a href=\"https://en.wikipedia.org/wiki/Main_Page\">Wikipedia</a> - the free encyclopedia<br>"
+    "<a href=\"https://news.ycombinator.com/\">Hacker News</a><br>"
+    "<a href=\"https://lite.cnn.com/\">CNN Lite</a> - text-only news<br>"
+    "<a href=\"https://text.npr.org/\">NPR text edition</a><br>"
+    "<a href=\"http://68k.news/\">68k.news</a> - news for vintage computers<br>"
+    "<a href=\"http://frogfind.com/\">FrogFind</a> - search that simplifies pages<br>"
+    "<a href=\"https://www.gutenberg.org/\">Project Gutenberg</a> - free books</div>"
+    "<div class=\"card\"><h3>On this computer</h3>"
+    "<a href=\"file:///C:/Samples/Welcome.html\">Welcome page</a> - what the browser can show<br>"
+    "<a href=\"file:///C:/Samples/CSS%20demo.html\">CSS demo</a> - boxes, margins and a linked style sheet<br>"
+    "<a href=\"file:///C:/Samples/JavaScript%20demo.html\">JavaScript demo</a> - scripts, events and timers<br>"
+    "<a href=\"file:///C:/\">Browse drive C:</a></div>"
+    "<div class=\"card\"><h3>What's new</h3>Tabs (middle-click a link to open it in one), a new toolbar and bookmarks bar, "
+    "and CSS boxes: margins, padding, borders, widths and linked style sheets.</div>"
+    "<p class=\"foot\">HTTPS with TLS 1.3 and 1.2 &middot; JavaScript by QuickJS &middot; ads and trackers blocked</p>"
+    "</div></body></html>";
 
 static char *error_html(const char *url, const char *title, const char *msg) {
     char *b = kmalloc(4096);
@@ -697,14 +760,13 @@ static void install_page(browser_t *b, page_t *p, job_t *j) {
             strlcpy(b->hist[b->nhist], p->url, sizeof b->hist[0]); b->hpos = b->nhist++;
         }
     }
-    char t[200]; snprintf(t, sizeof t, "%s - XplorerLite", p->title[0] ? p->title : p->url);
-    if (!b->closed) wm_set_title(b->w, t);
+    tab_title(b);
     if (old) { if (old->worker_running) old->orphan = true; else page_free(old); }
 }
 static int view_width(browser_t *b) { rect_t cr = b->closed ? R(0, 0, 800, 600) : R(0, 0, b->w->surf->w, b->w->surf->h); return cr.w - SB_W; }
 static canvas_t *builtin_image(const char *url) {
     if (!strcmp(url, "wrld://logo")) {
-        canvas_t *c = canvas_new(96, 96); gfx_clear(c, HEX(0xF2F6FC)); draw_globe(c, 0, 0, 96, -36); return c;
+        canvas_t *c = canvas_new(96, 96); gfx_clear(c, 0); draw_globe(c, 0, 0, 96, -36); return c;   /* transparent around the globe */
     }
     if (!strcmp(url, "wrld://error")) { canvas_t *c = canvas_new(48, 48); gfx_clear(c, WHITE); draw_icon(c, ICON_ERROR, 48, 0, 0); return c; }
     return NULL;
@@ -833,8 +895,7 @@ static void page_sync(browser_t *b, job_t *j, page_t *p) {
     if (b->gen != j->gen || b->closed) return;
     if (p->scripts_pending) run_scripts(b, j, p);
     if (p->title_dirty && b->page == p && !b->closed) {
-        char t[200]; snprintf(t, sizeof t, "%s - XplorerLite", p->title[0] ? p->title : p->url);
-        wm_set_title(b->w, t);
+        tab_title(b);
         p->title_dirty = false;
     }
     if (p->tree_dirty) {
@@ -1011,7 +1072,7 @@ static int mem_ask(page_t *p) {           /* 1 = stop the page */
     char m[700];
     snprintf(m, sizeof m, "%s is using %u MB of memory, more than %u MB.\n\nPages that use this much memory can make " OS_NAME " slow or unresponsive.\n\nDo you want to let this page continue?\n(Yes = continue, No = stop the page)",
              p->title[0] ? p->title : p->url, (uint32_t)(used >> 20), (uint32_t)(p->mem_limit >> 20));
-    msgbox("XplorerLite - High memory use", m, MBI_WARNING, MBX_YESNO, mem_reply_cb, p);
+    msgbox("The WRLD Browser - High memory use", m, MBI_WARNING, MBX_YESNO, mem_reply_cb, p);
     while (!mem_reply && alive(p)) task_sleep(50);
     int r = mem_reply;
     mem_asker = NULL;
@@ -1028,6 +1089,37 @@ int dom_interrupt(void *page) {
     return 0;
 }
 
+/* <link rel=stylesheet> sheets: fetched in document order, then the tree is styled again */
+static void load_stylesheets(browser_t *b, job_t *j, page_t *p) {
+    doc_t *d = p->doc;
+    int got = 0;
+    for (int i = 0; i < d->nlinks; i++) {
+        char abs[1024];
+        url_resolve(d->base[0] ? d->base : p->url, d->links[i].href, abs, sizeof abs);
+        if (!p->ads_ok && adblock_blocks(abs, p->url)) { p->blocked++; continue; }
+        char msg[160]; snprintf(msg, sizeof msg, "Loading style sheet %d of %d...", i + 1, d->nlinks);
+        set_status(b, msg);
+        if (!strncasecmp(abs, "file:", 5)) {
+            const char *pth = abs + 5; while (*pth == '/') pth++;
+            char vp[512]; strlcpy(vp, pth, sizeof vp);
+            for (char *q = vp; *q; q++) if (*q == '/') *q = '\\';
+            vnode_t *n = vfs_resolve(vp, NULL);
+            if (n && !n->dir && n->data) { html_add_stylesheet(d, (const char *)n->data, MIN(n->size, 512u * 1024), d->links[i].sheet); got++; }
+            continue;
+        }
+        if (strncasecmp(abs, "http:", 5) && strncasecmp(abs, "https:", 6)) continue;
+        http_response_t r;
+        bool ok = http_get(abs, &r, NULL, NULL);
+        if (b->gen != j->gen || b->closed) { http_free(&r); return; }
+        if (ok && r.body_len) { html_add_stylesheet(d, (const char *)r.body, MIN(r.body_len, 512u * 1024), d->links[i].sheet); got++; }
+        http_free(&r);
+    }
+    if (!got) return;
+    html_restyle_all(d);
+    if (d->bgcolor) p->bg = d->bgcolor;
+    if (d->text) p->fg = d->text;
+    page_rebuild(p);
+}
 static void nav_worker(void *arg) {
     job_t *j = arg;
     browser_t *b = j->b;
@@ -1096,6 +1188,8 @@ static void nav_worker(void *arg) {
         http_free(&r);
     }
     if (!p || b->gen != j->gen || b->closed) { page_free(p); goto out; }
+    load_stylesheets(b, j, p);
+    if (b->gen != j->gen || b->closed) { page_free(p); goto out; }
     p->browser = b; p->gen = j->gen;
     strlcpy(p->referrer, j->referrer, sizeof p->referrer);
     p->worker_running = true;
@@ -1207,7 +1301,7 @@ static void submit_form(browser_t *b, int form, int submitter) {
 }
 
 /* ---------------- painting ---------------- */
-static rect_t content_rect(window_t *w) { return R(0, TOOLBAR_H + ADDR_H, w->surf->w - SB_W, w->surf->h - TOOLBAR_H - ADDR_H - STATUS_H); }
+static rect_t content_rect(window_t *w) { return R(0, CHROME_H, w->surf->w - SB_W, w->surf->h - CHROME_H - STATUS_H); }
 static void draw_img(canvas_t *c, pimg_t *im, int x, int y, int w, int h) {
     if (im->state != 1) {
         draw_rect(c, x, y, w, h, HEX(0xA0A0A0));
@@ -1299,7 +1393,7 @@ static void paint_content(browser_t *b, canvas_t *c, rect_t v) {
                         raster_fill_gradient(c, rp, x + it->w / 2, y + it->h / 2,
                                              x + it->w / 2, y + it->h / 2 + rad,
                                              it->color, it->color2, true, false);
-                    } else {
+                    } else if (it->color >> 24) {                   /* a border alone has no fill */
                         raster_fill(c, rp, it->color, false);
                     }
                     if (it->border > 0) {
@@ -1336,42 +1430,183 @@ static void clamp_scroll(browser_t *b, rect_t v) {
 static void go_back(browser_t *b) { if (b->hpos > 0) { b->hpos--; browser_navigate_ext(b, b->hist[b->hpos], NULL, false); } }
 static void go_fwd(browser_t *b) { if (b->hpos < b->nhist - 1) { b->hpos++; browser_navigate_ext(b, b->hist[b->hpos], NULL, false); } }
 static void stop_loading(browser_t *b) { b->gen++; b->loading = false; set_status(b, "Stopped"); }
-static void br_paint(window_t *w) {
-    browser_t *b = w->data;
+/* ---------------- the window: tabs, toolbar, bookmarks, page, status ---------------- */
+typedef struct { uint32_t strip, bar, tab_hot, text, dim, line, field, field_line, accent; } chrome_t;
+static chrome_t chrome_colours(void) {
+    if (dark_mode) return (chrome_t){ 0xFF161B26, 0xFF262D3D, 0xFF1F2533, 0xFFE6EBF3, 0xFF9AA6BA, 0xFF0E121A, 0xFF161B26, 0xFF3A4458, 0xFF5B9BFF };
+    return (chrome_t){ 0xFFCFD8E6, 0xFFF7F9FC, 0xFFE2E8F1, 0xFF1C2635, 0xFF5E6B80, 0xFFB5C0D0, 0xFFFFFFFF, 0xFFB8C4D6, 0xFF2F6FE0 };
+}
+static void tri3(canvas_t *c, int x0, int y0, int x1, int y1, int x2, int y2, uint32_t col) {
+    raster_path_t *p = raster_path_new(); if (!p) return;
+    raster_move_to(p, RASTER_FIX(x0), RASTER_FIX(y0)); raster_line_to(p, RASTER_FIX(x1), RASTER_FIX(y1));
+    raster_line_to(p, RASTER_FIX(x2), RASTER_FIX(y2)); raster_close(p);
+    raster_fill(c, p, col, false); raster_path_free(p);
+}
+/* a round toolbar button with a drawn glyph; returns true when clicked */
+enum { GL_BACK, GL_FWD, GL_RELOAD, GL_STOP, GL_HOME, GL_PLUS, GL_CLOSE };
+static bool glyph_btn(window_t *w, int cx, int cy, int r, int glyph, bool enabled, const chrome_t *k) {
     canvas_t *c = w->surf;
+    rect_t rr = R(cx - r, cy - r, 2 * r, 2 * r);
+    bool hot = enabled && ui_hover(w, rr), click = ui_click_area(w, rr) && enabled;
+    if (hot) fill_circle(c, cx, cy, r, w->ui.down ? mix(k->bar, k->text, 60) : mix(k->bar, k->text, 30));
+    uint32_t g = enabled ? k->text : mix(k->bar, k->dim, 120);
+    switch (glyph) {
+    case GL_BACK: case GL_FWD: {
+        int d = glyph == GL_BACK ? -1 : 1;
+        draw_thick_line(c, cx - 6 * d, cy, cx + 6 * d, cy, 2, g);
+        draw_thick_line(c, cx + 6 * d, cy, cx + 1 * d, cy - 5, 2, g);
+        draw_thick_line(c, cx + 6 * d, cy, cx + 1 * d, cy + 5, 2, g);
+        break;
+    }
+    case GL_RELOAD: {
+        raster_path_t *p = raster_path_new();
+        if (p) {   /* three quarters of a circle and an arrow head */
+            int32_t R0 = RASTER_FIX(6);
+            raster_move_to(p, RASTER_FIX(cx) + R0, RASTER_FIX(cy));
+            raster_cubic_to(p, RASTER_FIX(cx) + R0, RASTER_FIX(cy) + R0 * 55 / 100, RASTER_FIX(cx) + R0 * 55 / 100, RASTER_FIX(cy) + R0, RASTER_FIX(cx), RASTER_FIX(cy) + R0);
+            raster_cubic_to(p, RASTER_FIX(cx) - R0 * 55 / 100, RASTER_FIX(cy) + R0, RASTER_FIX(cx) - R0, RASTER_FIX(cy) + R0 * 55 / 100, RASTER_FIX(cx) - R0, RASTER_FIX(cy));
+            raster_cubic_to(p, RASTER_FIX(cx) - R0, RASTER_FIX(cy) - R0 * 55 / 100, RASTER_FIX(cx) - R0 * 55 / 100, RASTER_FIX(cy) - R0, RASTER_FIX(cx), RASTER_FIX(cy) - R0);
+            raster_stroke(c, p, 2, g); raster_path_free(p);
+        }
+        tri3(c, cx - 1, cy - 10, cx + 5, cy - 6, cx - 1, cy - 2, g);
+        break;
+    }
+    case GL_STOP: case GL_CLOSE: {
+        int s = glyph == GL_CLOSE ? 4 : 5;
+        draw_thick_line(c, cx - s, cy - s, cx + s, cy + s, 2, g); draw_thick_line(c, cx + s, cy - s, cx - s, cy + s, 2, g);
+        break;
+    }
+    case GL_HOME:
+        tri3(c, cx - 8, cy - 1, cx, cy - 8, cx + 8, cy - 1, g);
+        fill_rect(c, cx - 5, cy - 1, 10, 8, g);
+        fill_rect(c, cx - 1, cy + 2, 3, 5, hot ? mix(k->bar, k->text, 30) : k->bar);
+        break;
+    case GL_PLUS:
+        fill_rect(c, cx - 6, cy - 1, 13, 2, g); fill_rect(c, cx - 1, cy - 6, 2, 13, g);
+        break;
+    }
+    return click;
+}
+static void new_tab(window_t *w, const char *url, bool activate);
+static void close_tab(window_t *w, int i);
+static void switch_tab(window_t *w, int i) {
+    brwin_t *bw = w->data;
+    if (i < 0 || i >= bw->n) return;
+    bw->cur = i; w->ui.focus = 0;
+    tab_title(bw->tab[i]);
+    w->dirty = true;
+}
+static void draw_tabs(window_t *w, brwin_t *bw, const chrome_t *k) {
+    canvas_t *c = w->surf;
+    fill_rect(c, 0, 0, c->w, TABS_H, k->strip);
+    int x = 8, avail = c->w - 8 - 48;
+    int tw = MIN(220, MAX(70, avail / MAX(1, bw->n)));
+    int close_req = -1, switch_req = -1;
+    for (int i = 0; i < bw->n; i++) {
+        browser_t *t = bw->tab[i];
+        rect_t r = R(x, 6, tw, TABS_H - 6);
+        bool on = i == bw->cur, hot = ui_hover(w, r);
+        if (on || hot) {
+            uint32_t col = on ? k->bar : k->tab_hot;
+            fill_round_rect(c, r.x, r.y, r.w, r.h + 8, 8, col);
+            if (on) { /* the active tab flows into the toolbar */
+                fill_rect(c, r.x - 6, TABS_H - 6, 6, 6, col); fill_rect(c, r.x + r.w, TABS_H - 6, 6, 6, col);
+                fill_circle(c, r.x - 6, TABS_H - 7, 6, k->strip); fill_circle(c, r.x + r.w + 5, TABS_H - 7, 6, k->strip);
+            }
+        } else if (i + 1 != bw->cur && i + 1 < bw->n) vline(c, r.x + r.w, r.y + 7, r.h - 14, k->line);
+        /* site icon, or a spinner while loading */
+        int ix = r.x + 10, iy = r.y + (r.h - 16) / 2;
+        if (t->loading) {
+            int f = (timer_ticks() / 90) % 12;
+            for (int d = 0; d < 12; d++) {
+                int a = d * 30; int dx = (a < 180 ? 1 : -1) * (a % 180 < 90 ? a % 90 : 90 - a % 90) / 13, dy = (a < 90 || a >= 270 ? -1 : 1) * (a % 180 < 90 ? 90 - a % 90 : a % 90) / 13;
+                fill_circle(c, ix + 8 + dx, iy + 8 + dy, 1, mix(k->accent, on ? k->bar : k->strip, ((d - f + 12) % 12) * 20));
+            }
+        } else draw_icon(c, t->page && t->page->secure ? ICON_LOCK : ICON_BROWSER, 16, ix, iy);
+        const char *title = t->page ? (t->page->title[0] ? t->page->title : t->page->url) : "New Tab";
+        if (t->loading && (!t->page || !t->page->title[0])) title = "Loading...";
+        draw_text_ellipsis(c, FONT_UI, ix + 22, r.y + (r.h - font_height(FONT_UI)) / 2, r.w - 22 - 10 - 26, title, on ? k->text : k->dim);
+        if (ui_click_area(w, r)) switch_req = i;
+        if ((on || hot) && glyph_btn(w, r.x + r.w - 16, r.y + r.h / 2, 9, GL_CLOSE, true, k)) close_req = i;
+        x += tw;
+    }
+    if (bw->n < MAXTABS && glyph_btn(w, x + 20, 6 + (TABS_H - 6) / 2, 13, GL_PLUS, true, k)) new_tab(w, HOME_URL, true);
+    if (close_req >= 0) close_tab(w, close_req);
+    else if (switch_req >= 0 && switch_req != bw->cur) switch_tab(w, switch_req);
+}
+static const char *fav_names[] = { "Wikipedia", "Hacker News", "CNN Lite", "NPR", "68k.news", "FrogFind" };
+static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
+static void br_paint(window_t *w) {
+    brwin_t *bw = w->data;
+    browser_t *b = active_tab(w);
+    canvas_t *c = w->surf;
+    chrome_t k = chrome_colours();
+    draw_tabs(w, bw, &k);
+    b = active_tab(w);
     /* toolbar */
-    if (T.classic) fill_rect(c, 0, 0, c->w, TOOLBAR_H + ADDR_H, T.face);
-    else gradient_v(c, 0, 0, c->w, TOOLBAR_H + ADDR_H, lighten(T.face, 120), T.face);
-    hline(c, 0, TOOLBAR_H - 1, c->w, darken(T.face, 30)); hline(c, 0, TOOLBAR_H, c->w, lighten(T.face, 160));
-    int x = 6;
-    bool canb = b->hpos > 0, canf = b->hpos < b->nhist - 1;
-    if (ui_icon_button(w, R(x, 4, 72, 32), ICON_BACK, "Back") && canb) go_back(b);
-    if (!canb) blend_rect(c, x + 2, 6, 68, 28, T.face, 140);
-    x += 76;
-    if (ui_icon_button(w, R(x, 4, 32, 32), ICON_FORWARD, NULL) && canf) go_fwd(b);
-    if (!canf) blend_rect(c, x + 2, 6, 28, 28, T.face, 140);
-    x += 38;
-    if (ui_icon_button(w, R(x, 4, 32, 32), ICON_STOP, NULL)) stop_loading(b);
-    x += 34;
-    if (ui_icon_button(w, R(x, 4, 32, 32), ICON_REFRESH, NULL)) browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
-    x += 34;
-    if (ui_icon_button(w, R(x, 4, 32, 32), ICON_HOME, NULL)) browser_navigate_ext(b, HOME_URL, NULL, true);
-    x += 40;
-    vline(c, x, 6, 28, darken(T.face, 40)); vline(c, x + 1, 6, 28, WHITE);
-    /* spinning globe while loading */
-    draw_icon(c, ICON_BROWSER, 32, c->w - 40, 4);
-    if (b->loading) { int f = (timer_ticks() / 120) % 8; fill_circle(c, c->w - 24 + (f < 4 ? f * 3 - 6 : 6 - (f - 4) * 3), 30, 2, HEX(0xF08A24)); }
-    /* address bar */
-    int ay = TOOLBAR_H + 3;
-    draw_text(c, FONT_UI, 8, ay + 5, "Address", HEX(0x404040));
-    rect_t ab = R(62, ay, c->w - 62 - 74, 22);
-    bool enter = ui_textbox(w, ab, b->addr, sizeof b->addr);
-    if (b->page && b->page->secure) draw_icon(c, ICON_LOCK, 16, ab.x + ab.w - 20, ab.y + 3);
-    if (ui_icon_button(w, R(c->w - 68, ay - 1, 60, 24), ICON_GO, "Go") || enter) {
+    int ty = TABS_H;
+    fill_rect(c, 0, ty, c->w, TOOLBAR_H + BOOK_H, k.bar);
+    int cy = ty + TOOLBAR_H / 2;
+    if (glyph_btn(w, 22, cy, 15, GL_BACK, b->hpos > 0, &k)) go_back(b);
+    if (glyph_btn(w, 56, cy, 15, GL_FWD, b->hpos < b->nhist - 1, &k)) go_fwd(b);
+    if (b->loading) { if (glyph_btn(w, 90, cy, 15, GL_STOP, true, &k)) stop_loading(b); }
+    else if (glyph_btn(w, 90, cy, 15, GL_RELOAD, true, &k)) browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
+    if (glyph_btn(w, 124, cy, 15, GL_HOME, true, &k)) browser_navigate_ext(b, HOME_URL, NULL, true);
+    /* address field */
+    int shield_w = 112;
+    rect_t ab = R(146, ty + 6, MAX(120, c->w - 146 - shield_w - 14), TOOLBAR_H - 12);
+    bool focused = w->ui.focus == w->ui.next_id + 1;
+    fill_round_rect(c, ab.x, ab.y, ab.w, ab.h, ab.h / 2, focused ? k.field : mix(k.field, k.bar, 90));
+    draw_round_rect(c, ab.x, ab.y, ab.w, ab.h, ab.h / 2, focused ? k.accent : k.field_line);
+    if (focused) draw_round_rect(c, ab.x - 1, ab.y - 1, ab.w + 2, ab.h + 2, ab.h / 2 + 1, mix(k.accent, k.bar, 140));
+    if (focused && !bw->addr_was_focused) bw->addr_all = true;          /* focusing selects the address */
+    if (!focused) bw->addr_all = false;
+    bw->addr_was_focused = focused;
+    if (bw->addr_all && b->addr[0]) fill_rect(c, ab.x + 37, ab.y + (ab.h - font_height(FONT_UI)) / 2 - 1, MIN(text_width(FONT_UI, b->addr) + 2, ab.w - 48), font_height(FONT_UI) + 2, mix(k.accent, k.field, 150));
+    bool secure = b->page && b->page->secure;
+    if (secure) draw_icon(c, ICON_LOCK, 16, ab.x + 12, ab.y + (ab.h - 16) / 2);
+    else draw_icon(c, ICON_INFO, 16, ab.x + 12, ab.y + (ab.h - 16) / 2);
+    bw->addr_id = w->ui.next_id + 1;
+    bool enter = ui_textbox_ex(w, R(ab.x + 34, ab.y + 2, ab.w - 44, ab.h - 4), b->addr, sizeof b->addr, true, k.text, NULL);
+    if (enter) {
         char u[1024]; normalize_address(b->addr, u, sizeof u);
         browser_navigate_ext(b, u, NULL, true);
         w->ui.focus = 0;
     }
+    /* ad blocker shield */
+    {
+        rect_t sr = R(c->w - shield_w - 8, ty + 7, shield_w, TOOLBAR_H - 14);
+        bool hot = ui_hover(w, sr);
+        uint32_t col = !adblock_enabled ? k.dim : b->page && b->page->ads_ok ? 0xFFD08A00 : 0xFF1E9A4A;
+        fill_round_rect(c, sr.x, sr.y, sr.w, sr.h, sr.h / 2, hot ? mix(k.bar, col, 60) : mix(k.bar, col, 30));
+        char t[24];
+        if (!adblock_enabled) strcpy(t, "Ads allowed"); else if (b->page && b->page->ads_ok) strcpy(t, "Site allowed");
+        else snprintf(t, sizeof t, "%d blocked", b->page ? b->page->blocked : 0);
+        fill_round_rect(c, sr.x + 8, sr.y + 6, 12, sr.h - 12, 4, col);
+        draw_text(c, FONT_SMALL, sr.x + 11, sr.y + (sr.h - font_height(FONT_SMALL)) / 2, "A", WHITE);
+        draw_text_ellipsis(c, FONT_UI, sr.x + 26, sr.y + (sr.h - font_height(FONT_UI)) / 2, sr.w - 32, t, k.text);
+        if (ui_click_area(w, sr)) br_menu(w, BM_ADBLOCK);
+    }
+    /* loading progress along the bottom of the toolbar */
+    if (b->loading) {
+        int pw = b->prog_total ? (int)((uint64_t)b->prog_got * c->w / b->prog_total) : -1;
+        if (pw >= 0) fill_rect(c, 0, ty + TOOLBAR_H - 2, MAX(pw, 8), 2, k.accent);
+        else { int pos = (int)(timer_ticks() / 4 % (uint32_t)(c->w + 160)) - 160; fill_rect(c, MAX(0, pos), ty + TOOLBAR_H - 2, 160 + MIN(0, pos), 2, k.accent); }
+    }
+    /* bookmarks bar */
+    int by = ty + TOOLBAR_H;
+    int bx = 10;
+    for (unsigned i = 0; i < ARRAY_LEN(fav_names); i++) {
+        int bwid = text_width(FONT_UI, fav_names[i]) + 34;
+        if (bx + bwid > c->w - 10) break;
+        rect_t r = R(bx, by + 3, bwid, BOOK_H - 6);
+        if (ui_hover(w, r)) fill_round_rect(c, r.x, r.y, r.w, r.h, 6, mix(k.bar, k.text, 25));
+        draw_icon(c, ICON_BROWSER, 16, r.x + 6, r.y + (r.h - 16) / 2);
+        draw_text(c, FONT_UI, r.x + 26, r.y + (r.h - font_height(FONT_UI)) / 2, fav_names[i], k.text);
+        if (ui_click_area(w, r)) browser_navigate_ext(b, favs[i], NULL, true);
+        bx += bwid + 4;
+    }
+    hline(c, 0, CHROME_H - 1, c->w, k.line);
     /* page */
     rect_t v = content_rect(w);
     if (b->page && b->page->lay_width != v.w) page_layout(b->page, v.w);
@@ -1380,25 +1615,13 @@ static void br_paint(window_t *w) {
     draw_scrollbar(c, R(v.x + v.w, v.y, SB_W, v.h), b->page ? MAX(b->page->height, v.h) : v.h, v.h, b->scroll, true);
     /* status bar */
     int sy = c->h - STATUS_H;
-    fill_rect(c, 0, sy, c->w, STATUS_H, T.face);
-    hline(c, 0, sy, c->w, darken(T.face, 40));
+    fill_rect(c, 0, sy, c->w, STATUS_H, k.bar);
+    hline(c, 0, sy, c->w, k.line);
     const char *st = b->hover_link >= 0 && b->page && b->hover_link < b->page->nlinks ? b->page->links[b->hover_link] : b->status;
-    draw_icon(c, b->loading ? ICON_BROWSER : ICON_INFO, 16, 4, sy + 3);
-    draw_text_ellipsis(c, FONT_UI, 24, sy + 4, c->w - 330, st, T.text);
-    vline(c, c->w - 170, sy + 3, STATUS_H - 6, darken(T.face, 40));
-    {   /* ad blocker indicator */
-        char ab[24]; uint32_t col = adblock_enabled ? HEX(0x1E8A3C) : HEX(0x909090);
-        if (!adblock_enabled) strcpy(ab, "Ads: off"); else if (b->page && b->page->ads_ok) strcpy(ab, "Ads: allowed");
-        else snprintf(ab, sizeof ab, "Ads: %d blocked", b->page ? b->page->blocked : 0);
-        int aw = text_width(FONT_UI, ab) + 22, ax = c->w - 176 - aw;
-        fill_round_rect(c, ax, sy + 4, 14, 14, 3, col); draw_text(c, FONT_SMALL, ax + 4, sy + 5, "A", WHITE);
-        draw_text(c, FONT_UI, ax + 18, sy + 4, ab, T.text);
-        vline(c, ax - 6, sy + 3, STATUS_H - 6, darken(T.face, 40));
-        if (ui_click_area(w, R(ax, sy, aw, STATUS_H))) br_menu(w, BM_ADBLOCK);
-    }
-    if (b->page && b->page->secure) draw_icon(c, ICON_LOCK, 16, c->w - 162, sy + 3);
-    draw_icon(c, ICON_CP_NETWORK, 16, c->w - 130, sy + 3);
-    draw_text(c, FONT_UI, c->w - 110, sy + 4, netif.configured ? "Internet" : "Offline", T.text);
+    draw_text_ellipsis(c, FONT_UI, 10, sy + 4, c->w - 220, st, k.dim);
+    if (secure) { draw_icon(c, ICON_LOCK, 16, c->w - 200, sy + 3); draw_text_ellipsis(c, FONT_SMALL, c->w - 180, sy + 5, 80, b->page->tls, k.dim); }
+    draw_icon(c, ICON_CP_NETWORK, 16, c->w - 92, sy + 3);
+    draw_text(c, FONT_UI, c->w - 72, sy + 4, netif.configured ? "Online" : "Offline", k.dim);
 }
 static int item_at(page_t *p, int x, int y, int kind_ctrl) {
     if (!p) return -1;
@@ -1426,7 +1649,7 @@ static void select_cb(void *ctx, int id) {
     }
 }
 static void br_mouse(window_t *w, int type, int mx, int my, int btn) {
-    browser_t *b = w->data;
+    browser_t *b = active_tab(w);
     rect_t v = content_rect(w);
     if (b->drag_sb) {
         if (type == ME_UP) b->drag_sb = false;
@@ -1446,6 +1669,11 @@ static void br_mouse(window_t *w, int type, int mx, int my, int btn) {
     if (type == ME_MOVE) {
         if (link != b->hover_link) { b->hover_link = link; w->dirty = true; }
         w->cursor = link >= 0 ? CURSOR_HAND : ctl >= 0 && b->page && (b->page->ctrls[ctl].type == C_TEXT || b->page->ctrls[ctl].type == C_PASSWORD || b->page->ctrls[ctl].type == C_TEXTAREA) ? CURSOR_IBEAM : CURSOR_ARROW;
+        return;
+    }
+    if (type == ME_DOWN && btn == MB_MIDDLE && link >= 0) {
+        char u[1024]; strlcpy(u, b->page->links[link], sizeof u);
+        new_tab(w, u, false);
         return;
     }
     if (type == ME_DOWN && btn == MB_LEFT) {
@@ -1480,8 +1708,22 @@ static void br_mouse(window_t *w, int type, int mx, int my, int btn) {
     }
 }
 static void br_key(window_t *w, key_event_t *e) {
-    browser_t *b = w->data;
+    brwin_t *bw = w->data;
+    browser_t *b = active_tab(w);
     if (!e->pressed) return;
+    if (bw->addr_all && w->ui.focus == bw->addr_id && !(e->mods & MOD_CTRL)) {   /* typing replaces a selected address */
+        if (e->key == KEY_BACKSPACE || e->key == KEY_DELETE) { b->addr[0] = 0; bw->addr_all = false; w->dirty = true; return; }
+        if (e->ch >= 32 && (uint8_t)e->ch < 127) { b->addr[0] = 0; bw->addr_all = false; }          /* the text box then adds the character */
+        else if (e->key == KEY_LEFT || e->key == KEY_RIGHT || e->key == KEY_END || e->key == KEY_HOME) bw->addr_all = false;
+    }
+    if (e->mods & MOD_CTRL) {
+        int ch = e->ch | 0x20;
+        if (ch == 't') { new_tab(w, HOME_URL, true); return; }
+        if (ch == 'w') { close_tab(w, bw->cur); return; }
+        if (ch == 'l') { w->ui.focus = bw->addr_id; bw->addr_all = true; bw->addr_was_focused = true; w->dirty = true; return; }
+        if (e->key == KEY_TAB) { switch_tab(w, (bw->cur + ((e->mods & MOD_SHIFT) ? bw->n - 1 : 1)) % bw->n); return; }
+        if (e->ch >= '1' && e->ch <= '9') { switch_tab(w, e->ch == '9' ? bw->n - 1 : e->ch - '1'); return; }
+    }
     rect_t v = content_rect(w);
     if ((e->mods & MOD_ALT) && e->key == KEY_LEFT) { go_back(b); return; }
     if ((e->mods & MOD_ALT) && e->key == KEY_RIGHT) { go_fwd(b); return; }
@@ -1518,30 +1760,75 @@ static void br_key(window_t *w, key_event_t *e) {
     }
     clamp_scroll(b, v); w->dirty = true;
 }
-static void br_tick(window_t *w) { browser_t *b = w->data; if (b->loading || b->focus_ctrl >= 0) w->dirty = true; }
-static void br_destroy(window_t *w) {
-    browser_t *b = w->data; b->closed = true; b->gen++; b->w = NULL;
-    w->menus = NULL;                  /* the static br_menus: not the window manager's to free */
+static void br_tick(window_t *w) {
+    brwin_t *bw = w->data;
+    for (int i = 0; i < bw->n; i++) if (bw->tab[i]->loading) w->dirty = true;
+    if (active_tab(w)->focus_ctrl >= 0) w->dirty = true;
+}
+static void tab_free(browser_t *b) {
+    b->closed = true; b->gen++; b->w = NULL; b->win = NULL;
     for (int i = 0; i < b->ncon; i++) kfree(b->con[i]);
     b->ncon = 0;
-    browser_release(b);
+    browser_release(b);                       /* a worker still running holds its own reference */
+}
+static void br_destroy(window_t *w) {
+    brwin_t *bw = w->data;
+    w->menus = NULL;                  /* the static br_menus: not the window manager's to free */
+    for (int i = 0; i < bw->n; i++) tab_free(bw->tab[i]);
+    bw->n = 0;
+    kfree(bw);
+    w->data = NULL;
+}
+static browser_t *tab_alloc(window_t *w) {
+    browser_t *b = kzalloc(sizeof *b);
+    b->refs = 1; b->hover_link = -1; b->focus_ctrl = -1; b->hpos = -1;
+    b->w = w; b->win = w->data;
+    return b;
+}
+static void new_tab(window_t *w, const char *url, bool activate) {
+    brwin_t *bw = w->data;
+    if (bw->n >= MAXTABS) { msgbox("The WRLD Browser", "Close a tab first: a window holds up to 12 tabs.", MBI_INFO, MBX_OK, NULL, NULL); return; }
+    browser_t *b = tab_alloc(w);
+    int at = activate ? bw->n : MIN(bw->cur + 1, bw->n);
+    memmove(&bw->tab[at + 1], &bw->tab[at], sizeof bw->tab[0] * (bw->n - at));
+    bw->tab[at] = b; bw->n++;
+    if (!activate && at <= bw->cur) bw->cur++;
+    char u[1024]; normalize_address(url && *url ? url : HOME_URL, u, sizeof u);
+    if (activate) switch_tab(w, at);
+    browser_navigate_ext(b, u, NULL, true);
+    w->dirty = true;
+}
+static void close_window_later(void *w) { wm_close(w); }
+static void close_tab(window_t *w, int i) {
+    brwin_t *bw = w->data;
+    if (i < 0 || i >= bw->n) return;
+    if (bw->n == 1) { wm_defer(close_window_later, w); return; }   /* not from inside paint */
+    browser_t *b = bw->tab[i];
+    memmove(&bw->tab[i], &bw->tab[i + 1], sizeof bw->tab[0] * (bw->n - i - 1));
+    bw->n--;
+    if (bw->cur > i || bw->cur >= bw->n) bw->cur = MAX(0, bw->cur - 1);
+    tab_free(b);
+    switch_tab(w, bw->cur);
 }
 static menu_t br_menus[] = {
-    { "File", { { "New Window", BM_NEW, 0 }, { "Open Location...", BM_OPEN, 0 }, { "Save Page As...", BM_SAVE, 0 }, { "-", 0, 0 }, { "Close", BM_CLOSE, 0 }, { NULL } } },
+    { "File", { { "New Tab    Ctrl+T", BM_NEWTAB, 0 }, { "New Window", BM_NEW, 0 }, { "Open Location...    Ctrl+L", BM_OPEN, 0 }, { "Save Page As...", BM_SAVE, 0 }, { "-", 0, 0 },
+                { "Close Tab    Ctrl+W", BM_CLOSETAB, 0 }, { "Close Window", BM_CLOSE, 0 }, { NULL } } },
     { "View", { { "Stop", BM_STOP, 0 }, { "Refresh", BM_REFRESH, 0 }, { "-", 0, 0 }, { "Page Source", BM_SOURCE, 0 }, { NULL } } },
     { "Go", { { "Back", BM_BACK, 0 }, { "Forward", BM_FWD, 0 }, { "Home Page", BM_HOME, 0 }, { NULL } } },
     { "Favorites", { { "Wikipedia", BM_FAV0, 0 }, { "Hacker News", BM_FAV0 + 1, 0 }, { "CNN Lite", BM_FAV0 + 2, 0 }, { "NPR text edition", BM_FAV0 + 3, 0 },
                      { "68k.news", BM_FAV0 + 4, 0 }, { "FrogFind", BM_FAV0 + 5, 0 }, { NULL } } },
     { "Tools", { { "Block Ads", BM_ADBLOCK, MI_CHECKED }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { "-", 0, 0 },
                  { "Enable JavaScript", BM_JS, MI_CHECKED }, { "Script Messages...", BM_CONSOLE, 0 }, { NULL } } },
-    { "Help", { { "About XplorerLite", BM_ABOUT, 0 }, { NULL } } },
+    { "Help", { { "About The WRLD Browser", BM_ABOUT, 0 }, { NULL } } },
 };
-static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
 static void br_menu(window_t *w, int id) {
-    browser_t *b = w->data;
+    brwin_t *bw = w->data;
+    browser_t *b = active_tab(w);
     switch (id) {
+    case BM_NEWTAB: new_tab(w, HOME_URL, true); break;
+    case BM_CLOSETAB: close_tab(w, bw->cur); break;
     case BM_NEW: browser_open(NULL); break;
-    case BM_OPEN: w->ui.focus = 0; b->addr[0] = 0; w->dirty = true; break;
+    case BM_OPEN: w->ui.focus = bw->addr_id; b->addr[0] = 0; w->dirty = true; break;
     case BM_SAVE: case BM_SOURCE:
         if (b->page && b->page->source) {
             char path[300];
@@ -1594,22 +1881,24 @@ static void br_menu(window_t *w, int id) {
     case BM_HOME: browser_navigate_ext(b, HOME_URL, NULL, true); break;
     case BM_ABOUT: {
         char m[600];
-        snprintf(m, sizeof m, "XplorerLite 1.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
+        snprintf(m, sizeof m, "The WRLD Browser 2.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
                  "Secure connections (TLS 1.3 and 1.2) use %s with %d trusted root certificates.\nJavaScript runs on QuickJS-ng %s with a built-in DOM.\nThe built-in ad blocker removes ads and trackers (Tools menu).", tls_library_version(), tls_trust_anchor_count(), js_engine_version());
-        msgbox("About XplorerLite", m, MBI_INFO, MBX_OK, NULL, NULL);
+        msgbox("About The WRLD Browser", m, MBI_INFO, MBX_OK, NULL, NULL);
         break;
     }
     default: if (id >= BM_FAV0 && id < BM_FAV0 + (int)ARRAY_LEN(favs)) browser_navigate_ext(b, favs[id - BM_FAV0], NULL, true);
     }
 }
 void browser_open(const char *url) {
-    browser_t *b = kzalloc(sizeof *b);
-    b->refs = 1; b->hover_link = -1; b->focus_ctrl = -1; b->hpos = -1;
-    window_t *w = wm_create("XplorerLite", -1, -1, 900, 640, WF_RESIZABLE);
-    b->w = w;
-    w->data = b; w->paint = br_paint; w->mouse = br_mouse; w->key = br_key; w->destroy = br_destroy; w->menu_cmd = br_menu;
+    window_t *w = wm_create("The WRLD Browser", -1, -1, MIN(1000, SCREEN_W - 24), MIN(700, SCREEN_H - 60), WF_RESIZABLE);
+    brwin_t *bw = kzalloc(sizeof *bw);
+    bw->w = w;
+    w->data = bw;
+    browser_t *b = tab_alloc(w);
+    bw->tab[0] = b; bw->n = 1;
+    w->paint = br_paint; w->mouse = br_mouse; w->key = br_key; w->destroy = br_destroy; w->menu_cmd = br_menu;
     w->menus = (menu_t *)br_menus; w->nmenus = ARRAY_LEN(br_menus);
-    w->icon = ICON_BROWSER; w->min_w = 420; w->min_h = 300;
+    w->icon = ICON_BROWSER; w->min_w = 480; w->min_h = 320;
     wm_set_timer(w, 250, br_tick);
     char u[1024]; normalize_address(url && *url ? url : HOME_URL, u, sizeof u);
     browser_navigate_ext(b, u, NULL, true);

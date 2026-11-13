@@ -137,6 +137,7 @@ bool ui_checkbox(window_t *w, int x, int y, const char *label, bool *v);
 bool ui_radio(window_t *w, int x, int y, const char *label, bool checked);
 bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi);
 bool ui_textbox(window_t *w, rect_t r, char *buf, int cap);
+bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_t fg, bool *focused_out);
 bool ui_password(window_t *w, rect_t r, char *buf, int cap);
 bool ui_hover(window_t *w, rect_t r);
 bool ui_click_area(window_t *w, rect_t r);

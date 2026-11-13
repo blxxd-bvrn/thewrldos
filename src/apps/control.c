@@ -784,7 +784,7 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     for (int i = 0; i < 8; i++) { if (!netif.present && i > 1) break; draw_text(s, FONT_UI, ox + 40, y, lab[i], T.gray_text); draw_text(s, FONT_UI, ox + 170, y, vals[i], T.text); y += 20; }
     y += 10;
     if (netif.present && ui_button(w, R(ox + 40, y, 150, 26), "Renew address (DHCP)")) dhcp_renew();
-    if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open XplorerLite", W7_LINK)) browser_open(NULL);
+    if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open The WRLD Browser", W7_LINK)) browser_open(NULL);
     y += 40;
     snprintf(b, sizeof b, "Secure websites are checked against %d trusted root certificates (add your own in C:\\WRLD\\Certificates).", tls_trust_anchor_count());
     draw_text_wrapped(s, FONT_UI, ox + 30, y, s->w - ox - 60, netif.present ? b : "No supported network adapter was found. THE WRLD OS supports Intel PRO/1000, e1000e, I217-I219 and I210/I211/I350, Realtek RTL8111/8168/8125 and RTL8139, AMD PCnet, VMware VMXNET3 and VirtIO adapters. Wireless adapters are not supported.", W7_TEXT, 2);

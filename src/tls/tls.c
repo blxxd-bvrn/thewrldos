@@ -1,4 +1,4 @@
-/* HTTPS for XplorerLite, wget and curl: TLS 1.3 and 1.2 through Mbed TLS.
+/* HTTPS for The WRLD Browser, wget and curl: TLS 1.3 and 1.2 through Mbed TLS.
  * This file is built against Mbed TLS and the C library shim, not the kernel
  * headers (see tlsglue.h); it implements the TLS API declared in net.h.
  * Server certificates are checked against the Mozilla root store compiled in

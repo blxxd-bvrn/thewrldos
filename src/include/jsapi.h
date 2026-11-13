@@ -13,7 +13,7 @@ typedef void (*js_out_fn)(void *user, const char *text);
 int js_shell_run(const char *src, int len, const char *name, js_out_fn out, void *user);   /* 0 = ok */
 const char *js_engine_version(void);
 
-/* ---- page scripting (XplorerLite) ---- */
+/* ---- page scripting (The WRLD Browser) ---- */
 jspage_t *js_page_new(void *page);                 /* page = the browser's page_t */
 void js_page_free(jspage_t *j);
 int js_page_eval(jspage_t *j, const char *src, int len, const char *name);   /* 0 ok, -1 exception, -2 aborted */

@@ -1,4 +1,4 @@
-/* XplorerLite - internal interfaces shared by html.c and browser.c */
+/* The WRLD Browser - internal interfaces shared by html.c and browser.c */
 #ifndef BROWSER_H
 #define BROWSER_H
 #include "kernel.h"
@@ -23,8 +23,17 @@ void arena_free(arena_t *a);
 #define ST_RADIUS   0x100
 #define ST_GRAD     0x200
 #define ST_BORDER   0x400
-typedef struct { uint16_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 block, 2 inline */ int8_t align; bool bold, italic, under; int8_t size;
-                 int16_t radius; uint32_t bg2; int8_t grad, grad_dir; int16_t border; uint32_t border_color; } css_t;
+#define ST_MARGIN   0x800     /* box model: which sides are in mset / pset */
+#define ST_PADDING  0x1000
+#define ST_WIDTH    0x2000
+#define ST_MAXW     0x4000
+#define ST_BCOLOR   0x8000    /* border-color on its own */
+typedef struct { uint32_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 block, 2 inline */ int8_t align; bool bold, italic, under; int8_t size;
+                 int16_t radius; uint32_t bg2; int8_t grad, grad_dir; int16_t border; uint32_t border_color;
+                 int16_t m[4], pad[4];        /* margin and padding: top, right, bottom, left (px) */
+                 uint8_t mset, pset, mauto;   /* bit per side set; mauto: bit 1 right, bit 3 left are "auto" */
+                 int16_t width, maxw;         /* px, or percent of the container when wpct/mpct */
+                 bool wpct, mpct; } css_t;
 
 typedef struct node {
     uint8_t type;                 /* 0 element, 1 text */

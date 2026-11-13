@@ -1,4 +1,4 @@
-/* XplorerLite ad blocker.
+/* The WRLD Browser ad blocker.
  *  - requests for pictures and scripts on known ad / tracking servers are
  *    never made (built-in list plus C:\WRLD\adblock.txt)
  *  - page elements whose class or id looks like an ad slot are hidden
@@ -63,7 +63,7 @@ static void push(char ***arr, int *n, const char *s, int len) {
 static void freelist(char ***arr, int *n) { for (int i = 0; i < *n; i++) kfree((*arr)[i]); kfree(*arr); *arr = NULL; *n = 0; }
 
 static const char *default_list =
-    "; XplorerLite ad blocker - your own rules, one per line.\r\n"
+    "; The WRLD Browser ad blocker - your own rules, one per line.\r\n"
     ";   example.com        block pictures and scripts from example.com and its subdomains\r\n"
     ";   ##.promo-box       hide elements with class=\"promo-box\"\r\n"
     ";   ###top-banner      hide the element with id=\"top-banner\"\r\n"

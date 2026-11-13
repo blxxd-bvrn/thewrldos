@@ -931,7 +931,7 @@ static void paint_balloon(canvas_t *c) {
 /* ---------------- start menu ---------------- */
 typedef struct { const char *label, *sub; int icon; const char *action; bool bold; } sm_item_t;
 static const sm_item_t sm_left[] = {
-    { "Internet", "XplorerLite", ICON_BROWSER, "xplorer", true },
+    { "Internet", "The WRLD Browser", ICON_BROWSER, "xplorer", true },
     { "Command Prompt", "Shell & scripts", ICON_TERMINAL, "cmd", true },
     { "File Explorer", "Browse files", ICON_EXPLORER, "explorer", true },
     { NULL },
@@ -955,7 +955,7 @@ static const sm_item_t sm_right[] = {
     { "Run...", NULL, ICON_RUN, "run", false },
 };
 static const sm_item_t all_programs[] = {
-    { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "XplorerLite", NULL, ICON_BROWSER, "xplorer" },
+    { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "The WRLD Browser", NULL, ICON_BROWSER, "xplorer" },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
     { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },

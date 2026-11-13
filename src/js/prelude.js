@@ -1,4 +1,4 @@
-// THE WRLD OS - browser environment for XplorerLite.
+// THE WRLD OS - browser environment for The WRLD Browser.
 // Runs once per page before the page's own scripts. Builds window, document,
 // elements, events, timers, storage and fetch on top of the native __host
 // primitives, which are captured here and removed from the global object.
@@ -544,7 +544,7 @@ for (const part of ["protocol", "host", "hostname", "port", "pathname", "search"
 Object.defineProperty(location, "hash", { get() { return parseURL(H.url()).hash; }, set(v) { v = str(v); if (v && v[0] !== "#") v = "#" + v; H.navigate(H.url().replace(/#.*$/, "") + v, 1); }, enumerable: true });
 const history = { get length() { return 1; }, state: null, back() { H.history(-1); }, forward() { H.history(1); }, go(d) { if (d) H.history(d | 0); else H.reload(); },
                   pushState(s) { this.state = s; }, replaceState(s) { this.state = s; }, scrollRestoration: "auto" };
-const navigator = { userAgent: "Mozilla/5.0 (THE WRLD OS; i686) XplorerLite/1.1", appName: "Netscape", appVersion: "5.0 (THE WRLD OS)", appCodeName: "Mozilla",
+const navigator = { userAgent: "Mozilla/5.0 (THE WRLD OS; i686) WRLDBrowser/2.0", appName: "Netscape", appVersion: "5.0 (THE WRLD OS)", appCodeName: "Mozilla",
                     product: "Gecko", vendor: "", platform: "WRLD i686", language: "en-US", languages: ["en-US", "en"], onLine: true, cookieEnabled: true,
                     hardwareConcurrency: 1, maxTouchPoints: 0, doNotTrack: "1", webdriver: false, javaEnabled: () => false,
                     sendBeacon: () => true, clipboard: { writeText: () => Promise.resolve(), readText: () => Promise.resolve("") },

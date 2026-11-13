@@ -1,7 +1,7 @@
-/* XplorerLite: documents. Lexbor's HTML5 parser builds the tree (see
+/* The WRLD Browser: documents. Lexbor's HTML5 parser builds the tree (see
  * lexglue.h); text is UTF-8 end to end, so any character the fonts cover
  * reaches the screen unchanged. Windows-1252 input is converted on the way in.
- * CSS: full selectors (parsed by Lexbor, matched here on XplorerLite's tree)
+ * CSS: full selectors (parsed by Lexbor, matched here on The WRLD Browser's tree)
  * with the cascade by specificity and source order, simple @media queries, and
  * the small set of properties the layout uses (colour, background, display,
  * alignment, bold/italic/underline, size). */
@@ -143,6 +143,41 @@ static int parse_gradient(const char *s, css_t *c) {
     return 1;
 }
 
+/* a CSS length in px: px, em/rem (16 px), pt, or 0; *pct set for percentages */
+static int css_len(const char *v, bool *pct, bool *is_auto) {
+    while (*v == ' ') v++;
+    if (is_auto) *is_auto = !strncmp(v, "auto", 4);
+    if (pct) *pct = false;
+    bool neg = *v == '-'; if (neg || *v == '+') v++;
+    int whole = 0, frac = 0, fd = 0;
+    while (*v >= '0' && *v <= '9') whole = whole * 10 + (*v++ - '0');
+    if (*v == '.') { v++; while (*v >= '0' && *v <= '9') { if (fd < 2) { frac = frac * 10 + (*v - '0'); fd++; } v++; } }
+    while (fd < 2) { frac *= 10; fd++; }
+    int x100 = whole * 100 + frac, px;
+    if (!strncmp(v, "em", 2) || !strncmp(v, "rem", 3)) px = x100 * 16 / 100;
+    else if (!strncmp(v, "pt", 2)) px = x100 * 4 / 300;
+    else if (*v == '%') { px = x100 / 100; if (pct) *pct = true; }
+    else if (!strncmp(v, "vw", 2)) { px = x100 / 100; if (pct) *pct = true; }
+    else px = x100 / 100;
+    px = CLAMP(px, 0, 8000);
+    return neg ? -px : px;
+}
+/* margin / padding shorthand with one to four values */
+static void css_sides(const char *v, int16_t out[4], uint8_t *set, uint8_t *autos) {
+    int vals[4], aut[4], k = 0;
+    const char *p = v;
+    while (*p && k < 4) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p || *p == '!') break;
+        bool a; vals[k] = css_len(p, NULL, &a); aut[k] = a; k++;
+        while (*p && *p != ' ' && *p != '\t') p++;
+    }
+    if (!k) return;
+    int t = 0, r = k > 1 ? 1 : 0, b = k > 2 ? 2 : 0, l = k > 3 ? 3 : k > 1 ? 1 : 0;
+    int idx[4] = { t, r, b, l };
+    for (int i = 0; i < 4; i++) { out[i] = (int16_t)vals[idx[i]]; if (autos) { if (aut[idx[i]]) *autos |= 1 << i; else *autos &= ~(1 << i); } }
+    *set = 0xF;
+}
 static void css_decls(const char *s, int n, css_t *c) {
     char buf[1024]; n = MIN(n, 1023); memcpy(buf, s, n); buf[n] = 0;
     for (char *d = strtok(buf, ";"); d; d = strtok(NULL, ";")) {
@@ -162,12 +197,37 @@ static void css_decls(const char *s, int n, css_t *c) {
         else if (!strcmp(k, "border-radius")) { c->set |= ST_RADIUS; c->radius = (int16_t)CLAMP(atoi(v), 0, 512); }
         else if (!strcmp(k, "border")) {
             c->set |= ST_BORDER;
-            c->border = (int16_t)CLAMP(atoi(v), 0, 32);
+            c->border = !strncmp(v, "none", 4) || (v[0] == '0' && (v[1] == ' ' || !v[1])) ? 0 : (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 32);
+            if (!c->border && strncmp(v, "none", 4) && strncmp(v, "0", 1) && (strstr(v, "solid") || strstr(v, "dashed") || strstr(v, "dotted"))) c->border = 3;   /* "solid #ccc": medium */
             c->border_color = BLACK;
-            const char *h = strchr(v, '#');
             uint32_t bc;
-            if (h && parse_color(h, &bc)) c->border_color = bc;
+            for (const char *w = v; *w; ) {                               /* the colour is any word that parses as one */
+                while (*w == ' ') w++;
+                const char *e = w; int depth = 0;
+                while (*e && (depth || *e != ' ')) { if (*e == '(') depth++; else if (*e == ')') depth--; e++; }
+                char word[48]; int l = MIN((int)(e - w), 47); memcpy(word, w, l); word[l] = 0;
+                static const char *styles[] = { "solid", "dashed", "dotted", "double", "groove", "ridge", "inset", "outset", "none", "hidden" };
+                bool kw = (word[0] >= '0' && word[0] <= '9') || word[0] == '.';          /* the width */
+                for (unsigned q = 0; q < ARRAY_LEN(styles) && !kw; q++) if (!strcasecmp(word, styles[q])) kw = true;
+                if (l && !kw && parse_color(word, &bc)) { c->border_color = bc; break; }
+                w = e;
+            }
         }
+        else if (!strcmp(k, "margin")) { css_sides(v, c->m, &c->mset, &c->mauto); c->set |= ST_MARGIN; }
+        else if (!strcmp(k, "padding")) { uint8_t dummy = 0; css_sides(v, c->pad, &c->pset, &dummy); c->set |= ST_PADDING; }
+        else if (!strncmp(k, "margin-", 7) || !strncmp(k, "padding-", 8)) {
+            bool marg = k[0] == 'm'; const char *side = k + (marg ? 7 : 8);
+            int i = !strcmp(side, "top") ? 0 : !strcmp(side, "right") ? 1 : !strcmp(side, "bottom") ? 2 : !strcmp(side, "left") ? 3 : -1;
+            if (i >= 0) {
+                bool a; int px = css_len(v, NULL, &a);
+                if (marg) { c->m[i] = (int16_t)px; c->mset |= 1 << i; if (a) c->mauto |= 1 << i; else c->mauto &= ~(1 << i); c->set |= ST_MARGIN; }
+                else { c->pad[i] = (int16_t)MAX(0, px); c->pset |= 1 << i; c->set |= ST_PADDING; }
+            }
+        }
+        else if (!strcmp(k, "width")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && px > 0) { c->width = (int16_t)px; c->wpct = pc; c->set |= ST_WIDTH; } }
+        else if (!strcmp(k, "max-width")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && px > 0) { c->maxw = (int16_t)px; c->mpct = pc; c->set |= ST_MAXW; } }
+        else if (!strcmp(k, "border-width")) { c->set |= ST_BORDER; c->border = (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 32); if (!c->border_color) c->border_color = BLACK; }
+        else if (!strcmp(k, "border-color")) { uint32_t bc; if (parse_color(v, &bc)) { c->border_color = bc; c->set |= ST_BCOLOR; } }
         else if (!strcmp(k, "display")) { c->set |= ST_DISPLAY; c->display = !strncmp(v, "none", 4) ? 0 : !strncmp(v, "inline", 6) ? 2 : 1; }
         else if (!strcmp(k, "visibility")) { if (!strncmp(v, "hidden", 6)) { c->set |= ST_DISPLAY; c->display = 0; } }
         else if (!strcmp(k, "text-align")) { c->set |= ST_ALIGN; c->align = !strncmp(v, "center", 6) ? 1 : !strncmp(v, "right", 5) ? 2 : 0; }
@@ -197,6 +257,13 @@ static void css_merge(css_t *dst, const css_t *src) {
     if (src->set & ST_RADIUS) dst->radius = src->radius;
     if (src->set & ST_GRAD) { dst->bg2 = src->bg2; dst->grad = src->grad; dst->grad_dir = src->grad_dir; }
     if (src->set & ST_BORDER) { dst->border = src->border; dst->border_color = src->border_color; }
+    if (src->set & ST_BCOLOR) dst->border_color = src->border_color;
+    for (int i = 0; i < 4; i++) {
+        if (src->mset & (1 << i)) { dst->m[i] = src->m[i]; dst->mset |= 1 << i; dst->mauto = (dst->mauto & ~(1 << i)) | (src->mauto & (1 << i)); }
+        if (src->pset & (1 << i)) { dst->pad[i] = src->pad[i]; dst->pset |= 1 << i; }
+    }
+    if (src->set & ST_WIDTH) { dst->width = src->width; dst->wpct = src->wpct; }
+    if (src->set & ST_MAXW) { dst->maxw = src->maxw; dst->mpct = src->mpct; }
     dst->set |= src->set;
 }
 /* ---------------- tree building (Lexbor's HTML5 parser) ---------------- */
@@ -578,6 +645,7 @@ static void style_root(doc_t *d) {
     if (st) { css_t in = { 0 }; css_decls(st, strlen(st), &in); css_merge(&c, &in); }
     if (c.set & ST_BG) d->bgcolor = c.bg;
     if (c.set & ST_COLOR) d->text = c.color;
+    d->root->css = c;                     /* body's box (margins, max-width) for page_layout */
 }
 
 doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char *url) {

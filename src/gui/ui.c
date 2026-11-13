@@ -127,7 +127,8 @@ bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi) {
     }
     return changed;
 }
-bool ui_textbox(window_t *w, rect_t r, char *buf, int cap) {
+/* flat: the caller draws the box (text in fg); *focused_out reports keyboard focus */
+bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_t fg, bool *focused_out) {
     int id = ui_id(w);
     ui_t *u = &w->ui;
     bool hot;
@@ -135,6 +136,7 @@ bool ui_textbox(window_t *w, rect_t r, char *buf, int cap) {
     if (clicked || (u->pressed && hot)) u->focus = id;
     if (hot) u->cursor = CURSOR_IBEAM;
     bool focused = u->focus == id;
+    if (focused_out) *focused_out = focused;
     bool enter = false;
     if (focused && u->has_key) {
         int len = strlen(buf);
@@ -145,17 +147,18 @@ bool ui_textbox(window_t *w, rect_t r, char *buf, int cap) {
         if (k->key != KEY_TAB && k->key != KEY_ESC) u->has_key = false;
     }
     canvas_t *c = w->surf;
-    draw_sunken_box(c, r, WHITE);
+    if (!flat) { draw_sunken_box(c, r, WHITE); fg = T.text; }
     rect_t old = canvas_push_clip(c, R(r.x + 2, r.y + 1, r.w - 4, r.h - 2));
     int tw = text_width(FONT_UI, buf);
     int off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
     int ty = r.y + (r.h - font_height(FONT_UI)) / 2;
-    draw_text(c, FONT_UI, r.x + 4 - off, ty, buf, T.text);
-    if (focused && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), T.text);
+    draw_text(c, FONT_UI, r.x + 4 - off, ty, buf, fg);
+    if (focused && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), fg);
     c->clip = old;
     if (focused) { extern void ui_blink_request(window_t *w); ui_blink_request(w); }
     return enter;
 }
+bool ui_textbox(window_t *w, rect_t r, char *buf, int cap) { return ui_textbox_ex(w, r, buf, cap, false, 0, NULL); }
 static void blink_tick(window_t *w) { w->dirty = true; }
 void ui_blink_request(window_t *w) { if (!w->timer) wm_set_timer(w, 500, blink_tick); }
 bool ui_password(window_t *w, rect_t r, char *buf, int cap) {

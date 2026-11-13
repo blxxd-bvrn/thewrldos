@@ -1,5 +1,5 @@
 /* QuickJS glue for THE WRLD OS: the "js" command and page scripting for
- * XplorerLite. Built against the QuickJS libc shim, not the kernel
+ * The WRLD Browser. Built against the QuickJS libc shim, not the kernel
  * headers; everything else is reached through jsapi.h. */
 #include <string.h>
 #include <stdio.h>

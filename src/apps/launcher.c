@@ -6,7 +6,7 @@
 #include "audio.h"
 
 const app_info_t app_table[] = {
-    { "xplorer", "XplorerLite", "Browse the web", ICON_BROWSER },
+    { "xplorer", "The WRLD Browser", "Browse the web", ICON_BROWSER },
     { "explorer", "File Explorer", "Browse files and folders", ICON_EXPLORER },
     { "notepad", "Notepad", "Edit text files", ICON_NOTEPAD },
     { "cmd", "Command Prompt", "Shell & scripts", ICON_TERMINAL },
@@ -25,13 +25,13 @@ const app_info_t app_table[] = {
 };
 const int app_count = ARRAY_LEN(app_table);
 const app_info_t *app_find(const char *id) {
-    if (!strcasecmp(id, "xplorerlite")) id = "xplorer";
+    if (!strcasecmp(id, "xplorerlite") || !strcasecmp(id, "wrldbrowser") || !strcasecmp(id, "browser")) id = "xplorer";
     for (int i = 0; i < app_count; i++) if (!strcasecmp(app_table[i].id, id)) return &app_table[i]; return NULL; }
 
 void app_launch(const char *name, const char *arg) {
     if (!strcasecmp(name, "explorer")) explorer_open(arg ? arg : USER_DOCS);
     else if (!strcasecmp(name, "notepad")) notepad_open(arg);
-    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "xplorerlite") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
+    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "xplorerlite") || !strcasecmp(name, "wrldbrowser") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
     else if (!strcasecmp(name, "cmd") || !strcasecmp(name, "terminal") || !strcasecmp(name, "sh") || !strcasecmp(name, "bash")) terminal_open(arg, NULL);
     else if (!strcasecmp(name, "calc")) calc_open();
     else if (!strcasecmp(name, "paint") || !strcasecmp(name, "mspaint")) paint_open(arg);

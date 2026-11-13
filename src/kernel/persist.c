@@ -129,15 +129,16 @@ bool persist_boot_from_disk(uint32_t serial, char *err, int errcap) {
                     vol_sync(v);
                     klog("persist: renamed C:\\Windows to C:\\WRLD (%s)", ok ? "ok" : "failed");
                 }
-                /* systems installed before the browser became XplorerLite */
+                /* systems installed before the browser became The WRLD Browser */
                 {
-                    const char *ol = "Documents and Settings\\User\\Desktop\\The WRLD Xplorer.lnk";
-                    const char *nl = "Documents and Settings\\User\\Desktop\\XplorerLite.lnk";
-                    uint32_t ln = 0; uint8_t *lk = vol_exists(v, ol) ? vol_read(v, ol, &ln) : NULL;
-                    if (lk) {
-                        if (vol_exists(v, nl) || vol_write(v, nl, lk, ln, false)) vol_delete(v, ol);
+                    static const char *olds[] = { "Documents and Settings\\User\\Desktop\\The WRLD Xplorer.lnk", "Documents and Settings\\User\\Desktop\\XplorerLite.lnk" };
+                    const char *nl = "Documents and Settings\\User\\Desktop\\The WRLD Browser.lnk";
+                    for (unsigned k = 0; k < 2; k++) {
+                        uint32_t ln = 0; uint8_t *lk = vol_exists(v, olds[k]) ? vol_read(v, olds[k], &ln) : NULL;
+                        if (!lk) continue;
+                        if (vol_exists(v, nl) || vol_write(v, nl, lk, ln, false)) vol_delete(v, olds[k]);
                         kfree(lk); vol_sync(v);
-                        klog("persist: desktop shortcut renamed to XplorerLite");
+                        klog("persist: desktop shortcut renamed to The WRLD Browser");
                     }
                 }
                 int files = vol_load_tree(v, vfs_root('C'));

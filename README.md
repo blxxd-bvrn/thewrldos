@@ -5,7 +5,7 @@ lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the L
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
-**XplorerLite**.
+**The WRLD Browser** (formerly XplorerLite).
 
 - Boots from a GRUB CD image (BIOS or UEFI) into a spinning-globe boot screen, a log-on
   screen and the desktop.
@@ -58,7 +58,7 @@ from; open it in a browser to watch it live.
 | ![Dark mode](docs/screenshots/dark.png) | ![Explorer in dark mode](docs/screenshots/dark-explorer.png) |
 | ![Advanced appearance](docs/screenshots/advanced.png) | ![Sound settings](docs/screenshots/sound.png) |
 
-### XplorerLite
+### The WRLD Browser
 
 | | |
 |---|---|
@@ -228,7 +228,10 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `winhello.exe`, a Win32 GUI program;
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
-- **XplorerLite** (Start menu > Internet, or the globe on Quick Launch):
+- **The WRLD Browser** (Start menu > Internet, or the globe on Quick Launch):
+  - Tabs: Ctrl+T opens one, Ctrl+W closes it, Ctrl+Tab and Ctrl+1..9 switch, and a middle-click
+    opens a link in a new tab. Ctrl+L selects the address bar.
+  - Try `C:\Samples\CSS demo.html` for boxes, margins and a linked style sheet.
   - It runs **JavaScript** (QuickJS) and has a built-in **ad blocker**. Try
     `C:\Samples\JavaScript demo.html` (linked from the home page).
   - The home page links to sites that work well, such as Wikipedia, Hacker News, CNN Lite and
@@ -555,12 +558,22 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Mbed TLS's random generator is seeded from RDRAND and timing jitter, conditioned with SHA-256.
 - **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
 
-### XplorerLite (`src/apps/browser.c`, `html.c`, `imgdec.c`)
+### The WRLD Browser (`src/apps/browser.c`, `html.c`, `imgdec.c`)
+- **Window:** up to 12 tabs per window, each with its own page, history and loading task; a
+  toolbar with drawn back/forward/reload/home buttons, a rounded address bar (the lock shows
+  on secure pages; focusing it selects the address), an ad-blocker badge, a bookmarks bar and
+  a loading bar. Light and dark chrome follow the desktop's dark mode.
+- **CSS boxes:** `margin` (including `auto` to centre a box), `padding`, `border` /
+  `border-width` / `border-color`, `width` and `max-width` in px, em, pt or %, on blocks and on
+  `<body>`; borders without a background are drawn as outlines.
+- **Linked style sheets:** `<link rel="stylesheet">` files are fetched (HTTP, HTTPS or `file:`)
+  in document order before the first layout, filtered by the ad blocker, and cascaded with the
+  page's `<style>` sheets.
 - **Parsing:** Lexbor 3.0's HTML5 parser (`third_party/lexbor`, glue in `src/lexbor/lexglue.c`)
   builds the tree, so misnested tags, tables and entities come out as in other browsers;
   `innerHTML` parses fragments in the context of their element.
 - **CSS:** full selectors (combinators, attribute selectors, `:not()`, `:is()`, `:nth-child()`
-  and the other structural pseudo-classes), parsed by Lexbor and matched on XplorerLite's tree,
+  and the other structural pseudo-classes), parsed by Lexbor and matched on the browser's own tree,
   with the cascade by specificity and source order; simple `@media` queries are answered for an
   880-pixel-wide window. `querySelector()` uses the same matcher.
 - **Software rasterisation:** `border-radius`, linear gradients (`linear-gradient(90deg, …)`) and
@@ -568,8 +581,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   (`src/gui/raster.c`), not a rectangle approximation.
 - **HTML:** a forgiving parser with entities. Documents are decoded to UTF-8 (Windows-1252
   input is converted), so text is stored and drawn exactly as written.
-- **CSS:** simple selectors (tag, `.class`, `#id`) and `style` attributes, for colour,
-  background, `display:none`, alignment, bold, italic, underline and size.
+- **CSS properties:** colour, background, `display:none`, alignment, bold, italic, underline,
+  size, plus the box properties above, from rules and `style` attributes.
 - **Layout:**
   - Text wrapping, headings, lists, blockquote, `pre` and `hr`.
   - Tables: column widths from min/max content, `colspan`, cell colours, borders, `valign`.
@@ -666,7 +679,7 @@ device manager's job is to say what the computer has and which driver runs it.
   - **Software rasteriser** (`src/gui/raster.c`): path fills and strokes with eight scanline
     samples per pixel, round joins and caps, nonzero and even-odd rules, path construction
     through move/line/quadratic/cubic commands, linear and radial gradients, and clipping to
-    the canvas. XplorerLite uses it for rounded boxes, gradient backgrounds and CSS borders.
+    the canvas. The WRLD Browser uses it for rounded boxes, gradient backgrounds and CSS borders.
   - **Bidirectional text** (`src/gui/text.c`): the UAX #9 algorithm (explicit embeddings, weak
     types, brackets, neutrals, implicit levels) plus script itemisation, so a line mixing
     Arabic, Hebrew, Latin and numbers comes out in the right visual order.
@@ -742,7 +755,7 @@ device manager's job is to say what the computer has and which driver runs it.
     Network, Mouse, Keyboard, Sound, Programs and Features, Default Programs, User Accounts,
     Fonts, Ease of Access.
 - **Task Manager:** applications, processes, CPU/memory graphs.
-- **XplorerLite** web browser (see above).
+- **The WRLD Browser** (see above).
 - **THE WRLD Media Player** (`mediaplayer.c`): an all-in-one player in the style of the XP era,
   with its own dark glossy skin.
   - Now Playing shows the track's info and a visualisation drawn from the samples being heard
@@ -839,7 +852,7 @@ used to test every screen above, including a full install from a blank disk.
     not with Windows' own chkdsk.
 - **Notepad and the Command Prompt** treat text as bytes, one cell per byte, so a
   UTF-8 file's non-ASCII characters take two cells (as they always did). The desktop,
-  XplorerLite, the dialogs and the Win32 text APIs are UTF-8.
+  The WRLD Browser, the dialogs and the Win32 text APIs are UTF-8.
 - **Network and browser:**
   - Wired Ethernet only (no Wi-Fi, no USB adapters, no Broadcom), and IPv4 only.
   - HTTPS: no HTTP/2, and no post-quantum (hybrid ML-KEM) key exchange.
@@ -866,7 +879,7 @@ used to test every screen above, including a full install from a blank disk.
     Devices (disks included) can be plugged in and
     removed while the system runs.
   - No GPU or 3D; the software rasteriser has paths, strokes and gradients but no filters,
-    shadows or canvas, and CSS layout is still the small subset XplorerLite implements.
+    shadows or canvas, and CSS layout is block boxes and tables (no floats, flexbox or grid).
   - Sound is playback only (no recording).
   - Resolution can only be changed on the display adapters listed above; otherwise it stays at
     GRUB's 1024×768. The minimum is 1024×768.

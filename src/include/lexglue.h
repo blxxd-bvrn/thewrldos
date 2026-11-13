@@ -1,5 +1,5 @@
 /* Lexbor glue (src/lexbor/lexglue.c): the HTML5 parser and the CSS selector
- * parser for XplorerLite. Only plain C types cross this boundary: the kernel's
+ * parser for The WRLD Browser. Only plain C types cross this boundary: the kernel's
  * bool is not C's, so neither side includes the other's headers. */
 #ifndef LEXGLUE_H
 #define LEXGLUE_H

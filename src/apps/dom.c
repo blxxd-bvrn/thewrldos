@@ -1,4 +1,4 @@
-/* XplorerLite: the document tree as seen from JavaScript (jsapi.h dom_*).
+/* The WRLD Browser: the document tree as seen from JavaScript (jsapi.h dom_*).
  * Nodes live in the page's arena and are never freed before the page, so a
  * node pointer stays valid for the page's lifetime. Strings are UTF-8
  * everywhere: the tree stores the same bytes the renderer draws. */
