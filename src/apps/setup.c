@@ -1236,6 +1236,7 @@ void setup_gui_mode(bool from_desktop) {
         }
         bool repaint = false;
         while (mouse_poll(&ms)) {
+            int oldx = wm_mouse_x, oldy = wm_mouse_y;
             wm_mouse_x = ms.x; wm_mouse_y = ms.y;
             rect_t cr = wm_client_rect(&sw);
             sw.ui.mx = ms.x - cr.x; sw.ui.my = ms.y - cr.y;
@@ -1246,6 +1247,8 @@ void setup_gui_mode(bool from_desktop) {
             if (ms.wheel) { sw.ui.wheel = ms.wheel; repaint = true; }
             prev = ms.buttons;
             if (repaint) { sg_paint(); repaint = false; }
+            else if (oldx != wm_mouse_x || oldy != wm_mouse_y)
+                gfx_move_cursor(sw.ui.cursor ? sw.ui.cursor : CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
         }
         if (SG.action) { sg_action(); if (SG.page != SG_QUIT) sg_paint(); }
         task_yield();
