@@ -489,6 +489,7 @@ bool lx_ipc_ready(lxfile_t *f, uint32_t want) {
     }
     case FD_EVENTFD: { lxevfd_t *e = f->obj; if (want & POLLIN_) return e->count > 0; if (want & POLLOUT_) return e->count < ~0ull - 1; return false; }
     case FD_TIMERFD: { lxtfd_t *t = f->obj; tfd_tick(t); if (want & POLLIN_) return t->exp > 0; return false; }
+    case FD_WINDOW: return (want & POLLIN_) && lxwin_ready(f->obj);
     default: return false;
     }
 }

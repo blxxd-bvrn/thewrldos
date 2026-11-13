@@ -456,6 +456,10 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **WebKit's JavaScript engine:** built with `make ARCH=x86_64 LX_WEBKIT=1`, the image also
   carries JavaScriptCore from WebKitGTK (about 70 MB with ICU) and `jsctest`, which runs modern
   JavaScript through it, JIT included. Give the VM 1 GB for that image.
+- **Desktop windows:** a Linux program can open `/dev/wrld/window`, create a window, map its
+  pixels (32-bit ARGB, as Cairo draws them), present frames and read mouse, keyboard, resize and
+  close events (`samples/linux-gnome/wrldwin.h`). `C:/Linux/usr/local/bin/wrldpaint` is a Cairo
+  demo: click to drop dots, type to write, Esc to quit.
 - **Shared memory:** `memfd_create` (with seals), `shm_open`/`shm_unlink` under `/dev/shm`,
   and `MAP_SHARED` of those or of anonymous memory share real pages between processes, across
   `fork` and through descriptors passed with `SCM_RIGHTS` (`shm` tests all of it).

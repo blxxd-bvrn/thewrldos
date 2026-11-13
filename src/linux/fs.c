@@ -48,6 +48,7 @@ void lx_abspath(lxproc_t *p, const char *upath, char *out, int cap) {
 static int classify(const char *a) {
     if (!strcmp(a, "/dev/null")) return LP_DEV_NULL;
     if (!strcmp(a, "/dev/shm")) return LP_DEV_SHM_DIR;
+    if (!strcmp(a, "/dev/wrld/window")) return LP_DEV_WRLDWIN;
     if (!strncmp(a, "/dev/shm/", 9) && a[9] && !strchr(a + 9, '/')) return LP_DEV_SHM;
     if (!strcmp(a, "/dev/zero")) return LP_DEV_ZERO;
     if (!strcmp(a, "/dev/urandom") || !strcmp(a, "/dev/random")) return LP_DEV_RANDOM;
@@ -139,6 +140,7 @@ lxfile_t *lx_fd_get(lxproc_t *p, int fd) { return fd >= 0 && fd < LX_MAXFD ? p->
 void lx_file_put(lxfile_t *f) {
     if (!f || --f->refs > 0) return;
     if (f->type == FD_SHM) { shm_unref(f->obj); f->obj = NULL; }
+    else if (f->type == FD_WINDOW) { lxwin_release(f->obj); f->obj = NULL; }
     else lx_ipc_release(f);
     kfree(f->pdata); kfree(f);
 }
@@ -395,6 +397,10 @@ static int64_t do_open(lxproc_t *p, int dirfd, uint64_t upath, int flags, int mo
         if ((flags & O_TRUNC) && (flags & O_ACCMODE)) shm_resize(o, 0);
         f = file_new(FD_SHM); f->obj = o;
     }
+    else if (kind == LP_DEV_WRLDWIN) {
+        f = file_new(FD_WINDOW); f->obj = lxwin_new();
+        if (!f->obj) { kfree(f); return -ENOMEM; }
+    }
     else if (kind == LP_DEV_SHM_DIR) {
         if ((flags & O_ACCMODE) && !(flags & O_PATH)) return -EISDIR;
         f = file_new(FD_DIR); f->pdata = kzalloc(1); f->plen = 0;
@@ -467,6 +473,7 @@ static int64_t file_read(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, int
         return k;
     }
     case FD_DIR: return -EISDIR;
+    case FD_WINDOW: return lxwin_read(f->obj, dst, n, (f->oflags & O_NONBLOCK) != 0);
     case FD_SHM: {
         uint64_t pos = at >= 0 ? (uint64_t)at : f->pos;
         int64_t k = shm_rw(f->obj, dst, n, pos, false);

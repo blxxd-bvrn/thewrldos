@@ -55,6 +55,15 @@ shmobj_t *shm_lookup(const char *name);       /* /dev/shm/<name>, with a referen
 shmobj_t *shm_create_named(const char *name);
 int shm_unlink_name(const char *name);
 
+/* ---- /dev/wrld/window (wrldwin.c): a desktop window for a Linux program ---- */
+void *lxwin_new(void);
+void lxwin_release(void *o);
+struct uvm;
+int64_t lxwin_ioctl(void *o, uint64_t cmd, uint64_t arg, struct uvm *vm);
+void *lxwin_buffer(void *o);                   /* its shmobj_t */
+bool lxwin_ready(void *o);
+int64_t lxwin_read(void *o, void *dst, uint64_t n, bool nonblock);
+
 /* ---- user address spaces ---- */
 enum { VM_READ = 1, VM_WRITE = 2, VM_EXEC = 4 };
 enum { VMF_PRIVATE = 0, VMF_SHARED = 1, VMF_STACK = 2, VMF_HEAP = 4 };
@@ -92,7 +101,7 @@ uint64_t uvm_find_free(uvm_t *vm, uint64_t len, uint64_t below);
 
 /* ---- files ---- */
 enum { FD_FILE = 1, FD_DIR, FD_CONSOLE, FD_NULL, FD_ZERO, FD_RANDOM,
-       FD_PIPE, FD_SOCKET, FD_EPOLL, FD_EVENTFD, FD_TIMERFD, FD_SHM };   /* FD_SHM: obj is a shmobj_t */
+       FD_PIPE, FD_SOCKET, FD_EPOLL, FD_EVENTFD, FD_TIMERFD, FD_SHM, FD_WINDOW };   /* FD_SHM: obj is a shmobj_t; FD_WINDOW: wrldwin.c */
 typedef struct lxfile {
     int type, refs;
     int oflags;
@@ -167,7 +176,7 @@ enum { LP_FILE = 0, LP_DEV_NULL, LP_DEV_ZERO, LP_DEV_RANDOM, LP_DEV_TTY, LP_PROC
        LP_PROC_MEMINFO, LP_PROC_CPUINFO, LP_PROC_UPTIME, LP_PROC_VERSION,
        LP_SYS, LP_SYS_DEVICES, LP_SYS_DEV_SYSTEM, LP_SYS_CPU, LP_SYS_KERNEL,
        LP_SYS_CPU_ONLINE, LP_SYS_CPU_POSSIBLE, LP_SYS_CPU_PRESENT,
-       LP_SYS_OSRELEASE, LP_SYS_OSTYPE, LP_SYS_VERSION, LP_DEV_SHM, LP_DEV_SHM_DIR };
+       LP_SYS_OSRELEASE, LP_SYS_OSTYPE, LP_SYS_VERSION, LP_DEV_SHM, LP_DEV_SHM_DIR, LP_DEV_WRLDWIN };
 int lx_path(lxproc_t *p, int dirfd, const char *upath, char *out, int cap);
 void lx_abspath(lxproc_t *p, const char *upath, char *out, int cap);
 

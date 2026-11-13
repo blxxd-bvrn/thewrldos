@@ -19,7 +19,12 @@ the test programs below inside the OS:
 - **shared memory between processes**, the way WebKit's processes exchange tiles and IPC
   buffers: `memfd_create` (with seals), `shm_open`/`shm_unlink` under `/dev/shm`,
   `MAP_SHARED` of either and `MAP_SHARED | MAP_ANONYMOUS`, kept shared across `fork` and when
-  the descriptor is passed with `SCM_RIGHTS` (`samples/linux/shm.c`, 16 checks).
+  the descriptor is passed with `SCM_RIGHTS` (`samples/linux/shm.c`, 16 checks);
+- **desktop windows for Linux programs**: `/dev/wrld/window` creates a window whose pixels the
+  program maps and draws (32-bit ARGB, what Cairo, pixman and Skia's CPU backend write), presents
+  with an `ioctl`, and reads mouse, keyboard, resize and close events from with `read`, `poll`
+  or `epoll` (`src/linux/wrldwin.c`, interface in `samples/linux-gnome/wrldwin.h`; the
+  `wrldpaint` demo draws with Cairo and takes clicks and typing).
 
 ## Where the port stands
 
@@ -199,10 +204,16 @@ Already working, and not on the list below:
 
 ## The next steps to WebKit
 
-1. **WPE WebKit itself.** Ubuntu 24.04 packages WebKitGTK (which needs GTK and a Wayland or X11
-   server) but not WPE. The plan is to build WPE WebKit 2.x on the build machine with its CPU
-   Skia renderer and the headless WPE platform, then add a small WRLD backend that hands each
-   rendered frame to a desktop window through shared memory.
+1. **WebKit on the window device.** No Ubuntu release packages WPE WebKit (checked up to 25.10),
+   and Debian's archive is not reachable from the build environment, so there are two routes:
+   - *WebKitGTK*, which Ubuntu packages: write a small Wayland compositor (with Ubuntu's
+     `libwayland-server`) that runs as a Linux program and shows each `wl_shm` surface in a
+     `/dev/wrld/window` window, then run GTK 4 with its Cairo renderer and WebKitGTK's
+     MiniBrowser on it. Needs `wl_compositor`, `wl_shm`, `xdg_wm_base`, `wl_seat` (with an XKB
+     keymap in a memfd) and `wl_output`, plus EGL/GBM avoided or provided by Mesa's llvmpipe.
+   - *WPE WebKit* built from source on a bigger build machine with the CPU Skia renderer and a
+     WRLD platform backend that writes frames straight into `/dev/wrld/window`.
+   The compositor route reuses packaged binaries, so it is the one to try first.
 2. **Networking for libsoup.** HTTP through libsoup 3 and TLS through glib-networking/GnuTLS,
    on the existing socket layer; then IPv6 and loopback, which WebKit probes for.
 3. **Memory.** WebKit wants 1-2 GB per web process; the 3.75 GB ceiling and the in-RAM root file
@@ -239,7 +250,9 @@ Already working, and not on the list below:
 13. [x] **JavaScriptCore** - WebKit's JavaScript engine with its JIT (`samples/linux-webkit`).
 14. [x] **Shared memory between processes** - `memfd_create`, `/dev/shm`, real `MAP_SHARED`
    (`src/linux/shm.c`, `samples/linux/shm.c`).
-15. [ ] **WPE WebKit** with a WRLD display backend.
+15. [x] **Desktop windows for Linux programs** - `/dev/wrld/window` (`src/linux/wrldwin.c`).
+16. [ ] **A Wayland compositor on `/dev/wrld/window`**, then GTK 4 and WebKitGTK's MiniBrowser.
+17. [ ] **WebKit as a browser** on THE WRLD OS.
 
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
 `fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.

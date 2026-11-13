@@ -246,7 +246,7 @@ GNOME_PKGS := glib-2.0 gio-2.0 cairo cairo-ft fontconfig freetype2
 LXGNOME := $(if $(shell pkg-config --exists $(GNOME_PKGS) 2>/dev/null && echo y),$(patsubst samples/linux-gnome/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gnome/*.c)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gnome/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/fonts
-	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(GNOME_PKGS))
+	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(GNOME_PKGS)) -lm
 	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
 	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
 	@printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>/mnt/c/WRLD/Fonts</dir>\n  <cachedir>/tmp/fontconfig</cachedir>\n  <config></config>\n</fontconfig>\n' > $(LXROOT)/Linux/etc/fonts/fonts.conf

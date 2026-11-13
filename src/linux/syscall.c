@@ -136,6 +136,11 @@ static int64_t sys_mmap(lxproc_t *p, uint64_t addr, uint64_t len, uint64_t prot,
         if (!f) return -EBADF;
         if (f->type == FD_SHM)                                          /* memfd or /dev/shm */
             return uvm_map_shm(p->vm, addr, len, prot_of(prot), (flags & MAP_SHARED) != 0, fixed, f->obj, off);
+        if (f->type == FD_WINDOW) {                                     /* a window's pixels */
+            shmobj_t *o = lxwin_buffer(f->obj);
+            if (!o) return -ENODEV;
+            return uvm_map_shm(p->vm, addr, len, prot_of(prot), true, fixed, o, off);
+        }
         if (f->type == FD_ZERO) anon = true;                            /* like anonymous */
         else if (f->type != FD_FILE) return -ENODEV;
         else { data = f->node->data; size = f->node->size; node = f->node; }
@@ -259,6 +264,7 @@ int64_t lx_syscall(regs_t *r) {
     case 15: return lx_rt_sigreturn(r);                               /* rt_sigreturn */
     case 16: {                                                        /* ioctl */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
+        if (f->type == FD_WINDOW) return lxwin_ioctl(f->obj, a1, a2, p->vm);
         if (f->type != FD_CONSOLE) return -ENOTTY;
         if (a1 == 0x5401) {                                                                  /* TCGETS: struct termios (kernel layout, 36 bytes) */
             uint8_t tio[36]; memset(tio, 0, sizeof tio);
