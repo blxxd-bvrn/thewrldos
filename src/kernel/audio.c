@@ -19,6 +19,7 @@
 #include "devmgr.h"
 #include "audio.h"
 #include "usb.h"
+#include "virtio.h"
 
 static uint32_t out_rate = 48000;            /* the mixer's (and the card's) sample rate */
 #define RATE out_rate
@@ -28,7 +29,7 @@ static uint32_t out_rate = 48000;            /* the mixer's (and the card's) sam
 #define LEAD 16                           /* buffers kept ahead of the hardware */
 #define NVOICE 4
 
-enum { DEV_NONE, DEV_HDA, DEV_AC97, DEV_ES1370, DEV_ES1371, DEV_SB16, DEV_USB };
+enum { DEV_NONE, DEV_HDA, DEV_AC97, DEV_ES1370, DEV_ES1371, DEV_SB16, DEV_USB, DEV_WSS, DEV_VIA, DEV_CMI, DEV_VIRTIO };
 static int dev;
 static char hda_why[96];                     /* why the HDA probe gave up (shown on the log-on screen) */
 static char devname[80] = "No sound device";
@@ -710,6 +711,257 @@ static int sb16_position(void) {
     return pos / BUFBYTES;
 }
 
+static void mix_into(int16_t *out, int frames);
+
+/* ======================= Crystal CS4231A / Windows Sound System (ISA) =======================
+ * The codec's four registers (index, data, status, PIO) sit at base+4 on a WSS
+ * card (QEMU puts them at 0x534). Playback is 16-bit stereo at 48 kHz from an
+ * 8-bit ISA DMA channel in auto-init mode over the whole ring; the position is
+ * the DMA controller's remaining count. */
+static uint16_t wss;                                  /* codec index register */
+static int wss_dma = 3, wss_irq = 9;
+static uint8_t wss_rd(uint8_t r) { outb(wss, r & 0x1F); return inb(wss + 1); }
+static void wss_wr(uint8_t r, uint8_t v, bool mce) { outb(wss, (r & 0x1F) | (mce ? 0x40 : 0)); outb(wss + 1, v); }
+static bool wss_ready(void) { for (int i = 0; i < 20000; i++) { if (!(inb(wss) & 0x80)) return true; io_wait(); } return false; }
+static void wss_irq_handler(regs_t *r) { (void)r; outb(wss + 2, 0); }            /* acknowledge */
+static bool wss_probe(uint16_t base) {
+    uint8_t idx = inb(base);
+    if (idx == 0xFF) return false;                   /* nothing on the bus */
+    wss = base;
+    if (!wss_ready()) { wss = 0; return false; }
+    uint8_t old = wss_rd(0);                         /* left input control: read/write test */
+    wss_wr(0, 0x45, false); bool ok = wss_rd(0) == 0x45;
+    wss_wr(0, old, false);
+    uint8_t id = wss_rd(12) & 0x0F;                  /* 0x0A on a CS4231, 0x09 on an AD1848 */
+    if (!ok || (id != 0x0A && id != 0x09)) { wss = 0; return false; }
+    return true;
+}
+static bool wss_init(void) {
+    static const uint16_t bases[] = { 0x534, 0x608, 0xE84, 0xF44 };
+    for (unsigned i = 0; i < ARRAY_LEN(bases) && !wss; i++) wss_probe(bases[i]);
+    if (!wss) return false;
+    bool cs4231 = (wss_rd(12) & 0x0F) == 0x0A;
+    out_rate = 48000;
+    ring = (int16_t *)(uintptr_t)ISA_DMA_AREA;
+    memset(ring, 0, NBUF * BUFBYTES);
+    /* 8237 master controller, 8-bit channel: single mode, auto-init, memory -> device */
+    int c = wss_dma & 3;
+    uint32_t a = ISA_DMA_AREA, bytes = NBUF * BUFBYTES;
+    outb(0x0A, 0x04 | c);
+    outb(0x0C, 0);
+    outb(0x0B, 0x58 | c);
+    outb(dma_addr_port[c], a & 0xFF); outb(dma_addr_port[c], (a >> 8) & 0xFF);
+    outb(dma_page_port[c], (a >> 16) & 0xFF);
+    outb(dma_count_port[c], (bytes - 1) & 0xFF); outb(dma_count_port[c], ((bytes - 1) >> 8) & 0xFF);
+    outb(0x0A, c);
+    /* format: 48 kHz (24.576 MHz crystal, divider code 6), 16-bit linear, stereo; then autocalibrate */
+    wss_wr(9, 0x08, true);                           /* ACAL, playback off, DMA mode */
+    wss_wr(8, 0x5C, true);
+    wss_ready();
+    outb(wss, 9);                                    /* leave mode-change: autocalibration runs */
+    for (int i = 0; i < 2000 && (wss_rd(11) & 0x20); i++) io_wait();
+    wss_wr(6, 0x00, false); wss_wr(7, 0x00, false);  /* DAC left/right: unmuted, 0 dB */
+    if (cs4231) wss_wr(26, 0x00, false);             /* mono output on */
+    uint32_t cnt = BUFFRAMES - 1;                    /* an interrupt per buffer */
+    wss_wr(15, cnt & 0xFF, false); wss_wr(14, cnt >> 8, false);
+    irq_install(wss_irq, wss_irq_handler);
+    wss_wr(10, 0x02, false);                         /* interrupts on */
+    outb(wss + 2, 0);
+    wss_wr(9, 0x01, false);                          /* playback on */
+    snprintf(devname, sizeof devname, "%s Windows Sound System (port %x, IRQ %d, DMA %d)", cs4231 ? "Crystal CS4231A" : "Analog Devices AD1848", wss - 4, wss_irq, wss_dma);
+    klog("wss: %s", devname);
+    return true;
+}
+static int wss_position(void) {
+    int c = wss_dma & 3;
+    outb(0x0C, 0);
+    uint16_t lo = inb(dma_count_port[c]), hi = inb(dma_count_port[c]);
+    uint32_t left = ((hi << 8) | lo) + 1, bytes = NBUF * BUFBYTES;
+    if (left > bytes) left = bytes;
+    return (bytes - left) / BUFBYTES;
+}
+
+/* ======================= VIA VT82C686 / VT8233-VT8251 AC'97 =======================
+ * VIA's south bridges drive an AC'97 codec through their own scatter-gather
+ * DMA engine. The 686 has one playback channel at 0x00; the 8233 family has
+ * four "DXS" playback channels (0x00, 0x10, 0x20, 0x30) with a rate and volume
+ * of their own; the first one is used. A table entry per ring buffer, the last
+ * marked end-of-list, and the engine loops. Codec access is register 0x80. */
+static uint16_t via_io;
+static bool via_8233;
+static uint32_t *via_tbl;
+static bool via_codec_wait(void) { for (int i = 0; i < 5000; i++) { if (!(inl(via_io + 0x80) & 0x01000000)) return true; io_wait(); } return false; }
+static void via_codec_wr(uint8_t reg, uint16_t val) { via_codec_wait(); outl(via_io + 0x80, ((uint32_t)reg << 16) | val); via_codec_wait(); }
+static uint16_t via_codec_rd(uint8_t reg) {
+    via_codec_wait(); outl(via_io + 0x80, 0x00800000 | ((uint32_t)reg << 16));
+    for (int i = 0; i < 5000; i++) { uint32_t v = inl(via_io + 0x80); if (!(v & 0x01000000) && (v & 0x02000000)) return v & 0xFFFF; io_wait(); }
+    return 0xFFFF;
+}
+static bool via_match(const pci_dev_t *p) { return p->vendor == 0x1106 && (p->device == 0x3058 || p->device == 0x3059); }
+static bool via_init(pci_dev_t *p) {
+    via_8233 = p->device == 0x3059;                   /* VT8233/A/C, VT8235, VT8237, VT8251 */
+    bool io; uintptr_t b = pci_bar(p, 0, &io);
+    if (!b || !io) return false;
+    via_io = (uint16_t)b;
+    pci_enable(p, true, false);
+    /* AC-link: out of reset, link on, variable rate, SGD on (PCI config 0x41) */
+    uint32_t r40 = pci_cfg_read(p->bus, p->dev, p->fn, 0x40);
+    pci_cfg_write(p->bus, p->dev, p->fn, 0x40, (r40 & ~0xFF00u) | (0xCC << 8));
+    sleep_ms(50);
+    via_codec_wr(0x00, 0);                            /* codec reset */
+    sleep_ms(20);
+    if (via_codec_rd(0x26) == 0xFFFF) { klog("via: the AC'97 codec does not answer"); return false; }
+    via_codec_wr(0x02, 0x0000); via_codec_wr(0x04, 0x0000); via_codec_wr(0x18, 0x0808);
+    if (via_codec_rd(0x28) & 1) { via_codec_wr(0x2A, via_codec_rd(0x2A) | 1); via_codec_wr(0x2C, RATE); }
+    via_tbl = kmalloc_aligned(NBUF * 8, 8);
+    for (int i = 0; i < NBUF; i++) {
+        via_tbl[i * 2] = (uint32_t)(uintptr_t)(ring + i * BUFFRAMES * 2);
+        via_tbl[i * 2 + 1] = BUFBYTES | (i == NBUF - 1 ? 0x80000000u : 0);    /* EOL on the last: loop */
+    }
+    outb(via_io + 0x01, 0x40);                        /* stop channel 0 */
+    outb(via_io + 0x00, 0xFF);                        /* clear its status */
+    outl(via_io + 0x04, (uint32_t)(uintptr_t)via_tbl);
+    if (via_8233) {
+        outb(via_io + 0x02, 0x00); outb(via_io + 0x03, 0x00);       /* DXS volume: 0 dB */
+        uint32_t rate = (uint32_t)(((uint64_t)RATE << 20) / 48000);
+        outl(via_io + 0x08, 0x00300000 | (rate & 0xFFFFF) | 0xFF000000u);  /* 16-bit stereo, no stop index */
+        outb(via_io + 0x01, 0xA0);                    /* start, auto-start (loop) */
+    } else {
+        outb(via_io + 0x02, 0xB0);                    /* auto-start, 16-bit, stereo */
+        outb(via_io + 0x01, 0x80);                    /* start */
+    }
+    snprintf(devname, sizeof devname, "VIA %s AC'97 Audio Controller (1106:%04x)", via_8233 ? "VT8233/VT8235/VT8237" : "VT82C686", p->device);
+    klog("via: %s at io %x", devname, via_io);
+    return true;
+}
+static int via_position(void) {
+    if (via_8233) return (inl(via_io + 0x0C) >> 24) % NBUF;          /* current descriptor index */
+    uint32_t cur = inl(via_io + 0x04), base = (uint32_t)(uintptr_t)via_tbl;
+    if (cur < base || cur > base + NBUF * 8) return -1;
+    return ((cur - base) / 8 + NBUF - 1) % NBUF;                      /* it points past the entry being played */
+}
+
+/* ======================= C-Media CMI8738 / CMI8338 =======================
+ * Channel 0 plays a ring of `total` dwords from FRAME1 (base) / FRAME2 (count).
+ * Rates are a 3-bit code; 48 kHz is code 7. Volume is in the SB16-compatible
+ * mixer at 0x22/0x23. */
+static uint16_t cm_io;
+static bool cm_match(const pci_dev_t *p) { return p->vendor == 0x13F6 && (p->device == 0x0100 || p->device == 0x0101 || p->device == 0x0111 || p->device == 0x0112); }
+static bool cm_init(pci_dev_t *p) {
+    bool io; uintptr_t b = pci_bar(p, 0, &io);
+    if (!b || !io) return false;
+    cm_io = (uint16_t)b;
+    pci_enable(p, true, false);
+    outl(cm_io + 0x00, inl(cm_io + 0x00) | 0x00040000);          /* reset channel 0 */
+    io_wait(); outl(cm_io + 0x00, inl(cm_io + 0x00) & ~0x00040000u);
+    outl(cm_io + 0x00, inl(cm_io + 0x00) & ~0x00000001u);        /* channel 0: playback */
+    uint32_t f1 = inl(cm_io + 0x04) & ~(7u << 10);
+    outl(cm_io + 0x04, f1 | (7u << 10));                         /* 48 kHz */
+    outl(cm_io + 0x08, (inl(cm_io + 0x08) & ~3u) | 3u);          /* 16-bit stereo */
+    outl(cm_io + 0x80, (uint32_t)(uintptr_t)ring);
+    uint32_t dwords = NBUF * BUFBYTES / 4, per = BUFBYTES / 4;
+    outl(cm_io + 0x84, ((per - 1) << 16) | (dwords - 1));
+    static const uint8_t mixer[][2] = { { 0x30, 0xF8 }, { 0x31, 0xF8 }, { 0x32, 0xF8 }, { 0x33, 0xF8 }, { 0x3C, 0x1F } };
+    for (unsigned i = 0; i < ARRAY_LEN(mixer); i++) { outb(cm_io + 0x23, mixer[i][0]); outb(cm_io + 0x22, mixer[i][1]); }
+    outl(cm_io + 0x00, inl(cm_io + 0x00) | 0x00010000);          /* enable channel 0 */
+    snprintf(devname, sizeof devname, "C-Media CMI%s PCI Audio (13f6:%04x)", p->device >= 0x0111 ? "8738" : "8338", p->device);
+    klog("cmi: %s at io %x", devname, cm_io);
+    return true;
+}
+static int cm_position(void) {
+    uint32_t dwords = NBUF * BUFBYTES / 4, left = (inl(cm_io + 0x84) & 0xFFFF) + 1;
+    if (left > dwords) return -1;
+    return (int)((dwords - left) * 4 / BUFBYTES);
+}
+
+/* ======================= virtio-sound (QEMU/KVM, Proxmox) =======================
+ * Control queue: PCM_INFO to find an output stream, then SET_PARAMS (48 kHz,
+ * S16, stereo), PREPARE and START. Each ring buffer is one period sent on the
+ * TX queue as {stream id, PCM data, status}; the device hands it back when it
+ * has played it, which is how the position is known. */
+static vdev_t vsnd;
+static virtq_t vs_ctl, vs_tx;
+static uint32_t vs_stream, vs_sent, vs_done;
+static uint8_t *vs_req, *vs_resp;
+static uint32_t *vs_hdr, *vs_status;            /* per slot: stream id; status + latency */
+#define VS_SLOTS LEAD
+static int64_t vs_control(const void *req, uint32_t rlen, uint32_t resp_len) {
+    memcpy(vs_req, req, rlen);
+    memset(vs_resp, 0, resp_len);
+    vs_ctl.desc[0].addr = dma_addr(vs_req); vs_ctl.desc[0].len = rlen; vs_ctl.desc[0].flags = VQ_NEXT; vs_ctl.desc[0].next = 1;
+    vs_ctl.desc[1].addr = dma_addr(vs_resp); vs_ctl.desc[1].len = resp_len; vs_ctl.desc[1].flags = VQ_WRITE; vs_ctl.desc[1].next = 0;
+    uint16_t idx = vs_ctl.avail[1];
+    vs_ctl.avail[2 + idx % vs_ctl.size] = 0;
+    __asm__ volatile("mfence" ::: "memory");
+    vs_ctl.avail[1] = idx + 1;
+    __asm__ volatile("mfence" ::: "memory");
+    virtio_notify(&vsnd, &vs_ctl);
+    uint32_t t0 = timer_ticks();
+    while (*(volatile uint16_t *)(vs_ctl.used + 2) == vs_ctl.last_used) if (timer_ticks() - t0 > 1000) return -1;
+    vs_ctl.last_used++;
+    uint32_t code; memcpy(&code, vs_resp, 4);
+    return code;
+}
+static bool vsnd_match(const pci_dev_t *p) { return p->vendor == 0x1AF4 && p->device == 0x1059; }
+static bool vsnd_init(pci_dev_t *p) {
+    uint32_t got;
+    memset(&vsnd, 0, sizeof vsnd);
+    if (!virtio_transport(p, &vsnd) || !vsnd.modern || !virtio_negotiate(&vsnd, 0, &got)) { klog("virtio-snd: no usable transport"); return false; }
+    if (!virtio_queue_setup(&vsnd, &vs_ctl, 0, 16) || !virtio_queue_setup(&vsnd, &vs_tx, 2, 64) || vs_tx.size < VS_SLOTS * 3) { klog("virtio-snd: queues unavailable"); return false; }
+    virtio_driver_ok(&vsnd);
+    uint32_t streams = virtio_cfg32(&vsnd, 4);
+    vs_req = kmalloc_aligned(64, 64); vs_resp = kmalloc_aligned(4 + 32 * 8, 64);
+    vs_hdr = kmalloc_aligned(VS_SLOTS * 4, 64); vs_status = kmalloc_aligned(VS_SLOTS * 8, 64);
+    /* the first output stream */
+    uint32_t n = MIN(streams, 8u), info[4] = { 0x0100, 0, n, 32 };
+    if (vs_control(info, 16, 4 + 32 * n) != 0x8000) { klog("virtio-snd: PCM_INFO failed"); return false; }
+    vs_stream = ~0u;
+    for (uint32_t i = 0; i < n && vs_stream == ~0u; i++) {
+        const uint8_t *e = vs_resp + 4 + 32 * i;
+        uint64_t fmts, rates; memcpy(&fmts, e + 8, 8); memcpy(&rates, e + 16, 8);
+        if (e[24] == 0 && (fmts & (1u << 5)) && e[25] <= 2 && e[26] >= 2) {      /* output, S16, stereo */
+            vs_stream = i;
+            out_rate = (rates & (1u << 7)) ? 48000 : (rates & (1u << 6)) ? 44100 : 48000;
+        }
+    }
+    if (vs_stream == ~0u) { klog("virtio-snd: no 16-bit stereo output stream among %u", streams); return false; }
+    struct { uint32_t code, stream, buffer, period, features; uint8_t channels, format, rate, pad; } __attribute__((packed)) sp =
+        { 0x0101, vs_stream, VS_SLOTS * BUFBYTES, BUFBYTES, 0, 2, 5, (uint8_t)(out_rate == 44100 ? 6 : 7), 0 };
+    uint32_t prep[2] = { 0x0102, vs_stream }, start[2] = { 0x0104, vs_stream };
+    if (vs_control(&sp, sizeof sp, 4) != 0x8000 || vs_control(prep, 8, 4) != 0x8000) { klog("virtio-snd: stream setup refused"); return false; }
+    vs_sent = vs_done = 0;
+    for (int i = 0; i < VS_SLOTS; i++) vs_hdr[i] = vs_stream;
+    if (vs_control(start, 8, 4) != 0x8000) { klog("virtio-snd: START refused"); return false; }
+    snprintf(devname, sizeof devname, "VirtIO Sound (stream %u)", vs_stream);
+    klog("virtio-snd: %s, %u streams", devname, streams);
+    return true;
+}
+/* hand back played periods, and keep LEAD periods queued */
+static void vsnd_refill(void) {
+    while (*(volatile uint16_t *)(vs_tx.used + 2) != vs_tx.last_used) {
+        uint32_t id = *(volatile uint32_t *)(vs_tx.used + 4 + 8 * (vs_tx.last_used % vs_tx.size));
+        vs_tx.last_used++; vs_done++;
+        int b = (int)((id / 3) % VS_SLOTS);
+        (void)b;
+    }
+    bool sent = false;
+    while (vs_sent - vs_done < VS_SLOTS) {
+        int slot = vs_sent % VS_SLOTS, buf = vs_sent % NBUF;
+        int16_t *data = ring + buf * BUFFRAMES * 2;
+        mix_into(data, BUFFRAMES);
+        vq_desc_t *d = &vs_tx.desc[slot * 3];
+        d[0].addr = dma_addr(&vs_hdr[slot]); d[0].len = 4; d[0].flags = VQ_NEXT; d[0].next = slot * 3 + 1;
+        d[1].addr = dma_addr(data); d[1].len = BUFBYTES; d[1].flags = VQ_NEXT; d[1].next = slot * 3 + 2;
+        d[2].addr = dma_addr(&vs_status[slot * 2]); d[2].len = 8; d[2].flags = VQ_WRITE; d[2].next = 0;
+        uint16_t idx = vs_tx.avail[1];
+        vs_tx.avail[2 + idx % vs_tx.size] = slot * 3;
+        __asm__ volatile("mfence" ::: "memory");
+        vs_tx.avail[1] = idx + 1;
+        vs_sent++; sent = true;
+    }
+    if (sent) { __asm__ volatile("mfence" ::: "memory"); virtio_notify(&vsnd, &vs_tx); }
+}
+
 /* ======================= mixer + task ======================= */
 static void mix_into(int16_t *out, int frames) {
     static int32_t acc[BUFFRAMES * 2];
@@ -731,7 +983,15 @@ static void mix_into(int16_t *out, int frames) {
  * silence instead of repeating stale sound; if it has overtaken us, start
  * again just ahead of it. Runs with interrupts off (timer IRQ or irq_save). */
 static int cur_position(void) {
-    return dev == DEV_HDA ? hda_position() : dev == DEV_AC97 ? ac97_position() : dev == DEV_SB16 ? sb16_position() : es_position();
+    switch (dev) {
+    case DEV_HDA: return hda_position();
+    case DEV_AC97: return ac97_position();
+    case DEV_SB16: return sb16_position();
+    case DEV_WSS: return wss_position();
+    case DEV_VIA: return via_position();
+    case DEV_CMI: return cm_position();
+    default: return es_position();
+    }
 }
 static int last_cur = -1;
 static uint32_t underruns, bad_positions;
@@ -741,6 +1001,7 @@ static uint32_t underruns, bad_positions;
 static uint32_t est_bytes, est_tick;
 static bool est_set;
 static void refill(void) {
+    if (dev == DEV_VIRTIO) { vsnd_refill(); return; }        /* paced by the device handing periods back */
     int cur = cur_position();
     uint32_t now = timer_ticks();
     if (dev == DEV_ES1370 || dev == DEV_ES1371) {
@@ -992,6 +1253,9 @@ DRIVER_PCI(drv_hda, "hdaudio", "High Definition Audio (Intel, AMD, NVIDIA, VIA, 
 DRIVER_PCI(drv_ac97, "ac97", "AC'97 audio (Intel ICH, nVidia, AMD, SiS)", DC_SOUND, ac97_match);
 DRIVER_PCI(drv_es1370, "es1370", "Ensoniq AudioPCI ES1370", DC_SOUND, es1370_match);
 DRIVER_PCI(drv_es1371, "es1371", "Ensoniq/Creative AudioPCI ES1371, ES1373", DC_SOUND, es1371_match);
+DRIVER_PCI(drv_via, "viaac97", "VIA VT82C686 and VT8233-VT8251 AC'97 audio", DC_SOUND, via_match);
+DRIVER_PCI(drv_cmi, "cmpci", "C-Media CMI8738 and CMI8338 PCI audio", DC_SOUND, cm_match);
+DRIVER_PCI(drv_vsnd, "viosnd", "VirtIO sound device", DC_SOUND, vsnd_match);
 
 void audio_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
@@ -1016,8 +1280,12 @@ void audio_init(void) {
         if (es1370_match(d)) { if (es1370_init(d)) { dev = DEV_ES1370; dev_claim(d, &drv_es1370, "Ensoniq AudioPCI (ES1370)"); } }
         else if (es1371_match(d)) { if (es1371_init(d)) { dev = DEV_ES1371; dev_claim(d, &drv_es1371, "Creative AudioPCI (ES1371/ES1373)"); } }
         else if (ac97_match(d) && ac97_init(d)) { dev = DEV_AC97; dev_claim(d, &drv_ac97, "AC'97 audio controller"); }
+        else if (via_match(d) && via_init(d)) { dev = DEV_VIA; dev_claim(d, &drv_via, devname); }
+        else if (cm_match(d) && cm_init(d)) { dev = DEV_CMI; dev_claim(d, &drv_cmi, devname); }
+        else if (vsnd_match(d) && vsnd_init(d)) { dev = DEV_VIRTIO; dev_claim(d, &drv_vsnd, devname); }
     }
     if (!dev && sb16_init()) dev = DEV_SB16;            /* ISA: probed last */
+    if (!dev && wss_init()) dev = DEV_WSS;
     card_found = dev != DEV_NONE;
     probed = true;
     if (usb_was && dev != DEV_HDA) {                    /* USB was the output; a non-HDA card wins */
@@ -1032,7 +1300,7 @@ void audio_init(void) {
     }
     /* HD Audio is the default: when one was found, it stays the output even
      * if a USB audio device is plugged in; USB remains selectable in Sound. */
-    if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, AudioPCI, Sound Blaster 16 or USB audio)"); return; }
+    if (!dev) { klog("audio: no supported sound device (HD Audio, AC'97, VIA, C-Media, AudioPCI, VirtIO, Sound Blaster 16, Windows Sound System or USB audio)"); return; }
     if (dev == DEV_USB && !card_found) vhda_start(out_rate);
     else vhda_stop();
     eps_build();
@@ -1127,6 +1395,7 @@ void audio_rescan(void) {
     /* Nothing was found at boot: free the mixer ring and probe again, so a
      * card that was disabled or not ready then can still be picked up. */
     if (ring && ring != (int16_t *)(uintptr_t)ISA_DMA_AREA) { kfree_aligned(ring); ring = NULL; }
+    wss = 0;
     audio_init();
 }
 const char *audio_device_name(void) { return neps ? eps[ep_sel].name : devname; }
@@ -1138,6 +1407,10 @@ const char *audio_controller_name(void) {
     case DEV_AC97: return "AC'97";
     case DEV_ES1370: case DEV_ES1371: return "AudioPCI";
     case DEV_SB16: return "Sound Blaster 16";
+    case DEV_WSS: return "Windows Sound System";
+    case DEV_VIA: return "VIA AC'97";
+    case DEV_CMI: return "C-Media";
+    case DEV_VIRTIO: return "VirtIO Sound";
     default: return "";
     }
 }

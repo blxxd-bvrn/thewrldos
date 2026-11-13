@@ -59,8 +59,9 @@ INSTALLING TO A HARD DISK
 SOUND AND DISPLAY
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
   shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High
-  Definition Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI ES1370
-  and ES1371/ES1373, and Sound Blaster 16. Command Prompt: volume 60, play FILE.wav
+  Definition Audio, AC'97 (Intel, nVidia, AMD, SiS, VIA), C-Media CMI8738,
+  Ensoniq AudioPCI ES1370 and ES1371/ES1373, VirtIO sound, Sound Blaster 16
+  and Windows Sound System (CS4231A). Command Prompt: volume 60, play FILE.wav
   No sound? "sndinfo" in the Command Prompt shows the card, the codec route
   and whether playback is advancing. In VMware, also check that the sound
   card is connected (VM > Settings > Sound Card > Connected).

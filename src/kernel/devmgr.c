@@ -27,6 +27,7 @@ static const driver_t drv_serial = { "serial", "16550 serial port (kernel log)",
 static const driver_t drv_pcspk = { "pcspk", "PC speaker", DC_SOUND, "ISA", NULL }; DRIVER_REGISTER(drv_pcspk);
 static const driver_t drv_acpi = { "acpi", "ACPI power management (power off, restart)", DC_SYSTEM, "ACPI", NULL }; DRIVER_REGISTER(drv_acpi);
 static const driver_t drv_sb16 = { "sb16", "Sound Blaster 16", DC_SOUND, "ISA", NULL }; DRIVER_REGISTER(drv_sb16);
+static const driver_t drv_wss = { "wss", "Windows Sound System (Crystal CS4231A, AD1848)", DC_SOUND, "ISA", NULL }; DRIVER_REGISTER(drv_wss);
 static const driver_t drv_disk = { "disk", "Hard disks (IDE, SATA, NVMe, SCSI, USB)", DC_DISK, "storage", NULL }; DRIVER_REGISTER(drv_disk);
 #ifdef __x86_64__
 static const driver_t drv_usbhub = { "usbhub", "USB hubs", DC_USBDEV, "USB", NULL }; DRIVER_REGISTER(drv_usbhub);
@@ -199,6 +200,8 @@ static void scan_fixed(void) {
     /* an ISA sound card, when that is what plays */
     if (audio_present() && !class_claimed(DC_SOUND) && strstr(audio_controller_name(), "Sound Blaster"))
         add(DC_SOUND, DS_WORKING, &drv_sb16, "ISAPNP\\CTL0031", "Sound Blaster 16", "Port 220h, IRQ 5, DMA 1/5", "This device is working properly.");
+    if (audio_present() && !class_claimed(DC_SOUND) && strstr(audio_controller_name(), "Windows Sound System"))
+        add(DC_SOUND, DS_WORKING, &drv_wss, "ISAPNP\\CSC0000", "Crystal CS4231A Windows Sound System", "Port 530h, IRQ 9, DMA 3", "This device is working properly.");
 }
 
 static void scan_disks(void) {

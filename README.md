@@ -22,8 +22,9 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
   (RTL8111/8168/8125, RTL8139), AMD PCnet, VMware VMXNET3 and virtio-net cards, a TCP/IP stack
   with DHCP and DNS, and HTTPS with certificate checking.
 - **Real power-off** through ACPI, on VirtualBox, VMware, Hyper-V and real PCs as well as QEMU.
-- **Sound:** drivers for Intel HD Audio, AC'97 (Intel, nVidia, AMD, SiS), Ensoniq AudioPCI
-  (ES1370, ES1371/ES1373), Sound Blaster 16 and USB audio (class 1 and 2). A startup sound plays when
+- **Sound:** drivers for Intel HD Audio, AC'97 (Intel, nVidia, AMD, SiS, VIA), C-Media CMI8738,
+  Ensoniq AudioPCI (ES1370, ES1371/ES1373), VirtIO sound, Sound Blaster 16, Windows Sound System
+  (Crystal CS4231A) and USB audio (class 1 and 2). A startup sound plays when
   you log on and a shutdown sound plays before the computer turns off. The Sound page lists the
   playback endpoints and every detected audio-class device with its driver state; **Scan again**
   refreshes the list after plugging in a device.
@@ -314,6 +315,15 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
       the sample rate converter); DAC2 loops over the ring.
     - **Sound Blaster 16:** DSP 4.x, 16-bit stereo auto-init ISA DMA from a buffer below
       16 MiB; the 8237 count register gives the position.
+    - **Windows Sound System (Crystal CS4231A, AD1848):** the codec at port 534h (QEMU's
+      `cs4231a`) or the other usual WSS ports, 48 kHz 16-bit stereo from 8-bit ISA DMA channel 3,
+      IRQ 9.
+    - **VirtIO sound** (QEMU/KVM `virtio-sound-pci`, Proxmox): the first 16-bit stereo output
+      stream; each ring buffer is a period on the TX queue, and the device returning it is the
+      play position.
+    - **VIA VT82C686 and VT8233/VT8235/VT8237/VT8251 AC'97** (VIA chipsets) and **C-Media
+      CMI8738/CMI8338**: written from the chips' documented registers; QEMU cannot emulate them,
+      so they are untested on real hardware.
     - **USB audio (class 1 and 2):** the audio control and streaming interfaces are read from the
       configuration, the streaming alternate setting is selected, the sample rate is set (from the
       format descriptor's list in class 1, on the clock source entity in class 2), and the
