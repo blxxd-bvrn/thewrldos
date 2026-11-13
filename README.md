@@ -819,8 +819,8 @@ device manager's job is to say what the computer has and which driver runs it.
     glowing orb (Aero renderer).
   - **Metro:** the flat Windows 8 look (its own `metro` renderer): window frames in one solid
     accent colour with square corners and a centred title, thin-line caption glyphs that light up
-    on hover beside an always-red close button, flat push buttons, a flat taskbar with a tiled
-    Start button, and a square Start menu.
+    on hover beside an always-red close button, flat push buttons, a flat taskbar whose Start
+    button is the globe as a simple line logo, and a square Start menu.
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.

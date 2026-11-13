@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "gfx.h"
 #include "theme.h"
+#include "raster.h"
 #include "wm.h"
 #include "apps.h"
 #include "fs.h"
@@ -870,12 +871,35 @@ static void paint_start_button(canvas_t *c, bool hot, bool down) {
         draw_text(c, FONT_LARGE, r.x + 27, r.y + (r.h - font_height(FONT_LARGE)) / 2, "start", T.start_text);
         return;
     }
-    if (T.renderer == RENDER_METRO) {   /* a flat square with four tiles */
+    if (T.renderer == RENDER_METRO) {   /* the globe as a flat line logo */
         int w = start_w(), h = T.taskbar_h;
         if (hot || down) fill_rect(c, 0, y, w, h, down ? T.start_top : lighten(T.tb_top, 40));
-        int s = h >= 36 ? 9 : 7, g = 2, ox = (w - 2 * s - g) / 2, oy = y + (h - 2 * s - g) / 2;
-        uint32_t tile = hot || down ? WHITE : T.start_top;
-        for (int k = 0; k < 4; k++) fill_rect(c, ox + (k & 1) * (s + g), oy + (k >> 1) * (s + g), s, s, tile);
+        uint32_t ink = hot || down ? WHITE : T.start_top;
+        int rad = h >= 36 ? 11 : 8;
+        int32_t cx = RASTER_FIX(w) / 2, cy = RASTER_FIX(2 * y + h) / 2, r = RASTER_FIX(rad), k = r * 552 / 1000;
+        int32_t mr = r * 45 / 100, mk = mr * 552 / 1000, lat = r / 2, half = r * 866 / 1000;
+        raster_path_t *p = raster_path_new();
+        if (p) {
+            /* outline */
+            raster_move_to(p, cx + r, cy);
+            raster_cubic_to(p, cx + r, cy + k, cx + k, cy + r, cx, cy + r);
+            raster_cubic_to(p, cx - k, cy + r, cx - r, cy + k, cx - r, cy);
+            raster_cubic_to(p, cx - r, cy - k, cx - k, cy - r, cx, cy - r);
+            raster_cubic_to(p, cx + k, cy - r, cx + r, cy - k, cx + r, cy);
+            raster_close(p);
+            /* a meridian */
+            raster_move_to(p, cx, cy - r);
+            raster_cubic_to(p, cx + mk, cy - r, cx + mr, cy - k, cx + mr, cy);
+            raster_cubic_to(p, cx + mr, cy + k, cx + mk, cy + r, cx, cy + r);
+            raster_cubic_to(p, cx - mk, cy + r, cx - mr, cy + k, cx - mr, cy);
+            raster_cubic_to(p, cx - mr, cy - k, cx - mk, cy - r, cx, cy - r);
+            /* the equator and two parallels */
+            raster_move_to(p, cx - r, cy); raster_line_to(p, cx + r, cy);
+            raster_move_to(p, cx - half, cy - lat); raster_line_to(p, cx + half, cy - lat);
+            raster_move_to(p, cx - half, cy + lat); raster_line_to(p, cx + half, cy + lat);
+            raster_stroke(c, p, 2, ink);
+            raster_path_free(p);
+        }
         return;
     }
     if (T.classic) {
