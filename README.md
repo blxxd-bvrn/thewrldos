@@ -12,8 +12,9 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 - **Two editions from the same sources:** `wrldos.iso` (32-bit, i686) runs 32-bit Win32
   programs; `wrldos64.iso` (64-bit, x86-64 long mode) runs 64-bit (x64) Win32 programs.
   Everything else is the same.
-- Runs **live from the CD** or **installs to a hard disk** with an XP-style Setup, after which
-  every file and setting is saved to the disk.
+- Runs **live from the CD** or **installs to a hard disk** with a graphical Setup (a detailed
+  disk list, confirmations before formatting and a progress page), after which every file and
+  setting is saved to the disk.
 - Visual styles **Luna (Blue), Olive Green, Silver, WRLD Classic, Aero** (translucent
   blurred glass) and **Plex** (Longhorn-style). Each one is a `.wrldstyle` text file you can edit
   or copy, and each can be recoloured with **hue, saturation and lightness** sliders.
@@ -171,15 +172,26 @@ timer, which is useful when testing a machine that boots with a silent timer.
 
 You can also start Setup from the **Install THE WRLD OS** icon on the live desktop.
 
-1. **Text-mode Setup** (blue screens, keyboard-driven, like XP's):
-   - welcome screen and licence (F8 to agree);
-   - **partition list**, where you can create (C) and delete (D) partitions;
+1. **Graphical Setup** (the same wizard look as the first-boot pages, mouse or keyboard):
+   - welcome screen and licence (accept the checkbox or press F8);
+   - **detailed disk list**: each disk shows its number, model, bus, capacity and partition table
+     (MBR, GPT or none), and each partition shows its drive letter, partition number, file
+     system, size and free space. Unpartitioned space is listed with its available size;
+   - create (**New partition**) and delete partitions. Both actions show a confirmation naming
+     the disk, partition, drive letter and size; a GPT disk is called out before Setup replaces
+     its table with MBR;
    - **format** as NTFS or FAT32, quick or full, or keep the existing file system. When Setup
      was started by UEFI firmware the system partition must be FAT32: it becomes the EFI System
      Partition (type `0xEF`) and receives `\EFI\BOOT\BOOTX64.EFI`;
-   - **copies the system** and writes the boot loader: GRUB's boot code in the MBR and its core
-     image after the MBR (which also keeps the disk BIOS-bootable);
+   - a **summary page** repeats the exact disk, partition, letter, size and file system, warns
+     that formatting deletes everything on the partition, and requires an "I understand"
+     checkbox before **Install** is enabled;
+   - **copies the system** with a progress bar and writes the boot loader: GRUB's boot code in
+     the MBR and its core image after the MBR (which also keeps the disk BIOS-bootable);
    - restarts.
+
+   The blue text-mode Setup is kept as a fallback: choose **Install THE WRLD OS (text mode)** in
+   the boot menu (or add `setup=text` to the kernel command line).
 2. **First boot from the disk**: Setup first **installs devices**: it detects the hardware in
    the computer, matches each device to its built-in driver and shows them one by one, then
    says how many are ready and how many have no driver. A graphical wizard then asks for:
@@ -605,8 +617,12 @@ device manager's job is to say what the computer has and which driver runs it.
   appears in all of the above without further changes.
 
 ### Setup (`src/apps/setup.c`)
-- **Text mode:** partition editor, NTFS or FAT32 format (quick/full), file copy with progress, GRUB
-  install.
+- **Graphical install:** the default Setup. Detailed disk/partition list with numbers, letters,
+  sizes and file systems, New/Delete with confirmations, a file-system choice, a review page
+  with an "I understand" checkbox, and graphical format/copy progress. It works from the boot
+  menu and from the live desktop.
+- **Text mode:** fallback (`setup=text`), with the same partition editor, NTFS/FAT32 format
+  (quick/full), file copy and GRUB install.
 - **First boot:** *Installing devices* (see above), then the graphical wizard. It runs before
   the log-on screen, using the normal widgets.
 

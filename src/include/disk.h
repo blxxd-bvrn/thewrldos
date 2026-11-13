@@ -129,7 +129,8 @@ void settings_set(const char *key, const char *val);
 /* ---- setup ---- */
 extern bool boot_setup_mode;        /* "setup" on the kernel command line */
 extern uint32_t boot_root_serial;   /* "root=XXXXXXXX" */
-void setup_text_mode(bool from_desktop);   /* blue text-mode installer */
+void setup_gui_mode(bool from_desktop);     /* graphical installer (default) */
+void setup_text_mode(bool from_desktop);   /* blue text-mode fallback: setup=text */
 bool setup_oobe_pending(void);
 void setup_oobe(void);              /* first-boot "Finishing setup" wizard */
 void setup_launch_from_desktop(void);

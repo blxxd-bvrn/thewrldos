@@ -1,6 +1,8 @@
 /* THE WRLD OS Setup.
- *  1. Text-mode setup (blue screens): partition the disk, format NTFS or FAT32, copy the
- *     system from the live C: drive, install the GRUB boot loader, restart.
+ *  1. Graphical Setup: pick a disk and partition from a detailed list, confirm the
+ *     exact disk/partition/letter/size, format NTFS or FAT32, copy the system
+ *     from the live C: drive, install the GRUB boot loader, restart. The older
+ *     blue text-mode setup is kept as a fallback ("setup=text").
  *  2. First boot from the hard disk: a graphical wizard collects the user's
  *     name, computer name, time zone and look, then finishes the installation. */
 #include "kernel.h"
@@ -14,6 +16,12 @@
 
 bool boot_setup_mode;
 uint32_t boot_root_serial;
+
+/* Set while either setup front-end owns the screen.  The GUI front-end also
+ * uses it to redirect the text progress and message helpers in do_install. */
+static bool gui_setup;
+static void gui_setup_message(const char *msg);
+static void gui_setup_progress(const char *caption, int pct, const char *detail);
 
 /* ======================================================================
  * text-mode screens
@@ -251,10 +259,12 @@ static int fmt_pct; static const char *fmt_what;
 static void fmt_progress(int pct, const char *what) {
     if (pct == fmt_pct && what == fmt_what) return;
     fmt_pct = pct; fmt_what = what;
+    if (gui_setup) { gui_setup_progress("Formatting the partition...", pct, what); return; }
     ts_progress(16, "Setup is formatting...", pct, TS_YEL);
     ts_present();
 }
 static void message_screen(const char *msg, const char *status) {
+    if (gui_setup) { gui_setup_message(msg); return; }
     ts_begin(status, NULL);
     tx_wrap(2, 3, msg, TS_FG);
     ts_present();
@@ -272,7 +282,7 @@ static bool do_install(int disk, int slot, int mode) {
         message_screen("This computer started Setup in UEFI mode, so the system partition must be FAT32 (it becomes the EFI System Partition).\n\nRun Setup again and choose a FAT32 option.\n\nPress ENTER to return.", "ENTER=Continue");
         return false;
     }
-    if (gpt_disk[disk]) {
+    if (gpt_disk[disk] && !gui_setup) {
         message_screen("This disk uses a GPT partition table. Setup writes an MBR partition table, so it will replace the GPT and erase all partitions on this disk.\n\n"
                        "Turn the computer off now if you need to keep them. Otherwise press ENTER to continue.", "ENTER=Continue");
     }
@@ -293,11 +303,17 @@ static bool do_install(int disk, int slot, int mode) {
     /* format */
     if (mode != 4) {
         int kind = mode < 2 ? FS_NTFS : FS_FAT32;
-        ts_begin("", NULL);
-        tx(2, 3, "Please wait while Setup formats the partition", TS_FG);
         item_t it = { .kind = IT_PART, .disk = disk, .slot = slot, .lba = p->lba, .sectors = p->sectors, .type = vol_part_type(kind), .letter = 'C' };
-        char pd[96]; part_desc(&it, pd, sizeof pd); tx(6, 5, pd, TS_HI);
-        tx(2, 7, "on", TS_FG); tx(2, 8, dd, TS_FG);
+        char pd[96]; part_desc(&it, pd, sizeof pd);
+        if (gui_setup) {
+            char det[200]; snprintf(det, sizeof det, "%s\n%s", pd, dd);
+            gui_setup_progress("Formatting the partition...", 0, det);
+        } else {
+            ts_begin("", NULL);
+            tx(2, 3, "Please wait while Setup formats the partition", TS_FG);
+            tx(6, 5, pd, TS_HI);
+            tx(2, 7, "on", TS_FG); tx(2, 8, dd, TS_FG);
+        }
         fmt_pct = -1;
         p->type = vol_part_type(kind); write_ptab(disk);
         if (!vol_format(kind, dv, p->lba, p->sectors, "WRLD OS", mode == 1 || mode == 3, serial, fmt_progress, err, sizeof err)) {
@@ -332,21 +348,28 @@ static bool do_install(int disk, int slot, int mode) {
         if (!n->dir) done += n->size;
         if (timer_ticks() - last > 30 || i == L.n - 1) {
             last = timer_ticks();
-            ts_begin("", NULL);
-            tx_wrap(2, 3, "Please wait while Setup copies files to the " OS_NAME " installation folders. This might take several minutes to complete.", TS_FG);
-            ts_progress(16, "Setup is copying files...", (int)(done * 100 / MAX(1, L.bytes)), TS_YEL);
             char st[160]; snprintf(st, sizeof st, "Copying: %s", n->name);
-            ts_status("", st);
-            ts_present();
+            int pct = (int)(done * 100 / MAX(1, L.bytes));
+            if (gui_setup) gui_setup_progress("Copying files to the hard disk...", pct, st);
+            else {
+                ts_begin("", NULL);
+                tx_wrap(2, 3, "Please wait while Setup copies files to the " OS_NAME " installation folders. This might take several minutes to complete.", TS_FG);
+                ts_progress(16, "Setup is copying files...", pct, TS_YEL);
+                ts_status("", st);
+                ts_present();
+            }
         }
     }
     kfree(L.v);
     vol_delete(v, "Documents and Settings\\User\\Desktop\\Install " OS_NAME ".lnk");
     /* configuration */
-    ts_begin("", NULL);
-    tx(2, 3, "Please wait while Setup initializes your " OS_NAME " configuration.", TS_FG);
-    ts_progress(16, "Setup is installing the boot loader...", 40, TS_YEL);
-    ts_present();
+    if (gui_setup) gui_setup_progress("Finishing the installation...", 40, "Installing the boot loader");
+    else {
+        ts_begin("", NULL);
+        tx(2, 3, "Please wait while Setup initializes your " OS_NAME " configuration.", TS_FG);
+        ts_progress(16, "Setup is installing the boot loader...", 40, TS_YEL);
+        ts_present();
+    }
     char cfg[1024];
     snprintf(cfg, sizeof cfg,
         "# THE WRLD OS boot menu - written by Setup\n"
@@ -394,7 +417,8 @@ static bool do_install(int disk, int slot, int mode) {
     for (int i = 0; i < 4; i++) ptab[disk][i].boot = i == slot;
     ok = ok && mbr_write(dv, ptab[disk], bootimg);
     kfree(bootimg); kfree(core);
-    ts_progress(16, "Setup is installing the boot loader...", 100, TS_YEL); ts_present();
+    if (gui_setup) gui_setup_progress("Finishing the installation...", 100, "The boot loader is installed");
+    else { ts_progress(16, "Setup is installing the boot loader...", 100, TS_YEL); ts_present(); }
     if (!ok) { message_screen("Setup could not write the boot loader to the disk.\n\nPress ENTER to return.", "ENTER=Continue"); return false; }
     klog("setup: installed to disk %d partition %d (serial %08x)", disk, slot + 1, serial);
     return true;
@@ -655,9 +679,583 @@ void setup_text_mode(bool from_desktop) {
     setup_text_active = false;
 }
 
+/* ======================================================================
+ * graphical setup
+ *
+ * The same wizard look as the first-boot pages: the blue Setup background,
+ * a step list on the left and a white window.  It runs its own small event
+ * loop, so it works both from the boot menu (before wm_run) and from the
+ * live desktop.  The text front-end above stays as a fallback for
+ * "setup=text" on the kernel command line.
+ * ====================================================================== */
+enum { SG_WELCOME, SG_LICENSE, SG_DISK, SG_CONFIRM, SG_INSTALL, SG_DONE, SG_QUIT = -1 };
+enum { SGA_NONE, SGA_NEXT, SGA_BACK, SGA_NEW, SGA_DELETE, SGA_INSTALL, SGA_RESTART, SGA_CANCEL };
+
+typedef struct {
+    int page, sel, top, fs, lic_top, action;
+    bool accepted, confirmed;
+} sg_t;
+static sg_t SG;
+static int SG_fs[5], SG_nfs;
+static bool SG_from_desk;
+static canvas_t *sbg;
+static canvas_t *slic;                 /* the whole licence, wrapped once */
+static window_t sw;
+
+static const char *sg_steps[] = { "Welcome", "License agreement", "Where to install", "Confirm", "Installing", "Finished" };
+static void page_header(canvas_t *s, const char *title, const char *sub);
+
+static void sg_left(int step) {
+    canvas_t *c = &screen;
+    int y = 100;
+    for (int i = 0; i < 6; i++) {
+        uint32_t col = i == step ? WHITE : i < step ? HEX(0xC8D8FF) : HEX(0x8AA4E8);
+        fill_circle(c, 30, y + 7, 5, i <= step ? (i == step ? HEX(0xFFB54A) : HEX(0x7CE07C)) : HEX(0x5C78D0));
+        draw_text(c, i == step ? FONT_UI_BOLD : FONT_UI, 44, y, sg_steps[i], col);
+        y += 30;
+    }
+    y += 20;
+    if (SG.page == SG_INSTALL) {
+        draw_text(c, FONT_UI, 22, y, "Writing to the disk.", HEX(0xE0E8FF)); y += 16;
+        draw_text(c, FONT_UI, 22, y, "Do not turn off the computer.", HEX(0xE0E8FF));
+    } else if (SG.page == SG_DONE) {
+        draw_text(c, FONT_UI, 22, y, "Installation complete.", HEX(0xE0E8FF)); y += 16;
+        draw_text(c, FONT_UI, 22, y, "Restart to finish.", HEX(0xE0E8FF));
+    } else {
+        draw_text(c, FONT_UI, 22, y, "Setup changes nothing", HEX(0xE0E8FF)); y += 16;
+        draw_text(c, FONT_UI, 22, y, "until you click Install.", HEX(0xE0E8FF));
+    }
+}
+static void sg_bg(void) {
+    if (sbg && sbg->w == SCREEN_W && sbg->h == SCREEN_H) return;
+    if (sbg) canvas_free(sbg);
+    sbg = canvas_new(SCREEN_W, SCREEN_H);
+    canvas_t *c = sbg;
+    gradient_v(c, 0, 0, SCREEN_W, 64, HEX(0x0A2A8C), HEX(0x163EB0));
+    hline(c, 0, 63, SCREEN_W, HEX(0x6A8EEA));
+    gradient_v(c, 0, 64, SCREEN_W, SCREEN_H - 128, HEX(0x5C82E0), HEX(0x3A5CC4));
+    gradient_v(c, 0, SCREEN_H - 64, SCREEN_W, 64, HEX(0x163EB0), HEX(0x0A2A8C));
+    gradient_h(c, 0, SCREEN_H - 64, SCREEN_W, 2, HEX(0xE88A30), HEX(0xFFD08A));
+    fill_rect(c, 0, 64, 250, SCREEN_H - 128, HEX(0x2E50B8));
+    vline(c, 250, 64, SCREEN_H - 128, HEX(0x7A9AF0));
+    draw_globe(c, 18, 6, 64, -36);
+    draw_wordmark(c, 92, 12, WORDMARK_SMALL, WHITE);
+}
+static rect_t sg_rect(void) { return R(292, 92, SCREEN_W - 332, SCREEN_H - 184); }
+static void sg_sync(void) {
+    rect_t r = sg_rect();
+    sw.x = r.x; sw.y = r.y; sw.w = r.w; sw.h = r.h;
+    sw.flags = WF_NO_MAX | WF_NO_MIN | WF_DIALOG;
+    rect_t cr = wm_client_rect(&sw);
+    if (!sw.surf || sw.surf->w != cr.w || sw.surf->h != cr.h) {
+        if (sw.surf) canvas_free(sw.surf);
+        sw.surf = canvas_new(cr.w, cr.h);
+    }
+}
+static void sg_mb(uint64_t mb, char *b, int n) {
+    if (mb >= 1024ull * 1024) {
+        uint64_t t = (mb * 10 + 524288) >> 20;
+        snprintf(b, n, "%llu.%llu TB", (unsigned long long)(t / 10), (unsigned long long)(t % 10));
+    } else if (mb >= 1024) {
+        uint64_t t = (mb * 10 + 512) >> 10;
+        snprintf(b, n, "%llu.%llu GB", (unsigned long long)(t / 10), (unsigned long long)(t % 10));
+    } else snprintf(b, n, "%llu MB", (unsigned long long)mb);
+}
+static void sg_right(canvas_t *s, int font, int right, int y, const char *t, uint32_t col) {
+    draw_text(s, font, right - text_width(font, t), y, t, col);
+}
+static int sg_item_h(item_t *it) { return it->kind == IT_DISK ? 38 : 26; }
+static const char *sg_fs_label(int mode) {
+    switch (mode) {
+    case 0: return "NTFS (Quick format)";
+    case 1: return "NTFS (full format - writes every sector)";
+    case 2: return "FAT32 (Quick format)";
+    case 3: return "FAT32 (full format - writes every sector)";
+    default: return "Keep the existing file system (no formatting)";
+    }
+}
+static void sg_build_fs(item_t *it) {
+    SG_nfs = 0;
+    bool big = it->sectors / 2048 > 120000;
+    if (bootinfo.is_efi) {
+        SG_fs[SG_nfs++] = 2; SG_fs[SG_nfs++] = 3;
+        if (it->fat && it->fskind == FS_FAT32) SG_fs[SG_nfs++] = 4;
+    } else {
+        SG_fs[SG_nfs++] = 0; SG_fs[SG_nfs++] = 1;
+        if (!big) { SG_fs[SG_nfs++] = 2; SG_fs[SG_nfs++] = 3; }
+        if (it->fat && (it->fskind == FS_NTFS || !big)) SG_fs[SG_nfs++] = 4;
+    }
+    SG.fs = 0;
+}
+static void sg_select_default(void) {
+    SG.sel = -1;
+    for (int i = 0; i < nitems; i++) if (items[i].kind != IT_DISK) { SG.sel = i; break; }
+    SG.top = 0;
+}
+static void sg_ensure_visible(int listh) {
+    if (SG.sel < 0) return;
+    if (SG.sel < SG.top) SG.top = SG.sel;
+    for (;;) {
+        int h = 0;
+        for (int i = SG.top; i < nitems; i++) {
+            if (h + sg_item_h(&items[i]) > listh) break;
+            h += sg_item_h(&items[i]);
+        }
+        int last = SG.top;
+        h = 0;
+        for (int i = SG.top; i < nitems && h + sg_item_h(&items[i]) <= listh; i++) { h += sg_item_h(&items[i]); last = i + 1; }
+        if (SG.sel < last) break;
+        if (last == SG.top || SG.top >= SG.sel) break;
+        SG.top = MIN(SG.sel, SG.top + 1);
+    }
+}
+
+/* ---------- modal prompts ---------- */
+static bool gui_confirm(const char *title, const char *msg, const char *yes, const char *no) {
+    static canvas_t *base;
+    if (!base || base->w != SCREEN_W || base->h != SCREEN_H) { if (base) canvas_free(base); base = canvas_new(SCREEN_W, SCREEN_H); }
+    memcpy(base->px, screen.px, SCREEN_W * SCREEN_H * 4);
+    int w = MIN(460, SCREEN_W - 80);
+    int h = MIN(120 + text_wrapped_height(FONT_UI, w - 40, msg, 5), SCREEN_H - 80);
+    rect_t box = R((SCREEN_W - w) / 2, (SCREEN_H - h) / 2, w, h);
+    rect_t by = R(box.x + box.w - (no ? 196 : 106), box.y + box.h - 38, 90, 26);
+    rect_t bn = R(box.x + box.w - 100, box.y + box.h - 38, 90, 26);
+    mouse_state_t ms; key_event_t ke;
+    int prev = 0;
+    while (mouse_poll(&ms)) { wm_mouse_x = ms.x; wm_mouse_y = ms.y; prev = ms.buttons; }
+    while (keyboard_poll(&ke)) {}
+    for (;;) {
+        memcpy(screen.px, base->px, SCREEN_W * SCREEN_H * 4);
+        canvas_reset_clip(&screen);
+        blend_rect(&screen, 0, 0, SCREEN_W, SCREEN_H, BLACK, 120);
+        fill_rect(&screen, box.x + 4, box.y + 4, box.w, box.h, HEX(0x303030));
+        fill_rect(&screen, box.x, box.y, box.w, box.h, HEX(0xE8EEF8));
+        gradient_v(&screen, box.x + 1, box.y + 1, box.w - 2, 28, HEX(0x163EB0), HEX(0x0A2A8C));
+        draw_text(&screen, FONT_UI_BOLD, box.x + 10, box.y + 7, title, WHITE);
+        draw_text_wrapped(&screen, FONT_UI, box.x + 20, box.y + 42, w - 40, msg, BLACK, 5);
+        bool hy = pt_in(by, wm_mouse_x, wm_mouse_y);
+        bool hn = no && pt_in(bn, wm_mouse_x, wm_mouse_y);
+        draw_button(&screen, by, yes, hy, false, false, true);
+        if (no) draw_button(&screen, bn, no, hn, false, false, true);
+        gfx_present(hy || hn ? CURSOR_HAND : CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
+        while (mouse_poll(&ms)) {
+            wm_mouse_x = ms.x; wm_mouse_y = ms.y;
+            int ch = ms.buttons ^ prev;
+            if ((ch & 1) && !(ms.buttons & 1)) {
+                if (pt_in(by, ms.x, ms.y)) return true;
+                if (no && pt_in(bn, ms.x, ms.y)) return false;
+            }
+            prev = ms.buttons;
+        }
+        while (keyboard_poll(&ke)) {
+            if (!ke.pressed) continue;
+            if (ke.key == KEY_ENTER) return true;
+            if (ke.key == KEY_ESC) return false;
+        }
+        task_yield();
+    }
+}
+static void gui_setup_message(const char *msg) { gui_confirm("Setup", msg, "OK", NULL); }
+
+/* ---------- progress page (also used from do_install) ---------- */
+static void gui_setup_progress(const char *caption, int pct, const char *detail) {
+    gui_heartbeat = timer_ticks();
+    sg_bg();
+    sg_sync();
+    memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4);
+    canvas_reset_clip(&screen);
+    sg_left(SG_INSTALL);
+    rect_t r = sg_rect();
+    draw_window_frame(&screen, r, OS_NAME " Setup", ICON_LOGO, true, WF_NO_MAX | WF_NO_MIN | WF_NOCLOSE, -1, -1, WS_NORMAL);
+    rect_t cr = wm_client_rect(&sw);
+    fill_rect(&screen, cr.x, cr.y, cr.w, cr.h, WHITE);
+    int x = cr.x + 24, y = cr.y + 24, iw = cr.w - 48;
+    draw_text(&screen, FONT_LARGE, x, y, "Installing " OS_NAME, BLACK); y += 36;
+    draw_text_ellipsis(&screen, FONT_UI, x, y, iw, caption, HEX(0x303030)); y += 30;
+    draw_progress(&screen, R(x, y, iw, 22), pct);
+    char b[16]; snprintf(b, sizeof b, "%d%%", CLAMP(pct, 0, 100));
+    draw_text_centered(&screen, FONT_UI_BOLD, R(x, y, iw, 22), b, BLACK); y += 40;
+    if (detail) draw_text_wrapped(&screen, FONT_UI, x, y, iw, detail, HEX(0x505050), 4);
+    draw_text(&screen, FONT_UI, x, cr.y + cr.h - 30, "Do not turn off the computer.", HEX(0x9C1C1C));
+    gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y);
+}
+
+/* ---------- pages ---------- */
+static void sg_footer(window_t *w, bool back, bool cancel, const char *next, bool next_ok, int next_action) {
+    canvas_t *s = w->surf;
+    int fy = s->h - 40;
+    hline(s, 0, fy, s->w, HEX(0xA0A0A0)); hline(s, 0, fy + 1, s->w, WHITE);
+    int x = 16;
+    if (cancel) { if (ui_button(w, R(x, fy + 8, 80, 24), "Cancel")) SG.action = SGA_CANCEL; x += 88; }
+    if (back) { if (ui_button(w, R(x, fy + 8, 80, 24), "< Back")) SG.action = SGA_BACK; }
+    if (next) if (ui_button_ex(w, R(s->w - 106, fy + 8, 90, 24), next, next_ok, true)) SG.action = next_action;
+}
+static void sg_welcome(window_t *w) {
+    canvas_t *s = w->surf;
+    page_header(s, "Welcome to " OS_NAME " Setup", "This wizard puts " OS_NAME " on a hard disk.");
+    int y = 84, bx = 20, bw = s->w - 40;
+    y += draw_text_wrapped(s, FONT_UI, bx, y, bw, "Setup will show every disk, partition, drive letter and size before it changes anything. "
+        "Nothing is written until you review the summary and click Install.", BLACK, 5) + 12;
+    y += 8;
+    draw_text(s, FONT_UI_BOLD, bx, y, "What Setup will do", BLACK); y += 20;
+    draw_text_wrapped(s, FONT_UI, bx + 16, y, bw - 16, "Create or choose a partition, format it, copy the system files and install the boot loader.", HEX(0x303030), 4); y += 36;
+    draw_text(s, FONT_UI_BOLD, bx, y, "Before you continue", BLACK); y += 20;
+    draw_text_wrapped(s, FONT_UI, bx + 16, y, bw - 16, "Formatting deletes every file on the selected partition. Setup asks you to confirm, and the summary shows the exact disk number, partition number, letter and size.", HEX(0x303030), 4); y += 40;
+    if (y < s->h - 90) {
+        fill_rect(s, bx, y, bw, 44, HEX(0xFFF4D8));
+        draw_rect(s, bx, y, bw, 44, HEX(0xE0B040));
+        draw_text_wrapped(s, FONT_UI, bx + 10, y + 8, bw - 20, "If this computer already has a system on the disk, stop now and make a backup first.", HEX(0x6A4000), 4);
+    }
+    sg_footer(w, false, true, "Next >", true, SGA_NEXT);
+}
+static void sg_license(window_t *w) {
+    canvas_t *s = w->surf;
+    page_header(s, "License Agreement", "Read the terms, then accept them to continue.");
+    rect_t box = R(20, 78, s->w - 40, s->h - 188);
+    draw_sunken_box(s, box, WHITE);
+    int lw = box.w - 18;
+    int lh = text_wrapped_height(FONT_UI, lw, license_text, 4);
+    if (!slic || slic->w != lw || slic->h != lh) {
+        if (slic) canvas_free(slic);
+        slic = canvas_new(lw, MAX(1, lh));
+        gfx_clear(slic, WHITE);
+        draw_text_wrapped(slic, FONT_UI, 0, 0, lw, license_text, BLACK, 4);
+    }
+    if (w->ui.wheel) SG.lic_top -= w->ui.wheel * 40;
+    SG.lic_top = CLAMP(SG.lic_top, 0, MAX(0, lh - (box.h - 10)));
+    int vis = MIN(box.h - 10, lh - SG.lic_top);
+    if (vis > 0) blit(s, box.x + 8, box.y + 5, slic, 0, SG.lic_top, lw, vis);
+    if (lh > box.h - 10) draw_scrollbar(s, R(box.x + box.w - 18, box.y + 1, 17, box.h - 2), lh, box.h - 10, SG.lic_top, true);
+    ui_checkbox(w, 20, box.y + box.h + 10, "I accept the terms in the License Agreement", &SG.accepted);
+    sg_footer(w, true, true, "Next >", SG.accepted, SGA_NEXT);
+}
+static void sg_disk(window_t *w) {
+    canvas_t *s = w->surf;
+    page_header(s, "Where do you want to install " OS_NAME "?", "Check the disk number, drive letter, file system and size.");
+    int bx = 16, by = 74, bw = s->w - 32, listh = s->h - by - 104;
+    draw_sunken_box(s, R(bx, by, bw, listh), WHITE);
+    if (w->ui.wheel) {
+        int n = w->ui.wheel > 0 ? 3 : -3;
+        while (n > 0) { for (int i = SG.sel + 1; i < nitems; i++) if (items[i].kind != IT_DISK) { SG.sel = i; break; } n--; }
+        while (n < 0) { for (int i = SG.sel - 1; i >= 0; i--) if (items[i].kind != IT_DISK) { SG.sel = i; break; } n++; }
+    }
+    sg_ensure_visible(listh);
+    rect_t old = canvas_push_clip(s, R(bx + 1, by + 1, bw - 2, listh - 2));
+    int y = by + 3;
+    for (int i = SG.top; i < nitems && y < by + listh; i++) {
+        item_t *it = &items[i];
+        int h = sg_item_h(it);
+        if (it->kind == IT_DISK) {
+            blkdev_t *dv = blk_get(it->disk);
+            char sz[32], t[32], line[220];
+            sg_mb((dv->total_sectors ? dv->total_sectors : dv->sectors) / 2048, sz, sizeof sz);
+            snprintf(t, sizeof t, "Disk %d", it->disk);
+            snprintf(line, sizeof line, "%s  -  %s  -  %s%s", dv->model, dv->driver,
+                     gpt_disk[it->disk] ? "GPT partition table (will be replaced)" : has_mbr[it->disk] ? "MBR partition table" : "no partition table",
+                     dv->total_sectors > dv->sectors ? "  -  2 TiB addressable" : "");
+            fill_rect(s, bx + 2, y, bw - 4, h - 2, HEX(0xE4ECF8));
+            draw_text(s, FONT_UI_BOLD, bx + 10, y + 4, t, HEX(0x1E3287));
+            sg_right(s, FONT_UI_BOLD, bx + bw - 10, y + 4, sz, HEX(0x1E3287));
+            draw_text_ellipsis(s, FONT_SMALL, bx + 80, y + 21, bw - 96, line, HEX(0x505A68));
+            if (ui_click_area(w, R(bx + 2, y, bw - 4, h - 2))) {
+                for (int k = i + 1; k < nitems && items[k].kind != IT_DISK; k++) if (items[k].kind != IT_DISK) { SG.sel = k; break; }
+            }
+        } else {
+            bool sel = i == SG.sel;
+            rect_t row = R(bx + 2, y, bw - 4, h - 2);
+            uint32_t fg = sel ? WHITE : BLACK, fg2 = sel ? HEX(0xE0E8FF) : HEX(0x505050);
+            if (sel) fill_rect(s, row.x, row.y, row.w, row.h, T.select);
+            else if (ui_hover(w, row)) fill_rect(s, row.x, row.y, row.w, row.h, HEX(0xEAF4FD));
+            if (ui_click_area(w, row)) SG.sel = i;
+            char lab[80], fs[24], sz[32], fr[40] = "";
+            if (it->kind == IT_FREE) {
+                snprintf(lab, sizeof lab, "Unpartitioned space");
+                snprintf(fs, sizeof fs, "-");
+                sg_mb(it->sectors / 2048, sz, sizeof sz);
+                snprintf(fr, sizeof fr, "%s available", sz);
+            } else {
+                snprintf(lab, sizeof lab, "%c:   Partition %d", it->letter, it->slot + 1);
+                if (it->fat) snprintf(fs, sizeof fs, "%s", it->fskind == FS_NTFS ? "NTFS" : "FAT32");
+                else if (it->type == 0x0C || it->type == 0x07) snprintf(fs, sizeof fs, "Raw");
+                else snprintf(fs, sizeof fs, "%s", part_type_name(it->type));
+                sg_mb(it->sectors / 2048, sz, sizeof sz);
+                if (it->fat) snprintf(fr, sizeof fr, "%d MB free", it->free_mb);
+            }
+            draw_text_ellipsis(s, FONT_UI, bx + 14, y + 4, bw - 300, lab, fg);
+            draw_text(s, FONT_UI, bx + 310, y + 4, fs, fg2);
+            sg_right(s, FONT_UI, bx + bw - 132, y + 4, it->kind == IT_FREE ? fr : sz, fg);
+            if (it->kind != IT_FREE) sg_right(s, FONT_UI, bx + bw - 10, y + 4, fr, fg2);
+        }
+        y += h;
+    }
+    s->clip = old;
+    if (nitems > 0) {
+        int totalh = 0; for (int i = 0; i < nitems; i++) totalh += sg_item_h(&items[i]);
+        if (totalh > listh) {
+            int vis = 1, hh = 0;
+            for (int i = SG.top; i < nitems && hh + sg_item_h(&items[i]) <= listh; i++) { hh += sg_item_h(&items[i]); vis++; }
+            draw_scrollbar(s, R(bx + bw - 18, by + 1, 17, listh - 2), nitems, MAX(1, vis), SG.top, true);
+        }
+    }
+    int sy = by + listh + 8;
+    if (SG.sel >= 0 && SG.sel < nitems && items[SG.sel].kind != IT_DISK) {
+        item_t *it = &items[SG.sel];
+        char b[240];
+        if (it->kind == IT_FREE) {
+            char sz[32]; sg_mb(it->sectors / 2048, sz, sizeof sz);
+            snprintf(b, sizeof b, "Selected: Disk %d, unpartitioned space, %s", it->disk, sz);
+        } else {
+            char sz[32]; sg_mb(it->sectors / 2048, sz, sizeof sz);
+            snprintf(b, sizeof b, "Selected: Disk %d, %c:, Partition %d, %s, %s%s", it->disk, it->letter, it->slot + 1,
+                     it->fat ? (it->fskind == FS_NTFS ? "NTFS" : "FAT32") : "not formatted", sz, it->fat ? "" : " (will be formatted)");
+        }
+        draw_text_ellipsis(s, FONT_UI, bx, sy, bw - 190, b, BLACK);
+        if (gpt_disk[it->disk])
+            draw_text(s, FONT_SMALL, bx, sy + 18, "This disk uses GPT. Setup replaces it with an MBR table and erases all its partitions.", HEX(0x9C4A00));
+        else
+            draw_text(s, FONT_SMALL, bx, sy + 18, "Select a partition, or unpartitioned space and click New partition.", HEX(0x505A68));
+    } else {
+        draw_text(s, FONT_UI, bx, sy, "There is no unpartitioned space on these disks.", HEX(0x9C1C1C));
+    }
+    int x = s->w - 106 - 100 - 8;
+    if (ui_button_ex(w, R(x - 100, s->h - 40 + 8, 92, 24), "New partition", SG.sel >= 0 && items[SG.sel].kind == IT_FREE, false)) SG.action = SGA_NEW;
+    if (ui_button_ex(w, R(x, s->h - 40 + 8, 92, 24), "Delete", SG.sel >= 0 && items[SG.sel].kind == IT_PART, false)) SG.action = SGA_DELETE;
+    sg_footer(w, false, true, "Next >", SG.sel >= 0 && items[SG.sel].kind != IT_DISK, SGA_NEXT);
+}
+static void sg_confirm(window_t *w) {
+    canvas_t *s = w->surf;
+    page_header(s, "Confirm your installation", "This is exactly what Setup is going to do.");
+    if (SG.sel < 0 || SG.sel >= nitems || items[SG.sel].kind == IT_DISK) {
+        draw_text(s, FONT_UI, 24, 90, "No partition is selected. Go back and choose one.", HEX(0x9C1C1C));
+        sg_footer(w, true, true, NULL, false, SGA_NONE);
+        return;
+    }
+    item_t *it = &items[SG.sel];
+    blkdev_t *dv = blk_get(it->disk);
+    int y = 84, bx = 24, bw = s->w - 48;
+    char sz[32], b[260];
+    sg_mb(it->sectors / 2048, sz, sizeof sz);
+    draw_text(s, FONT_UI_BOLD, bx, y, "Install to", BLACK); y += 20;
+    snprintf(b, sizeof b, "Disk %d, Partition %d (%c:)  -  %s", it->disk, it->slot + 1, it->letter, sz);
+    draw_text(s, FONT_LARGE, bx + 12, y, b, HEX(0x1E3287)); y += 28;
+    snprintf(b, sizeof b, "%s, %s, %s", dv->model, dv->driver, gpt_disk[it->disk] ? "GPT (will become MBR)" : has_mbr[it->disk] ? "MBR" : "no table");
+    draw_text_ellipsis(s, FONT_UI, bx + 12, y, bw - 12, b, HEX(0x505050)); y += 26;
+    int mode;
+    draw_text(s, FONT_UI_BOLD, bx, y, "File system", BLACK); y += 22;
+    for (int i = 0; i < SG_nfs; i++) {
+        if (ui_radio(w, bx + 12, y, sg_fs_label(SG_fs[i]), SG.fs == i)) SG.fs = i;
+        y += 22;
+    }
+    mode = SG_fs[CLAMP(SG.fs, 0, MAX(0, SG_nfs - 1))];
+    y += 4;
+    if ((mode == 1 || mode == 3) && it->sectors / 2048 > 120000)
+        y += draw_text_wrapped(s, FONT_UI, bx, y, bw, "A full format writes every sector. On this disk it can take hours; Quick format is usually the right choice.", HEX(0x9C4A00), 4) + 8;
+    if (gpt_disk[it->disk])
+        y += draw_text_wrapped(s, FONT_UI, bx, y, bw, "This disk uses a GPT partition table. Setup writes an MBR table, which erases every existing partition on this disk.", HEX(0x9C1C1C), 4) + 8;
+    if (mode != 4)
+        y += draw_text_wrapped(s, FONT_UI, bx, y, bw, "Formatting deletes every file on the selected partition. This cannot be undone.", HEX(0x9C1C1C), 4) + 6;
+    else
+        y += draw_text_wrapped(s, FONT_UI, bx, y, bw, "The existing file system is kept, but Setup copies its own files into it and may overwrite files with the same names.", HEX(0x9C4A00), 4) + 6;
+    ui_checkbox(w, bx, y, "I understand and want to continue.", &SG.confirmed);
+    sg_footer(w, true, true, "Install", SG.confirmed, SGA_INSTALL);
+}
+static void sg_done(window_t *w) {
+    canvas_t *s = w->surf;
+    page_header(s, "Setup is complete", OS_NAME " is installed on your hard disk.");
+    int y = 90, bx = 24, bw = s->w - 48;
+    draw_text_wrapped(s, FONT_UI, bx, y, bw, "Remove the installation CD or USB drive, then restart the computer so it starts from the hard disk.", BLACK, 5);
+    y += 50;
+    draw_text_wrapped(s, FONT_UI, bx, y, bw, "Setup has written the boot menu and copied your files. The first start asks for your user name, computer name, time zone and look.", HEX(0x303030), 5);
+    y += 60;
+    draw_text(s, FONT_UI_BOLD, bx, y, "You can restart now.", BLACK);
+    int fy = s->h - 40;
+    hline(s, 0, fy, s->w, HEX(0xA0A0A0)); hline(s, 0, fy + 1, s->w, WHITE);
+    if (ui_button_ex(w, R(s->w - 116, fy + 8, 100, 24), "Restart now", true, true)) SG.action = SGA_RESTART;
+    if (SG_from_desk && ui_button(w, R(s->w - 226, fy + 8, 100, 24), "Close")) SG.action = SGA_CANCEL;
+}
+static void sg_page(window_t *w) {
+    switch (SG.page) {
+    case SG_WELCOME: sg_welcome(w); break;
+    case SG_LICENSE: sg_license(w); break;
+    case SG_DISK: sg_disk(w); break;
+    case SG_CONFIRM: sg_confirm(w); break;
+    case SG_DONE: sg_done(w); break;
+    default: break;
+    }
+}
+static void sg_paint(void) {
+    sg_bg(); sg_sync();
+    memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4);
+    canvas_reset_clip(&screen);
+    sg_left(SG.page);
+    rect_t r = sg_rect();
+    draw_window_frame(&screen, r, OS_NAME " Setup", ICON_LOGO, true, WF_NO_MAX | WF_NO_MIN | WF_NOCLOSE, -1, -1, WS_NORMAL);
+    rect_t cr = wm_client_rect(&sw);
+    canvas_reset_clip(sw.surf);
+    gfx_clear(sw.surf, WHITE);
+    ui_begin(&sw); sg_page(&sw); ui_end(&sw);
+    blit(&screen, cr.x, cr.y, sw.surf, 0, 0, cr.w, cr.h);
+    sw.ui.pressed = sw.ui.released = sw.ui.rpressed = sw.ui.dblclick = false; sw.ui.wheel = 0;
+    gfx_present(sw.ui.cursor ? sw.ui.cursor : CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
+}
+
+/* ---------- actions ---------- */
+static void sg_new_partition(void) {
+    if (SG.sel < 0 || items[SG.sel].kind != IT_FREE) return;
+    int disk = items[SG.sel].disk;
+    uint32_t lba = items[SG.sel].lba, secs = items[SG.sel].sectors;
+    bool capped = false;
+    if (bootinfo.is_efi && secs > 100u * 1024 * 2048) { secs = 100u * 1024 * 2048; capped = true; }
+    char sz[32], q[360]; sg_mb(secs / 2048, sz, sizeof sz);
+    snprintf(q, sizeof q, "Create a %s partition on Disk %d?%s%s", sz, disk,
+             capped ? "\n\nThe FAT32 system partition is limited to 100 GB; the rest of the disk stays unpartitioned." : "",
+             gpt_disk[disk] ? "\n\nThis disk uses GPT. Creating the partition writes a new MBR table and erases every existing partition on this disk." : "");
+    if (!gui_confirm("Create partition", q, "Create", "Cancel")) return;
+    int slot = free_slot(disk);
+    if (slot < 0) { gui_setup_message("The partition table on this disk is full. Delete a partition first."); return; }
+    ptab[disk][slot] = (part_t){ .type = 0x0C, .lba = lba, .sectors = secs };
+    if (!write_ptab(disk)) { gui_setup_message("Setup could not write the partition table to the disk."); return; }
+    gpt_disk[disk] = false;
+    build_items();
+    SG.sel = -1;
+    for (int i = 0; i < nitems; i++) if (items[i].kind == IT_PART && items[i].disk == disk && items[i].slot == slot) { SG.sel = i; break; }
+    if (SG.sel < 0) sg_select_default();
+}
+static void sg_delete_partition(void) {
+    if (SG.sel < 0 || items[SG.sel].kind != IT_PART) return;
+    item_t it = items[SG.sel];
+    char sz[32], q[360]; sg_mb(it.sectors / 2048, sz, sizeof sz);
+    snprintf(q, sizeof q, "Delete %c: Partition %d on Disk %d (%s)?\n\nEvery file on that partition will be lost.", it.letter, it.slot + 1, it.disk, sz);
+    if (!gui_confirm("Delete partition", q, "Delete", "Cancel")) return;
+    memset(&ptab[it.disk][it.slot], 0, sizeof ptab[it.disk][it.slot]);
+    if (!write_ptab(it.disk)) { gui_setup_message("Setup could not write the partition table to the disk."); return; }
+    build_items(); sg_select_default();
+}
+static void sg_disk_next(void) {
+    if (SG.sel < 0 || SG.sel >= nitems || items[SG.sel].kind == IT_DISK) return;
+    if (items[SG.sel].kind == IT_FREE) {
+        int before = nitems;
+        sg_new_partition();
+        if (SG.sel < 0 || items[SG.sel].kind != IT_PART) return;
+        (void)before;
+    }
+    item_t it = items[SG.sel];
+    if (it.kind != IT_PART) return;
+    if (it.sectors < 64 * 2048) { gui_setup_message("This partition is too small for " OS_NAME ". Setup needs at least 64 MB."); return; }
+    sg_build_fs(&it);
+    SG.confirmed = false;
+    SG.page = SG_CONFIRM;
+}
+static void sg_install(void) {
+    if (SG.sel < 0 || items[SG.sel].kind != IT_PART) return;
+    item_t it = items[SG.sel];
+    int mode = SG_fs[CLAMP(SG.fs, 0, MAX(0, SG_nfs - 1))];
+    SG.page = SG_INSTALL;
+    gui_setup_progress("Preparing the disk...", 0, NULL);
+    bool ok = do_install(it.disk, it.slot, mode);
+    SG.page = ok ? SG_DONE : SG_CONFIRM;
+}
+static void sg_action(void) {
+    int a = SG.action; SG.action = SGA_NONE;
+    switch (a) {
+    case SGA_NEXT:
+        if (SG.page == SG_WELCOME) SG.page = SG_LICENSE;
+        else if (SG.page == SG_LICENSE) { if (SG.accepted) SG.page = SG_DISK; }
+        else if (SG.page == SG_DISK) sg_disk_next();
+        else if (SG.page == SG_DONE) system_reboot();
+        break;
+    case SGA_BACK:
+        if (SG.page == SG_LICENSE) SG.page = SG_WELCOME;
+        else if (SG.page == SG_DISK) SG.page = SG_LICENSE;
+        else if (SG.page == SG_CONFIRM) SG.page = SG_DISK;
+        break;
+    case SGA_NEW: sg_new_partition(); break;
+    case SGA_DELETE: sg_delete_partition(); break;
+    case SGA_INSTALL: sg_install(); break;
+    case SGA_RESTART: system_reboot(); break;
+    case SGA_CANCEL:
+        if (SG.page == SG_DONE) { if (SG_from_desk) SG.page = SG_QUIT; else system_reboot(); break; }
+        if (gui_confirm("Exit Setup", "Setup will stop. Any partitions you created stay on the disk. Continue?", "Exit Setup", "Go back")) {
+            if (SG_from_desk) SG.page = SG_QUIT;
+            else system_reboot();
+        }
+        break;
+    }
+}
+static void sg_key(key_event_t *e) {
+    if (SG.page == SG_LICENSE) {
+        if (e->key == KEY_PGDN || e->key == KEY_DOWN) { SG.lic_top += e->key == KEY_PGDN ? 200 : 20; return; }
+        if (e->key == KEY_PGUP || e->key == KEY_UP) { SG.lic_top = MAX(0, SG.lic_top - (e->key == KEY_PGUP ? 200 : 20)); return; }
+        if (e->key == ' ') { SG.accepted = !SG.accepted; return; }
+    }
+    if (SG.page == SG_DISK) {
+        if (e->key == KEY_UP) {
+            for (int i = SG.sel - 1; i >= 0; i--) if (items[i].kind != IT_DISK) { SG.sel = i; break; }
+            return;
+        }
+        if (e->key == KEY_DOWN) {
+            for (int i = SG.sel + 1; i < nitems; i++) if (items[i].kind != IT_DISK) { SG.sel = i; break; }
+            return;
+        }
+    }
+    if (SG.page == SG_CONFIRM) {
+        if (e->key == KEY_UP && SG_nfs) { SG.fs = (SG.fs + SG_nfs - 1) % SG_nfs; return; }
+        if (e->key == KEY_DOWN && SG_nfs) { SG.fs = (SG.fs + 1) % SG_nfs; return; }
+        if (e->key == ' ') { SG.confirmed = !SG.confirmed; return; }
+    }
+    if (SG.page == SG_LICENSE && e->key == KEY_F8) { SG.accepted = true; SG.action = SGA_NEXT; return; }
+    if (e->key == KEY_ENTER) {
+        if (SG.page == SG_WELCOME) SG.action = SGA_NEXT;
+        else if (SG.page == SG_LICENSE && SG.accepted) SG.action = SGA_NEXT;
+        else if (SG.page == SG_DISK) SG.action = SGA_NEXT;
+        else if (SG.page == SG_CONFIRM && SG.confirmed) SG.action = SGA_INSTALL;
+        else if (SG.page == SG_DONE) SG.action = SGA_RESTART;
+    } else if (e->key == KEY_ESC) {
+        if (SG.page == SG_WELCOME || SG.page == SG_DONE) SG.action = SGA_CANCEL;
+        else if (SG.page > SG_WELCOME) SG.action = SGA_BACK;
+    }
+}
+
+void setup_gui_mode(bool from_desktop) {
+    gui_setup = true; setup_text_active = true; SG_from_desk = from_desktop;
+    memset(&SG, 0, sizeof SG); memset(&sw, 0, sizeof sw);
+    SG.page = SG_WELCOME;
+    build_items(); sg_select_default();
+    sg_bg(); sg_sync();
+    mouse_state_t ms; key_event_t ke; int prev = 0;
+    while (mouse_poll(&ms)) { wm_mouse_x = ms.x; wm_mouse_y = ms.y; prev = ms.buttons; }
+    while (keyboard_poll(&ke)) {}
+    sg_paint();
+    while (SG.page != SG_QUIT) {
+        while (keyboard_poll(&ke)) {
+            if (!ke.pressed) continue;
+            sg_key(&ke);
+            sg_paint();
+        }
+        bool repaint = false;
+        while (mouse_poll(&ms)) {
+            wm_mouse_x = ms.x; wm_mouse_y = ms.y;
+            rect_t cr = wm_client_rect(&sw);
+            sw.ui.mx = ms.x - cr.x; sw.ui.my = ms.y - cr.y;
+            sw.ui.in_window = pt_in(R(0, 0, cr.w, cr.h), sw.ui.mx, sw.ui.my);
+            int changed = ms.buttons ^ prev;
+            if ((changed & 1) && (ms.buttons & 1)) { sw.ui.down = true; sw.ui.pressed = true; repaint = true; }
+            if ((changed & 1) && !(ms.buttons & 1)) { sw.ui.down = false; sw.ui.released = true; repaint = true; }
+            if (ms.wheel) { sw.ui.wheel = ms.wheel; repaint = true; }
+            prev = ms.buttons;
+            if (repaint) { sg_paint(); repaint = false; }
+        }
+        if (SG.action) { sg_action(); if (SG.page != SG_QUIT) sg_paint(); }
+        task_yield();
+    }
+    if (sw.surf) { canvas_free(sw.surf); sw.surf = NULL; }
+    gui_setup = false; setup_text_active = false;
+}
+
 /* desktop entry point (live session) */
 static void desk_run(void *arg) {
-    setup_text_mode(true);
+    if (SCREEN_W < 900 || SCREEN_H < 650) setup_text_mode(true);
+    else setup_gui_mode(true);
     wm_redraw_all();
 }
 static void desk_confirm(void *ctx, int r) { if (r == IDYES) wm_defer(desk_run, NULL); }

@@ -163,7 +163,11 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     persist_start();
     boot_screen_progress("Starting shell...", 100);
     boot_screen_end();
-    if (boot_setup_mode && !system_volume) setup_text_mode(false);
+    if (boot_setup_mode && !system_volume) {
+        if (bootinfo.cmdline && strstr(bootinfo.cmdline, "setup=text")) setup_text_mode(false);
+        else if (SCREEN_W < 900 || SCREEN_H < 650) setup_text_mode(false);
+        else setup_gui_mode(false);
+    }
     if (setup_oobe_pending()) setup_oobe();
     welcome_screen();
     wm_redraw_all();
