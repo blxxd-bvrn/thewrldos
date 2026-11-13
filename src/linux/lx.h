@@ -33,6 +33,28 @@ uint32_t pmm_used_pages(void);
 uint32_t pmm_total_pages(void);
 uint32_t pmm_free_pages(void);
 
+/* ---- shared memory objects (shm.c): memfd_create, /dev/shm, MAP_SHARED|MAP_ANONYMOUS ---- */
+enum { SHM_SEAL_SEAL = 1, SHM_SEAL_SHRINK = 2, SHM_SEAL_GROW = 4, SHM_SEAL_WRITE = 8, SHM_SEAL_FUTURE_WRITE = 16 };
+typedef struct shmobj {
+    int refs;                                  /* mappings, descriptors and a /dev/shm name */
+    uint64_t size;                             /* bytes */
+    uint64_t npages;
+    uint8_t **pages;                           /* physical pages, allocated on first use */
+    uint32_t seals;                            /* F_ADD_SEALS */
+    bool is_named;
+    char name[96];
+    struct shmobj *next;                       /* /dev/shm list */
+} shmobj_t;
+shmobj_t *shm_new(const char *name);
+void shm_ref(shmobj_t *o);
+void shm_unref(shmobj_t *o);
+int shm_resize(shmobj_t *o, uint64_t size);
+uint8_t *shm_page(shmobj_t *o, uint64_t idx, bool create);
+int64_t shm_rw(shmobj_t *o, uint8_t *buf, uint64_t n, uint64_t off, bool write);
+shmobj_t *shm_lookup(const char *name);       /* /dev/shm/<name>, with a reference */
+shmobj_t *shm_create_named(const char *name);
+int shm_unlink_name(const char *name);
+
 /* ---- user address spaces ---- */
 enum { VM_READ = 1, VM_WRITE = 2, VM_EXEC = 4 };
 enum { VMF_PRIVATE = 0, VMF_SHARED = 1, VMF_STACK = 2, VMF_HEAP = 4 };
@@ -42,6 +64,7 @@ typedef struct vma {
     const uint8_t *fdata; uint64_t fsize;       /* file contents behind the mapping (copied on first touch) */
     uint64_t foff;                              /* file offset of `start` */
     vnode_t *fnode;
+    shmobj_t *shm;                             /* a shared object behind the mapping; foff is the offset in it */
     struct vma *next;
 } vma_t;
 typedef struct uvm {
@@ -51,7 +74,8 @@ typedef struct uvm {
     uint32_t pages;                            /* resident pages */
 } uvm_t;
 uvm_t *uvm_new(void);
-uvm_t *uvm_clone(uvm_t *src);                  /* copy every mapping and resident page */
+uvm_t *uvm_clone(uvm_t *src);                  /* copy every mapping and resident page (shared ones stay shared) */
+int64_t uvm_map_shm(uvm_t *vm, uint64_t hint, uint64_t len, int prot, bool shared, bool fixed, shmobj_t *o, uint64_t off);
 bool uvm_poke32(uvm_t *vm, uint64_t va, uint32_t v);   /* write into another process's memory */
 void uvm_free(uvm_t *vm);
 uintptr_t uvm_cr3(uvm_t *vm);
@@ -68,7 +92,7 @@ uint64_t uvm_find_free(uvm_t *vm, uint64_t len, uint64_t below);
 
 /* ---- files ---- */
 enum { FD_FILE = 1, FD_DIR, FD_CONSOLE, FD_NULL, FD_ZERO, FD_RANDOM,
-       FD_PIPE, FD_SOCKET, FD_EPOLL, FD_EVENTFD, FD_TIMERFD };
+       FD_PIPE, FD_SOCKET, FD_EPOLL, FD_EVENTFD, FD_TIMERFD, FD_SHM };   /* FD_SHM: obj is a shmobj_t */
 typedef struct lxfile {
     int type, refs;
     int oflags;
@@ -143,7 +167,7 @@ enum { LP_FILE = 0, LP_DEV_NULL, LP_DEV_ZERO, LP_DEV_RANDOM, LP_DEV_TTY, LP_PROC
        LP_PROC_MEMINFO, LP_PROC_CPUINFO, LP_PROC_UPTIME, LP_PROC_VERSION,
        LP_SYS, LP_SYS_DEVICES, LP_SYS_DEV_SYSTEM, LP_SYS_CPU, LP_SYS_KERNEL,
        LP_SYS_CPU_ONLINE, LP_SYS_CPU_POSSIBLE, LP_SYS_CPU_PRESENT,
-       LP_SYS_OSRELEASE, LP_SYS_OSTYPE, LP_SYS_VERSION };
+       LP_SYS_OSRELEASE, LP_SYS_OSTYPE, LP_SYS_VERSION, LP_DEV_SHM, LP_DEV_SHM_DIR };
 int lx_path(lxproc_t *p, int dirfd, const char *upath, char *out, int cap);
 void lx_abspath(lxproc_t *p, const char *upath, char *out, int cap);
 

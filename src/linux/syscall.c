@@ -127,18 +127,28 @@ static int prot_of(uint64_t p) { return (p & 1 ? VM_READ : 0) | (p & 2 ? VM_WRIT
 static int64_t sys_mmap(lxproc_t *p, uint64_t addr, uint64_t len, uint64_t prot, uint64_t flags, int64_t fd, uint64_t off) {
     if (!len || (off & (PAGE - 1))) return -EINVAL;
     if (len > (1ull << 46)) return -ENOMEM;
+    bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
+    if ((flags & MAP_FIXED_NOREPLACE) && uvm_find(p->vm, addr)) return -EEXIST;
     const uint8_t *data = NULL; uint64_t size = 0; vnode_t *node = NULL;
-    if (!(flags & MAP_ANON)) {
+    bool anon = flags & MAP_ANON;
+    if (!anon) {
         lxfile_t *f = lx_fd_get(p, fd);
         if (!f) return -EBADF;
-        if (f->type == FD_ZERO) { /* like anonymous */ }
+        if (f->type == FD_SHM)                                          /* memfd or /dev/shm */
+            return uvm_map_shm(p->vm, addr, len, prot_of(prot), (flags & MAP_SHARED) != 0, fixed, f->obj, off);
+        if (f->type == FD_ZERO) anon = true;                            /* like anonymous */
         else if (f->type != FD_FILE) return -ENODEV;
         else { data = f->node->data; size = f->node->size; node = f->node; }
     }
-    bool fixed = flags & (MAP_FIXED | MAP_FIXED_NOREPLACE);
-    if ((flags & MAP_FIXED_NOREPLACE) && uvm_find(p->vm, addr)) return -EEXIST;
-    int64_t r = uvm_map(p->vm, addr, len, prot_of(prot), (flags & MAP_SHARED) ? VMF_SHARED : VMF_PRIVATE, fixed, data, size, off, node);
-    return r;
+    if (anon && (flags & MAP_SHARED)) {                                 /* shared anonymous: shared with children after fork */
+        shmobj_t *o = shm_new(NULL);
+        if (!o) return -ENOMEM;
+        int rr = shm_resize(o, PALIGN(len));
+        int64_t r = rr ? rr : uvm_map_shm(p->vm, addr, len, prot_of(prot), true, fixed, o, 0);
+        shm_unref(o);                                                   /* the mapping holds it now */
+        return r;
+    }
+    return uvm_map(p->vm, addr, len, prot_of(prot), (flags & MAP_SHARED) ? VMF_SHARED : VMF_PRIVATE, fixed, data, size, off, node);
 }
 static int64_t sys_brk(lxproc_t *p, uint64_t want) {
     uvm_t *vm = p->vm;
@@ -279,6 +289,15 @@ int64_t lx_syscall(regs_t *r) {
         case 3: return f->oflags;
         case 4: f->oflags = (f->oflags & ~(02000 | 04000)) | (a2 & (02000 | 04000)); return 0;
         case 5: case 6: case 7: return 0;                                                   /* locks: always granted */
+        case 1033: {                                                                        /* F_ADD_SEALS */
+            if (f->type != FD_SHM) return -EINVAL;
+            shmobj_t *o = f->obj;
+            if (o->seals & SHM_SEAL_SEAL) return -EPERM;
+            if (a2 & ~31ull) return -EINVAL;
+            o->seals |= (uint32_t)a2;
+            return 0;
+        }
+        case 1034: return f->type == FD_SHM ? (int64_t)((shmobj_t *)f->obj)->seals : -EINVAL;   /* F_GET_SEALS */
         default: return -EINVAL;
         }
     }
@@ -329,11 +348,12 @@ int64_t lx_syscall(regs_t *r) {
         if (a0 != 0) return -EINVAL;
         tv_t it[2]; memset(it, 0, sizeof it);
         uint32_t now = timer_ticks();
+        /* struct itimerval is { it_interval, it_value } */
         if (p->alarm_at && (int32_t)(p->alarm_at - now) > 0) {
             uint32_t left = p->alarm_at - now;
-            it[0].sec = left / 1000; it[0].usec = (left % 1000) * 1000;
+            it[1].sec = left / 1000; it[1].usec = (left % 1000) * 1000;
         }
-        if (p->alarm_iv) { it[1].sec = p->alarm_iv / 1000; it[1].usec = (p->alarm_iv % 1000) * 1000; }
+        if (p->alarm_iv) { it[0].sec = p->alarm_iv / 1000; it[0].usec = (p->alarm_iv % 1000) * 1000; }
         return uout(a1, it, sizeof it) ? 0 : -EFAULT;
     }
     case 37: {                                                        /* alarm */
@@ -352,12 +372,13 @@ int64_t lx_syscall(regs_t *r) {
         if (p->alarm_at && (int32_t)(p->alarm_at - now) > 0) left = p->alarm_at - now;
         if (a2) {
             tv_t old[2]; memset(old, 0, sizeof old);
-            old[0].sec = left / 1000; old[0].usec = (left % 1000) * 1000;
-            if (p->alarm_iv) { old[1].sec = p->alarm_iv / 1000; old[1].usec = (p->alarm_iv % 1000) * 1000; }
+            old[1].sec = left / 1000; old[1].usec = (left % 1000) * 1000;       /* { it_interval, it_value } */
+            if (p->alarm_iv) { old[0].sec = p->alarm_iv / 1000; old[0].usec = (p->alarm_iv % 1000) * 1000; }
             if (!uout(a2, old, sizeof old)) return -EFAULT;
         }
-        uint64_t ms = (uint64_t)MAX(it[0].sec, 0) * 1000 + MAX(it[0].usec, 0) / 1000;
-        uint64_t iv = (uint64_t)MAX(it[1].sec, 0) * 1000 + MAX(it[1].usec, 0) / 1000;
+        uint64_t iv = (uint64_t)MAX(it[0].sec, 0) * 1000 + MAX(it[0].usec, 0) / 1000;   /* it_interval */
+        uint64_t ms = (uint64_t)MAX(it[1].sec, 0) * 1000 + MAX(it[1].usec, 0) / 1000;   /* it_value */
+        if (!ms && (it[1].usec > 0)) ms = 1;                          /* under a millisecond still fires */
         p->alarm_at = ms ? now + (uint32_t)MIN(ms, 0x7FFFFFFFull) : 0;
         p->alarm_iv = (uint32_t)MIN(iv, 0x7FFFFFFFull);
         p->alarm_sig = 14;

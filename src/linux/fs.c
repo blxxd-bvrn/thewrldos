@@ -47,6 +47,8 @@ void lx_abspath(lxproc_t *p, const char *upath, char *out, int cap) {
 }
 static int classify(const char *a) {
     if (!strcmp(a, "/dev/null")) return LP_DEV_NULL;
+    if (!strcmp(a, "/dev/shm")) return LP_DEV_SHM_DIR;
+    if (!strncmp(a, "/dev/shm/", 9) && a[9] && !strchr(a + 9, '/')) return LP_DEV_SHM;
     if (!strcmp(a, "/dev/zero")) return LP_DEV_ZERO;
     if (!strcmp(a, "/dev/urandom") || !strcmp(a, "/dev/random")) return LP_DEV_RANDOM;
     if (!strcmp(a, "/dev/tty") || !strcmp(a, "/dev/console") || !strcmp(a, "/dev/stdout") || !strcmp(a, "/dev/stderr") || !strcmp(a, "/dev/stdin")) return LP_DEV_TTY;
@@ -134,7 +136,12 @@ int lx_fd_alloc(lxproc_t *p, lxfile_t *f, int min) {
     return -EMFILE;
 }
 lxfile_t *lx_fd_get(lxproc_t *p, int fd) { return fd >= 0 && fd < LX_MAXFD ? p->fds[fd] : NULL; }
-void lx_file_put(lxfile_t *f) { if (f && --f->refs <= 0) { lx_ipc_release(f); kfree(f->pdata); kfree(f); } }
+void lx_file_put(lxfile_t *f) {
+    if (!f || --f->refs > 0) return;
+    if (f->type == FD_SHM) { shm_unref(f->obj); f->obj = NULL; }
+    else lx_ipc_release(f);
+    kfree(f->pdata); kfree(f);
+}
 static lxfile_t *file_new(int type) { lxfile_t *f = kzalloc(sizeof *f); f->type = type; f->refs = 1; return f; }
 
 /* ---------------- /proc contents ---------------- */
@@ -302,6 +309,12 @@ static int64_t node_time(vnode_t *n) {
     unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1, doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     return (era * 146097 + (int64_t)doe - 719468) * 86400 + t.hour * 3600 + t.minute * 60 + t.second;
 }
+static void shm_stat(lstat_t *st, shmobj_t *o) {
+    memset(st, 0, sizeof *st);
+    st->dev = 0x802; st->nlink = 1; st->uid = st->gid = 1000; st->blksize = 4096;
+    st->ino = ((uintptr_t)o >> 4) & 0xFFFFFFFF;
+    st->mode = 0100600; st->size = o->size; st->blocks = (o->size + 511) / 512;
+}
 static void fill_stat(lstat_t *st, vnode_t *n, int kind) {
     memset(st, 0, sizeof *st);
     st->dev = 0x801; st->nlink = 1; st->uid = st->gid = 1000; st->blksize = 4096;
@@ -370,6 +383,22 @@ static int64_t do_open(lxproc_t *p, int dirfd, uint64_t upath, int flags, int mo
     else if (kind == LP_DEV_ZERO) f = file_new(FD_ZERO);
     else if (kind == LP_DEV_RANDOM) f = file_new(FD_RANDOM);
     else if (kind == LP_DEV_TTY) { f = file_new(FD_CONSOLE); f->con = p->con; }
+    else if (kind == LP_DEV_SHM) {                          /* shm_open: a named shared object */
+        const char *name = labs + 9;
+        shmobj_t *o = shm_lookup(name);
+        if (o && (flags & O_CREAT) && (flags & O_EXCL)) { shm_unref(o); return -EEXIST; }
+        if (!o) {
+            if (!(flags & O_CREAT)) return -ENOENT;
+            o = shm_create_named(name);
+            if (!o) return -ENOMEM;
+        }
+        if ((flags & O_TRUNC) && (flags & O_ACCMODE)) shm_resize(o, 0);
+        f = file_new(FD_SHM); f->obj = o;
+    }
+    else if (kind == LP_DEV_SHM_DIR) {
+        if ((flags & O_ACCMODE) && !(flags & O_PATH)) return -EISDIR;
+        f = file_new(FD_DIR); f->pdata = kzalloc(1); f->plen = 0;
+    }
     else if (kind == LP_PROC_SELF_FD) {                     /* opening an fd link is a dup */
         int fd = atoi(labs + 14);
         lxfile_t *src = lx_fd_get(p, fd);
@@ -438,6 +467,12 @@ static int64_t file_read(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, int
         return k;
     }
     case FD_DIR: return -EISDIR;
+    case FD_SHM: {
+        uint64_t pos = at >= 0 ? (uint64_t)at : f->pos;
+        int64_t k = shm_rw(f->obj, dst, n, pos, false);
+        if (k > 0 && at < 0) f->pos = pos + k;
+        return k;
+    }
     case FD_FILE: {
         const uint8_t *data = f->node ? f->node->data : (const uint8_t *)f->pdata;
         uint64_t pos = at >= 0 ? (uint64_t)at : f->pos, size = f->node ? f->node->size : f->plen;
@@ -459,6 +494,13 @@ static int64_t file_write(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, in
         return lx_ipc_write(f, src, n, (f->oflags & O_NONBLOCK) != 0);
     case FD_CONSOLE: if (f->con && n) f->con->write(f->con, (const char *)src, n); return n;
     case FD_DIR: return -EISDIR;
+    case FD_SHM: {
+        if (!(f->oflags & O_ACCMODE)) return -EBADF;
+        uint64_t pos = at >= 0 ? (uint64_t)at : ((f->oflags & O_APPEND) ? ((shmobj_t *)f->obj)->size : f->pos);
+        int64_t k = shm_rw(f->obj, (uint8_t *)src, n, pos, true);
+        if (k > 0 && at < 0) f->pos = pos + k;
+        return k;
+    }
     case FD_FILE: {
         if (!f->node) return -EACCES;                       /* generated /proc files are read-only */
         if (!(f->oflags & O_ACCMODE)) return -EBADF;
@@ -563,6 +605,27 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
         p->fds[a0] = NULL; lx_file_put(f); return 0;
     }
+    case 319: {                                                                                             /* memfd_create */
+        char name[80]; int rr = ustr(name, a0, sizeof name); if (rr < 0) return rr;
+        if (a1 & ~0x7ull) return -EINVAL;                     /* MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_HUGETLB (as normal pages) */
+        shmobj_t *o = shm_new(name);
+        if (!o) return -ENOMEM;
+        if (!(a1 & 2)) o->seals = SHM_SEAL_SEAL;               /* without MFD_ALLOW_SEALING no seals can be added */
+        lxfile_t *f = file_new(FD_SHM);
+        f->obj = o; f->oflags = 2;                            /* O_RDWR */
+        snprintf(f->path, sizeof f->path, "/memfd:%s (deleted)", name);
+        int fd = lx_fd_alloc(p, f, 0);
+        if (fd < 0) { lx_file_put(f); return fd; }
+        if (a1 & 1) p->fdflags[fd] = 1;
+        return fd;
+    }
+    case 285: {                                                                                             /* fallocate */
+        lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
+        if (a1 & ~1ull) return -EOPNOTSUPP;                   /* only FALLOC_FL_KEEP_SIZE */
+        if (f->type == FD_SHM) { shmobj_t *o = f->obj; uint64_t want = a2 + a3; return (a1 & 1) || want <= o->size ? 0 : shm_resize(o, want); }
+        if (f->type != FD_FILE || !f->node) return -ENODEV;
+        return 0;
+    }
     case 436: {                                                                                             /* close_range */
         if (a0 > a1) return -EINVAL;
         if (a2 & ~6ull) return -EINVAL;                       /* CLOSE_RANGE_UNSHARE (2) needs no work: tables are per process */
@@ -576,8 +639,9 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
     }
     case 8: {                                                                                               /* lseek */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
-        if (f->type == FD_CONSOLE || f->type >= FD_PIPE) return -ESPIPE;
-        int64_t base = a2 == 0 ? 0 : a2 == 1 ? (int64_t)f->pos : a2 == 2 ? (f->node ? (int64_t)f->node->size : 0) : -1;
+        if (f->type == FD_CONSOLE || (f->type >= FD_PIPE && f->type != FD_SHM)) return -ESPIPE;
+        int64_t end = f->type == FD_SHM ? (int64_t)((shmobj_t *)f->obj)->size : f->node ? (int64_t)f->node->size : 0;
+        int64_t base = a2 == 0 ? 0 : a2 == 1 ? (int64_t)f->pos : a2 == 2 ? end : -1;
         if (base < 0) return -EINVAL;
         int64_t np = base + (int64_t)a1;
         if (np < 0) return -EINVAL;
@@ -589,7 +653,8 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
             char tmp[2] = ""; if (nr == 262) { int rr = ustr(tmp, a1, 2); if (rr < 0) return rr; }
             if (nr == 5 || !tmp[0]) {
                 lxfile_t *f = lx_fd_get(p, nr == 5 ? a0 : a0); if (!f) return -EBADF;
-                fill_stat(&st, f->node, f->node ? LP_FILE : (f->type == FD_CONSOLE ? LP_DEV_TTY : LP_DEV_NULL));
+                if (f->type == FD_SHM) shm_stat(&st, f->obj);
+                else fill_stat(&st, f->node, f->node ? LP_FILE : (f->type == FD_CONSOLE ? LP_DEV_TTY : LP_DEV_NULL));
                 return uout(nr == 5 ? a1 : a2, &st, sizeof st) ? 0 : -EFAULT;
             }
         }
@@ -598,7 +663,11 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
         int kind; char labs[512];
         vnode_t *n = resolve(p, nr == 262 ? (int)a0 : AT_FDCWD, path, &kind, labs, sizeof labs);
         if (!n && (kind == LP_FILE || kind == LP_PROC_SELF_EXE)) return -ENOENT;
-        fill_stat(&st, n, kind);
+        if (kind == LP_DEV_SHM) {
+            shmobj_t *o = shm_lookup(labs + 9); if (!o) return -ENOENT;
+            shm_stat(&st, o); shm_unref(o);
+        } else if (kind == LP_DEV_SHM_DIR) { memset(&st, 0, sizeof st); st.mode = 041777; st.nlink = 2; st.ino = 300; st.dev = 0x801; }
+        else fill_stat(&st, n, kind);
         return uout(nr == 262 ? a2 : a1, &st, sizeof st) ? 0 : -EFAULT;
     }
     case 332: {                                                                                             /* statx */
@@ -661,6 +730,7 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
         char path[512]; int rr = ustr(path, nr == 263 ? a1 : a0, sizeof path); if (rr < 0) return rr;
         int kind; char labs[512];
         vnode_t *n = resolve(p, nr == 263 ? (int)a0 : AT_FDCWD, path, &kind, labs, sizeof labs);
+        if (kind == LP_DEV_SHM) return shm_unlink_name(labs + 9);           /* shm_unlink */
         if (!n) return -ENOENT;
         bool want_dir = nr == 84 || (nr == 263 && (a2 & 0x200));
         if (want_dir && !n->dir) return -ENOTDIR;
@@ -701,7 +771,12 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
     }
     case 76: case 77: {                                                                                     /* truncate, ftruncate */
         vnode_t *n;
-        if (nr == 77) { lxfile_t *f = lx_fd_get(p, a0); if (!f || !f->node) return -EBADF; n = f->node; }
+        if (nr == 77) {
+            lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
+            if (f->type == FD_SHM) return (f->oflags & O_ACCMODE) ? shm_resize(f->obj, a1) : -EINVAL;
+            if (!f->node) return -EBADF;
+            n = f->node;
+        }
         else { char path[512]; int rr = ustr(path, a0, sizeof path); if (rr < 0) return rr; int kind; char labs[512]; n = resolve(p, AT_FDCWD, path, &kind, labs, sizeof labs); if (!n) return -ENOENT; }
         if (n->dir) return -EISDIR;
         uint64_t ns = a1;

@@ -8,6 +8,7 @@
 #define PTE_W   0x002ull
 #define PTE_U   0x004ull
 #define PTE_NX  (1ull << 63)
+#define PTE_SHARED (1ull << 9)                  /* software bit: a shared object's page, not ours to free */
 #define ADDR(e) ((e) & 0x000FFFFFFFFFF000ull)
 
 extern uint64_t boot_pml4[];
@@ -44,7 +45,9 @@ uint64_t *lx_pte_lookup(uvm_t *vm, uint64_t va) { uint64_t *e = pte_of(vm, va, f
 uint64_t *uvm_pte(uvm_t *vm, uint64_t va, bool create) { return pte_of(vm, va, create); }
 
 /* fork(): a private copy of every mapping, and of every page that is resident.
- * MAP_SHARED mappings are copied as well, so the two processes stop sharing them. */
+ * Mappings of a shared object (MAP_SHARED of a memfd, /dev/shm or MAP_SHARED|MAP_ANONYMOUS)
+ * keep pointing at the object's pages, so parent and child go on sharing them. MAP_SHARED of
+ * an ordinary file is still a private snapshot. */
 uvm_t *uvm_clone(uvm_t *src) {
     uvm_t *dst = uvm_new();
     if (!dst) return NULL;
@@ -52,6 +55,7 @@ uvm_t *uvm_clone(uvm_t *src) {
         vma_t *n = kmalloc(sizeof *n);
         if (!n) { uvm_free(dst); return NULL; }
         *n = *v; n->next = NULL;
+        if (n->shm) shm_ref(n->shm);
         vma_t **pp = &dst->vmas;
         while (*pp) pp = &(*pp)->next;
         *pp = n;
@@ -62,6 +66,12 @@ uvm_t *uvm_clone(uvm_t *src) {
         for (uint64_t va = v->start; va < v->end; va += PAGE) {
             uint64_t *sp = lx_pte_lookup(src, va);
             if (!sp) continue;
+            if (*sp & PTE_SHARED) {                                     /* MAP_SHARED: the same page */
+                uint64_t *dp = pte_of(dst, va, true);
+                if (!dp) { uvm_free(dst); return NULL; }
+                *dp = *sp;
+                continue;
+            }
             uint64_t *dp = pte_of(dst, va, true);
             if (!dp) { uvm_free(dst); return NULL; }
             uint8_t *pg = pmm_alloc();
@@ -84,14 +94,14 @@ static void free_range_pages(uvm_t *vm, uint64_t start, uint64_t end) {
     for (uint64_t va = start; va < end; va += PAGE) {
         uint64_t *pte = pte_of(vm, va, false);
         if (!pte) { va = (va | 0x1FFFFF); continue; }          /* no page table: skip its 2 MiB */
-        if (*pte & PTE_P) { pmm_free((void *)(uintptr_t)ADDR(*pte)); vm->pages--; *pte = 0; invlpg(va); }
+        if (*pte & PTE_P) { if (!(*pte & PTE_SHARED)) { pmm_free((void *)(uintptr_t)ADDR(*pte)); vm->pages--; } *pte = 0; invlpg(va); }
     }
 }
 static void free_tables(uint64_t *t, int level) {
     for (int i = 0; i < 512; i++) {
         if (!(t[i] & PTE_P)) continue;
         if (level > 1) free_tables((uint64_t *)(uintptr_t)ADDR(t[i]), level - 1);
-        else pmm_free((void *)(uintptr_t)ADDR(t[i]));
+        else if (!(t[i] & PTE_SHARED)) pmm_free((void *)(uintptr_t)ADDR(t[i]));
     }
     pmm_free(t);
 }
@@ -99,7 +109,7 @@ void uvm_free(uvm_t *vm) {
     if (!vm) return;
     for (int i = 1; i < 256; i++) if (vm->pml4[i] & PTE_P) free_tables((uint64_t *)(uintptr_t)ADDR(vm->pml4[i]), 3);
     pmm_free(vm->pml4);
-    while (vm->vmas) { vma_t *n = vm->vmas->next; kfree(vm->vmas); vm->vmas = n; }
+    while (vm->vmas) { vma_t *n = vm->vmas->next; if (vm->vmas->shm) shm_unref(vm->vmas->shm); kfree(vm->vmas); vm->vmas = n; }
     kfree(vm);
 }
 
@@ -117,7 +127,8 @@ static void split_vma(vma_t *v, uint64_t addr) {
     vma_t *n = kmalloc(sizeof *n);
     *n = *v;
     n->start = addr;
-    if (n->fdata) n->foff += addr - v->start;
+    if (n->fdata || n->shm) n->foff += addr - v->start;
+    if (n->shm) shm_ref(n->shm);
     v->end = addr;
     v->next = n;
 }
@@ -145,10 +156,18 @@ int uvm_unmap(uvm_t *vm, uint64_t start, uint64_t len) {
     vma_t **pp = &vm->vmas;
     while (*pp) {
         vma_t *v = *pp;
-        if (v->start >= start && v->end <= end) { *pp = v->next; free_range_pages(vm, v->start, v->end); kfree(v); }
+        if (v->start >= start && v->end <= end) { *pp = v->next; free_range_pages(vm, v->start, v->end); if (v->shm) shm_unref(v->shm); kfree(v); }
         else pp = &v->next;
     }
     return 0;
+}
+/* map a shared object; the mapping holds a reference to it */
+int64_t uvm_map_shm(uvm_t *vm, uint64_t hint, uint64_t len, int prot, bool shared, bool fixed, shmobj_t *o, uint64_t off) {
+    int64_t r = uvm_map(vm, hint, len, prot, shared ? VMF_SHARED : VMF_PRIVATE, fixed, NULL, 0, off, NULL);
+    if (r < 0) return r;
+    vma_t *v = uvm_find(vm, (uint64_t)r);
+    if (v) { v->shm = o; shm_ref(o); }
+    return r;
 }
 int64_t uvm_map(uvm_t *vm, uint64_t hint, uint64_t len, int prot, int flags, bool fixed,
                 const uint8_t *fdata, uint64_t fsize, uint64_t foff, vnode_t *fnode) {
@@ -190,7 +209,7 @@ int uvm_protect(uvm_t *vm, uint64_t start, uint64_t len, int prot) {
         for (uint64_t va = v->start; va < v->end; va += PAGE) {
             uint64_t *pte = pte_of(vm, va, false);
             if (!pte) { va |= 0x1FFFFF; continue; }
-            if (*pte & PTE_P) { *pte = ADDR(*pte) | pte_flags(prot); invlpg(va); }
+            if (*pte & PTE_P) { *pte = ADDR(*pte) | pte_flags(prot) | (*pte & PTE_SHARED); invlpg(va); }
         }
     }
     return 0;
@@ -204,6 +223,19 @@ bool uvm_fault(uvm_t *vm, uint64_t addr, bool write) {
     uint64_t *pte = pte_of(vm, va, true);
     if (!pte) return false;
     if (*pte & PTE_P) return !write || (*pte & PTE_W);         /* another thread got there first */
+    if (v->shm) {
+        uint64_t idx = (v->foff + (va - v->start)) / PAGE;
+        if (idx * PAGE >= PALIGN(v->shm->size)) return false;   /* past the object's end (SIGBUS on Linux) */
+        uint8_t *sp = shm_page(v->shm, idx, true);
+        if (!sp) { klog("linux: out of memory for a shared page"); return false; }
+        if (v->flags & VMF_SHARED) { *pte = (uint64_t)(uintptr_t)sp | pte_flags(v->prot) | PTE_SHARED; return true; }
+        uint8_t *pg = pmm_alloc();                              /* MAP_PRIVATE of a shared object: a copy */
+        if (!pg) return false;
+        memcpy(pg, sp, PAGE);
+        *pte = (uint64_t)(uintptr_t)pg | pte_flags(v->prot);
+        vm->pages++;
+        return true;
+    }
     uint8_t *pg = pmm_alloc();
     if (!pg) { klog("linux: out of memory for a page at %llx", (unsigned long long)va); return false; }
     if (v->fdata) {

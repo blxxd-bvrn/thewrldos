@@ -15,7 +15,11 @@ the test programs below inside the OS:
 - **WebKit's JavaScript engine**, JavaScriptCore 2.52 from WebKitGTK, JIT included: modern
   JavaScript through its C API and a hot loop that speeds up 4x as the JIT tiers kick in
   (`samples/linux-webkit/jsctest.c`, 12 checks; built with `make ARCH=x86_64 LX_WEBKIT=1`
-  because it adds about 70 MB with ICU).
+  because it adds about 70 MB with ICU);
+- **shared memory between processes**, the way WebKit's processes exchange tiles and IPC
+  buffers: `memfd_create` (with seals), `shm_open`/`shm_unlink` under `/dev/shm`,
+  `MAP_SHARED` of either and `MAP_SHARED | MAP_ANONYMOUS`, kept shared across `fork` and when
+  the descriptor is passed with `SCM_RIGHTS` (`samples/linux/shm.c`, 16 checks).
 
 ## Where the port stands
 
@@ -85,8 +89,10 @@ Already working, and not on the list below:
 
 ### 5. Memory
 
-- `uvm` copies file data on first touch, so `MAP_SHARED` behaves like a private snapshot: no
-  write-back and no sharing between processes.
+- Shared objects (`src/linux/shm.c`) are reference-counted page sets: a `MAP_SHARED` mapping of
+  a memfd, a `/dev/shm` object or shared anonymous memory uses the object's own pages (marked so
+  no address space frees them), and `fork` keeps them shared. `MAP_SHARED` of an ordinary file
+  is still a private snapshot copied on first touch, with no write-back.
 - A fixed 8 MiB stack with no growth and no guard page.
 - No swap and no reclaim, and about 3.75 GB of RAM at most.
 
@@ -193,18 +199,15 @@ Already working, and not on the list below:
 
 ## The next steps to WebKit
 
-1. **Real shared memory.** `MAP_SHARED` is a private snapshot and `memfd_create` is missing.
-   WebKit's processes exchange tiles, shared buffers and IPC messages through shared memory, so
-   this is the first hard blocker: shared pages between address spaces, and `memfd_create`.
-2. **WPE WebKit itself.** Ubuntu 24.04 packages WebKitGTK (which needs GTK and a Wayland or X11
+1. **WPE WebKit itself.** Ubuntu 24.04 packages WebKitGTK (which needs GTK and a Wayland or X11
    server) but not WPE. The plan is to build WPE WebKit 2.x on the build machine with its CPU
    Skia renderer and the headless WPE platform, then add a small WRLD backend that hands each
    rendered frame to a desktop window through shared memory.
-3. **Networking for libsoup.** HTTP through libsoup 3 and TLS through glib-networking/GnuTLS,
+2. **Networking for libsoup.** HTTP through libsoup 3 and TLS through glib-networking/GnuTLS,
    on the existing socket layer; then IPv6 and loopback, which WebKit probes for.
-4. **Memory.** WebKit wants 1-2 GB per web process; the 3.75 GB ceiling and the in-RAM root file
+3. **Memory.** WebKit wants 1-2 GB per web process; the 3.75 GB ceiling and the in-RAM root file
    system make a single web process the realistic target at first.
-5. **Input and lifecycle.** Keyboard and mouse events from the desktop window into WPE, resizing,
+4. **Input and lifecycle.** Keyboard and mouse events from the desktop window into WPE, resizing,
    and tearing the processes down with the window.
 
 ## Milestones
@@ -234,7 +237,8 @@ Already working, and not on the list below:
 12. [x] **GNOME platform layer** - GLib, GIO, `g_spawn`, Fontconfig, FreeType, Cairo
    (`samples/linux-gnome`).
 13. [x] **JavaScriptCore** - WebKit's JavaScript engine with its JIT (`samples/linux-webkit`).
-14. [ ] **Shared memory between processes** - real `MAP_SHARED`, `memfd_create`.
+14. [x] **Shared memory between processes** - `memfd_create`, `/dev/shm`, real `MAP_SHARED`
+   (`src/linux/shm.c`, `samples/linux/shm.c`).
 15. [ ] **WPE WebKit** with a WRLD display backend.
 
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,

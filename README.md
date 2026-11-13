@@ -456,9 +456,12 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **WebKit's JavaScript engine:** built with `make ARCH=x86_64 LX_WEBKIT=1`, the image also
   carries JavaScriptCore from WebKitGTK (about 70 MB with ICU) and `jsctest`, which runs modern
   JavaScript through it, JIT included. Give the VM 1 GB for that image.
+- **Shared memory:** `memfd_create` (with seals), `shm_open`/`shm_unlink` under `/dev/shm`,
+  and `MAP_SHARED` of those or of anonymous memory share real pages between processes, across
+  `fork` and through descriptors passed with `SCM_RIGHTS` (`shm` tests all of it).
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
-  loopback interface, real shared memory between processes, and a real `vfork` (the child gets
-  a copy of the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
+  loopback interface, `MAP_SHARED` write-back to ordinary files, and a real `vfork` (the child
+  gets a copy of the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
 
 ### USB (`src/usb`)
 - **Host controllers:** all four kinds a PC uses. **xHCI** (`xhci.c`, USB 3.x, what every
