@@ -642,6 +642,9 @@ bool gfx_ready_for_watchdog = true;
  * which one, in the log and on the screen, so the hang can be reported. */
 static volatile bool wd_reported;
 static uint32_t wd_eips[4]; static int wd_neips;
+#ifdef __x86_64__
+extern void shell_restart_trampoline(void);
+#endif
 void video_update(int x, int y, int w, int h);
 static void wd_banner(const char *a, const char *b) {
     canvas_t c; c.px = (uint32_t *)(uintptr_t)fb_info.addr; c.w = fb_info.width; c.h = fb_info.height;
@@ -658,6 +661,19 @@ static void watchdog(regs_t *r, uint32_t now) {
      * hung desktop, so keep the heartbeat fresh and say nothing. */
     if (setup_text_active) { gui_heartbeat = now; wd_neips = 0; return; }
     uint32_t idle = now - gui_heartbeat;
+    /* If the shell task itself is stuck, restart just the shell manager (not
+     * the machine).  The timer interrupt returns to a tiny assembly trampoline
+     * that switches to a private recovery stack, closes the windows and enters
+     * a fresh wm_run loop. */
+#ifdef __x86_64__
+    if (idle >= 8000 && gui_task && task_current() == gui_task) {
+        klog("watchdog: shellmanager.exe is not responding (%u ms); restarting it", idle);
+        gui_heartbeat = now; wd_neips = 0; wd_reported = false;
+        r->eip = (uint64_t)(uintptr_t)shell_restart_trampoline;
+        r->eflags |= 0x200;
+        return;
+    }
+#endif
     if (idle < 4000) {
         if (wd_reported) { klog("watchdog: the desktop is running again after %u ms", idle); wd_reported = false; }
         wd_neips = 0;
@@ -674,6 +690,50 @@ static void watchdog(regs_t *r, uint32_t now) {
     klog("watchdog: %s %s", a, b);
     if (gfx_ready_for_watchdog) wd_banner(a, b);
 }
+static volatile bool shell_restart_req;
+void wm_recover_shell(void) {
+    popup_close();
+    pm.open = false;
+    drag.mode = DRAG_NONE;
+    capture = NULL;
+    hover_win = NULL;
+    cap_hot.w = NULL;
+    prev_buttons = 0;
+    last_click_time = 0;
+    while (nwin > 0) wm_destroy(wins[nwin - 1]);
+    wm_need_redraw = true;
+}
+void shellmanager_restart(void) { klog("shellmanager: restart requested"); shell_restart_req = true; wm_need_redraw = true; }
+void shell_recover(void) {
+    klog("shellmanager.exe: restarting the shell loop");
+    wm_recover_shell();
+    shell_reset();
+    gui_heartbeat = timer_ticks();
+    wm_run();
+    for (;;) hlt();
+}
+static void shellmanager_entry(void *arg) {
+    if (arg) { wm_recover_shell(); shell_reset(); }
+    wm_run();
+}
+static int shell_pid;
+static void shellwatch_entry(void *arg) {
+    (void)arg;
+    for (;;) {
+        task_sleep(1000);
+        if (shell_pid && !task_find(shell_pid)) {
+            klog("shellmanager.exe: process exited; starting it again");
+            task_t *t = task_create("shellmanager.exe", shellmanager_entry, (void *)1, 512 * 1024);
+            if (t) { shell_pid = t->pid; task_set_gui_task(t); }
+        }
+    }
+}
+void shellmanager_start(void) {
+    task_t *t = task_create("shellmanager.exe", shellmanager_entry, NULL, 512 * 1024);
+    if (t) { shell_pid = t->pid; task_set_gui_task(t); }
+    task_create("shellwatch", shellwatch_entry, NULL, 32 * 1024);
+}
+
 void wm_run(void) {
     mouse_state_t ms;
     uint32_t last_tick = 0;
@@ -682,6 +742,14 @@ void wm_run(void) {
     for (;;) {
         uint32_t loop_t0 = timer_ticks();
         gui_heartbeat = timer_ticks();
+        if (shell_restart_req) {
+            klog("shellmanager: restarting windows");
+            shell_restart_req = false;
+            wm_recover_shell();
+            shell_reset();
+            gui_heartbeat = timer_ticks();
+            wm_need_redraw = true;
+        }
         bool activity = false;
         key_event_t ke;
         while (keyboard_poll(&ke)) { handle_key(&ke); activity = true; }

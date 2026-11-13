@@ -131,7 +131,7 @@ static void tm_paint(window_t *w) {
         draw_group(c, R(body.x + 20 + gw, body.y + 136, body.w - gw - 30, 120), "Memory Usage History");
         graph(c, R(body.x + 30 + gw, body.y + 156, body.w - gw - 50, 90), t->mem, HEX(0xFFFF00));
         int y = body.y + 266;
-        snprintf(b, sizeof b, "Physical memory: %u MB", mm_phys_total() / (1024 * 1024)); draw_text(c, FONT_UI, body.x + 14, y, b, T.text);
+        snprintf(b, sizeof b, "Physical memory: %llu MB", (unsigned long long)(mm_phys_total() / (1024 * 1024))); draw_text(c, FONT_UI, body.x + 14, y, b, T.text);
         snprintf(b, sizeof b, "Kernel heap: %u / %u KB", mm_used() / 1024, mm_total() / 1024); draw_text(c, FONT_UI, body.x + 14, y + 18, b, T.text);
         uint32_t up = timer_ticks() / 1000; snprintf(b, sizeof b, "Up time: %u:%02u:%02u   Tasks: %d   Open windows: %d", up / 3600, (up / 60) % 60, up % 60, task_count(), wm_window_count());
         draw_text(c, FONT_UI, body.x + 260, y, b, T.text);
@@ -446,6 +446,136 @@ void snake_open(void) {
     snake_t *s = kzalloc(sizeof *s); sn_reset(s);
     w->data = s; w->paint = sn_paint; w->key = sn_key; w->icon = ICON_GAME; w->destroy = free_data;
     wm_set_timer(w, 140, sn_tick);
+}
+
+/* ======================= Minesweeper ======================= */
+#define MS_W 9
+#define MS_H 9
+#define MS_MINES 10
+#define MS_CELL 26
+typedef struct { uint8_t mine[MS_W * MS_H], open[MS_W * MS_H], flag[MS_W * MS_H]; int lost, won, flags, opened; } ms_t;
+static void ms_reset(ms_t *m) {
+    memset(m, 0, sizeof *m);
+    for (int placed = 0; placed < MS_MINES;) {
+        int i = rand_next() % (MS_W * MS_H);
+        if (!m->mine[i]) { m->mine[i] = 1; placed++; }
+    }
+}
+static int ms_around(ms_t *m, int x, int y) {
+    int n = 0;
+    for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+        int nx = x + dx, ny = y + dy;
+        if ((dx || dy) && nx >= 0 && ny >= 0 && nx < MS_W && ny < MS_H) n += m->mine[ny * MS_W + nx];
+    }
+    return n;
+}
+static void ms_reveal(ms_t *m, int x, int y) {
+    if (x < 0 || y < 0 || x >= MS_W || y >= MS_H) return;
+    int i = y * MS_W + x;
+    if (m->open[i] || m->flag[i]) return;
+    m->open[i] = 1; m->opened++;
+    if (m->mine[i]) { m->lost = 1; return; }
+    if (!ms_around(m, x, y)) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) if (dx || dy) ms_reveal(m, x + dx, y + dy);
+}
+static void ms_paint(window_t *w) {
+    ms_t *m = w->data; canvas_t *c = w->surf;
+    gfx_clear(c, T.face);
+    fill_rect(c, 0, 0, c->w, 30, T.pane_head_bot);
+    char b[96]; snprintf(b, sizeof b, "Mines: %d    Flags: %d", MS_MINES, m->flags);
+    draw_text(c, FONT_UI_BOLD, 8, 8, b, T.pane_head_text);
+    draw_text(c, FONT_UI_BOLD, c->w - 80, 8, m->won ? "You win!" : m->lost ? "Boom!" : "R = reset", T.pane_head_text);
+    for (int y = 0; y < MS_H; y++) for (int x = 0; x < MS_W; x++) {
+        int i = y * MS_W + x, cx = 8 + x * MS_CELL, cy = 38 + y * MS_CELL;
+        if (m->open[i]) {
+            fill_rect(c, cx, cy, MS_CELL - 1, MS_CELL - 1, m->mine[i] ? HEX(0xE05050) : T.window_bg);
+            draw_rect(c, cx, cy, MS_CELL - 1, MS_CELL - 1, T.face_dark);
+            if (m->mine[i]) { fill_circle(c, cx + 12, cy + 12, 7, BLACK); fill_circle(c, cx + 9, cy + 9, 2, WHITE); }
+            else {
+                int n = ms_around(m, x, y);
+                if (n) { char s[2] = { (char)('0' + n), 0 }; uint32_t col = n == 1 ? HEX(0x0000C0) : n == 2 ? HEX(0x008000) : n == 3 ? HEX(0xC00000) : n == 4 ? HEX(0x000080) : HEX(0x800080); draw_text(c, FONT_UI_BOLD, cx + 8, cy + 6, s, col); }
+            }
+        } else {
+            fill_rect(c, cx, cy, MS_CELL - 1, MS_CELL - 1, T.face_light);
+            draw_rect(c, cx, cy, MS_CELL - 1, MS_CELL - 1, T.face_dark);
+            if (m->flag[i]) draw_text(c, FONT_UI_BOLD, cx + 6, cy + 6, "F", HEX(0xC02020));
+        }
+    }
+    if (m->lost || m->won) {
+        const char *msg = m->won ? "You cleared the field - Space to play again" : "Mine hit - Space to play again";
+        int tw = text_width(FONT_UI_BOLD, msg);
+        blend_rect(c, (c->w - tw) / 2 - 10, c->h / 2 - 16, tw + 20, 32, BLACK, 150);
+        draw_text(c, FONT_UI_BOLD, (c->w - tw) / 2, c->h / 2 - 7, msg, WHITE);
+    }
+}
+static void ms_mouse(window_t *w, int type, int x, int y, int btn) {
+    ms_t *m = w->data;
+    if (type != ME_DOWN || m->lost || m->won) return;
+    int gx = (x - 8) / MS_CELL, gy = (y - 38) / MS_CELL;
+    if (gx < 0 || gy < 0 || gx >= MS_W || gy >= MS_H) return;
+    int i = gy * MS_W + gx;
+    if (btn & MB_RIGHT) { if (!m->open[i]) { m->flag[i] = !m->flag[i]; m->flags += m->flag[i] ? 1 : -1; } }
+    else if (btn & MB_LEFT) { if (m->flag[i]) return; ms_reveal(m, gx, gy); if (m->opened == MS_W * MS_H - MS_MINES) m->won = 1; }
+    w->dirty = true;
+}
+static void ms_key(window_t *w, key_event_t *e) {
+    ms_t *m = w->data;
+    if (e->pressed && (e->key == 'r' || e->key == 'R' || e->key == ' ')) { ms_reset(m); w->dirty = true; }
+}
+void minesweeper_open(void) {
+    window_t *w = wm_create("Minesweeper", -1, -1, 8 + MS_W * MS_CELL + 8, 38 + MS_H * MS_CELL + 10, WF_NO_MAX);
+    ms_t *m = kzalloc(sizeof *m); ms_reset(m);
+    w->data = m; w->paint = ms_paint; w->mouse = ms_mouse; w->key = ms_key; w->icon = ICON_GAME; w->destroy = free_data;
+}
+
+/* ======================= Pong ======================= */
+#define PG_W 480
+#define PG_H 300
+typedef struct { int py, cy, bx, by, dx, dy, score, cpu; } pong_t;
+static void pg_reset(pong_t *p, int dir) {
+    p->bx = PG_W / 2; p->by = PG_H / 2; p->dx = 4 * dir; p->dy = (rand_next() & 1) ? 3 : -3;
+}
+static void pg_tick(window_t *w) {
+    pong_t *p = w->data;
+    if (p->score >= 10 || p->cpu >= 10) return;
+    p->cy += (p->by > p->cy + 4) ? 3 : (p->by < p->cy - 4) ? -3 : 0;
+    p->cy = CLAMP(p->cy, 16, PG_H - 16);
+    p->bx += p->dx; p->by += p->dy;
+    if (p->by <= 4 || p->by >= PG_H - 4) { p->dy = -p->dy; p->by = CLAMP(p->by, 4, PG_H - 4); }
+    if (p->dx < 0 && p->bx <= 18 && p->by >= p->py && p->by <= p->py + 56) { p->dx = 4; p->bx = 19; }
+    if (p->dx > 0 && p->bx >= PG_W - 18 && p->by >= p->cy && p->by <= p->cy + 56) { p->dx = -4; p->bx = PG_W - 19; }
+    if (p->bx < 0) { p->cpu++; pg_reset(p, 1); }
+    else if (p->bx > PG_W) { p->score++; pg_reset(p, -1); }
+    w->dirty = true;
+}
+static void pg_paint(window_t *w) {
+    pong_t *p = w->data; canvas_t *c = w->surf;
+    gfx_clear(c, HEX(0x101820));
+    for (int y = 0; y < c->h; y += 20) fill_rect(c, c->w / 2 - 1, y, 2, 10, HEX(0x405060));
+    fill_rect(c, 8, p->py, 8, 56, T.check);
+    fill_rect(c, c->w - 16, p->cy, 8, 56, HEX(0xE08040));
+    fill_circle(c, p->bx, p->by, 5, WHITE);
+    char b[32]; snprintf(b, sizeof b, "%d", p->score); draw_text(c, FONT_LARGE_BOLD, c->w / 2 - 40, 8, b, WHITE);
+    snprintf(b, sizeof b, "%d", p->cpu); draw_text(c, FONT_LARGE_BOLD, c->w / 2 + 24, 8, b, WHITE);
+    if (p->score >= 10 || p->cpu >= 10) {
+        const char *m = p->score >= 10 ? "You win - Space for a new game" : "Computer wins - Space for a new game";
+        int tw = text_width(FONT_UI_BOLD, m);
+        blend_rect(c, (c->w - tw) / 2 - 12, c->h / 2 - 18, tw + 24, 36, BLACK, 160);
+        draw_text(c, FONT_UI_BOLD, (c->w - tw) / 2, c->h / 2 - 8, m, WHITE);
+    }
+}
+static void pg_key(window_t *w, key_event_t *e) {
+    pong_t *p = w->data; if (!e->pressed) return;
+    if (e->key == KEY_UP || e->key == 'w') p->py -= 18;
+    if (e->key == KEY_DOWN || e->key == 's') p->py += 18;
+    p->py = CLAMP(p->py, 4, PG_H - 60);
+    if (e->key == ' ' && (p->score >= 10 || p->cpu >= 10)) { p->score = p->cpu = 0; p->py = PG_H / 2 - 28; pg_reset(p, 1); }
+    w->dirty = true;
+}
+void pong_open(void) {
+    window_t *w = wm_create("Pong", -1, -1, PG_W, PG_H, WF_NO_MAX);
+    pong_t *p = kzalloc(sizeof *p); p->py = PG_H / 2 - 28; p->cy = PG_H / 2 - 28; pg_reset(p, 1);
+    w->data = p; w->paint = pg_paint; w->key = pg_key; w->icon = ICON_GAME; w->destroy = free_data;
+    wm_set_timer(w, 16, pg_tick);
 }
 
 /* ======================= About ======================= */

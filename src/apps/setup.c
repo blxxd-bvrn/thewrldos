@@ -1293,7 +1293,7 @@ static const struct { const char *name; int off; } zones[] = {
     { "(GMT+08:00) Beijing, Hong Kong, Singapore, Perth", 480 }, { "(GMT+09:00) Osaka, Seoul, Tokyo", 540 }, { "(GMT+10:00) Brisbane, Melbourne, Sydney", 600 },
     { "(GMT+12:00) Auckland, Wellington", 720 },
 };
-typedef struct { int page; char name[32], org[48], comp[32]; int tz, tzscroll, pic; char err[96]; bool finish; } oobe_t;
+typedef struct { int page; char name[32], org[48], comp[32], pass[32], pass2[32]; int tz, tzscroll, pic; char err[96]; bool finish; } oobe_t;
 static oobe_t O;
 static window_t ow;
 static canvas_t *obg;
@@ -1366,6 +1366,13 @@ static void oobe_paint(window_t *w) {
         if (ui_textbox(w, R(bx + 120, by + 46, 320, 22), O.name, sizeof O.name)) O.finish = true;
         draw_text(s, FONT_UI, bx + 20, by + 86, "Organization:", BLACK);
         if (ui_textbox(w, R(bx + 120, by + 82, 320, 22), O.org, sizeof O.org)) O.finish = true;
+        draw_text(s, FONT_UI, bx + 20, by + 122, "Password:", BLACK);
+        if (ui_password(w, R(bx + 120, by + 118, 320, 22), O.pass, sizeof O.pass)) O.finish = true;
+        draw_text(s, FONT_UI, bx + 20, by + 158, "Confirm:", BLACK);
+        if (ui_password(w, R(bx + 120, by + 154, 320, 22), O.pass2, sizeof O.pass2)) O.finish = true;
+        draw_text(s, FONT_SMALL, bx + 120, by + 182, "Leave both boxes empty to sign in without a password.", HEX(0x505050));
+        if (O.pass[0] && strcmp(O.pass, O.pass2)) draw_text(s, FONT_UI, bx + 120, by + 200, "The passwords do not match.", HEX(0xC02020));
+        if (O.pass[0] && strcmp(O.pass, O.pass2)) next_ok = false;
         if (!O.name[0]) next_ok = false;
         break;
     }
@@ -1533,6 +1540,7 @@ void setup_oobe(void) {
     /* finalize */
     strlcpy(user_name, O.name, sizeof user_name);
     strlcpy(computer_name, O.comp, sizeof computer_name);
+    password_set(O.pass);
     user_picture = O.pic;
     settings_set("organization", O.org);
     static const char *tasks[] = { "Installing Start menu items...", "Registering components...", "Saving settings...", "Removing any temporary files used..." };

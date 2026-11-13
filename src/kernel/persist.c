@@ -9,6 +9,7 @@
 #include "theme.h"
 #include "wm.h"
 #include "audio.h"
+#include "net.h"
 
 vol_t *system_volume;
 int system_disk_index = -1, system_part_index = -1;
@@ -191,6 +192,26 @@ void persist_status(char *b, int cap) {
              vol_fs_name(system_volume), vol_label(system_volume), (uint32_t)(vol_free_bytes(system_volume) >> 20), (uint32_t)(vol_total_bytes(system_volume) >> 20));
 }
 static int geti(const char *k, int def) { const char *v = settings_get(k); return v ? atoi(v) : def; }
+/* Account password: a salted FNV-1a digest.  It is not a replacement for a
+ * real password KDF, but it keeps the plain password out of wrld.ini. */
+static uint64_t fnv1a(const char *s, uint64_t h) {
+    for (; *s; s++) { h ^= (uint8_t)*s; h *= 1099511628211ull; }
+    return h;
+}
+void password_set(const char *plain) {
+    if (!plain || !*plain) { user_password[0] = 0; return; }
+    uint64_t h = fnv1a("THE WRLD OS account", 1469598103934665603ull);
+    h = fnv1a(plain, h);
+    snprintf(user_password, sizeof user_password, "%016llx", (unsigned long long)h);
+}
+bool password_matches(const char *plain) {
+    if (!user_password[0]) return true;
+    char h[32];
+    uint64_t v = fnv1a("THE WRLD OS account", 1469598103934665603ull);
+    v = fnv1a(plain ? plain : "", v);
+    snprintf(h, sizeof h, "%016llx", (unsigned long long)v);
+    return !strcmp(h, user_password);
+}
 void settings_load(void) {
     uint32_t len;
     char *t = (char *)vfs_read_file(SETTINGS_FILE, &len);
@@ -208,6 +229,9 @@ void settings_load(void) {
     const char *s;
     if ((s = settings_get("user")) && *s) strlcpy(user_name, s, sizeof user_name);
     if ((s = settings_get("computer")) && *s) strlcpy(computer_name, s, sizeof computer_name);
+    strlcpy(user_password, settings_get("password") ? settings_get("password") : "", sizeof user_password);
+    fw_enabled = geti("fw_on", 0) != 0; fw_block_tcp = geti("fw_tcp", 1) != 0; fw_block_udp = geti("fw_udp", 1) != 0;
+    fw_clear_ports(); { const char *fp = settings_get("fw_ports"); while (fp && *fp) { char *e; unsigned long v = strtoul(fp, &e, 10); if (v) fw_allow_port((uint16_t)v); fp = (*e == 0) ? e : e + 1; } }
     user_picture = picture_from_name(settings_get("picture"), user_picture);
     tz_offset_minutes = geti("tz", tz_offset_minutes);
     mouse_speed = geti("mouse_speed", mouse_speed);
@@ -253,6 +277,9 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", system_sounds); settings_set("sounds", b);
     snprintf(b, sizeof b, "%d", dark_mode ? 1 : 0); settings_set("dark", b);
     settings_set("cursor", cursor_set_active());
+    settings_set("password", user_password);
+    settings_set("fw_on", fw_enabled ? "1" : "0"); settings_set("fw_tcp", fw_block_tcp ? "1" : "0"); settings_set("fw_udp", fw_block_udp ? "1" : "0");
+    { char fp[64] = ""; int o = 0; for (int i = 0; i < fw_port_count() && o < (int)sizeof fp - 8; i++) o += snprintf(fp + o, sizeof fp - o, "%s%u", i ? "," : "", fw_port_at(i)); settings_set("fw_ports", fp); }
 }
 void settings_save(void) {
     capture();

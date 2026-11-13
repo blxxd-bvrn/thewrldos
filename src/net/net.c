@@ -160,6 +160,20 @@ static void udp_input(uint32_t src, const uint8_t *p, uint32_t len) {
     if (ulen < 8 || ulen > len) return;
     for (int i = 0; i < 16; i++) if (udps[i].port == dport && udps[i].h) { udps[i].h(src, sport, p + 8, ulen - 8, udps[i].ctx); return; }
 }
+static bool udp_is_bound(uint16_t port) { for (int i = 0; i < 16; i++) if (udps[i].port == port) return true; return false; }
+
+/* ---- simple inbound firewall ----
+ * Outbound traffic is always allowed.  The filter blocks unsolicited new TCP
+ * connections and UDP datagrams to ports nothing has bound.  Replies that
+ * belong to a connection (TCP ACK) and bound UDP sockets pass. */
+bool fw_enabled, fw_block_tcp = true, fw_block_udp = true;
+uint32_t fw_blocked;
+static uint16_t fw_ports[16]; static int fw_nports;
+bool fw_port_allowed(uint16_t p) { for (int i = 0; i < fw_nports; i++) if (fw_ports[i] == p) return true; return false; }
+bool fw_allow_port(uint16_t p) { if (fw_port_allowed(p)) return true; if (fw_nports >= 16) return false; fw_ports[fw_nports++] = p; return true; }
+void fw_clear_ports(void) { fw_nports = 0; }
+int fw_port_count(void) { return fw_nports; }
+uint16_t fw_port_at(int i) { return i >= 0 && i < fw_nports ? fw_ports[i] : 0; }
 
 /* ---------------- frame dispatch ---------------- */
 static void ip_input(const uint8_t *p, uint32_t len) {
@@ -170,6 +184,18 @@ static void ip_input(const uint8_t *p, uint32_t len) {
     uint32_t src = get32(p + 12), dst = get32(p + 16);
     bool mine = dst == netif.ip || dst == 0xFFFFFFFF || (netif.mask && (dst | netif.mask) == 0xFFFFFFFF) || !netif.ip;
     if (!mine) return;
+    if (fw_enabled) {
+        uint8_t proto = p[9];
+        if (proto == IPPROTO_TCP && fw_block_tcp && tot >= hl + 20) {
+            uint16_t dport = get16(p + hl + 2); uint8_t flags = p[hl + 13];
+            /* a pure SYN is a new inbound connection; ACK/SYN-ACK belongs to
+             * an existing connection and is allowed */
+            if ((flags & 0x02) && !(flags & 0x10) && !fw_port_allowed(dport)) { fw_blocked++; return; }
+        } else if (proto == IPPROTO_UDP && fw_block_udp && tot >= hl + 8) {
+            uint16_t dport = get16(p + hl + 2);
+            if (!udp_is_bound(dport) && !fw_port_allowed(dport) && dport != 68) { fw_blocked++; return; }
+        }
+    }
     switch (p[9]) {
     case IPPROTO_ICMP: icmp_input(src, p + hl, tot - hl); break;
     case IPPROTO_UDP: udp_input(src, p + hl, tot - hl); break;

@@ -1184,7 +1184,7 @@ static int b_sync(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static int b_free(sh_t *s, int argc, char **argv, io_t *io) {
     out_f(io, "              total        used        free\nMem:     %10u  %10u  %10u  (KB)\n", mm_total() / 1024, mm_used() / 1024, (mm_total() - mm_used()) / 1024);
-    out_f(io, "Physical: %u MB installed\n", mm_phys_total() / (1024 * 1024));
+    out_f(io, "Physical: %llu MB installed\n", (unsigned long long)(mm_phys_total() / (1024 * 1024)));
     return 0;
 }
 static int b_uptime(sh_t *s, int argc, char **argv, io_t *io) {
@@ -1413,6 +1413,18 @@ static int b_shutdown(sh_t *s, int argc, char **argv, io_t *io) {
     wm_defer(shell_power_action, r ? (void *)1 : NULL);
     return 0;
 }
+static int b_passwd(sh_t *s, int argc, char **argv, io_t *io) {
+    (void)s;
+    if (argc < 2) { out_s(io, "usage: passwd <new password>   (passwd -c clears it)\n"); return 1; }
+    if (!strcmp(argv[1], "-c")) { password_set(""); settings_save(); out_s(io, "Password cleared.\n"); return 0; }
+    password_set(argv[1]); settings_save(); out_s(io, "Password changed.\n"); return 0;
+}
+static int b_logoff(sh_t *s, int argc, char **argv, io_t *io) {
+    (void)s; (void)argc; (void)argv;
+    out_s(io, "Logging off...\n");
+    wm_defer((wm_deferred_fn)shell_logoff, NULL);
+    return 0;
+}
 static int b_xargs(sh_t *s, int argc, char **argv, io_t *io);
 static int b_lsblk(sh_t *s, int argc, char **argv, io_t *io) {
     if (!blk_count()) { out_s(io, "No hard disks.\n"); return 0; }
@@ -1529,6 +1541,7 @@ static const builtin_t builtins[] = {
     { "tree", b_tree, "directory tree" }, { "find", b_find, "find files (-name PAT)" }, { "hexdump", b_hexdump, "hex dump a file" }, { "xxd", b_hexdump, NULL },
     { "mount", b_mount, "mount a .dmg / list drives" }, { "hdiutil", b_hdiutil, "disk image utility" }, { "open", b_open, "open with default app" }, { "start", b_open, NULL },
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
+    { "passwd", b_passwd, "change the account password (-c clears)" }, { "logoff", b_logoff, "log off and show the welcome screen" },
     { "lspci", b_lspci, "list PCI devices" }, { "devices", b_devices, "devices and their drivers (-p problems, -i IDs)" }, { "lsdev", b_devices, NULL },
     { "driverquery", b_driverquery, "list the built-in drivers" }, { "lsusb", b_lsusb, "list USB devices" }, { "lsblk", b_lsblk, "list disks and partitions" }, { "return", b_return, NULL }, { "break", b_break, NULL }, { "continue", b_continue, NULL },
     { "shift", b_shift, NULL }, { "cpuinfo", b_cpuinfo, NULL }, { "xargs", b_xargs, "build commands from input" },

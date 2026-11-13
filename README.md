@@ -28,7 +28,12 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
   playback endpoints and every detected audio-class device with its driver state; **Scan again**
   refreshes the list after plugging in a device.
 - **Graphics:** drivers for the Bochs/QEMU, VirtualBox and VMware display adapters, so the
-  resolution can be changed at runtime (1024×768 up to 1920×1200 or more).
+  resolution can be changed at runtime (1024x768 up to 1920x1200 or more).
+- **Memory:** physical RAM is detected and reported up to 512 GB. The kernel heap stays in the
+  low 4 GB window, where device DMA buffers are safe.
+- **Security:** optional account password at first-boot setup and the logon screen, an inbound
+  firewall in the network stack (blocks unsolicited TCP SYNs and unbound UDP), and a Security
+  Center for the firewall, password and shell status.
 - **Text:** scalable TrueType fonts (Liberation Sans and Mono, read from `C:\WRLD\Fonts`) with
   OpenType shaping: Arabic (with its joining forms and mark positioning, in Noto Naskh Arabic),
   Hebrew, ligatures, and the Unicode bidirectional algorithm, so right-to-left text mixes with
@@ -669,6 +674,10 @@ device manager's job is to say what the computer has and which driver runs it.
   - Menu bars, popup menus, modal dialogs.
   - Alt+Tab, Alt+F4, Win key, Ctrl+Shift+Esc.
 - **Shell:**
+  - The desktop, taskbar, sidebar, icons and window manager run in a separate
+    **`shellmanager.exe`** task started at boot. A small **shellwatch** task restarts it
+    if it exits, and the watchdog restarts only the shell loop (not the computer) if it
+    stops responding. Administrative Tools and Security Center have a restart button.
   - Taskbar with Start button, Quick Launch, task buttons, volume and network icons, and clock.
   - Two-column Luna Start menu with an All Programs flyout; Classic cascading Start menu with
     a vertical banner.
@@ -725,7 +734,7 @@ device manager's job is to say what the computer has and which driver runs it.
 - **Task Manager:** applications, processes, CPU/memory graphs.
 - **XplorerLite** web browser (see above).
 - **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
-  Properties, Run, About, Setup.
+  Minesweeper, Pong, Security Center, Administrative Tools, Properties, Run, About, Setup.
 
 ### Compatibility
 - **`.exe`: Win32 subsystem (`src/win32`)**

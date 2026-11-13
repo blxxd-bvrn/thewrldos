@@ -115,8 +115,10 @@ static void schedule(void) {
 }
 
 volatile uint32_t gui_heartbeat;             /* last time the main (GUI) task had the CPU */
+task_t *gui_task;                            /* shellmanager.exe task, once it starts */
+void task_set_gui_task(task_t *t) { gui_task = t; }
 void task_yield(void) {
-    if (current == &task0) gui_heartbeat = timer_ticks();
+    if (current == &task0 || (gui_task && current == gui_task)) gui_heartbeat = timer_ticks();
     uint32_t f = irq_save();
     schedule();
     irq_restore(f);

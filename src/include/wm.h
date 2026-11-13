@@ -73,6 +73,10 @@ struct window {
 /* window manager */
 void wm_init(void);
 void wm_run(void);                  /* main GUI loop (never returns) */
+void shellmanager_start(void);      /* start the desktop shell as its own task */
+void shellmanager_restart(void);    /* soft restart request, handled by wm_run */
+void wm_recover_shell(void);        /* close windows and reset the shell state */
+void shell_reset(void);             /* reset Start menu/sidebar transient state */
 window_t *wm_create(const char *title, int x, int y, int cw, int ch, int flags);  /* client size */
 void wm_destroy(window_t *w);
 void wm_close(window_t *w);         /* asks close callback */
@@ -133,6 +137,7 @@ bool ui_checkbox(window_t *w, int x, int y, const char *label, bool *v);
 bool ui_radio(window_t *w, int x, int y, const char *label, bool checked);
 bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi);
 bool ui_textbox(window_t *w, rect_t r, char *buf, int cap);
+bool ui_password(window_t *w, rect_t r, char *buf, int cap);
 bool ui_hover(window_t *w, rect_t r);
 bool ui_click_area(window_t *w, rect_t r);
 int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scroll);
@@ -165,6 +170,9 @@ extern bool sidebar_open;
 extern int sidebar_tiles;                    /* bit per sidebar tile */
 extern uint32_t desktop_color;
 extern char user_name[32];
+extern char user_password[32];
+void password_set(const char *plain);          /* empty clears it; stores a hash */
+bool password_matches(const char *plain);
 extern char computer_name[32];
 extern int user_picture;
 extern int user_picture_count;

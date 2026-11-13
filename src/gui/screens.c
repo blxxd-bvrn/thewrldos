@@ -114,6 +114,9 @@ static void welcome_bg(canvas_t *c, bool divider) {
     gradient_h(c, SCREEN_W / 2, SCREEN_H - bot, SCREEN_W / 2, 2, HEX(0xFFD08A), HEX(0xE88A30));
     if (divider) draw_divider(c, SCREEN_W / 2, top + 40, SCREEN_H - top - bot - 80);
 }
+/* password state for the logon tile */
+static bool login_ask, login_bad;
+static char login_pw[32];
 static void welcome_draw(int hot, bool logging_in, int frame) {
     canvas_t *c = &screen;
     welcome_bg(c, true);
@@ -132,6 +135,16 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
         draw_text(c, FONT_LARGE, t.x + 76, t.y + 24, user_name, WHITE);
     } else {
         for (int k = 0; k < 3; k++) { int a = ((frame / 6) % 3) == k ? 255 : 90; fill_circle(c, SCREEN_W / 2 + 40 + k * 16, SCREEN_H / 2, 4, mix(HEX(0x5A7EDC), WHITE, a)); }
+    }
+    if (login_ask) {
+        rect_t pr = R(SCREEN_W / 2 + 30, SCREEN_H / 2 + 42, 300, 26);
+        draw_text(c, FONT_UI, pr.x, pr.y - 18, "Password:", WHITE);
+        fill_rect(c, pr.x, pr.y, pr.w, pr.h, WHITE); draw_rect(c, pr.x, pr.y, pr.w, pr.h, HEX(0x808080));
+        char mask[32]; int n = MIN((int)strlen(login_pw), (int)sizeof mask - 1);
+        for (int i = 0; i < n; i++) mask[i] = '*'; mask[n] = 0;
+        draw_text(c, FONT_UI, pr.x + 6, pr.y + 5, mask, BLACK);
+        if (login_bad) draw_text(c, FONT_UI, pr.x, pr.y + 30, "Incorrect password.", HEX(0xFFD070));
+        else draw_text(c, FONT_SMALL, pr.x, pr.y + 30, "Press ENTER, or ESC to go back.", HEX(0xD8E4F8));
     }
     /* turn off button */
     int bx = 30, by = SCREEN_H - 52;
@@ -189,17 +202,39 @@ static void welcome_draw(int hot, bool logging_in, int frame) {
 #endif
     }
 }
+static bool login_request(void) {
+    if (!user_password[0]) return true;
+    login_ask = true; login_bad = false; login_pw[0] = 0;
+    return false;
+}
 void welcome_screen(void) {
     mouse_state_t ms; key_event_t ke;
     int hot = 0, prev = 0;
     usb_input_reset();
+    login_ask = false; login_bad = false; login_pw[0] = 0;
     welcome_draw(0, false, 0);
     gfx_present(CURSOR_ARROW, wm_mouse_x, wm_mouse_y);
     uint32_t next = timer_ticks() + 500;
     int shown_active = 0;
     for (;;) {
         bool login = false;
-        while (keyboard_poll(&ke)) if (ke.pressed && (ke.key == KEY_ENTER || ke.key == ' ')) login = true;
+        while (keyboard_poll(&ke)) {
+            if (!ke.pressed) continue;
+            if (login_ask) {
+                if (ke.key == KEY_ESC) { login_ask = false; login_bad = false; login_pw[0] = 0; }
+                else if (ke.key == KEY_BACKSPACE) { int l = strlen(login_pw); if (l) login_pw[l - 1] = 0; }
+                else if (ke.key == KEY_ENTER) {
+                    if (password_matches(login_pw)) login = true;
+                    else { login_bad = true; login_pw[0] = 0; }
+                } else if (ke.ch >= 32 && ke.ch < 127 && strlen(login_pw) < sizeof login_pw - 1) {
+                    int l = strlen(login_pw); login_pw[l] = ke.ch; login_pw[l + 1] = 0; login_bad = false;
+                }
+                if (!login) { welcome_draw(hot, false, 0); gfx_present(CURSOR_ARROW, wm_mouse_x, wm_mouse_y); }
+            } else if (ke.key == KEY_ENTER || ke.key == ' ') {
+                if (login_request()) login = true;
+                else { welcome_draw(hot, false, 0); gfx_present(CURSOR_ARROW, wm_mouse_x, wm_mouse_y); }
+            }
+        }
         if (mouse_poll(&ms)) {
             wm_mouse_x = ms.x; wm_mouse_y = ms.y;
             int nh = 0;
@@ -207,7 +242,7 @@ void welcome_screen(void) {
             if (pt_in(R(30, SCREEN_H - 52, 180, 32), ms.x, ms.y)) nh = 2;
             bool click = (ms.buttons & 1) && !(prev & 1);
             prev = ms.buttons;
-            if (click && nh == 1) login = true;
+            if (click && nh == 1) { if (login_request()) login = true; }
             if (click && nh == 2) { shell_show_shutdown(); return; }
             if (nh != hot) { hot = nh; welcome_draw(hot, false, 0); gfx_present(nh ? CURSOR_HAND : CURSOR_ARROW, ms.x, ms.y); }
             else gfx_move_cursor(nh ? CURSOR_HAND : CURSOR_ARROW, ms.x, ms.y);
@@ -348,8 +383,18 @@ void shell_show_shutdown(void) {
     else if (r == 2) final_screen("Restarting...", true);
 }
 static void close_all_apps(void) {
+    /* Keep the shell, its supervisor and the kernel service tasks running.
+     * Logging off should close windows and user programs, not tear down the
+     * desktop or USB/network/persistence. */
     for (int i = wm_window_count() - 1; i >= 0; i--) { window_t *w = wm_window_at(i); if (w) wm_destroy(w); }
-    for (task_t *t = task_list(); t;) { task_t *nx = t->next; if (t->pid != 0) task_kill(t->pid); t = nx; }
+    for (task_t *t = task_list(); t;) {
+        task_t *nx = t->next;
+        const char *n = t->name;
+        bool service = t->pid == 0 || t == gui_task || !strcmp(n, "shellwatch") || !strcmp(n, "usbd") ||
+                       !strcmp(n, "netd") || !strcmp(n, "devmgr") || !strcmp(n, "persistd");
+        if (!service) task_kill(t->pid);
+        t = nx;
+    }
 }
 void shell_logoff(void) {
     close_all_apps();

@@ -47,6 +47,14 @@ const char *net_status_text(void);                        /* one line for the UI
 /* ---- IP / ICMP / UDP ---- */
 enum { IPPROTO_ICMP = 1, IPPROTO_TCP = 6, IPPROTO_UDP = 17 };
 bool ip_send(uint32_t dst, uint8_t proto, const void *payload, uint32_t len);
+/* inbound firewall */
+extern bool fw_enabled, fw_block_tcp, fw_block_udp;
+extern uint32_t fw_blocked;
+bool fw_port_allowed(uint16_t p);
+bool fw_allow_port(uint16_t p);
+void fw_clear_ports(void);
+int fw_port_count(void);
+uint16_t fw_port_at(int i);
 uint16_t ip_checksum(const void *data, uint32_t len, uint32_t initial);
 int icmp_ping(uint32_t dst, uint16_t seq, uint32_t timeout_ms);   /* round-trip ms, or -1 */
 typedef void (*udp_handler_t)(uint32_t src, uint16_t sport, const uint8_t *data, uint32_t len, void *ctx);

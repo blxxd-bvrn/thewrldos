@@ -120,7 +120,7 @@ size_t kmalloc_usable(void *p);
 void kfree_aligned(void *p);
 uint32_t mm_total(void);
 uint32_t mm_used(void);
-uint32_t mm_phys_total(void);
+uint64_t mm_phys_total(void);
 uintptr_t paging_kernel_root(void);                   /* CR3 of the kernel address space */
 #ifdef __x86_64__
 uintptr_t vm_space_new(void);                          /* a private address space sharing the kernel's 0..4 GiB */
@@ -164,6 +164,8 @@ void task_init(void);
 task_t *task_create(const char *name, void (*entry)(void *), void *arg, uint32_t stack_size);
 void task_yield(void);
 extern volatile uint32_t gui_heartbeat;
+extern task_t *gui_task;
+void task_set_gui_task(task_t *t);
 extern bool setup_text_active;      /* Setup owns the screen; its long formats are not a GUI hang */
 void task_sleep(uint32_t ms);
 void task_exit(int code);

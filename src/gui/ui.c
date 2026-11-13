@@ -158,6 +158,38 @@ bool ui_textbox(window_t *w, rect_t r, char *buf, int cap) {
 }
 static void blink_tick(window_t *w) { w->dirty = true; }
 void ui_blink_request(window_t *w) { if (!w->timer) wm_set_timer(w, 500, blink_tick); }
+bool ui_password(window_t *w, rect_t r, char *buf, int cap) {
+    int id = ui_id(w);
+    ui_t *u = &w->ui;
+    bool hot;
+    bool clicked = behave(w, id, r, &hot, NULL);
+    if (clicked || (u->pressed && hot)) u->focus = id;
+    if (hot) u->cursor = CURSOR_IBEAM;
+    bool focused = u->focus == id;
+    bool enter = false;
+    if (focused && u->has_key) {
+        int len = strlen(buf);
+        key_event_t *k = &u->key;
+        if (k->key == KEY_BACKSPACE) { if (len) buf[len - 1] = 0; }
+        else if (k->key == KEY_ENTER) enter = true;
+        else if (k->ch >= 32 && k->ch < 127 && len < cap - 1 && !(k->mods & MOD_CTRL)) { buf[len] = k->ch; buf[len + 1] = 0; }
+        if (k->key != KEY_TAB && k->key != KEY_ESC) u->has_key = false;
+    }
+    char mask[64]; int n = MIN((int)strlen(buf), (int)sizeof mask - 1);
+    for (int i = 0; i < n; i++) mask[i] = '*';
+    mask[n] = 0;
+    canvas_t *c = w->surf;
+    draw_sunken_box(c, r, WHITE);
+    rect_t old = canvas_push_clip(c, R(r.x + 2, r.y + 1, r.w - 4, r.h - 2));
+    int tw = text_width(FONT_UI, mask);
+    int off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
+    int ty = r.y + (r.h - font_height(FONT_UI)) / 2;
+    draw_text(c, FONT_UI, r.x + 4 - off, ty, mask, T.text);
+    if (focused && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), T.text);
+    c->clip = old;
+    if (focused) ui_blink_request(w);
+    return enter;
+}
 
 int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scroll) {
     int id = ui_id(w);

@@ -15,6 +15,9 @@ const app_info_t app_table[] = {
     { "taskmgr", "Task Manager", "Processes and performance", ICON_TASKMGR },
     { "control", "Control Panel", "Change settings", ICON_CONTROL_PANEL },
     { "snake", "Snake", "A small arcade game", ICON_GAME },
+    { "minesweeper", "Minesweeper", "Clear the minefield", ICON_GAME },
+    { "pong", "Pong", "Two-paddle arcade game", ICON_GAME },
+    { "security", "Security Center", "Firewall, password and shell status", ICON_CP_SYSTEM },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
     { "setup", "Install " OS_NAME, "Install to a hard disk", ICON_SETUP },
@@ -34,6 +37,9 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "taskmgr")) taskmgr_open();
     else if (!strcasecmp(name, "control")) control_open(arg);
     else if (!strcasecmp(name, "snake")) snake_open();
+    else if (!strcasecmp(name, "minesweeper") || !strcasecmp(name, "mine")) minesweeper_open();
+    else if (!strcasecmp(name, "pong")) pong_open();
+    else if (!strcasecmp(name, "security") || !strcasecmp(name, "firewall")) security_open();
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
     else if (!strcasecmp(name, "help")) notepad_open("C:\\WRLD\\Help.txt");
     else if (!strcasecmp(name, "run")) shell_show_run();

@@ -25,6 +25,7 @@ static const struct { const char *name; int icon; const char *links[3]; const ch
 };
 static const applet_t applets[] = {
     { "system", "System", "View basic information about your computer", ICON_CP_SYSTEM, CAT_SYSTEM },
+    { "admin", "Administrative Tools", "Task Manager, devices, storage and shell restart", ICON_TASKMGR, CAT_SYSTEM },
     { "devices", "Device Manager", "See every device and the driver that runs it", ICON_CP_DEVICES, CAT_HARDWARE },
     { "::taskmgr", "Task Manager", "See running programs and performance", ICON_TASKMGR, CAT_SYSTEM },
     { "network", "Network and Sharing Center", "View network status", ICON_CP_NETWORK, CAT_NETWORK },
@@ -562,6 +563,53 @@ static void page_datetime(window_t *w, cp_t *c, int ox, int oy) {
     ui_checkbox(w, ox + 232, oy + 240, "Use 24-hour clock in the taskbar", &clock_24h);
     draw_text_wrapped(s, FONT_UI, ox + 30, oy + 280, s->w - ox - 60, "The hardware clock (CMOS RTC) is read directly by the kernel and treated as UTC; the time zone offset is applied for display.", W7_TEXT, 2);
 }
+static void admin_restart_cb(void *ctx, int r) { (void)ctx; if (r == IDYES) shellmanager_restart(); }
+static void page_admin(window_t *w, cp_t *c, int ox, int oy) {
+    canvas_t *s = w->surf;
+    heading(s, ox + 20, oy + 16, "Administrative Tools", "System tools for this computer. Restarting the shell closes all open windows but not the system.");
+    struct tool { const char *name, *desc; int icon, action; };
+    static const struct tool tools[] = {
+        { "Task Manager", "Processes, CPU and memory", ICON_TASKMGR, 1 },
+        { "Device Manager", "Hardware and driver status", ICON_CP_DEVICES, 2 },
+        { "System Information", "Edition, processor and memory", ICON_CP_SYSTEM, 3 },
+        { "Network and Sharing Center", "Adapters and addresses", ICON_CP_NETWORK, 4 },
+        { "Sound", "Playback devices and volume", ICON_CP_SOUND, 5 },
+        { "Programs and Features", "Installed and built-in programs", ICON_CP_PROGRAMS, 6 },
+        { "Command Prompt", "A shell with administration commands", ICON_TERMINAL, 7 },
+        { "Restart Shell Manager", "Recover the desktop, taskbar and window manager", ICON_RESTART, 8 },
+        { "Security Center", "Firewall, password and shell status", ICON_CP_SYSTEM, 9 },
+    };
+    int act = 0, y = oy + 72;
+    for (unsigned i = 0; i < ARRAY_LEN(tools); i++) {
+        int col = i % 2, row = i / 2;
+        int x = ox + 20 + col * ((s->w - ox - 40) / 2), yy = y + row * 58;
+        rect_t r = R(x - 4, yy - 4, (s->w - ox - 40) / 2 - 8, 50);
+        if (ui_hover(w, r)) fill_round_rect(s, r.x, r.y, r.w, r.h, 4, T.face_light);
+        if (ui_click_area(w, r)) act = tools[i].action;
+        draw_icon(s, tools[i].icon, 32, x, yy + 2);
+        draw_text(s, FONT_UI_BOLD, x + 42, yy + 2, tools[i].name, T.text);
+        draw_text_ellipsis(s, FONT_SMALL, x + 42, yy + 20, r.w - 46, tools[i].desc, T.gray_text);
+    }
+    int sy = y + 5 * 58 + 10;
+    draw_text(s, FONT_UI_BOLD, ox + 20, sy, "Storage devices", T.link_head);
+    hline(s, ox + 150, sy + 8, s->w - ox - 180, T.face_dark); sy += 24;
+    for (int i = 0; i < blk_count() && i < 8; i++) {
+        char b[160]; blk_describe(blk_get(i), b, sizeof b);
+        draw_text_ellipsis(s, FONT_UI, ox + 32, sy, s->w - ox - 60, b, T.text);
+        sy += 18;
+    }
+    switch (act) {
+    case 1: taskmgr_open(); break;
+    case 2: cp_go(c, "devices", true); break;
+    case 3: cp_go(c, "system", true); break;
+    case 4: cp_go(c, "network", true); break;
+    case 5: cp_go(c, "sound", true); break;
+    case 6: cp_go(c, "programs", true); break;
+    case 7: terminal_open(NULL, NULL); break;
+    case 8: msgbox("Restart Shell Manager", "This restarts the desktop, taskbar, sidebar and window manager. All open windows will be closed, but the computer keeps running.", MBI_WARNING, MBX_YESNO, admin_restart_cb, NULL); break;
+    case 9: security_open(); break;
+    }
+}
 static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "View basic information about your computer", NULL);
@@ -579,7 +627,7 @@ static void page_system(window_t *w, cp_t *c, int ox, int oy) {
     strlcpy(vals[6], computer_name, 96);
     persist_status(vals[7], 96);
     snprintf(vals[0], 96, "%s (%s)", br, v);
-    snprintf(vals[1], 96, "%u MB", mm_phys_total() / (1024 * 1024));
+    snprintf(vals[1], 96, "%llu MB", (unsigned long long)(mm_phys_total() / (1024 * 1024)));
     snprintf(vals[2], 96, "%u KB used of %u MB", mm_used() / 1024, mm_total() / (1024 * 1024));
     snprintf(vals[3], 96, OS_ARCH_DESC);
     uint32_t up = timer_ticks() / 1000; snprintf(vals[4], 96, "%u:%02u:%02u", up / 3600, (up / 60) % 60, up % 60);
@@ -971,6 +1019,7 @@ static void cp_paint(window_t *w) {
     else if (!strcmp(a->id, "taskbar")) page_taskbar(w, c, ox, oy);
     else if (!strcmp(a->id, "datetime")) page_datetime(w, c, ox, oy);
     else if (!strcmp(a->id, "system")) page_system(w, c, ox, oy);
+    else if (!strcmp(a->id, "admin")) page_admin(w, c, ox, oy);
     else if (!strcmp(a->id, "devices")) page_devices(w, c, ox, oy);
     else if (!strcmp(a->id, "network")) page_network(w, c, ox, oy);
     else if (!strcmp(a->id, "mouse")) page_mouse(w, c, ox, oy);

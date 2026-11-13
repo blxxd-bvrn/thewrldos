@@ -12,6 +12,7 @@ int wallpaper_id = 0;
 int wallpaper_fit = 0;                        /* 0 crop, 1 scale, 2 stretch */
 uint32_t desktop_color = HEX(0x3A6EA5);
 char user_name[32] = "User";
+char user_password[32];                        /* hash; empty = no password */
 char computer_name[32] = "WRLD-PC";
 int user_picture = 0;
 int user_picture_count = 71;                  /* the photographs in C:\WRLD\Avatars */
@@ -938,6 +939,8 @@ static const sm_item_t sm_left[] = {
     { "Paint", NULL, ICON_PAINT, "paint", false },
     { "Task Manager", NULL, ICON_TASKMGR, "taskmgr", false },
     { "Snake", NULL, ICON_GAME, "snake", false },
+    { "Minesweeper", NULL, ICON_GAME, "minesweeper", false },
+    { "Pong", NULL, ICON_GAME, "pong", false },
 };
 static const sm_item_t sm_right[] = {
     { "My Documents", NULL, ICON_MY_DOCUMENTS, "explorer:" USER_DOCS, true },
@@ -946,6 +949,7 @@ static const sm_item_t sm_right[] = {
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control", false },
     { "Personalization", NULL, ICON_CP_APPEARANCE, "control:personalization", false },
     { "System Information", NULL, ICON_CP_SYSTEM, "control:system", false },
+    { "Security Center", NULL, ICON_CP_SYSTEM, "security", false },
     { NULL },
     { "Help and Support", NULL, ICON_HELP, "help", false },
     { "Run...", NULL, ICON_RUN, "run", false },
@@ -954,7 +958,8 @@ static const sm_item_t all_programs[] = {
     { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "XplorerLite", NULL, ICON_BROWSER, "xplorer" },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
-    { "Snake", NULL, ICON_GAME, "snake" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },
+    { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },
+    { "Security Center", NULL, ICON_CP_SYSTEM, "security" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },
     { NULL },
     { "Samples (EXE / DMG / SH)", NULL, ICON_FOLDER, "explorer:C:\\Samples" },
     { "Hello Console (hello.exe)", NULL, ICON_EXE, "open:C:\\Samples\\hello.exe" },
@@ -1372,4 +1377,12 @@ void shell_paint_overlays(canvas_t *c) {
 void shell_init(void) {
     shell_wallpaper_changed();
     desktop_refresh();
+}
+void shell_reset(void) {
+    startmenu_open = allprog_open = false;
+    sm_hot = ap_hot = -1;
+    side_hot = -1;
+    side_search_focus = false;
+    shell_init();
+    wm_need_redraw = true;
 }

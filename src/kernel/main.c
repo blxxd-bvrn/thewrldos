@@ -108,7 +108,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     fb_info.width = bootinfo.fb_width; fb_info.height = bootinfo.fb_height; fb_info.bpp = bootinfo.fb_bpp;
     paging_set_wc(fb_info.addr, fb_info.pitch * fb_info.height);
     klog("framebuffer %ux%ux%u at %08x pitch %u", fb_info.width, fb_info.height, fb_info.bpp, fb_info.addr, fb_info.pitch);
-    klog("memory: %u MB detected, heap %u MB", mm_phys_total() / (1024 * 1024), mm_total() / (1024 * 1024));
+    klog("memory: %llu MB detected, heap %u MB", (unsigned long long)(mm_phys_total() / (1024 * 1024)), mm_total() / (1024 * 1024));
     gfx_init();
     gfx_ready = true;
     panic_hook = gfx_panic;
@@ -118,9 +118,9 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     rand_seed(now.second * 1000 + now.minute * 60000 + timer_ticks());
 
     boot_screen_begin();
-    uint32_t ram_mb = mm_phys_total() / (1024 * 1024);
+    uint64_t ram_mb = mm_phys_total() / (1024 * 1024);
     if (ram_mb < 64) {
-        char w[96]; snprintf(w, sizeof w, "Low memory: %u MB. Give the virtual machine 128 MB or more.", ram_mb);
+        char w[96]; snprintf(w, sizeof w, "Low memory: %llu MB. Give the virtual machine 128 MB or more.", (unsigned long long)ram_mb);
         for (int i = 0; i < 6; i++) boot_screen_progress(w, 5);
     }
     boot_screen_progress("Initializing devices...", 10);
@@ -177,5 +177,6 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     else if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
     devmgr_boot_check();                             /* "Found New Hardware" replaces the welcome balloon when there is some */
-    wm_run();
+    shellmanager_start();                            /* shellmanager.exe: desktop, taskbar, sidebar and windows */
+    for (;;) task_sleep(10000);                      /* System task stays alive; the shell task runs the GUI */
 }

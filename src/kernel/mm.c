@@ -9,7 +9,7 @@ extern uint8_t kernel_end[];
 static uint32_t page_dir[1024] __attribute__((aligned(4096)));
 #endif
 static uintptr_t heap_start, heap_end;
-static uint32_t heap_used, phys_total;
+static uint32_t heap_used; static uint64_t phys_total;
 
 /* ---------- heap: address-ordered block list with coalescing ---------- */
 typedef struct block {
@@ -111,7 +111,7 @@ size_t kmalloc_usable(void *p) {
 void kfree_aligned(void *p) { if (p) kfree((void *)((uintptr_t *)p)[-1]); }
 uint32_t mm_total(void) { return heap_end - heap_start; }
 uint32_t mm_used(void) { return heap_used; }
-uint32_t mm_phys_total(void) { return phys_total; }
+uint64_t mm_phys_total(void) { return phys_total; }
 
 /* ---------- paging ---------- */
 #ifdef __x86_64__
@@ -260,17 +260,18 @@ void mm_init(void) {
     uintptr_t lowest = ((uintptr_t)kernel_end + 0xFFF) & ~(uintptr_t)0xFFF;
     if (lowest < 16 * 1024 * 1024) lowest = 16 * 1024 * 1024;
     uint32_t top = 64 * 1024 * 1024;
-    if (bootinfo.have_mem) phys_total = (bootinfo.mem_upper + 1024) * 1024;
+    if (bootinfo.have_mem) phys_total = (uint64_t)(bootinfo.mem_upper + 1024) * 1024;
     if (bootinfo.mmap_count) {
-        uint64_t best = 0;
+        uint64_t best = 0, ramsz = 0;
         for (int i = 0; i < bootinfo.mmap_count; i++) {
             const boot_mmap_t *e = &bootinfo.mmap[i];
-            if (e->type == 1 && e->addr >= 0x100000 && e->addr < 0xFFFFFFFFull) {
+            if (e->type == 1 && e->addr >= 0x100000) {
                 uint64_t end = e->addr + e->len;
-                if (end > 0xF0000000ull) end = 0xF0000000ull;
-                if (end - e->addr > best) { best = end - e->addr; top = (uint32_t)end; }
+                ramsz += e->len;
+                if (e->addr < 0xF0000000ull) { if (end > 0xF0000000ull) end = 0xF0000000ull; if (end - e->addr > best) { best = end - e->addr; top = (uint32_t)end; } }
             }
         }
+        if (ramsz) phys_total = ramsz;
         if (top > phys_total) phys_total = top;
     } else if (bootinfo.have_mem) top = (bootinfo.mem_upper + 1024) * 1024;
 

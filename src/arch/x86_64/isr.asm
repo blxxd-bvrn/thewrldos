@@ -132,3 +132,22 @@ switch_context:
     pop rbx
     pop rbp
     ret
+
+; Soft restart of shellmanager.exe: the watchdog redirects the timer interrupt
+; here.  Abandon the stuck call stack, switch to a private recovery stack and
+; enter a fresh shell loop.  Only the shell task is disturbed; the machine and
+; the other tasks keep running.
+section .bss
+align 16
+shell_rec_stack:
+    resb 131072
+shell_rec_stack_top:
+section .text
+global shell_restart_trampoline
+extern shell_recover
+shell_restart_trampoline:
+    mov rsp, shell_rec_stack_top
+    xor rbp, rbp
+    call shell_recover
+    hlt
+    jmp $

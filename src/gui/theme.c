@@ -390,16 +390,31 @@ static void cap_button(canvas_t *c, rect_t r, int kind, bool active, bool hot, b
     if (!active) { top = mix(top, WHITE, 90); bot = mix(bot, WHITE, 90); }
     if (hot) { top = lighten(top, 50); bot = lighten(bot, 40); }
     if (pressed) { uint32_t t2 = top; top = darken(bot, 30); bot = t2; }
-    fill_round_rect(c, x, y, s, s, 3, T.cap_border);
-    gradient_round_rect(c, x + 1, y + 1, s - 2, s - 2, 2, lighten(top, 40), bot);
-    blend_rect(c, x + 2, y + s - 6, s - 4, 3, WHITE, 25);
+    /* XP Luna: a white rounded outline, a light-to-dark blue face and a white
+     * caption glyph.  The outer white line and the highlight at the top are
+     * what make the button read as the Luna caption set rather than a plain
+     * gradient chip. */
+    fill_round_rect(c, x, y, s, s, 4, T.cap_border);
+    gradient_round_rect(c, x + 1, y + 1, s - 2, s - 2, 3, lighten(top, 25), bot);
+    blend_rect(c, x + 2, y + 1, s - 4, 1, WHITE, 90);
+    blend_rect(c, x + 2, y + s - 3, s - 4, 1, mix(bot, BLACK, 45), 80);
     uint32_t g = kind == 3 ? WHITE : T.cap_glyph;
     switch (kind) {
-    case 0: fill_rect(c, x + 5, y + s - 8, 7, 3, g); break;
-    case 1: draw_rect(c, x + 5, y + 5, s - 10, s - 10, g); fill_rect(c, x + 5, y + 5, s - 10, 3, g); break;
-    case 2: draw_rect(c, x + 8, y + 4, 8, 7, g); hline(c, x + 8, y + 5, 8, g);
-            fill_rect(c, x + 4, y + 9, 8, 7, top); draw_rect(c, x + 4, y + 9, 8, 7, g); fill_rect(c, x + 4, y + 9, 8, 2, g); break;
-    case 3: for (int i = 0; i < 9; i++) { fill_rect(c, x + 5 + i, y + 5 + i, 2, 2, g); fill_rect(c, x + 14 - i, y + 5 + i, 2, 2, g); } break;
+    case 0:                                     /* minimize: a white bar near the bottom */
+        fill_rect(c, x + 6, y + s - 8, 9, 3, g);
+        break;
+    case 1:                                     /* maximize: square outline with a filled top */
+        draw_rect(c, x + 5, y + 5, s - 10, s - 11, g);
+        fill_rect(c, x + 5, y + 5, s - 10, 3, g);
+        break;
+    case 2:                                     /* restore: two overlapping squares */
+        draw_rect(c, x + 8, y + 4, 7, 6, g); hline(c, x + 8, y + 5, 7, g);
+        fill_rect(c, x + 4, y + 9, 8, 7, bot); draw_rect(c, x + 4, y + 9, 8, 7, g);
+        fill_rect(c, x + 4, y + 9, 8, 2, g);
+        break;
+    case 3:                                     /* close: a bold white X */
+        for (int i = 0; i < 10; i++) { fill_rect(c, x + 5 + i, y + 5 + i, 2, 2, g); fill_rect(c, x + 15 - i, y + 5 + i, 2, 2, g); }
+        break;
     }
 }
 
