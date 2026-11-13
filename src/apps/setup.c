@@ -68,7 +68,7 @@ static void ts_box(int x, int y, int w, int h, uint32_t col, bool dbl) {
     draw_rect(&screen, x, y, w, h, col);
     if (dbl) draw_rect(&screen, x + 3, y + 3, w - 6, h - 6, col);
 }
-static void ts_present(void) { gfx_present(CURSOR_ARROW, -100, -100); }
+static void ts_present(void) { gui_heartbeat = timer_ticks(); gfx_present(CURSOR_ARROW, -100, -100); }
 static void ts_progress(int row, const char *caption, int pct, uint32_t col) {
     int w = 60 * cw, x = (SCREEN_W - w) / 2, y = Y(row);
     if (caption) draw_text(&screen, FONT_MONO, (SCREEN_W - text_width(FONT_MONO, caption)) / 2, y - LH - 4, caption, TS_HI);
@@ -448,7 +448,8 @@ static const char *license_text =
     "LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY ARISING FROM THE USE OF THIS SOFTWARE.\n\n"
     "By pressing F8 you agree to these terms.";
 
-void setup_text_mode(bool from_desktop) {
+bool setup_text_active;
+static void setup_text_body(bool from_desktop) {
     from_desk = from_desktop;
     cw = MAX(7, text_width(FONT_MONO, "M"));
     /* loading */
@@ -644,6 +645,14 @@ void setup_text_mode(bool from_desktop) {
             }
         }
     }
+}
+/* Setup runs on the GUI task and paints its own progress; while it is in
+ * control there is no desktop loop to heartbeat, so the watchdog must not
+ * mistake a long format for a hung desktop. */
+void setup_text_mode(bool from_desktop) {
+    setup_text_active = true;
+    setup_text_body(from_desktop);
+    setup_text_active = false;
 }
 
 /* desktop entry point (live session) */

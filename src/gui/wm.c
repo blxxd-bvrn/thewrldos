@@ -652,6 +652,10 @@ static void wd_banner(const char *a, const char *b) {
     video_update(bx, 0, bw, 50);
 }
 static void watchdog(regs_t *r, uint32_t now) {
+    /* Text-mode Setup runs on the GUI task and deliberately blocks it while it
+     * formats or copies files, painting its own progress bar.  That is not a
+     * hung desktop, so keep the heartbeat fresh and say nothing. */
+    if (setup_text_active) { gui_heartbeat = now; wd_neips = 0; return; }
     uint32_t idle = now - gui_heartbeat;
     if (idle < 4000) {
         if (wd_reported) { klog("watchdog: the desktop is running again after %u ms", idle); wd_reported = false; }

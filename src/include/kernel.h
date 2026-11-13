@@ -164,6 +164,7 @@ void task_init(void);
 task_t *task_create(const char *name, void (*entry)(void *), void *arg, uint32_t stack_size);
 void task_yield(void);
 extern volatile uint32_t gui_heartbeat;
+extern bool setup_text_active;      /* Setup owns the screen; its long formats are not a GUI hang */
 void task_sleep(uint32_t ms);
 void task_exit(int code);
 bool task_kill(int pid);
