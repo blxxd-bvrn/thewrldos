@@ -679,6 +679,8 @@ device manager's job is to say what the computer has and which driver runs it.
     - Title text glows; there's a wide red close button.
     - Glass taskbar, the globe on its own as the Start button (it glows on hover), and a glass
       Start menu.
+    - The sidebar is glass too: the wallpaper shows through a blurred blue tint, and the
+      account photo fades into those glass pixels instead of ending on a solid strip.
   - **Plex:** after the Longhorn reference.
     - Glossy sky-blue title bars, bare caption glyphs, a blue taskbar.
     - Blue Start menu with round lock/power buttons.

@@ -253,6 +253,7 @@ static void side_colors(uint32_t *top, uint32_t *bot, uint32_t *text, uint32_t *
     }
 }
 static uint32_t side_bg_at(int y, int h) {
+    if (T.renderer == RENDER_AERO) return mix(T.tb_mid, T.glass, 100);
     uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
     return mix(top, bot, MIN(255, y * 255 / MAX(1, h)));
 }
@@ -279,7 +280,12 @@ static void draw_avatar_banner(canvas_t *c, int id, int x, int y, int w, int h, 
             int rx = (int)(fx >> 8), wx = fx & 255;
             if (rx >= side - 1) { rx = side - 2; wx = 255; }
             uint32_t col = wall_mix(wall_mix(r0[rx], r0[rx + 1], wx), wall_mix(r1[rx], r1[rx + 1], wx), wy);
-            if (alpha) col = mix(col, fade, alpha);
+            if (alpha) {
+                /* Aero: fade into the glass pixels already on the sidebar so the
+                 * photo stays translucent instead of ending on a solid strip. */
+                uint32_t under = T.renderer == RENDER_AERO ? c->px[(y + yy) * c->stride + x + xx] : fade;
+                col = mix(col, under, alpha);
+            }
             put_pixel(c, x + xx, y + yy, col);
         }
     }
@@ -287,7 +293,10 @@ static void draw_avatar_banner(canvas_t *c, int id, int x, int y, int w, int h, 
 static void side_tile_header(canvas_t *c, int x, int y, int w, int t) {
     uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
     if (T.classic) { fill_rect(c, x, y, w, 17, T.face); bevel(c, x, y, w, 17, true); }
-    else { gradient_round_rect(c, x, y, w, 17, 3, h1, h2); blend_rect(c, x + 2, y + 1, w - 4, 1, WHITE, 45); }
+    else if (T.renderer == RENDER_AERO) {
+        fill_round_rect_blend(c, x, y, w, 17, 3, T.tb_mid, 190);
+        blend_rect(c, x + 2, y + 1, w - 4, 1, WHITE, 45);
+    } else { gradient_round_rect(c, x, y, w, 17, 3, h1, h2); blend_rect(c, x + 2, y + 1, w - 4, 1, WHITE, 45); }
     draw_icon(c, side_tile_icon[t], 12, x + 4, y + 2);
     draw_text(c, T.classic ? FONT_UI_BOLD : FONT_UI_BOLD, x + 20, y + 2, side_tile_name[t], text);
     draw_text(c, FONT_UI, x + w - 11, y + 1, "x", side_hot == 10 + t ? text : dim);
@@ -427,6 +436,15 @@ static void paint_sidebar(canvas_t *c) {
     if (T.classic) {
         fill_rect(c, x, 0, SIDE_W, h, T.face);
         vline(c, x, 0, h, T.face_dark); vline(c, x + 1, 0, h, WHITE);
+    } else if (T.renderer == RENDER_AERO) {
+        /* Aero: blurred wallpaper under a blue glass tint, like the window
+         * frames, then a light darkening so the white tile text keeps its
+         * contrast over bright wallpapers. */
+        draw_glass(c, x, 0, SIDE_W, h, T.glass, MAX(30, T.glass_alpha - 20), T.glass_blur);
+        for (int j = 0; j < h; j++) blend_rect(c, x, j, SIDE_W, 1, T.tb_mid, 65 + 35 * j / MAX(1, h));
+        blend_rect(c, x, 0, SIDE_W, 28, WHITE, 18);
+        vline(c, x, 0, h, mix(T.frame_out, WHITE, 35));
+        blend_rect(c, x + 1, 0, 1, h, WHITE, 80);
     } else {
         gradient_v3(c, x, 0, SIDE_W, h, top, top, bot, h * 3 / 4);
         vline(c, x, 0, h, T.sm_accent); blend_rect(c, x + 1, 0, 1, h, WHITE, 45);
@@ -446,6 +464,7 @@ static void paint_sidebar(canvas_t *c) {
         side_tile_header(c, ix, by, iw, t);
         int bx = ix, bw = iw, yy = by + 18;
         if (T.classic) { fill_rect(c, bx, yy, bw, bh, T.face); bevel(c, bx, yy, bw, bh, false); }
+        else if (T.renderer == RENDER_AERO) fill_round_rect_blend(c, bx, yy, bw, bh, 3, WHITE, 20);
         else fill_round_rect_blend(c, bx, yy, bw, bh, 3, WHITE, 28);
         if (t == ST_CLOCK) {
             rtc_time_t now; rtc_now(&now);
