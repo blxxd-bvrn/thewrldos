@@ -150,14 +150,26 @@ Already working, and not on the list below:
 - The GUI also has its own **software rasteriser** (`src/gui/raster.c`): path fills and strokes,
   anti-aliasing, round joins, linear and radial gradients and clipping, used by The WRLD Browser for
   `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
-- 3D is a software engine (`src/gui/r3d.c`) behind OpenGL 1.1 and fixed-function Direct3D 9 for
-  Win32 programs, and Direct3D 10 runs Shader Model 4 bytecode in an interpreter (`dxbc.c`). Next
-  steps there: a JIT for shaders (the interpreter costs most of the frame time), geometry shaders,
-  Direct3D 11 (Shader Model 5 adds few instructions the interpreter lacks) and a run-time HLSL
-  compiler. Vulkan would need a SPIR-V compiler as well and is not planned. Linux programs could get OpenGL through Mesa's software renderer on
-  `/dev/wrld/window`. There is no GPU driver, so a real Skia would have to use its software backend. Missing from the raster
-  stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
-  engine.
+- 3D remains native CPU rendering: `src/gui/r3d.c` serves OpenGL 1.1 and fixed-function D3D9;
+  D3D10's shared interpreter now accepts SM4, a staged **SM5.0 DXBC** subset and a staged
+  **SM6.0 / DXIL 1.0** vertex/pixel subset (`dxbc.c`, `dxil.c`, `shader_priv.h`). Prepared
+  per-draw register/operand bindings remove shader-invocation allocations; masked execution,
+  native float32 rounding and live-component scanline planes/spans reduce CPU work. Packed
+  cross-model signatures, flat/noperspective interpolation, late shader depth and unsigned
+  render targets have host framebuffer tests. A fixed 120-frame x64 QEMU cube improved from
+  7.97–8.12 to 12.14–13.18 FPS across two paired runs; genuine SM5/SM6 cubes and a 16-check in-OS upload /
+  rejection probe also pass. There is no LLVM runtime or new external graphics dependency.
+- **Still needed, not implied by shader acceptance:** D3D11/12 devices/resources/feature
+  levels and additional shader stages; geometry, tessellation, compute, waves, atomics/UAVs,
+  derivatives, double precision, broader textures/mips, signed render targets, newer profiles,
+  stencil, MSAA and stream output. DXIL currently rejects helper functions, backward branches,
+  nonzero resource spaces and unsupported intrinsics/properties at upload. D3D10 profile
+  queries remain SM4, and there is no run-time HLSL compiler. Extend the tested native subsets
+  before claiming more compatibility; JIT/native code generation is not part of this stage.
+  Vulkan still needs a SPIR-V frontend and API/driver work and is not planned. Linux programs
+  could get OpenGL through Mesa on `/dev/wrld/window`, but that is not implemented. Missing
+  from the native 2D raster stack: filters/blurs, box shadows, canvas, arbitrary CSS transforms
+  and a full CSS layout engine.
 - The display path starts with the GRUB/UEFI linear framebuffer and a write-combining mapping.
   QEMU/Bochs, VirtualBox and VMware adapters also support runtime mode changes via native drivers.
   There is no NVIDIA/AMD/Intel GPU driver, hardware acceleration, vsync or display-engine audio.

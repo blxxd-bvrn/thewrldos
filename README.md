@@ -731,23 +731,53 @@ device manager's job is to say what the computer has and which driver runs it.
       (`tools/gen_d3d9.py`), so methods that are not implemented return `D3DERR_INVALIDCALL`
       with the stack intact. A few `d3dx9` matrix helpers are exported too. Shaders are not
       supported: `SetVertexShader`/`SetPixelShader` accept only NULL.
-    - **Direct3D 10** (`d3d10.dll`, `dxgi.dll`, `src/win32/d3d10.c` and `dxbc.c`): the shader
-      pipeline. Vertex and pixel shaders are Shader Model 4 bytecode (compiled HLSL); `dxbc.c`
-      decodes them once and interprets them for every vertex and every pixel: the arithmetic,
-      integer, conversion and comparison instructions, if/else/loop, discard, constant buffers
-      (also relatively indexed), immediate constant buffers, indexable temporaries and texture
-      `sample`/`sample_l`/`ld`/`resinfo`. `d3d10.c` rasterises with perspective-correct
-      interpolation of every shader output, depth testing, culling and blending. Swap chains
-      present into a window; buffers, 2D textures, views, input layouts, sampler, rasterizer,
-      depth and blend states, `Draw`, `DrawIndexed` and `DrawInstanced` (triangle lists and
-      strips) are implemented. Not implemented: geometry shaders, stencil, multisampling, lines
-      and points, stream output, mip levels, and compiling HLSL at run time
-      (`D3D10CompileShader`/`D3DCompile` fail), so programs must ship compiled shaders, as most
-      do. The COM tables are generated from mingw-w64's headers (`tools/gen_d3d10.py`).
-      `d3d10cube.exe` in `C:\Samples` runs about 6 frames/s on the 64-bit edition under QEMU and
-      2 on the 32-bit one: every pixel runs the pixel shader in the interpreter.
-      Its shaders come from `samples/d3d10cube.sm4`, assembled by `tools/dxbc_asm.py` (a small
-      Shader Model 4 assembler; there is no HLSL compiler outside Windows).
+    - **Direct3D 10 and staged shader extensions** (`d3d10.dll`, `dxgi.dll`,
+      `src/win32/d3d10.c`, `dxbc.c`, `dxil.c`): vertex/pixel shaders run in a native CPU
+      interpreter. SM4.0/4.1 DXBC is joined by tested **SM5.0 DXBC** and **SM6.0 / DXIL 1.0**
+      subsets. These are WRLD shader-upload extensions, **not D3D11/12 compatibility or a
+      higher feature level**; D3D10's vertex/pixel profile queries still return `vs_4_0` /
+      `ps_4_0`. Both formats lower to the same native IR. DXIL's LLVM bitstream is parsed
+      directly: there is no LLVM runtime, JIT or native-code execution, and no new graphics
+      library dependency.
+      - SM4 arithmetic, integers, conversions/comparisons, structured if/else/loop, discard,
+        relatively indexed constant buffers, immediate constant buffers and indexable
+        temporaries remain. SM5 adds reciprocal, half conversions, bit count/reversal/scan,
+        bitfields, carry/borrow and conditional swap. The DXIL subset covers scalar f32/i32,
+        signature I/O (including packed columns), legacy constant buffers, float Texture2D
+        sampling, common math/dot intrinsics, discard and bounded forward branches/two-input
+        phi nodes. Modern `SampleLevel`/bias operands must be constant zero; only the base
+        mip is rendered. Unsupported instructions, resource kinds/spaces and stages fail
+        upload with a diagnostic rather than becoming silent no-ops.
+      - A prepared execution context binds operands and allocates registers **once per draw**;
+        shader invocations allocate nothing, including large temporary banks. Only destination
+        lanes are calculated, float rounding avoids per-component x87 rounding-mode changes,
+        and fully written pixel outputs need no clearing. The rasterizer clips the frustum,
+        solves top-left-covered scanline spans and steps only live varying components. It
+        supports perspective, noperspective and flat interpolation, component-remapped linkage,
+        shader-written depth, depth testing, culling, blending and color write masks. Uint
+        pixel outputs work with `R8G8B8A8_UINT` / `R32_UINT` targets (no blending); signed
+        render targets are not implemented.
+      - Swap chains present into windows; buffers, 2D textures, views, input layouts, sampler,
+        rasterizer, depth/blend states, `Draw`, `DrawIndexed` and `DrawInstanced` triangle lists
+        and strips remain. Missing: geometry/tessellation/compute, waves, UAVs/atomics, doubles,
+        DXIL helper functions/backward branches, derivatives, comparison/array/cube/MSAA
+        textures, newer shader profiles, stencil, multisampling, line/point primitives, stream
+        output, lower mip storage and run-time HLSL compilation (`D3D10CompileShader` /
+        `D3DCompile` fail). This is a bounded implementation, not a complete DXIL validator.
+      - `C:\Samples\d3d10cube.exe` defaults to the original SM4 assembly; `--sm5` / `--sm6`
+        select genuine FXC/DXC equivalents from `samples/d3d10cube.hlsl`. `--bench` draws four
+        warm-up frames followed by 120 deterministic 480x360 frames, logging the elapsed
+        milliseconds with `OutputDebugString`. In a same-host, 512 MB, one-vCPU QEMU TCG x64
+        comparison (two runs), SM4 improved from **7.97–8.12 to 12.14–13.18 FPS**
+        (**1.52–1.62x** paired speedups). SM5 measured **10.72–12.02 FPS** and SM6
+        **7.80–8.73 FPS**. These are software-renderer benchmark
+        results, not real-hardware/GPU numbers; x86 is compile/host-tested, not re-timed here.
+      - `C:\Samples\shaderprobe.exe` checks successful uploads, rejected features and unchanged
+        profile queries (16 checks). `make check-shaders` runs native host execution and
+        framebuffer tests using checked-in real compiler fixtures; `make bench-shaders` adds
+        an interpreter microbenchmark, **not OS frame rate**. Regeneration uses host FXC/DXC
+        only; see [`tools/shaders/README.md`](tools/shaders/README.md) for the exact subset,
+        limits and commands. The COM tables still come from `tools/gen_d3d10.py`.
     - **Vulkan** is not feasible: it draws only with SPIR-V shader programs. `vulkan-1.dll`
       exists so that programs can ask, and `vkCreateInstance` answers
       `VK_ERROR_INCOMPATIBLE_DRIVER` so that they fall back to Direct3D 9 or OpenGL.

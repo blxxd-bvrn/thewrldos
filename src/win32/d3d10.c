@@ -1,10 +1,10 @@
 /* d3d10.dll and dxgi.dll for Win32 programs: Direct3D 10 on the processor.
  *
  * Direct3D 10 has no fixed-function pipeline: every draw runs a vertex shader
- * and a pixel shader given as Shader Model 4 bytecode (compiled HLSL). The
- * bytecode is decoded and interpreted by dxbc.c, once per vertex and once per
- * pixel, and triangles are rasterised here with perspective-correct
- * interpolation of every shader output, a depth buffer, culling and blending.
+ * and a pixel shader in compiled HLSL bytecode. The native engine accepts SM4,
+ * an SM5.0 DXBC subset, and an SM6.0 DXIL subset (not D3D11/12 feature levels).
+ * Draws prepare both interpreters once; scanline spans step only the varying
+ * components actually read by the pixel shader, with depth/culling/blending.
  *
  * Implemented: D3D10CreateDevice(AndSwapChain), CreateDXGIFactory, swap chains
  * that present into a window, buffers (vertex, index, constant; Map and
@@ -114,7 +114,7 @@ typedef struct { com_t c; buffer_desc_t d; uint8_t *data; } buffer_t;
 typedef struct { com_t c; tex2d_desc_t d; uint32_t pitch, bpp; uint8_t *data, *scratch; } tex_t;
 typedef struct { com_t c; tex_t *tex; } view_t;
 typedef struct { com_t c; dxbc_shader_t *sh; } shader_t;
-typedef struct { int reg, slot, format, sysval; uint32_t offset; bool instance; } layout_elem_t;
+typedef struct { int reg, slot, format, sysval, mask; uint32_t offset, step; bool instance; } layout_elem_t;
 typedef struct { com_t c; layout_elem_t e[DX_MAX_SIG]; int n; } layout_t;
 typedef struct { com_t c; sampler_desc_t d; } sampler_t;
 typedef struct { com_t c; rast_desc_t d; } rast_t;
@@ -163,15 +163,19 @@ static void read_px(uint32_t f, const uint8_t *p, float *o) {
     case F_BGRX8: o[0] = p[2] / 255.0f; o[1] = p[1] / 255.0f; o[2] = p[0] / 255.0f; break;
     case F_RG8: o[0] = p[0] / 255.0f; o[1] = p[1] / 255.0f; break;
     case F_R8: o[0] = p[0] / 255.0f; break;
+    case F_RGBA8_UINT: for (int i = 0; i < 4; i++) o[i] = (float)p[i]; break;
+    case F_R32_UINT: { uint32_t v; memcpy(&v, p, 4); o[0] = (float)v; break; }
     }
 }
 /* vertex attributes keep integer formats as raw integers */
 static void read_attr(uint32_t f, const uint8_t *p, vec4_t *o) {
     if (f == F_RGBA8_UINT) { for (int i = 0; i < 4; i++) o->u[i] = p[i]; return; }
-    if (f == F_R32_UINT) { o->u[0] = *(const uint32_t *)p; o->u[1] = o->u[2] = 0; o->u[3] = 1; return; }
-    read_px(f, p, o->f);
+    if (f == F_R32_UINT) { memcpy(&o->u[0], p, 4); o->u[1] = o->u[2] = 0; o->u[3] = 1; return; }
+    vec4_t aligned = { 0 }; memcpy(&aligned, p, fmt_bytes(f));
+    read_px(f, (const uint8_t *)&aligned, o->f);
 }
-static uint8_t to8(float v) { return v <= 0 ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255 + 0.5f); }
+static uint8_t to8(float v) { return !(v > 0) ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255 + 0.5f); }
+static uint32_t to_uint(float v) { return !(v > 0) ? 0 : v >= 4294967296.0f ? ~0u : (uint32_t)v; }
 static void write_px(uint32_t f, uint8_t *p, const float *c) {
     float *fp = (float *)p;
     switch (f) {
@@ -183,6 +187,8 @@ static void write_px(uint32_t f, uint8_t *p, const float *c) {
     case F_BGRA8: case F_BGRA8_SRGB: case F_BGRX8: p[0] = to8(c[2]); p[1] = to8(c[1]); p[2] = to8(c[0]); p[3] = f == F_BGRX8 ? 255 : to8(c[3]); break;
     case F_RG8: p[0] = to8(c[0]); p[1] = to8(c[1]); break;
     case F_R8: p[0] = to8(c[0]); break;
+    case F_RGBA8_UINT: for (int i = 0; i < 4; i++) p[i] = MIN(to_uint(c[i]), 255u); break;
+    case F_R32_UINT: *(uint32_t *)p = to_uint(c[0]); break;
     }
 }
 static inline uint8_t *texel(tex_t *t, int x, int y) { return t->data + (size_t)y * t->pitch + (size_t)x * t->bpp; }
@@ -390,6 +396,7 @@ static HRESULT WINAPI CreateDepthStencilView(device_t *d, tex_t *t, const void *
     return make_view(d, IF_DSV, t, out);
 }
 static HRESULT make_shader(device_t *d, int kind, const void *code, uintptr_t len, shader_t **out) {
+    if (out) *out = NULL;
     char err[96];
     dxbc_shader_t *sh = dxbc_load(code, len, err, sizeof err);
     if (!sh) { klog("w32: d3d10: shader rejected: %s", err); return E_INVALIDARG; }
@@ -419,16 +426,17 @@ static HRESULT WINAPI CreateInputLayout(device_t *d, const elem_desc_t *el, uint
     uint32_t next_off[16] = { 0 };
     for (uint32_t i = 0; i < n; i++) {
         layout_elem_t *e = &l->e[l->n++];
-        e->slot = el[i].slot & 15; e->format = el[i].format; e->instance = el[i].cls == 1;
+        if (!el[i].name || el[i].slot >= 8 || el[i].cls > 1) { Release(&l->c); dxbc_free(sh); return E_INVALIDARG; }
+        e->slot = el[i].slot; e->format = el[i].format; e->instance = el[i].cls == 1; e->step = el[i].step;
         e->offset = el[i].offset == 0xFFFFFFFFu ? next_off[e->slot] : el[i].offset;
         next_off[e->slot] = e->offset + fmt_bytes(e->format);
         e->reg = -1;
-        for (int k = 0; k < ns; k++) if (!strcasecmp(sig[k].name, el[i].name) && sig[k].index == (int)el[i].index) e->reg = sig[k].reg;
+        for (int k = 0; k < ns; k++) if (!strcasecmp(sig[k].name, el[i].name) && sig[k].index == (int)el[i].index) { e->reg = sig[k].reg; e->mask = sig[k].mask; }
         if (!fmt_bytes(e->format)) { klog("w32: d3d10: vertex format %u is not supported", e->format); e->reg = -1; }
     }
     /* system values the shader reads (SV_VertexID, SV_InstanceID) */
     for (int k = 0; k < ns && l->n < DX_MAX_SIG; k++)
-        if (sig[k].sysval == 6 || sig[k].sysval == 8) { layout_elem_t *e = &l->e[l->n++]; e->reg = sig[k].reg; e->sysval = sig[k].sysval; e->format = 0; }
+        if (sig[k].sysval == 6 || sig[k].sysval == 8) { layout_elem_t *e = &l->e[l->n++]; e->reg = sig[k].reg; e->sysval = sig[k].sysval; e->mask = sig[k].mask; e->format = 0; }
     dxbc_free(sh);
     if (!out) { Release(&l->c); return S_FALSE; }
     *out = l;
@@ -568,6 +576,20 @@ static void fetch(tex_t *t, const sampler_desc_t *sd, int x, int y, float *o) {
     if (t->d.format == F_RGBA8 || t->d.format == F_RGBA8_SRGB) { const float k = 1 / 255.0f; o[0] = p[0] * k; o[1] = p[1] * k; o[2] = p[2] * k; o[3] = p[3] * k; return; }
     read_px(t->d.format, p, o);
 }
+/* Sampling coordinates are finite and clamped to +/-1e6 by cb_sample. Avoid
+ * x87 control-word changes for C float-to-int casts on the no-SSE x86 build. */
+static inline int sample_floor(float x) {
+#ifdef __SSE2__
+    int n = (int)x; return n - (x < n);
+#else
+    union { float f; uint32_t u; } b = { x };
+    unsigned magnitude = b.u & 0x7FFFFFFFu, sign = b.u >> 31;
+    int e = (int)(magnitude >> 23) - 127;
+    if (e < 0) return sign && magnitude ? -1 : 0;
+    unsigned shift = 23 - e, n = (0x800000u | (magnitude & 0x7FFFFFu)) >> shift;
+    return sign ? -(int)n - ((magnitude & ((1u << shift) - 1)) != 0) : (int)n;
+#endif
+}
 static void cb_sample(void *ctx, int ti, int si, const float *uv, float lod, float *out) {
     (void)lod;
     device_t *d = ((sctx_t *)ctx)->d;
@@ -581,8 +603,10 @@ static void cb_sample(void *ctx, int ti, int si, const float *uv, float lod, flo
     if (fx != fx) fx = 0;
     if (fy != fy) fy = 0;
     fx = CLAMP(fx, -1e6f, 1e6f); fy = CLAMP(fy, -1e6f, 1e6f);
-    if (!linear) { fetch(t, sd, (int)(fx + 0.5f + 1e5f) - 100000, (int)(fy + 0.5f + 1e5f) - 100000, out); return; }
-    int x0 = (int)(fx + 1e5f) - 100000, y0 = (int)(fy + 1e5f) - 100000;
+    if (!linear) {
+        fetch(t, sd, sample_floor(fx + .5f), sample_floor(fy + .5f), out); return;
+    }
+    int x0 = sample_floor(fx), y0 = sample_floor(fy);
     float ax = fx - x0, ay = fy - y0, p[4][4];
     fetch(t, sd, x0, y0, p[0]); fetch(t, sd, x0 + 1, y0, p[1]); fetch(t, sd, x0, y0 + 1, p[2]); fetch(t, sd, x0 + 1, y0 + 1, p[3]);
     for (int i = 0; i < 4; i++) {
@@ -604,18 +628,27 @@ static void cb_size(void *ctx, int ti, uint32_t *out) {
 }
 
 /* ---------------- drawing ---------------- */
-#define MAXV 16                                     /* interpolated vec4s between the shaders */
+#define MAXV 32                                     /* interpolated vec4s between the shaders */
 typedef struct { float pos[4]; vec4_t var[MAXV]; } pv_t;  /* a vertex after the vertex shader */
 typedef struct {
     device_t *d;
     dxbc_env_t vs_env, ps_env; sctx_t sctx;
+    dxbc_exec_t vs_exec, ps_exec;
+    vec4_t vs_in[DX_MAX_REG], vs_out[DX_MAX_REG], ps_in[DX_MAX_REG], ps_out[DX_MAX_REG];
     int pos_reg;                                    /* VS output holding SV_Position */
     int nvar; int vs_reg[MAXV], ps_reg[MAXV];       /* VS output -> PS input */
+    uint8_t var_mask[MAXV], interpolation[MAXV];
+    uint8_t var_src[MAXV][4];
+    vec4_t flat[MAXV];
+    pv_t poly[2][12];
     int ps_pos_reg, ps_face_reg, target_reg;
+    int ps_prim_reg, target_type;
     tex_t *rt, *ds;
     rect_t clip;
     float vx, vy, vw, vh, vminz, vmaxz;
     bool cull_back, cull_front, front_ccw, depth_on, depth_write, blend;
+    bool writes_depth;
+    uint8_t color_mask;
     uint32_t depth_func;
     const blend_desc_t *bd;
 } pipe_t;
@@ -627,8 +660,7 @@ static void env_for(pipe_t *P, dxbc_env_t *e, buffer_t **cbs) {
 }
 static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
     device_t *d = P->d;
-    vec4_t in[DX_MAX_REG], out[DX_MAX_REG];
-    memset(in, 0, sizeof in); memset(out, 0, sizeof out);
+    vec4_t *in = P->vs_in, *out = P->vs_out;
     layout_t *l = d->layout;
     for (int k = 0; l && k < l->n; k++) {
         layout_elem_t *e = &l->e[k];
@@ -637,13 +669,17 @@ static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
         if (e->sysval == 8) { in[e->reg].u[0] = instance; continue; }
         buffer_t *b = d->vb[e->slot].b;
         if (!b) continue;
-        uint32_t at = d->vb[e->slot].offset + (e->instance ? instance : index) * d->vb[e->slot].stride + e->offset;
-        if (at + fmt_bytes(e->format) > b->d.bytes) return false;
-        read_attr(e->format, b->data + at, &in[e->reg]);
+        uint32_t element = e->instance ? (e->step ? instance / e->step : 0) : index;
+        uint64_t at = (uint64_t)d->vb[e->slot].offset + (uint64_t)element * d->vb[e->slot].stride + e->offset;
+        if (at > b->d.bytes || (uint32_t)fmt_bytes(e->format) > b->d.bytes - at) return false;
+        vec4_t value; read_attr(e->format, b->data + at, &value);
+        int component = 0;
+        for (int i = 0; i < 4; i++) if (e->mask & (1u << i)) in[e->reg].u[i] = value.u[component++];
     }
-    dxbc_run(d->vs->sh, &P->vs_env, in, out);
+    if (!dxbc_exec_run(&P->vs_exec)) return false;
     memcpy(o->pos, out[P->pos_reg].f, 16);
-    for (int i = 0; i < P->nvar; i++) o->var[i] = out[P->vs_reg[i]];
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i))
+        o->var[k].u[i] = out[P->vs_reg[k]].u[P->var_src[k][i]];
     return true;
 }
 
@@ -672,55 +708,104 @@ static bool depth_pass(uint32_t f, float z, float cur) {
 
 /* screen-space vertex: position, 1/w and varyings divided by w */
 typedef struct { float x, y, z, iw; vec4_t v[MAXV]; } sv_t;
+typedef struct { float origin, dx, dy, value; float *input; bool perspective; } plane_t;
+static plane_t make_plane(float a, float b, float c, float w0, float w1, float dx0, float dx1, float dy0, float dy1) {
+    return (plane_t){ c + w0 * (a - c) + w1 * (b - c), dx0 * (a - c) + dx1 * (b - c), dy0 * (a - c) + dy1 * (b - c) };
+}
+static int64_t floor_div(int64_t a, int64_t positive_b) { return a >= 0 ? a / positive_b : -1 - ((-1 - a) / positive_b); }
+static void write_fragment(pipe_t *P, int x, int y) {
+    if (!P->rt || !P->color_mask) return;
+    uint8_t *dst = texel(P->rt, x, y);
+    vec4_t *value = &P->ps_out[P->target_reg];
+    if (P->target_type == 1) {
+        if (P->rt->d.format == F_R32_UINT) { if (P->color_mask & 1) *(uint32_t *)dst = value->u[0]; }
+        else for (int i = 0; i < 4; i++) if (P->color_mask & (1u << i)) dst[i] = MIN(value->u[i], 255u);
+        return;
+    }
+    const float *s = value->f;
+    float col[4];
+    if (P->blend) {
+        float dc[4]; read_px(P->rt->d.format, dst, dc);
+        const blend_desc_t *bd = P->bd;
+        for (int i = 0; i < 3; i++) col[i] = blend_op(bd->op, s[i] * blend_factor(bd->src, i, s, dc), dc[i] * blend_factor(bd->dst, i, s, dc));
+        col[3] = blend_op(bd->op_a, s[3] * blend_factor(bd->src_a, 3, s, dc), dc[3] * blend_factor(bd->dst_a, 3, s, dc));
+    } else for (int i = 0; i < 4; i++) col[i] = s[i];
+    if (P->color_mask != 15) { float dc[4]; read_px(P->rt->d.format, dst, dc); for (int i = 0; i < 4; i++) if (!(P->color_mask & (1u << i))) col[i] = dc[i]; }
+    write_px(P->rt->d.format, dst, col);
+}
 static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *c) {
     float area = (b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y);
     if (area == 0 || area != area) return;
     bool cw = area > 0;                             /* clockwise on screen (y grows downwards) */
     bool front = P->front_ccw ? !cw : cw;
     if ((front && P->cull_front) || (!front && P->cull_back)) return;
-    int x0 = (int)floorf_(MIN(a->x, MIN(b->x, c->x))), x1 = (int)ceilf_(MAX(a->x, MAX(b->x, c->x)));
-    int y0 = (int)floorf_(MIN(a->y, MIN(b->y, c->y))), y1 = (int)ceilf_(MAX(a->y, MAX(b->y, c->y)));
-    x0 = MAX(x0, P->clip.x); y0 = MAX(y0, P->clip.y);
-    x1 = MIN(x1, P->clip.x + P->clip.w); y1 = MIN(y1, P->clip.y + P->clip.h);
+    if (!cw) { const sv_t *swap = b; b = c; c = swap; area = -area; }
+    int x0 = (int)floorf_(MAX((float)P->clip.x, MIN(a->x, MIN(b->x, c->x))));
+    int x1 = (int)ceilf_(MIN((float)(P->clip.x + P->clip.w), MAX(a->x, MAX(b->x, c->x))));
+    int y0 = (int)floorf_(MAX((float)P->clip.y, MIN(a->y, MIN(b->y, c->y))));
+    int y1 = (int)ceilf_(MIN((float)(P->clip.y + P->clip.h), MAX(a->y, MAX(b->y, c->y))));
     if (x0 >= x1 || y0 >= y1) return;
+    /* Eight subpixel bits and a top-left rule give shared edges one owner.
+     * Solve three half-planes per row, not three coverage tests per pixel. */
+    const sv_t *v[3] = { a, b, c };
+    int64_t fx[3], fy[3], edge[3], ex[3], ey[3];
+    for (int i = 0; i < 3; i++) { fx[i] = (int64_t)floorf_(v[i]->x * 256 + .5f); fy[i] = (int64_t)floorf_(v[i]->y * 256 + .5f); }
+    int64_t fixed_area = (fx[1] - fx[0]) * (fy[2] - fy[0]) - (fx[2] - fx[0]) * (fy[1] - fy[0]);
+    if (fixed_area <= 0) return;
+    for (int i = 0; i < 3; i++) {
+        int j = (i + 1) % 3; int64_t dx = fx[j] - fx[i], dy = fy[j] - fy[i];
+        bool top_left = dy < 0 || (!dy && dx > 0);
+        ex[i] = -dy * 256; ey[i] = dx * 256;
+        edge[i] = dx * ((int64_t)y0 * 256 + 128 - fy[i]) - dy * ((int64_t)x0 * 256 + 128 - fx[i]) - !top_left;
+    }
     float inv = 1.0f / area;
-    vec4_t in[DX_MAX_REG], out[DX_MAX_REG];
-    memset(in, 0, sizeof in);
-    /* barycentric weights are linear in x: step them along each row */
-    float dw0 = (b->y - c->y) * inv, dw1 = (c->y - a->y) * inv;
+    vec4_t *in = P->ps_in, *out = P->ps_out;
+    float dx0 = (b->y - c->y) * inv, dx1 = (c->y - a->y) * inv;
+    float dy0 = (c->x - b->x) * inv, dy1 = (a->x - c->x) * inv;
+    float px = x0 + .5f, py = y0 + .5f;
+    float w0 = ((b->x - px) * (c->y - py) - (c->x - px) * (b->y - py)) * inv;
+    float w1 = ((c->x - px) * (a->y - py) - (a->x - px) * (c->y - py)) * inv;
+    plane_t zplane = make_plane(a->z, b->z, c->z, w0, w1, dx0, dx1, dy0, dy1);
+    plane_t iwplane = make_plane(a->iw, b->iw, c->iw, w0, w1, dx0, dx1, dy0, dy1);
+    plane_t attrs[MAXV * 4]; int nattrs = 0;
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i)) {
+        if (P->interpolation[k] == 1) { in[P->ps_reg[k]].u[i] = P->flat[k].u[i]; continue; }
+        plane_t *q = &attrs[nattrs++];
+        *q = make_plane(a->v[k].f[i], b->v[k].f[i], c->v[k].f[i], w0, w1, dx0, dx1, dy0, dy1);
+        q->input = &in[P->ps_reg[k]].f[i]; q->perspective = P->interpolation[k] != 4;
+    }
+    if (P->ps_face_reg >= 0) in[P->ps_face_reg].u[0] = front ? ~0u : 0;
+    if (P->ps_prim_reg >= 0) in[P->ps_prim_reg].u[0] = P->ps_env.primitive_id;
     for (int y = y0; y < y1; y++) {
-        float py = y + 0.5f, px0 = x0 + 0.5f;
-        float w0r = ((b->x - px0) * (c->y - py) - (c->x - px0) * (b->y - py)) * inv;
-        float w1r = ((c->x - px0) * (a->y - py) - (a->x - px0) * (c->y - py)) * inv;
-        for (int x = x0; x < x1; x++, w0r += dw0, w1r += dw1) {
-            float px = x + 0.5f;
-            float w0 = w0r, w1 = w1r, w2 = 1 - w0 - w1;
-            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
-            float z = w0 * a->z + w1 * b->z + w2 * c->z;
-            if (z < 0 || z > 1) continue;
+        int64_t lo = 0, hi = x1 - x0 - 1;
+        for (int i = 0; i < 3; i++) {
+            int64_t e = edge[i]; edge[i] += ey[i];
+            if (ex[i] > 0) lo = MAX(lo, -floor_div(e, ex[i]));
+            else if (ex[i] < 0) hi = MIN(hi, floor_div(e, -ex[i]));
+            else if (e < 0) hi = -1;
+        }
+        if (lo > hi) continue;
+        int xs = x0 + (int)lo, xe = x0 + (int)hi + 1;
+        float z = zplane.origin + zplane.dy * (y - y0) + zplane.dx * (xs - x0);
+        float iw = iwplane.origin + iwplane.dy * (y - y0) + iwplane.dx * (xs - x0);
+        for (int i = 0; i < nattrs; i++) attrs[i].value = attrs[i].origin + attrs[i].dy * (y - y0) + attrs[i].dx * (xs - x0);
+        for (int x = xs; x < xe; x++) {
             float zv = P->vminz + z * (P->vmaxz - P->vminz);
             float *dz = P->ds ? (float *)texel(P->ds, x, y) : NULL;
-            if (dz && P->depth_on && !depth_pass(P->depth_func, zv, *dz)) continue;
-            float iw = w0 * a->iw + w1 * b->iw + w2 * c->iw, w = iw != 0 ? 1.0f / iw : 0;
-            for (int k = 0; k < P->nvar; k++) {
-                vec4_t *r = &in[P->ps_reg[k]];
-                for (int i = 0; i < 4; i++) r->f[i] = (w0 * a->v[k].f[i] + w1 * b->v[k].f[i] + w2 * c->v[k].f[i]) * w;
+            if (z >= 0 && z <= 1 && (!dz || !P->depth_on || P->writes_depth || depth_pass(P->depth_func, zv, *dz))) {
+                float w = iw != 0 ? 1.0f / iw : 0;
+                for (int i = 0; i < nattrs; i++) *attrs[i].input = attrs[i].value * (attrs[i].perspective ? w : 1);
+                if (P->ps_pos_reg >= 0) { vec4_t *r = &in[P->ps_pos_reg]; r->f[0] = x + .5f; r->f[1] = y + .5f; r->f[2] = zv; r->f[3] = iw; }
+                if (dxbc_exec_run(&P->ps_exec)) {
+                    if (P->writes_depth) zv = out[DX_MAX_REG - 1].f[0];
+                    if (!P->writes_depth || (zv >= 0 && zv <= 1 && (!dz || !P->depth_on || depth_pass(P->depth_func, zv, *dz)))) {
+                        if (dz && P->depth_on && P->depth_write) *dz = zv;
+                        write_fragment(P, x, y);
+                    }
+                }
             }
-            if (P->ps_pos_reg >= 0) { vec4_t *r = &in[P->ps_pos_reg]; r->f[0] = px; r->f[1] = py; r->f[2] = zv; r->f[3] = iw; }
-            if (P->ps_face_reg >= 0) in[P->ps_face_reg].u[0] = front ? ~0u : 0;
-            memset(out, 0, sizeof(vec4_t) * (P->target_reg + 1));
-            if (!dxbc_run(P->d->ps->sh, &P->ps_env, in, out)) continue;
-            if (dz && P->depth_on && P->depth_write) *dz = zv;
-            if (!P->rt) continue;
-            uint8_t *dst = texel(P->rt, x, y);
-            float *s = out[P->target_reg].f, col[4];
-            if (P->blend) {
-                float dc[4]; read_px(P->rt->d.format, dst, dc);
-                const blend_desc_t *bd = P->bd;
-                for (int i = 0; i < 3; i++) col[i] = blend_op(bd->op, s[i] * blend_factor(bd->src, i, s, dc), dc[i] * blend_factor(bd->dst, i, s, dc));
-                col[3] = blend_op(bd->op_a, s[3] * blend_factor(bd->src_a, 3, s, dc), dc[3] * blend_factor(bd->dst_a, 3, s, dc));
-            } else memcpy(col, s, 16);
-            write_px(P->rt->d.format, dst, col);
+            z += zplane.dx; iw += iwplane.dx;
+            for (int i = 0; i < nattrs; i++) attrs[i].value += attrs[i].dx;
         }
     }
 }
@@ -730,35 +815,55 @@ static void to_screen(pipe_t *P, const pv_t *v, sv_t *s) {
     s->y = P->vy + (1 - v->pos[1] * iw) * 0.5f * P->vh;
     s->z = v->pos[2] * iw;
     s->iw = iw;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) s->v[k].f[i] = v->var[k].f[i] * iw;
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i)) {
+        if (P->interpolation[k] == 1) s->v[k].u[i] = v->var[k].u[i];
+        else s->v[k].f[i] = v->var[k].f[i] * (P->interpolation[k] == 4 ? 1 : iw);
+    }
 }
 static void lerp_pv(pipe_t *P, const pv_t *a, const pv_t *b, float t, pv_t *o) {
     for (int i = 0; i < 4; i++) o->pos[i] = a->pos[i] + (b->pos[i] - a->pos[i]) * t;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) o->var[k].f[i] = a->var[k].f[i] + (b->var[k].f[i] - a->var[k].f[i]) * t;
+    for (int k = 0; k < P->nvar; k++) {
+        float f = P->interpolation[k] == 4 && o->pos[3] != 0 ? t * b->pos[3] / o->pos[3] : t;
+        for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i)) {
+            if (P->interpolation[k] == 1) o->var[k].u[i] = a->var[k].u[i];
+            else o->var[k].f[i] = a->var[k].f[i] + (b->var[k].f[i] - a->var[k].f[i]) * f;
+        }
+    }
 }
-/* clip against z >= 0 and w > 0 (Direct3D's near plane), then fan the polygon */
+static float clip_distance(const pv_t *v, int plane) {
+    switch (plane) {
+    case 0: return v->pos[2]; case 1: return v->pos[3] - v->pos[2];
+    case 2: return v->pos[3] + v->pos[0]; case 3: return v->pos[3] - v->pos[0];
+    case 4: return v->pos[3] + v->pos[1]; case 5: return v->pos[3] - v->pos[1];
+    default: return v->pos[3] - 1e-6f;
+    }
+}
+/* Homogeneous frustum clipping also bounds screen coordinates before fixed-
+ * point conversion. Scratch belongs to the draw, not a shared static array. */
 static void draw_triangle(pipe_t *P, const pv_t *a, const pv_t *b, const pv_t *c) {
-    static pv_t poly[2][8];
     const pv_t *in[3] = { a, b, c };
     int n = 0;
     bool all_in = true;
-    for (int i = 0; i < 3; i++) if (!(in[i]->pos[2] >= 0 && in[i]->pos[3] > 1e-6f)) all_in = false;
-    sv_t s[8];
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 4; k++) if (!(in[i]->pos[k] > -1e20f && in[i]->pos[k] < 1e20f)) return;
+        for (int plane = 0; plane < 7; plane++) if (!(clip_distance(in[i], plane) >= 0)) all_in = false;
+    }
+    sv_t s[12];
     if (all_in) {
         for (int i = 0; i < 3; i++) to_screen(P, in[i], &s[i]);
         shade_triangle(P, &s[0], &s[1], &s[2]);
         return;
     }
-    pv_t *src = poly[0], *dst = poly[1];
+    pv_t *src = P->poly[0], *dst = P->poly[1];
     for (int i = 0; i < 3; i++) src[i] = *in[i];
     n = 3;
-    for (int plane = 0; plane < 2; plane++) {
+    for (int plane = 0; plane < 7; plane++) {
         int m = 0;
         for (int i = 0; i < n; i++) {
             pv_t *p = &src[i], *q = &src[(i + 1) % n];
-            float dp = plane ? p->pos[3] - 1e-5f : p->pos[2], dq = plane ? q->pos[3] - 1e-5f : q->pos[2];
-            if (dp >= 0) dst[m++] = *p;
-            if ((dp >= 0) != (dq >= 0) && m < 8) lerp_pv(P, p, q, dp / (dp - dq), &dst[m++]);
+            float dp = clip_distance(p, plane), dq = clip_distance(q, plane);
+            if (dp >= 0) { if (m == 12) return; dst[m++] = *p; }
+            if ((dp >= 0) != (dq >= 0)) { if (m == 12) return; lerp_pv(P, p, q, dp / (dp - dq), &dst[m++]); }
         }
         n = m; pv_t *t = src; src = dst; dst = t;
         if (n < 3) return;
@@ -782,21 +887,39 @@ static bool setup(pipe_t *P, device_t *d) {
     P->pos_reg = -1;
     for (int i = 0; i < nvo; i++) if (vo[i].sysval == 1) P->pos_reg = vo[i].reg;
     if (P->pos_reg < 0) { klog("w32: d3d10: the vertex shader writes no SV_Position"); return false; }
-    P->ps_pos_reg = P->ps_face_reg = -1;
+    P->ps_pos_reg = P->ps_face_reg = P->ps_prim_reg = -1;
     for (int i = 0; i < npi; i++) {
+        if (!dxbc_read_mask(d->ps->sh, pi[i].reg)) continue;
         if (pi[i].sysval == 1) { P->ps_pos_reg = pi[i].reg; continue; }
         if (pi[i].sysval == 9) { P->ps_face_reg = pi[i].reg; continue; }
+        if (pi[i].sysval == 7) { P->ps_prim_reg = pi[i].reg; continue; }
+        bool linked = false;
         for (int k = 0; k < nvo; k++)
             if (!strcasecmp(vo[k].name, pi[i].name) && vo[k].index == pi[i].index && P->nvar < MAXV) {
-                P->vs_reg[P->nvar] = vo[k].reg; P->ps_reg[P->nvar] = pi[i].reg; P->nvar++;
+                if (vo[k].component_type != pi[i].component_type) return false;
+                P->vs_reg[P->nvar] = vo[k].reg; P->ps_reg[P->nvar] = pi[i].reg;
+                P->var_mask[P->nvar] = dxbc_read_mask(d->ps->sh, pi[i].reg) & pi[i].mask;
+                P->interpolation[P->nvar] = dxbc_interpolation(d->ps->sh, pi[i].reg);
+                if (pi[i].component_type != 3 && P->interpolation[P->nvar] != 1) { klog("w32: d3d10: integer varyings require nointerpolation"); return false; }
+                int from = 0;
+                for (int to = 0; to < 4; to++) if (pi[i].mask & (1u << to)) {
+                    while (from < 4 && !(vo[k].mask & (1u << from))) from++;
+                    if (from == 4) { klog("w32: d3d10: varying component mismatch"); return false; }
+                    P->var_src[P->nvar][to] = from++;
+                }
+                P->nvar++;
+                linked = true;
                 break;
             }
+        if (!linked) { klog("w32: d3d10: pixel input %s%u has no vertex output", pi[i].name, pi[i].index); return false; }
     }
-    P->target_reg = 0;
-    for (int i = 0; i < npo; i++) if (!strncasecmp(po[i].name, "SV_Target", 9) && po[i].index == 0) P->target_reg = po[i].reg;
-    P->target_reg = CLAMP(P->target_reg, 0, DX_MAX_REG - 2);
+    P->target_reg = -1; P->target_type = 3;
+    for (int i = 0; i < npo; i++) if (!strncasecmp(po[i].name, "SV_Target", 9) && po[i].index == 0) { P->target_reg = po[i].reg; P->target_type = po[i].component_type; }
+    bool integer_target = P->rt && (P->rt->d.format == F_RGBA8_UINT || P->rt->d.format == F_R32_UINT);
+    if (P->rt && P->target_reg >= 0 && (P->target_type == 2 || ((P->target_type == 1) != integer_target))) { klog("w32: d3d10: pixel output/render target type mismatch (signed targets are not implemented)"); return false; }
     viewport_t vp = d->vp;
     if (!d->vp_set) vp = (viewport_t){ 0, 0, size_of->d.w, size_of->d.h, 0, 1 };
+    if (!vp.w || !vp.h || vp.w > 16384 || vp.h > 16384 || vp.x < -1048576 || vp.x > 1048576 || vp.y < -1048576 || vp.y > 1048576 || !(vp.minz >= 0 && vp.maxz <= 1 && vp.minz <= vp.maxz)) return false;
     P->vx = vp.x; P->vy = vp.y; P->vw = vp.w; P->vh = vp.h; P->vminz = vp.minz; P->vmaxz = vp.maxz;
     P->clip = rect_intersect(R(vp.x, vp.y, vp.w, vp.h), R(0, 0, size_of->d.w, size_of->d.h));
     if (P->ds && P->rt && (P->ds->d.w < P->rt->d.w || P->ds->d.h < P->rt->d.h)) P->clip = rect_intersect(P->clip, R(0, 0, P->ds->d.w, P->ds->d.h));
@@ -807,13 +930,20 @@ static bool setup(pipe_t *P, device_t *d) {
     P->depth_write = d->ds ? d->ds->d.write_mask != 0 : true;
     P->depth_func = d->ds ? d->ds->d.func : 2;
     P->blend = d->bs && d->bs->d.enable[0];
+    if (integer_target && P->blend) { klog("w32: d3d10: integer render targets do not support blending"); return false; }
+    P->color_mask = P->target_reg < 0 ? 0 : d->bs ? d->bs->d.mask[0] & 15 : 15;
     P->bd = d->bs ? &d->bs->d : NULL;
-    return P->clip.w > 0 && P->clip.h > 0;
+    P->writes_depth = dxbc_writes_depth(d->ps->sh);
+    if (P->clip.w <= 0 || P->clip.h <= 0) return false;
+    return dxbc_exec_init(&P->vs_exec, d->vs->sh, &P->vs_env, P->vs_in, P->vs_out) &&
+           dxbc_exec_init(&P->ps_exec, d->ps->sh, &P->ps_env, P->ps_in, P->ps_out);
 }
+static void free_pipe(pipe_t *P) { dxbc_exec_fini(&P->vs_exec); dxbc_exec_fini(&P->ps_exec); kfree(P); }
 static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_t base, uint32_t first, uint32_t instance) {
+    if (count < 3) return;
     pipe_t *P = kmalloc(sizeof(pipe_t));
     if (!P) return;
-    if (!setup(P, d) || count < 3) { kfree(P); return; }
+    if (!setup(P, d)) { free_pipe(P); return; }
     /* vertices go through the vertex shader once each */
     uint32_t lo = 0xFFFFFFFFu, hi = 0;
     for (uint32_t i = 0; i < count; i++) {
@@ -821,10 +951,10 @@ static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_
         lo = MIN(lo, k); hi = MAX(hi, k);
     }
     uint32_t span = hi - lo + 1;
-    if (span > (1u << 20)) { kfree(P); return; }
+    if (!span || span > (1u << 20)) { free_pipe(P); return; }
     pv_t *cache = kmalloc(sizeof(pv_t) * span);
     uint8_t *done = kzalloc(span);
-    if (!cache || !done) { kfree(cache); kfree(done); kfree(P); return; }
+    if (!cache || !done) { kfree(cache); kfree(done); free_pipe(P); return; }
     #define VTX(i, out) do { uint32_t k_ = idx ? (idx32 ? ((const uint32_t *)idx)[i] : ((const uint16_t *)idx)[i]) + base : first + (i); \
         uint32_t s_ = k_ - lo; if (!done[s_]) { done[s_] = run_vs(P, k_, instance, &cache[s_]) ? 1 : 2; } out = done[s_] == 1 ? &cache[s_] : NULL; } while (0)
     uint32_t ntri = d->topology == 4 ? count / 3 : count - 2;
@@ -835,17 +965,22 @@ static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_
         else { i0 = t; i1 = t + 1; i2 = t + 2; }
         const pv_t *a, *b, *c;
         VTX(i0, a); VTX(i1, b); VTX(i2, c);
-        if (a && b && c) draw_triangle(P, a, b, c);
+        if (a && b && c) {
+            const pv_t *leading = d->topology == 5 && (t & 1) ? b : a;
+            for (int k = 0; k < P->nvar; k++) if (P->interpolation[k] == 1) P->flat[k] = leading->var[k];
+            P->ps_env.primitive_id = t;
+            draw_triangle(P, a, b, c);
+        }
     }
     #undef VTX
-    kfree(cache); kfree(done); kfree(P);
+    kfree(cache); kfree(done); free_pipe(P);
 }
 static void WINAPI Draw(device_t *d, uint32_t count, uint32_t start) { draw(d, count, NULL, 0, 0, start, 0); }
 static void WINAPI DrawIndexed(device_t *d, uint32_t count, uint32_t start, int32_t base) {
     buffer_t *ib = d->ib;
     if (!ib) return;
     int sz = d->ib_format == F_R32_UINT ? 4 : 2;
-    uint32_t off = d->ib_offset + start * sz;
+    uint64_t off = (uint64_t)d->ib_offset + (uint64_t)start * sz;
     if (off + (uint64_t)count * sz > ib->d.bytes) return;
     draw(d, count, ib->data + off, sz == 4, base, 0, 0);
 }

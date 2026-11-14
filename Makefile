@@ -68,6 +68,9 @@ ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
 OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ) $(MP3_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 MINGW   := i686-w64-mingw32-gcc
+# The 32-bit kernel enables x87, not SSE. Use an x87-compatible MinGW CRT too;
+# per-source flags cannot remove SSE2 already built into a toolchain's startup.
+MINGW32_SHADER_FLAGS ?= -march=i686 -mno-sse -mno-mmx -mfpmath=387
 SAMPLES := $(wildcard samples/*.c)
 SAMPLE_EXES := $(patsubst samples/%.c,rootfs/Samples/%.exe,$(SAMPLES))
 MINGW64 := x86_64-w64-mingw32-gcc
@@ -105,12 +108,12 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite FORCE
+.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders shader-fixtures FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
 GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
-ifneq ($(filter-out clean check-tools check-hid check-audio check-animations check-composite,$(GOALS)),)
+ifneq ($(filter-out clean check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders shader-fixtures,$(GOALS)),)
 ifneq ($(findstring MINGW,$(UNAME))$(findstring MSYS,$(UNAME))$(findstring CYGWIN,$(UNAME)),)
 $(error This is $(UNAME) (MSYS2/Cygwin). Its gcc makes Windows PE files, not the 32-bit ELF kernel THE WRLD OS needs, and it has no BIOS GRUB tools. Build inside WSL instead - see README.md, section "Building on Windows")
 endif
@@ -195,9 +198,12 @@ rootfs64/Samples/glcube.exe: samples/glcube.c
 rootfs64/Samples/d3dcube.exe: samples/d3dcube.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d9
-rootfs64/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h
+rootfs64/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
+rootfs64/Samples/shaderprobe.exe: samples/shaderprobe.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h samples/shaderprobe_shaders.h
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -o $@ $< -ld3d10
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<
@@ -207,8 +213,10 @@ rootfs/Samples/glcube.exe: samples/glcube.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -lopengl32 -lglu32 -lgdi32
 rootfs/Samples/d3dcube.exe: samples/d3dcube.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -ld3d9
-rootfs/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h
-	$(MINGW) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
+rootfs/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
+	$(MINGW) $(MINGW32_SHADER_FLAGS) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
+rootfs/Samples/shaderprobe.exe: samples/shaderprobe.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h samples/shaderprobe_shaders.h
+	$(MINGW) $(MINGW32_SHADER_FLAGS) -O2 -s -o $@ $< -ld3d10
 samples/d3d10cube_shaders.h: samples/d3d10cube.sm4 tools/dxbc_asm.py
 	python3 tools/dxbc_asm.py $< $@
 rootfs/Samples/%.exe: samples/%.c
@@ -351,6 +359,31 @@ check-composite:
 	@mkdir -p build64
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/include -o build64/compositetest tools/compositetest.c src/gui/composite.c
 	./build64/compositetest
+
+# Native CPU shader/framebuffer tests; real-compiler fixtures are checked in,
+# so normal tests need only a host C compiler and libm, not FXC/DXC/LLVM.
+HOSTCC ?= cc
+SHADER_HOST_FLAGS := -std=gnu11 -O2 -fno-builtin -Wall -Wextra -Wno-unused-function \
+                     -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers -Wno-misleading-indentation \
+                     -Isrc/include -Isrc/win32
+SHADER_CORE := src/win32/dxbc.c src/win32/dxil.c
+SHADER_HEADERS := src/win32/dxbc.h src/win32/shader_priv.h samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
+$(BUILD)/win32/dxbc.o $(BUILD)/win32/dxil.o: src/win32/shader_priv.h src/win32/dxbc.h
+$(BUILD)/win32/d3d10.o: src/win32/dxbc.h
+build64/shadertest: tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
+	@mkdir -p build64
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/shadertest.c $(SHADER_CORE) -lm
+build64/d3d10test: tools/d3d10test.c tools/shadertest.c src/win32/d3d10.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
+	@mkdir -p build64
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/d3d10test.c $(SHADER_CORE) -lm
+check-shaders: build64/shadertest build64/d3d10test
+	./build64/shadertest
+	./build64/d3d10test
+bench-shaders: build64/shadertest
+	./build64/shadertest --bench
+# Windows-only regeneration. DXC is a host build tool, not an OS dependency.
+shader-fixtures:
+	python3 tools/build_shader_fixtures.py $(if $(DXC),--dxc "$(DXC)")
 
 clean:
 	rm -rf build build64 wrldos.iso wrldos64.iso
