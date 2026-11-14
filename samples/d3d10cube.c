@@ -5,8 +5,9 @@
  * select real FXC/DXC fixtures; these are WRLD extensions, not D3D11/12 APIs.
  * --bench renders 120 deterministic frames and reports timing with
  * OutputDebugString (captured by WRLD's serial log).
- * On THE WRLD OS d3d10.dll runs both shaders on the processor; Control Panel >
- * Visual Effects > 3D acceleration must be on.
+ * On THE WRLD OS supported shaders use the native legacy VMware SVGA3D GPU
+ * backend, otherwise the native CPU interpreter. --cpu forces the latter for
+ * comparisons. Control Panel > Visual Effects > 3D acceleration must be on.
  * Build: i686-w64-mingw32-gcc -O2 -mwindows d3d10cube.c -ld3d10 -ldxguid */
 #define COBJMACROS
 #define __USE_MINGW_ANSI_STDIO 0
@@ -36,6 +37,12 @@ static ID3D10DepthStencilView *dsv;
 static ID3D10Buffer *vb, *ib, *cb;
 static int width = 480, height = 360;
 static int shader_model = 4;
+static int force_cpu;
+typedef const char *(WINAPI *backend_fn_t)(ID3D10Device *);
+typedef void (WINAPI *stats_fn_t)(ID3D10Device *, UINT *, UINT *);
+static backend_fn_t backend_fn;
+static stats_fn_t stats_fn;
+static const char *backend_name(void) { return backend_fn ? backend_fn(dev) : "D3D10 driver"; }
 
 /* row-vector matrices (Direct3D's convention): p' = p * M */
 static void identity(float *m) { memset(m, 0, 64); m[0] = m[5] = m[10] = m[15] = 1; }
@@ -76,8 +83,10 @@ static HRESULT init(HWND hwnd) {
     sd.BufferCount = 1;
     sd.OutputWindow = hwnd;
     sd.Windowed = TRUE;
-    HRESULT hr = D3D10CreateDeviceAndSwapChain(NULL, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &sd, &swap, &dev);
+    HRESULT hr = D3D10CreateDeviceAndSwapChain(NULL, force_cpu ? D3D10_DRIVER_TYPE_REFERENCE : D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &sd, &swap, &dev);
     if (FAILED(hr)) return hr;
+    HMODULE module = GetModuleHandleA("d3d10.dll");
+    if (module) { backend_fn = (backend_fn_t)GetProcAddress(module, "WRLDGetD3D10Backend"); stats_fn = (stats_fn_t)GetProcAddress(module, "WRLDGetD3D10DrawStats"); }
     if (FAILED(hr = make_targets())) return hr;
 
     ID3D10VertexShader *vs; ID3D10PixelShader *ps; ID3D10InputLayout *layout;
@@ -184,6 +193,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     (void)prev;
     int bench = strstr(cmd, "--bench") != NULL, bench_frames = 0;
+    force_cpu = strstr(cmd, "--cpu") != NULL;
     if (strstr(cmd, "--sm6")) shader_model = 6;
     else if (strstr(cmd, "--sm5")) shader_model = 5;
     WNDCLASSA wc = { 0 };
@@ -220,16 +230,18 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
         render(bench ? bench_frames * (1.0f / 60) : GetTickCount() / 1000.0f);
         frames++;
         if (bench && ++bench_frames == 120) {
-            char result[160];
-            sprintf(result, "D3D10BENCH model=%d frames=120 ms=%lu size=%dx%d", shader_model,
-                    (unsigned long)(GetTickCount() - bench_start), width, height);
+            char result[240]; UINT gpu = 0, cpu = 0;
+            if (stats_fn) stats_fn(dev, &gpu, &cpu);
+            sprintf(result, "D3D10BENCH model=%d frames=120 ms=%lu size=%dx%d backend=%s gpu_draws=%u cpu_draws=%u", shader_model,
+                    (unsigned long)(GetTickCount() - bench_start), width, height, backend_name(), gpu, cpu);
             OutputDebugStringA(result);
             goto done;
         }
         DWORD now = GetTickCount();
         if (now - start >= 1000) {
             char title[96];
-            sprintf(title, "Direct3D 10 cube - SM%d - %d frames/s - CPU", shader_model, frames * 1000 / (int)(now - start));
+            _snprintf(title, sizeof title, "Direct3D 10 cube - SM%d - %d frames/s - %s", shader_model, frames * 1000 / (int)(now - start), backend_name());
+            title[sizeof title-1]=0;
             SetWindowTextA(hwnd, title);
             frames = 0; start = now;
         }

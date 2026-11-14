@@ -21,6 +21,18 @@ bool w32_hwnd_client(uintptr_t h, canvas_t **s, rect_t *r) { (void)h; (void)s; (
 void blit(canvas_t *d, int x, int y, canvas_t *s, int sx, int sy, int w, int h) { (void)d; (void)x; (void)y; (void)s; (void)sx; (void)sy; (void)w; (void)h; }
 void blit_scaled_alpha(canvas_t *d, rect_t r, canvas_t *s, int a) { (void)d; (void)r; (void)s; (void)a; }
 void task_yield(void) { }
+static bool mock_gpu_available, mock_gpu_success, mock_gpu_float=true;
+static int mock_gpu_calls;
+bool gpu3d_available(void) { return mock_gpu_available; }
+bool gpu3d_float_depth(void) { return mock_gpu_available&&mock_gpu_float; }
+bool gpu3d_draw(const gpu3d_draw_t *d) {
+    mock_gpu_calls++;
+    check("GPU adapter expanded inputs/indices",d->nvertices==6&&d->nindices==6&&d->input_slots==3&&d->indices[5]==5);
+    check("GPU adapter immutable shader/constants",d->vs.words&&d->ps.words&&d->vs.nconstants==256&&d->vs.constants[255][0]==-1.0f/d->vw);
+    if(mock_gpu_success){d->color[0]=7;d->color[1]=11;d->color[2]=13;d->color[3]=17;return true;}
+    return false;
+}
+const char *gpu3d_name(void) { return "native CPU"; }
 
 typedef struct { float p[4], c[4], uv[2]; } test_vertex_t;
 enum { TEST_W = 64, TEST_H = 48 };
@@ -186,12 +198,41 @@ static void sampling_cases(void) {
     cb_sample(&ctx, 7, 5, uv, 0, out); check("native sampler large negative floor", out[0] == .25f && out[1] == .75f && out[2] == 0);
     cb_sample(&ctx, 6, 5, uv, 0, out); check("unbound texture reads zero", out[0] == 0 && out[1] == 0 && out[2] == 0 && out[3] == 0);
 }
+static void gpu_fallback_cases(void) {
+    mock_gpu_available=true;
+    test_device_t t=test_device(F_RGBA8);bind_program(&t,"vertex",5,"smooth_color",5);
+    float color[]={.25f,.5f,.75f,1};clear_test(&t,0,0,0,0,1);rectangle(&t,color);
+    uint8_t *p=texel(t.color,20,20);
+    check("failed GPU submission retries native CPU",mock_gpu_calls==1&&p[0]==64&&p[1]==128&&p[2]==191&&t.d->cpu_draws==1&&t.d->gpu_draws==0);
+    mock_gpu_success=true;clear_test(&t,0,0,0,0,1);rectangle(&t,color);
+    check("completed GPU submission skips CPU",mock_gpu_calls==2&&t.color->data[0]==7&&p[0]==0&&t.d->gpu_draws==1&&t.d->last_gpu);
+    check("backend diagnostics reflect completed draw",!strcmp(WRLDGetD3D10Backend(t.d),"VMware SVGA3D GPU"));
+    t.d->force_cpu=true;clear_test(&t,0,0,0,0,1);rectangle(&t,color);
+    check("reference selection forces CPU",mock_gpu_calls==2&&p[0]==64&&t.d->cpu_draws==2&&!t.d->last_gpu);
+    device_t *ref=NULL;check("reference device creation",D3D10CreateDevice(NULL,1,0,0,29,&ref)==S_OK&&ref->force_cpu);if(ref)Release(&ref->c);
+    t.d->force_cpu=false;mock_gpu_float=false;clear_test(&t,0,0,0,0,1);rectangle(&t,color);
+    check("D32F never uses a D24-only GPU",mock_gpu_calls==2&&p[0]==64&&t.d->cpu_draws==3);
+    t.depth->d.format=F_D24S8;clear_test(&t,0,0,0,0,1);rectangle(&t,color);
+    check("D24 readback tags mixed-renderer precision",mock_gpu_calls==3&&t.depth->gpu_depth24);
+    pipe_t pipe={.ds=t.depth};float z=quantized_depth(&pipe,.5f);
+    for(int y=0;y<TEST_H;y++)for(int x=0;x<TEST_W;x++)*(float *)texel(t.depth,x,y)=z;
+    mapped2d_t map;check("read-only depth mapping",TexMap(t.depth,0,1,0,&map)==S_OK);TexUnmap(t.depth,0);
+    check("read-only mapping preserves D24 precision",t.depth->gpu_depth24);
+    depth_desc_t dd={.enable=1,.write_mask=1,.func=3};depthst_t *equal=NULL;
+    check("create mixed-renderer EQUAL state",CreateDepthStencilState(t.d,&dd,&equal)==S_OK);OMSetDepthStencilState(t.d,equal,0);Release(&equal->c);
+    t.d->force_cpu=true;const float zero[4]={0};ClearRenderTargetView(t.d,t.rt,zero);rectangle(&t,color);
+    check("CPU fallback EQUAL matches GPU D24 readback",p[0]==64&&p[1]==128&&p[2]==191&&*(float *)texel(t.depth,20,20)==z);
+    ClearDepthStencilView(t.d,t.ds,1,1,0);check("CPU clear resets GPU depth precision",!t.depth->gpu_depth24);
+    destroy_device(&t);mock_gpu_available=mock_gpu_success=false;
+    mock_gpu_float=true;
+}
 int main(void) {
     for (int model = 4; model <= 6; model++) coverage_cases(model);
     for (int vm = 4; vm <= 6; vm++) for (int pm = 4; pm <= 6; pm++) packed_link_cases(vm, pm);
     for (int clipped = 0; clipped < 2; clipped++) { interpolation_cases(1, clipped); interpolation_cases(2, clipped); interpolation_cases(4, clipped); }
     for (int model = 5; model <= 6; model++) { integer_target_cases(model, F_RGBA8_UINT); integer_target_cases(model, F_R32_UINT); }
     sampling_cases();
+    gpu_fallback_cases();
     check("renderer allocations released", live_allocations == 0);
     printf("D3D10 framebuffer tests: %s (%d checks, %d diagnostics)\n", failures ? "FAILED" : "passed", checks, diagnostics);
     return failures ? 1 : 0;

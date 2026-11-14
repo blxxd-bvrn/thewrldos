@@ -204,6 +204,9 @@ rootfs64/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h 
 rootfs64/Samples/shaderprobe.exe: samples/shaderprobe.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h samples/shaderprobe_shaders.h
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $< -ld3d10
+rootfs64/Samples/gpuverify.exe: samples/gpuverify.c samples/d3d10cube.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<
@@ -217,6 +220,8 @@ rootfs/Samples/d3d10cube.exe: samples/d3d10cube.c samples/d3d10cube_shaders.h sa
 	$(MINGW) $(MINGW32_SHADER_FLAGS) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
 rootfs/Samples/shaderprobe.exe: samples/shaderprobe.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h samples/shaderprobe_shaders.h
 	$(MINGW) $(MINGW32_SHADER_FLAGS) -O2 -s -o $@ $< -ld3d10
+rootfs/Samples/gpuverify.exe: samples/gpuverify.c samples/d3d10cube.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
+	$(MINGW) $(MINGW32_SHADER_FLAGS) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
 samples/d3d10cube_shaders.h: samples/d3d10cube.sm4 tools/dxbc_asm.py
 	python3 tools/dxbc_asm.py $< $@
 rootfs/Samples/%.exe: samples/%.c
@@ -360,14 +365,14 @@ check-composite:
 	$(CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/include -o build64/compositetest tools/compositetest.c src/gui/composite.c
 	./build64/compositetest
 
-# Native CPU shader/framebuffer tests; real-compiler fixtures are checked in,
+# Native CPU/GPU shader, framebuffer and SVGA transport tests; fixtures are checked in,
 # so normal tests need only a host C compiler and libm, not FXC/DXC/LLVM.
 HOSTCC ?= cc
 SHADER_HOST_FLAGS := -std=gnu11 -O2 -fno-builtin -Wall -Wextra -Wno-unused-function \
                      -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers -Wno-misleading-indentation \
                      -Isrc/include -Isrc/win32
-SHADER_CORE := src/win32/dxbc.c src/win32/dxil.c
-SHADER_HEADERS := src/win32/dxbc.h src/win32/shader_priv.h samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
+SHADER_CORE := src/win32/dxbc.c src/win32/dxil.c src/win32/shader_gpu.c
+SHADER_HEADERS := src/win32/dxbc.h src/win32/shader_priv.h src/win32/shader_gpu.h src/include/gpu3d.h samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
 $(BUILD)/win32/dxbc.o $(BUILD)/win32/dxil.o: src/win32/shader_priv.h src/win32/dxbc.h
 $(BUILD)/win32/d3d10.o: src/win32/dxbc.h
 build64/shadertest: tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
@@ -376,9 +381,17 @@ build64/shadertest: tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildca
 build64/d3d10test: tools/d3d10test.c tools/shadertest.c src/win32/d3d10.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
 	@mkdir -p build64
 	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/d3d10test.c $(SHADER_CORE) -lm
-check-shaders: build64/shadertest build64/d3d10test
+build64/shadergputest: tools/shadergputest.c tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
+	@mkdir -p build64
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/shadergputest.c $(SHADER_CORE) -lm
+build64/svgatest: tools/svgatest.c src/kernel/video.c $(wildcard src/include/*.h)
+	@mkdir -p build64
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/svgatest.c
+check-shaders: build64/shadertest build64/d3d10test build64/shadergputest build64/svgatest
 	./build64/shadertest
 	./build64/d3d10test
+	./build64/shadergputest
+	./build64/svgatest
 bench-shaders: build64/shadertest
 	./build64/shadertest --bench
 # Windows-only regeneration. DXC is a host build tool, not an OS dependency.

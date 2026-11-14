@@ -150,7 +150,7 @@ Already working, and not on the list below:
 - The GUI also has its own **software rasteriser** (`src/gui/raster.c`): path fills and strokes,
   anti-aliasing, round joins, linear and radial gradients and clipping, used by The WRLD Browser for
   `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
-- 3D remains native CPU rendering: `src/gui/r3d.c` serves OpenGL 1.1 and fixed-function D3D9;
+- The fixed-function engine remains native CPU rendering: `src/gui/r3d.c` serves OpenGL 1.1 and D3D9;
   D3D10's shared interpreter now accepts SM4, a staged **SM5.0 DXBC** subset and a staged
   **SM6.0 / DXIL 1.0** vertex/pixel subset (`dxbc.c`, `dxil.c`, `shader_priv.h`). Prepared
   per-draw register/operand bindings remove shader-invocation allocations; masked execution,
@@ -159,6 +159,31 @@ Already working, and not on the list below:
   render targets have host framebuffer tests. A fixed 120-frame x64 QEMU cube improved from
   7.97–8.12 to 12.14–13.18 FPS across two paired runs; genuine SM5/SM6 cubes and a 16-check in-OS upload /
   rejection probe also pass. There is no LLVM runtime or new external graphics dependency.
+- **First native GPU backend:** eligible D3D10 vertex/pixel draws now lower that shared IR
+  directly to legacy SM3 programs and run through VMware SVGA3D (`gpu3d.c`, `shader_gpu.c`).
+  Contexts/surfaces, GMR DMA, indexed draws, shader constants and fences are real device
+  commands, not a renamed CPU renderer. Stage-legal pixel comparisons and SM3 constant/input
+  read-port restrictions are tested. Unsupported hardware operations, control flow,
+  linkage, formats, states and large temporary banks retain per-draw native CPU fallback.
+  OpenGL, fixed-function D3D9, Flip 3D and desktop animations are not GPU-offloaded.
+  - Verified on Workstation 15.0.0 build-10134415 with 3D enabled, virtual hardware **7**,
+    `svga.vgpu10 = "FALSE"`, and its DX11 renderer on an RTX 3050. The modern guest-backed
+    interface (tested hardware 16) is **not implemented** and falls back. This is not a
+    physical NVIDIA driver or a D3D11/12 feature-level claim.
+  - Upload/readback and rendered-triangle/depth probes gate enablement. CPU buffers remain
+    authoritative, with fenced per-draw readback and safe CPU retry on failure; a 16 MiB
+    staging GMR is retained after loss to prevent late-DMA use-after-free. Legacy depth uses
+    D24S8; unsupported D32F stays on the CPU.
+  - Native SM4/SM5 cubes complete on the GPU; the larger SM6 cube stays on the CPU.
+    `gpuverify.exe` passes 36 fixed-pose CPU/GPU readback/counter checks, with zero pixels
+    exceeding its RGB-error threshold. Host reference/legality and mock fallback/transport
+    tests also cover the boundary. `d3d10cube --cpu --bench` supplies a forced-CPU comparison;
+    small-cube measurements show workload-specific speedups, but synchronous upload/readback
+    overhead still limits performance and is not a universal speedup.
+  - **Still needed:** guest-backed SVGA3D objects, more native shader/state lowering,
+    asynchronous/resident GPU resources that avoid per-draw transfers, broader real-device
+    validation, and native physical GPU drivers. Do not equate passing shader upload or
+    completed fences alone with correct pixels or faster frames.
 - **Still needed, not implied by shader acceptance:** D3D11/12 devices/resources/feature
   levels and additional shader stages; geometry, tessellation, compute, waves, atomics/UAVs,
   derivatives, double precision, broader textures/mips, signed render targets, newer profiles,
@@ -172,7 +197,8 @@ Already working, and not on the list below:
   and a full CSS layout engine.
 - The display path starts with the GRUB/UEFI linear framebuffer and a write-combining mapping.
   QEMU/Bochs, VirtualBox and VMware adapters also support runtime mode changes via native drivers.
-  There is no NVIDIA/AMD/Intel GPU driver, hardware acceleration, vsync or display-engine audio.
+  There is no physical NVIDIA/AMD/Intel GPU driver, vsync or display-engine audio; the
+  limited VMware D3D10 offload above is separate from the firmware framebuffer path.
 - PNG/JPEG/GIF/BMP, the native SVG subset and MP3/WAV audio are present. WebP, video decoding
   and a complete SVG implementation are still missing.
 - Display audio (HDMI/DP) is prepared on the HDA codec side (digital converter,

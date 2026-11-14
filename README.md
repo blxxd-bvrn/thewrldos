@@ -296,13 +296,15 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - **Display (`video.c`):**
     - Bochs/BGA "DISPI" driver for QEMU's standard VGA, Bochs and VirtualBox VBoxVGA.
     - VMware SVGA II driver (command FIFO) for VMware and VirtualBox VMSVGA.
+      A native **legacy VMware SVGA3D** backend offloads eligible D3D10 draws; see
+      the 3D section below for the tested VM configuration and CPU fallbacks.
     - Resolution changes at runtime from Control Panel > Display, with an XP-style "keep these
       settings?" countdown, and are saved in `wrld.ini`.
     - On real hardware the bootloader asks for the display's preferred 32-bit mode (a
       1920x1080x32-through-1024x768x32 list, then `auto`) and the kernel marks the framebuffer
       write-combining, so a real GPU gets a native-resolution, faster surface; a 24-bit boot mode
-      is converted too. A native GPU driver (NVIDIA/AMD/Intel) is not included - those are Linux
-      kernel modules - so the GRUB/UEFI framebuffer remains the device, and the display-engine
+      is converted too. A physical NVIDIA/AMD/Intel GPU driver is not included, so outside
+      the supported virtual adapters the GRUB/UEFI framebuffer remains the device, and the display-engine
       half of HDMI audio still needs such a driver.
   - **Sound (`audio.c`):**
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
@@ -704,12 +706,15 @@ device manager's job is to say what the computer has and which driver runs it.
   the log-on screen, using the normal widgets.
 
 ### Desktop (`src/gui`)
-- **3D acceleration (WRLD 3D, `src/gui/r3d.c`):** a software 3D engine with an on/off toggle in
-  Control Panel > Visual Effects (saved as `accel3d`). It is a fixed-function pipeline like
-  early OpenGL: 4x4 matrices, per-vertex lighting, near-plane clipping, a depth buffer,
+- **3D rendering:** an on/off toggle in
+  Control Panel > Visual Effects (saved as `accel3d`) enables both the native CPU engines
+  and supported VMware GPU offload. **WRLD 3D** (`src/gui/r3d.c`) is a software engine:
+  a fixed-function pipeline like early OpenGL: 4x4 matrices, per-vertex lighting,
+  near-plane clipping, a depth buffer,
   perspective-correct texture mapping with bilinear filtering, and alpha blending. Rows are
-  filled as exact spans with one perspective division per 16 pixels. It runs on the processor:
-  THE WRLD OS has no graphics card driver, so this is 3D rendering rather than GPU acceleration.
+  filled as exact spans with one perspective division per 16 pixels. Flip 3D, WRLD 3D,
+  OpenGL 1.1 and fixed-function Direct3D 9 still use the processor; the separate D3D10
+  shader pipeline can use the GPU backend described below. Desktop animations are unchanged.
   - **Flip 3D** (`flip3d.c`): with 3D on, Alt+Tab shows the open windows as a tilted stack of
     cards. Tab, Shift+Tab, the arrow keys or the wheel move through it; releasing Alt, Enter or a
     click picks a window; Esc goes back. Ctrl+Alt+Tab keeps the stack open. With 3D off, Alt+Tab
@@ -718,7 +723,8 @@ device manager's job is to say what the computer has and which driver runs it.
     scene with a frame counter and toggles for lighting, textures and filtering. Under QEMU's
     emulation it draws about 170,000 pixels a frame at about 24 frames/s on the 64-bit edition
     and about 7 on the 32-bit one, which uses x87 floating point.
-  - **3D for Windows programs** (`src/win32/gl.c`, `d3d9.c`, `vulkan.c`), on the same engine:
+  - **3D for Windows programs** (`src/win32`): OpenGL and fixed-function D3D9 share WRLD 3D;
+    D3D10 has a separate shader pipeline.
     - **OpenGL 1.1** (`opengl32.dll`, `glu32.dll`): WGL contexts (`ChoosePixelFormat`,
       `wglCreateContext`, `SwapBuffers`), `glBegin`/`glEnd` with every primitive type, vertex
       arrays, display lists, the matrix stacks, textures (RGB, RGBA, BGR(A), luminance), one
@@ -732,8 +738,9 @@ device manager's job is to say what the computer has and which driver runs it.
       with the stack intact. A few `d3dx9` matrix helpers are exported too. Shaders are not
       supported: `SetVertexShader`/`SetPixelShader` accept only NULL.
     - **Direct3D 10 and staged shader extensions** (`d3d10.dll`, `dxgi.dll`,
-      `src/win32/d3d10.c`, `dxbc.c`, `dxil.c`): vertex/pixel shaders run in a native CPU
-      interpreter. SM4.0/4.1 DXBC is joined by tested **SM5.0 DXBC** and **SM6.0 / DXIL 1.0**
+      `src/win32/d3d10.c`, `dxbc.c`, `dxil.c`): vertex/pixel shaders use a native CPU
+      interpreter or eligible **VMware SVGA3D GPU** offload. SM4.0/4.1 DXBC is joined by
+      tested **SM5.0 DXBC** and **SM6.0 / DXIL 1.0**
       subsets. These are WRLD shader-upload extensions, **not D3D11/12 compatibility or a
       higher feature level**; D3D10's vertex/pixel profile queries still return `vs_4_0` /
       `ps_4_0`. Both formats lower to the same native IR. DXIL's LLVM bitstream is parsed
@@ -764,17 +771,56 @@ device manager's job is to say what the computer has and which driver runs it.
         textures, newer shader profiles, stencil, multisampling, line/point primitives, stream
         output, lower mip storage and run-time HLSL compilation (`D3D10CompileShader` /
         `D3DCompile` fail). This is a bounded implementation, not a complete DXIL validator.
+      - **Native VMware GPU backend** (`src/kernel/gpu3d.c`, `src/win32/shader_gpu.c`):
+        real SVGA3D contexts, surfaces, shader programs, indexed draws, guest-memory DMA and
+        completion fences. The shared IR lowers directly to legal legacy SM3 programs,
+        including stage-specific comparison lowering and register-read-port limits; no
+        Mesa, LLVM, FreeType, Skia or ICU runtime is introduced.
+        - Tested with **VMware Workstation 15.0.0 build-10134415**, accelerated 3D enabled,
+          **virtual hardware version 7** (`virtualHW.version = "7"`, `mks.enable3d = "TRUE"`,
+          `svga.vgpu10 = "FALSE"`). Its DX11 host renderer used an NVIDIA RTX 3050; this is
+          **not** a native guest NVIDIA driver. Modern guest-backed-object SVGA3D (including
+          the tested hardware-version-16 VM), QEMU's 2D SVGA and unsupported devices keep
+          the CPU renderer. A guest-backed-object backend is not implemented.
+        - Offload is narrower than shader upload: float vertex/pixel math, bounded if/else,
+          perspective-linked varyings, up to 28 original temporaries / 512 emitted instruction
+          slots and eight 2D texture/sampler pairs. RGBA8/BGRA8 targets, point/linear sampling,
+          common depth/cull/blend states and color masks are supported. Integer/bit operations,
+          relative/indexable addressing, loops/discard, larger programs, unsupported linkage,
+          formats and states fall back **per draw**, without rejecting CPU-supported shaders.
+          The supplied SM4/SM5 cubes offload; the larger SM6 cube correctly falls back.
+        - Upload/readback and a rendered triangle/depth self-test must pass before enabling
+          offload. CPU color/depth buffers stay authoritative between draws; readback commits
+          only after a fence. The legacy target uses D24S8 depth; D32F requests stay on the CPU
+          when float depth is unavailable. A bounded 16 MiB staging GMR is retained after a
+          timeout so outstanding host DMA cannot access freed memory.
+        - `C:\Samples\gpuverify.exe` compares actual GPU and forced-CPU readbacks at four
+          fixed poses for both SM4 and SM5, checks completed GPU draw counts, and reports
+          **36 checks** through `OutputDebugString`. `--show` displays both images. The tested
+          poses have zero pixels exceeding the 24-level RGB error threshold. A missing GPU
+          fails this hardware verifier rather than passing a CPU-versus-CPU comparison.
+          Synchronous per-draw transfers/readbacks are still costly: **GPU execution is not
+          a guaranteed FPS improvement**, especially for small windows/simple shaders.
+          In two final one-vCPU, 512 MiB x64 VMware trials, the 120-frame 480x360 SM4 cube
+          took **1,148–1,158 ms CPU vs 795–901 ms GPU** (paired 1.28–1.44x speedups);
+          SM5 took **1,224–1,252 vs 908–1,167 ms** (1.05–1.38x). These include synchronous
+          transfers and window presentation, not just shader time, and are not comparable
+          to QEMU TCG figures or a general physical-GPU performance claim.
       - `C:\Samples\d3d10cube.exe` defaults to the original SM4 assembly; `--sm5` / `--sm6`
         select genuine FXC/DXC equivalents from `samples/d3d10cube.hlsl`. `--bench` draws four
         warm-up frames followed by 120 deterministic 480x360 frames, logging the elapsed
-        milliseconds with `OutputDebugString`. In a same-host, 512 MB, one-vCPU QEMU TCG x64
+        milliseconds, the last-draw backend and GPU/CPU draw counts with `OutputDebugString`.
+        `--cpu` selects the native CPU renderer even on a supported GPU; combine it with
+        `--sm5` / `--sm6` for like-for-like comparisons. In the earlier same-host,
+        512 MB, one-vCPU QEMU TCG x64
         comparison (two runs), SM4 improved from **7.97–8.12 to 12.14–13.18 FPS**
         (**1.52–1.62x** paired speedups). SM5 measured **10.72–12.02 FPS** and SM6
         **7.80–8.73 FPS**. These are software-renderer benchmark
         results, not real-hardware/GPU numbers; x86 is compile/host-tested, not re-timed here.
       - `C:\Samples\shaderprobe.exe` checks successful uploads, rejected features and unchanged
         profile queries (16 checks). `make check-shaders` runs native host execution and
-        framebuffer tests using checked-in real compiler fixtures; `make bench-shaders` adds
+        framebuffer, GPU-lowering/reference and FIFO-transport tests using checked-in real
+        compiler fixtures; `make bench-shaders` adds
         an interpreter microbenchmark, **not OS frame rate**. Regeneration uses host FXC/DXC
         only; see [`tools/shaders/README.md`](tools/shaders/README.md) for the exact subset,
         limits and commands. The COM tables still come from `tools/gen_d3d10.py`.

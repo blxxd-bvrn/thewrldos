@@ -50,11 +50,14 @@ void gfx_init(void) {
 
 /* change the screen resolution: switch the adapter, then resize the back buffer */
 void (*gfx_resized_hook)(void);
+void gfx_refresh_framebuffer(void) {
+    fb = (uint32_t *)(uintptr_t)fb_info.addr;
+    paging_set_wc(fb_info.addr, fb_info.pitch * fb_info.height);
+}
 bool gfx_set_resolution(int w, int h) {
     if (w == SCREEN_W && h == SCREEN_H) return true;
     if (!video_set_mode(w, h)) return false;
-    fb = (uint32_t *)(uintptr_t)fb_info.addr;
-    paging_set_wc(fb_info.addr, fb_info.pitch * fb_info.height);
+    gfx_refresh_framebuffer();
     kfree(screen.px);
     SCREEN_W = w; SCREEN_H = h;
     canvas_init(&screen, kmalloc(w * h * 4), w, h);

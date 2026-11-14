@@ -1,10 +1,11 @@
-/* d3d10.dll and dxgi.dll for Win32 programs: Direct3D 10 on the processor.
+/* d3d10.dll and dxgi.dll: native Direct3D 10 with optional VMware GPU offload.
  *
  * Direct3D 10 has no fixed-function pipeline: every draw runs a vertex shader
  * and a pixel shader in compiled HLSL bytecode. The native engine accepts SM4,
  * an SM5.0 DXBC subset, and an SM6.0 DXIL subset (not D3D11/12 feature levels).
- * Draws prepare both interpreters once; scanline spans step only the varying
- * components actually read by the pixel shader, with depth/culling/blending.
+ * Eligible draws lower the shared IR to legacy SVGA3D shaders and commit only
+ * fenced GPU readback. Other draws prepare both CPU interpreters once; scanline
+ * spans step only live varying components, with depth/culling/blending.
  *
  * Implemented: D3D10CreateDevice(AndSwapChain), CreateDXGIFactory, swap chains
  * that present into a window, buffers (vertex, index, constant; Map and
@@ -21,6 +22,8 @@
 #include "w32.h"
 #include "r3d.h"
 #include "dxbc.h"
+#include "shader_gpu.h"
+#include "gpu3d.h"
 
 bool w32_hwnd_client(uintptr_t hwnd, canvas_t **surf, rect_t *client);
 void blit_scaled_alpha(canvas_t *dst, rect_t r, canvas_t *src, int alpha);
@@ -111,9 +114,14 @@ typedef struct { int32_t a2c, enable[8]; uint32_t src, dst, op, src_a, dst_a, op
 typedef struct { uint32_t filter, au, av, aw; float bias; uint32_t aniso, cmp; float border[4], minlod, maxlod; } sampler_desc_t;
 
 typedef struct { com_t c; buffer_desc_t d; uint8_t *data; } buffer_t;
-typedef struct { com_t c; tex2d_desc_t d; uint32_t pitch, bpp; uint8_t *data, *scratch; } tex_t;
+typedef struct { com_t c; tex2d_desc_t d; uint32_t pitch, bpp; uint8_t *data, *scratch; bool gpu_depth24; } tex_t;
 typedef struct { com_t c; tex_t *tex; } view_t;
-typedef struct { com_t c; dxbc_shader_t *sh; } shader_t;
+typedef struct {
+    com_t c; dxbc_shader_t *sh;
+    shader_gpu_t *gpu;
+    bool gpu_tried;
+    uint64_t gpu_link;
+} shader_t;
 typedef struct { int reg, slot, format, sysval, mask; uint32_t offset, step; bool instance; } layout_elem_t;
 typedef struct { com_t c; layout_elem_t e[DX_MAX_SIG]; int n; } layout_t;
 typedef struct { com_t c; sampler_desc_t d; } sampler_t;
@@ -134,6 +142,8 @@ typedef struct device {
     view_t *rtv, *dsv;
     viewport_t vp; bool vp_set;
     rast_t *rs; depthst_t *ds; blendst_t *bs;
+    bool force_cpu, last_gpu;
+    uint32_t gpu_draws, cpu_draws;
 } device_t;
 typedef struct { com_t c; swap_desc_t d; tex_t *back; canvas_t *frame; } swap_t;
 
@@ -210,7 +220,7 @@ static uint32_t WINAPI Release(com_t *self) {
     case IF_BUFFER: kfree(((buffer_t *)self)->data); break;
     case IF_TEX2D: kfree(((tex_t *)self)->data); kfree(((tex_t *)self)->scratch); break;
     case IF_RTV: case IF_DSV: case IF_SRV: unref(((view_t *)self)->tex); break;
-    case IF_VS: case IF_PS: case IF_GS: dxbc_free(((shader_t *)self)->sh); break;
+    case IF_VS: case IF_PS: case IF_GS: shader_gpu_free(((shader_t *)self)->gpu); dxbc_free(((shader_t *)self)->sh); break;
     case IF_SWAP: unref(((swap_t *)self)->back); if (((swap_t *)self)->frame) canvas_free(((swap_t *)self)->frame); break;
     case IF_DEVICE: device_unbind_all((device_t *)self); break;
     }
@@ -233,7 +243,7 @@ static void WINAPI BufUnmap(buffer_t *b) { (void)b; }
 static void WINAPI BufGetDesc(buffer_t *b, buffer_desc_t *d) { if (d) *d = b->d; }
 typedef struct { void *data; uint32_t pitch; } mapped2d_t;
 static HRESULT WINAPI TexMap(tex_t *t, uint32_t sub, uint32_t type, uint32_t flags, mapped2d_t *m) {
-    (void)type; (void)flags;
+    (void)flags;
     if (!m) return E_INVALIDARG;
     uint32_t mip = sub % MAX(t->d.mips, 1);
     if (mip) {                                         /* smaller mips are accepted and not used */
@@ -242,6 +252,7 @@ static HRESULT WINAPI TexMap(tex_t *t, uint32_t sub, uint32_t type, uint32_t fla
         m->data = t->scratch; m->pitch = w * t->bpp;
         return t->scratch ? S_OK : E_OUTOFMEMORY;
     }
+    if(type!=1)t->gpu_depth24=false;          /* read-only mapping must retain depth precision */
     m->data = t->data; m->pitch = t->pitch;
     return S_OK;
 }
@@ -347,7 +358,7 @@ static HRESULT WINAPI AdapterGetDesc(com_t *a, uint16_t *d) {
     (void)a;
     if (!d) return E_INVALIDARG;
     memset(d, 0, 128 * 2 + 16 + 3 * sizeof(uintptr_t) + 8);
-    const char *n = "WRLD 3D (software rasterizer)";
+    const char *n = gpu3d_available() ? "VMware SVGA3D GPU (native CPU fallback)" : "WRLD 3D (software rasterizer)";
     for (int i = 0; n[i]; i++) d[i] = n[i];
     uintptr_t *mem = (uintptr_t *)((uint8_t *)d + 128 * 2 + 16);
     mem[2] = 256u << 20;                               /* shared system memory */
@@ -519,6 +530,7 @@ static void WINAPI ClearDepthStencilView(device_t *d, view_t *v, uint32_t flags,
     (void)d; (void)stencil;
     if (!v || !v->tex || !(flags & 1)) return;
     tex_t *t = v->tex;
+    t->gpu_depth24=false;
     for (uint32_t y = 0; y < t->d.h; y++) { float *row = (float *)texel(t, 0, y); for (uint32_t x = 0; x < t->d.w; x++) row[x] = depth; }
 }
 static void WINAPI GenerateMips(device_t *d, view_t *v) { (void)d; (void)v; }
@@ -532,6 +544,7 @@ static void WINAPI UpdateSubresource(device_t *d, com_t *res, uint32_t sub, cons
         if (x0 < x1 && x1 <= b->d.bytes) memcpy(b->data + x0, src, x1 - x0);
     } else if (res->kind == IF_TEX2D && sub == 0) {
         tex_t *t = (tex_t *)res;
+        t->gpu_depth24=false;
         uint32_t x0 = box ? box[0] : 0, y0 = box ? box[1] : 0, x1 = box ? box[3] : t->d.w, y1 = box ? box[4] : t->d.h;
         if (x1 > t->d.w || y1 > t->d.h || x0 >= x1 || y0 >= y1) return;
         for (uint32_t y = y0; y < y1; y++) memcpy(texel(t, x0, y), (const uint8_t *)src + (size_t)(y - y0) * pitch, (x1 - x0) * t->bpp);
@@ -543,6 +556,7 @@ static void WINAPI CopyResource(device_t *d, com_t *dst, com_t *src) {
     if (dst->kind == IF_BUFFER) { buffer_t *a = (buffer_t *)dst, *b = (buffer_t *)src; memcpy(a->data, b->data, MIN(a->d.bytes, b->d.bytes)); }
     else if (dst->kind == IF_TEX2D) {
         tex_t *a = (tex_t *)dst, *b = (tex_t *)src;
+        a->gpu_depth24=b->gpu_depth24&&a->d.format==b->d.format;
         if (a->bpp == b->bpp) for (uint32_t y = 0; y < MIN(a->d.h, b->d.h); y++) memcpy(texel(a, 0, y), texel(b, 0, y), MIN(a->pitch, b->pitch));
     }
 }
@@ -658,9 +672,8 @@ static void env_for(pipe_t *P, dxbc_env_t *e, buffer_t **cbs) {
     for (int i = 0; i < 14; i++) if (cbs[i]) { e->cb[i] = (const vec4_t *)cbs[i]->data; e->cb_rows[i] = cbs[i]->d.bytes / 16; }
     e->ctx = &P->sctx; e->sample = cb_sample; e->load = cb_load; e->size = cb_size;
 }
-static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
+static bool vertex_inputs(pipe_t *P, uint32_t index, uint32_t instance, vec4_t *in) {
     device_t *d = P->d;
-    vec4_t *in = P->vs_in, *out = P->vs_out;
     layout_t *l = d->layout;
     for (int k = 0; l && k < l->n; k++) {
         layout_elem_t *e = &l->e[k];
@@ -676,6 +689,11 @@ static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
         int component = 0;
         for (int i = 0; i < 4; i++) if (e->mask & (1u << i)) in[e->reg].u[i] = value.u[component++];
     }
+    return true;
+}
+static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
+    vec4_t *out = P->vs_out;
+    if (!vertex_inputs(P, index, instance, P->vs_in)) return false;
     if (!dxbc_exec_run(&P->vs_exec)) return false;
     memcpy(o->pos, out[P->pos_reg].f, 16);
     for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i))
@@ -704,6 +722,12 @@ static bool depth_pass(uint32_t f, float z, float cur) {
     case 5: return z > cur; case 6: return z != cur; case 7: return z >= cur;
     }
     return true;
+}
+static float quantized_depth(pipe_t *P,float z) {
+    /* Match a D24 GPU readback during later unsupported/CPU draws, including
+     * EQUAL/LESS_EQUAL. D32F never uses the reduced-precision hardware path. */
+    if(!P->ds||!P->ds->gpu_depth24||!(z>=0&&z<=1)||z==1)return z;
+    uint32_t n=(uint32_t)((double)z*16777215.0+.5);return (float)((double)n/16777215.0);
 }
 
 /* screen-space vertex: position, 1/w and varyings divided by w */
@@ -790,14 +814,14 @@ static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *
         float iw = iwplane.origin + iwplane.dy * (y - y0) + iwplane.dx * (xs - x0);
         for (int i = 0; i < nattrs; i++) attrs[i].value = attrs[i].origin + attrs[i].dy * (y - y0) + attrs[i].dx * (xs - x0);
         for (int x = xs; x < xe; x++) {
-            float zv = P->vminz + z * (P->vmaxz - P->vminz);
+            float zv = quantized_depth(P,P->vminz + z * (P->vmaxz - P->vminz));
             float *dz = P->ds ? (float *)texel(P->ds, x, y) : NULL;
             if (z >= 0 && z <= 1 && (!dz || !P->depth_on || P->writes_depth || depth_pass(P->depth_func, zv, *dz))) {
                 float w = iw != 0 ? 1.0f / iw : 0;
                 for (int i = 0; i < nattrs; i++) *attrs[i].input = attrs[i].value * (attrs[i].perspective ? w : 1);
                 if (P->ps_pos_reg >= 0) { vec4_t *r = &in[P->ps_pos_reg]; r->f[0] = x + .5f; r->f[1] = y + .5f; r->f[2] = zv; r->f[3] = iw; }
                 if (dxbc_exec_run(&P->ps_exec)) {
-                    if (P->writes_depth) zv = out[DX_MAX_REG - 1].f[0];
+                    if (P->writes_depth) zv = quantized_depth(P,out[DX_MAX_REG - 1].f[0]);
                     if (!P->writes_depth || (zv >= 0 && zv <= 1 && (!dz || !P->depth_on || depth_pass(P->depth_func, zv, *dz)))) {
                         if (dz && P->depth_on && P->depth_write) *dz = zv;
                         write_fragment(P, x, y);
@@ -935,10 +959,87 @@ static bool setup(pipe_t *P, device_t *d) {
     P->bd = d->bs ? &d->bs->d : NULL;
     P->writes_depth = dxbc_writes_depth(d->ps->sh);
     if (P->clip.w <= 0 || P->clip.h <= 0) return false;
-    return dxbc_exec_init(&P->vs_exec, d->vs->sh, &P->vs_env, P->vs_in, P->vs_out) &&
-           dxbc_exec_init(&P->ps_exec, d->ps->sh, &P->ps_env, P->ps_in, P->ps_out);
+    return true;
 }
 static void free_pipe(pipe_t *P) { dxbc_exec_fini(&P->vs_exec); dxbc_exec_fini(&P->ps_exec); kfree(P); }
+static shader_gpu_t *gpu_program(shader_t *s, const dxbc_shader_t *vs, uint64_t link) {
+    if (!s->gpu_tried || s->gpu_link != link) {
+        shader_gpu_free(s->gpu); s->gpu = NULL; s->gpu_tried = true; s->gpu_link = link;
+        char error[128]; s->gpu = shader_gpu_compile(s->sh, vs, error, sizeof error);
+        if (!s->gpu) klog("w32: d3d10: %s", error);
+    }
+    return s->gpu;
+}
+static bool draw_gpu(pipe_t *P, uint32_t count, const void *idx, int idx32, int32_t base, uint32_t first, uint32_t instance, uint32_t lo, uint32_t span) {
+    device_t *d = P->d;
+    if (d->force_cpu || !gpu3d_available() || !P->rt || P->target_type != 3 || P->writes_depth ||
+        (P->rt->d.format != F_RGBA8 && P->rt->d.format != F_BGRA8) ||
+        P->rt->d.w > 2048 || P->rt->d.h > 2048 || span > 65536 || count > 196608 ||
+        P->vx < 0 || P->vy < 0 || P->clip.x != (int)P->vx || P->clip.y != (int)P->vy ||
+        P->clip.w != (int)P->vw || P->clip.h != (int)P->vh || P->ps_pos_reg >= 0 || P->ps_face_reg >= 0 || P->ps_prim_reg >= 0) return false;
+    if (P->ds && (P->ds->d.w != P->rt->d.w || P->ds->d.h != P->rt->d.h || (P->ds->d.format != F_D32F && P->ds->d.format != F_D24S8))) return false;
+    if(P->ds&&P->ds->d.format==F_D32F&&!gpu3d_float_depth())return false;
+    if (d->ds && d->ds->d.stencil) return false;
+    if (d->rs && (d->rs->d.fill != 3 || d->rs->d.bias || d->rs->d.bias_clamp != 0 || d->rs->d.slope_bias != 0 ||
+        !d->rs->d.depth_clip || d->rs->d.scissor || d->rs->d.ms || d->rs->d.aa)) return false;
+    for (int i = 0; i < P->nvar; i++) if (P->interpolation[i] != 2) return false;
+    if (d->bs && (d->bs->d.a2c || (P->blend && (d->bs->d.src < 1 || d->bs->d.src > 11 || d->bs->d.dst < 1 || d->bs->d.dst > 11 ||
+        d->bs->d.src_a < 1 || d->bs->d.src_a > 11 || d->bs->d.dst_a < 1 || d->bs->d.dst_a > 11 ||
+        d->bs->d.op < 1 || d->bs->d.op > 3 || d->bs->d.op_a < 1 || d->bs->d.op_a > 3)))) return false;
+    shader_gpu_t *vs = gpu_program(d->vs, NULL, 0);
+    if (!vs || !vs->ninputs) return false;
+    shader_gpu_t *ps = gpu_program(d->ps, d->vs->sh, vs->link_key);
+    if (!ps) return false;
+    for (int i = 0; i < ps->ntextures; i++) {
+        view_t *v = d->srv[ps->texture[i].texture]; sampler_t *sm = d->smp[ps->texture[i].sampler];
+        if (!v || !v->tex || v->tex == P->rt || v->tex == P->ds || (v->tex->d.format != F_RGBA8 && v->tex->d.format != F_BGRA8)) return false;
+        if (sm) {
+            if ((sm->d.filter != 0 && sm->d.filter != 0x15) || sm->d.au < 1 || sm->d.au > 4 || sm->d.av < 1 || sm->d.av > 4) return false;
+            for (int c = 0; c < 4; c++) if (!(sm->d.border[c] >= 0 && sm->d.border[c] <= 1)) return false;
+        }
+    }
+    typedef struct { gpu3d_draw_t draw; float vs_const[256][4], ps_const[224][4]; } data_t;
+    size_t vb = (size_t)span * vs->ninputs * 16, ib = (size_t)count * 2;
+    if (vb + ib + (size_t)P->rt->d.w * P->rt->d.h * (P->ds ? 8 : 4) > 16u * 1024 * 1024) return false;
+    data_t *data = kzalloc(sizeof *data + vb + ib);
+    if (!data) return false;
+    float *vertices = (float *)(data + 1); uint16_t *indices = (uint16_t *)((uint8_t *)vertices + vb);
+    vec4_t in[DX_MAX_REG];
+    for (uint32_t i = 0; i < span; i++) {
+        memset(in, 0, sizeof in);
+        if (!vertex_inputs(P, lo + i, instance, in)) { kfree(data); return false; }
+        for (int k = 0; k < vs->ninputs; k++) memcpy(vertices + ((size_t)i * vs->ninputs + k) * 4, &in[vs->input_reg[k]], 16);
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t k = idx ? (idx32 ? ((const uint32_t *)idx)[i] : ((const uint16_t *)idx)[i]) + base : first + i;
+        if (k < lo || k - lo >= span) { kfree(data); return false; } indices[i] = k - lo;
+    }
+    gpu3d_draw_t *r = &data->draw;
+    r->width = P->rt->d.w; r->height = P->rt->d.h; r->color_pitch = P->rt->pitch; r->color = P->rt->data; r->bgra = P->rt->d.format == F_BGRA8;
+    if (P->ds) { r->depth = (float *)P->ds->data; r->depth_pitch = P->ds->pitch; }
+    r->vertices = vertices; r->nvertices = span; r->input_slots = vs->ninputs; r->input_mask = (1u << vs->ninputs) - 1;
+    r->indices = indices; r->nindices = count; r->strip = d->topology == 5;
+    r->vx = P->vx; r->vy = P->vy; r->vw = P->vw; r->vh = P->vh; r->minz = P->vminz; r->maxz = P->vmaxz;
+    r->depth_test = P->depth_on; r->depth_write = P->depth_write; r->depth_func = P->depth_func;
+    r->cull = d->rs ? d->rs->d.cull : 3; r->front_ccw = P->front_ccw; r->color_mask = P->color_mask; r->blend = P->blend;
+    r->src_blend = r->src_alpha = 2; r->dst_blend = r->dst_alpha = 1; r->blend_op = r->alpha_op = 1;
+    if (P->blend) { const blend_desc_t *b = P->bd; r->src_blend = b->src; r->dst_blend = b->dst; r->blend_op = b->op; r->src_alpha = b->src_a; r->dst_alpha = b->dst_a; r->alpha_op = b->op_a; }
+    shader_gpu_constants(vs, &P->vs_env, data->vs_const, P->vw, P->vh);
+    shader_gpu_constants(ps, &P->ps_env, data->ps_const, P->vw, P->vh);
+    r->vs = (gpu3d_stage_t){ vs->words, vs->nwords, vs->serial, data->vs_const, 256 };
+    r->ps = (gpu3d_stage_t){ ps->words, ps->nwords, ps->serial, data->ps_const, ps->ncb };
+    r->ntextures = ps->ntextures;
+    for (int i = 0; i < ps->ntextures; i++) {
+        tex_t *t = d->srv[ps->texture[i].texture]->tex; sampler_t *sm = d->smp[ps->texture[i].sampler];
+        gpu3d_texture_t *g = &r->texture[i]; g->data = t->data; g->width = t->d.w; g->height = t->d.h; g->pitch = t->pitch; g->bgra = t->d.format == F_BGRA8;
+        g->address_u = sm ? sm->d.au : 3; g->address_v = sm ? sm->d.av : 3; g->linear = !sm || sm->d.filter == 0x15;
+        if (sm) g->border = ((uint32_t)to8(sm->d.border[3]) << 24) | ((uint32_t)to8(sm->d.border[0]) << 16) | ((uint32_t)to8(sm->d.border[1]) << 8) | to8(sm->d.border[2]);
+    }
+    bool ok = gpu3d_draw(r); kfree(data);
+    if(ok&&P->ds)P->ds->gpu_depth24=!gpu3d_float_depth();
+    if (ok && !d->gpu_draws) klog("w32: d3d10: GPU draw path active (%s), fenced readback", gpu3d_name());
+    return ok;
+}
 static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_t base, uint32_t first, uint32_t instance) {
     if (count < 3) return;
     pipe_t *P = kmalloc(sizeof(pipe_t));
@@ -952,6 +1053,10 @@ static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_
     }
     uint32_t span = hi - lo + 1;
     if (!span || span > (1u << 20)) { free_pipe(P); return; }
+    if (draw_gpu(P, count, idx, idx32, base, first, instance, lo, span)) { d->last_gpu = true; d->gpu_draws++; free_pipe(P); return; }
+    d->last_gpu = false; d->cpu_draws++;
+    if (!dxbc_exec_init(&P->vs_exec, d->vs->sh, &P->vs_env, P->vs_in, P->vs_out) ||
+        !dxbc_exec_init(&P->ps_exec, d->ps->sh, &P->ps_env, P->ps_in, P->ps_out)) { free_pipe(P); return; }
     pv_t *cache = kmalloc(sizeof(pv_t) * span);
     uint8_t *done = kzalloc(span);
     if (!cache || !done) { kfree(cache); kfree(done); free_pipe(P); return; }
@@ -1045,18 +1150,19 @@ static void build_vtables(void) {
 }
 
 /* ---------------- exports ---------------- */
-static HRESULT new_device(device_t **out) {
+static HRESULT new_device(device_t **out, bool force_cpu) {
     if (!accel3d) { klog("w32: Direct3D 10 device refused: 3D acceleration is turned off"); return DXGI_ERROR_UNSUPPORTED; }
     device_t *d = com_new(IF_DEVICE, sizeof(device_t), NULL);
     if (!d) return E_OUTOFMEMORY;
     d->c.dev = d;
+    d->force_cpu = force_cpu;
     *out = d;
     return S_OK;
 }
 static HRESULT WINAPI D3D10CreateDevice(void *adapter, uint32_t type, uintptr_t sw, uint32_t flags, uint32_t sdk, device_t **out) {
-    (void)adapter; (void)type; (void)sw; (void)flags; (void)sdk;
+    (void)adapter; (void)sw; (void)flags; (void)sdk;
     device_t *d;
-    HRESULT hr = new_device(&d);
+    HRESULT hr = new_device(&d, type != 0);
     if (hr) { if (out) *out = NULL; return hr; }
     if (out) *out = d; else Release(&d->c);
     return S_OK;
@@ -1067,7 +1173,7 @@ static HRESULT WINAPI D3D10CreateDeviceAndSwapChain(void *adapter, uint32_t type
     if (swap) *swap = NULL;
     if (out) *out = NULL;
     device_t *d;
-    HRESULT hr = new_device(&d);
+    HRESULT hr = new_device(&d, type != 0);
     if (hr) return hr;
     if (swap) { hr = make_swapchain(d, sd, swap); if (hr) { Release(&d->c); return hr; } }
     if (out) *out = d; else Release(&d->c);
@@ -1084,6 +1190,15 @@ static HRESULT WINAPI D3D10CompileShader(const char *src, uintptr_t len, const c
 static const char *WINAPI D3D10GetVertexShaderProfile(void *dev) { (void)dev; return "vs_4_0"; }
 static const char *WINAPI D3D10GetPixelShaderProfile(void *dev) { (void)dev; return "ps_4_0"; }
 static const char *WINAPI D3D10GetGeometryShaderProfile(void *dev) { (void)dev; return "gs_4_0"; }
+/* Optional WRLD diagnostics, not new Direct3D feature levels. */
+static const char *WINAPI WRLDGetD3D10Backend(device_t *d) {
+    if (!d || d->force_cpu) return "native CPU";
+    return d->last_gpu ? "VMware SVGA3D GPU" : "native CPU (fallback)";
+}
+static void WINAPI WRLDGetD3D10DrawStats(device_t *d, uint32_t *gpu, uint32_t *cpu) {
+    if (gpu) *gpu = d ? d->gpu_draws : 0;
+    if (cpu) *cpu = d ? d->cpu_draws : 0;
+}
 static HRESULT WINAPI CreateDXGIFactory(const void *iid, com_t **out) {
     (void)iid;
     if (!out) return E_INVALIDARG;
@@ -1103,6 +1218,7 @@ static HRESULT WINAPI D3DCompile(const void *src, uintptr_t len, const char *nam
 const w32_export_t d3d10_exports[] = {
     E(D3D10CreateDevice), E(D3D10CreateDeviceAndSwapChain), E(D3D10CompileShader),
     E(D3D10GetVertexShaderProfile), E(D3D10GetPixelShaderProfile), E(D3D10GetGeometryShaderProfile),
+    E(WRLDGetD3D10Backend), E(WRLDGetD3D10DrawStats),
 };
 const int d3d10_count = ARRAY_LEN(d3d10_exports);
 const w32_export_t dxgi_exports[] = { E(CreateDXGIFactory), { "CreateDXGIFactory1", (void *)CreateDXGIFactory } };

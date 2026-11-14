@@ -11,7 +11,8 @@ fixture-generation tools, never OS runtime dependencies.
 | DXBC | Vertex/pixel SM4.0/4.1 and SM5.0 token programs in DXBC containers |
 | DXIL | Vertex/pixel SM6.0, DXIL 1.0, LLVM bitcode version 1; one void entry function |
 
-`dxbc.c` and `dxil.c` lower to `shader_priv.h`'s shared interpreter. Loading does
+`dxbc.c` and `dxil.c` lower to `shader_priv.h`'s shared native IR/interpreter. Eligible
+D3D10 draws can also lower that IR to legacy VMware GPU shaders (see below). Loading does
 not execute LLVM, native machine code or downloaded code. D3D10's profile queries
 remain `vs_4_0` / `ps_4_0`; acceptance of newer shader blobs is a WRLD extension,
 not a D3D11/12 API implementation or feature-level claim.
@@ -84,8 +85,14 @@ all 65,536 half encodings, allocation failure, malformed/truncated/mutated input
 instruction limits, zero hot-path allocations, coverage/shared-edge blending,
 depth/discard, color write masks, perspective/flat/noperspective clipping and
 unsigned render targets, native point/bilinear sampling and negative-coordinate
-wrapping. Unsupported cases have dedicated rejection fixtures.
-The core and framebuffer tests also run with Clang's undefined-behavior sanitizer.
+wrapping. GPU tests check per-draw CPU retry, reference-device selection, D24 CPU/GPU
+depth coherence, native IR-to-SM3 reference execution, stage opcodes, constant/input
+read ports, aliased scalar/conditional operations, ordered comparisons (including
+NaNs), and expanded instruction budgets. Mocked port I/O exercises the actual FIFO
+code's atomic/wrapped packets, timeouts, fence wrap and 2D capability refresh;
+obsolete "DEAD" slots/cursor IDs are not device-error status. Unsupported cases have
+dedicated rejection fixtures. These are host tests, not proof that a GPU executed
+the draw. The suites also run with Clang's undefined-behavior sanitizer.
 
 The microbenchmark uses the original cube PS, one million invocations and the
 same synthetic sampler/inputs as the saved pre-change baseline. Its checksum is
@@ -102,13 +109,87 @@ C:/Samples/shaderprobe.exe
 C:/Samples/d3d10cube.exe --bench
 C:/Samples/d3d10cube.exe --sm5 --bench
 C:/Samples/d3d10cube.exe --sm6 --bench
+C:/Samples/d3d10cube.exe --bench --cpu
+C:/Samples/gpuverify.exe --show
 ```
 
 Use forward slashes in Command Prompt: its shell consumes backslash escapes.
 The cube's normal interactive mode still runs until Escape/close. The probe logs
 16 successful-upload / rejection / unchanged-profile checks through
 `OutputDebugString`. Bench mode uses four warm-up frames and 120 deterministic
-480x360 frames, reporting guest milliseconds the same way.
+480x360 frames, reporting guest milliseconds, the last completed draw's backend,
+and per-device GPU/CPU draw counts the same way. `--cpu` uses a D3D10 reference
+device to force native CPU rendering; combine it with each shader-model switch
+for like-for-like comparisons. The optional `WRLDGetD3D10Backend` /
+`WRLDGetD3D10DrawStats` exports are diagnostics, not Direct3D feature levels.
+
+### Native legacy VMware GPU subset
+
+The guest backend is native C (`src/kernel/gpu3d.c`, `src/win32/shader_gpu.c`),
+without Mesa, LLVM, FreeType, Skia or ICU dependencies. It is tested with Workstation
+15.0.0 build-10134415, virtual hardware **7**, `mks.enable3d = "TRUE"` and
+`svga.vgpu10 = "FALSE"`. VMware's DX11 host renderer used an RTX 3050; the guest
+does not contain an NVIDIA driver. Modern guest-backed-object SVGA3D (including
+the tested hardware-16 configuration) is not implemented. Missing capabilities,
+failed DMA/rendered-triangle probes, and unsupported draws keep native CPU rendering.
+
+Hardware lowering is deliberately narrower than shader upload: up to 28 original
+temporary vectors, 512 emitted SM3 instruction slots, 24 branch levels, ten
+perspective varying registers, and eight 2D texture/sampler pairs. Float math and
+tracked comparison booleans support bounded if/else; integer/bit operations,
+relative/indexable operands, loops/discard, implicit texture gradients inside
+dynamic flow, unsupported linkage and larger programs fall back per draw.
+SM3 pixel shaders cannot use vertex-only SLT/SGE, and both stages allow only one
+distinct input and one distinct constant register per instruction. Legalization
+and alias-safe scalar comparisons are covered by the host reference tests.
+
+RGBA8/BGRA8 targets, base-level point/linear sampling, wrap/mirror/clamp/border,
+triangle lists/strips, and common depth/cull/blend/color-mask states offload;
+unsupported states retain the CPU path. The legacy target uses D24S8 with depth in
+the upper 24 bits; D32F requests fall back if float depth is unavailable. CPU
+buffers remain authoritative, with a stable bounded 16 MiB staging GMR, uploads
+before each draw and color/depth readbacks committed only after a fence. Staging
+is deliberately retained after timeout to prevent late host DMA into freed memory.
+
+`gpuverify.exe` requires actual completed GPU draws and compares CPU/GPU readbacks
+at four deterministic poses for the original SM4 and real-compiler SM5 cubes:
+36 checks, mean RGB error <= 2/255 and at most 2% of pixels with any RGB error > 24/255.
+The tested run has zero such bad pixels, with mean errors 0.002-0.021/255. The
+larger SM6 cube exceeds this initial hardware subset and correctly stays on the CPU.
+Do not substitute a CPU-versus-CPU comparison or relax tolerances to hide failures.
+Per-draw synchronous readback is expensive; small-cube results do not establish a
+universal FPS improvement. Earlier QEMU CPU measurements below
+are not comparable to hardware-virtualized VMware timings.
+
+Optional **Windows-host** SM3 assembler validation (not just disassembly):
+
+```powershell
+New-Item -ItemType Directory -Force build64/sm3 | Out-Null
+./build64/shadergputest.exe build64/sm3
+python tools/check_gpu_shaders.py build64/sm3
+```
+
+This uses the host's `d3dcompiler_47.dll` only. No compiler DLL or new runtime goes
+into the guest. Native GPU readback validation is still required separately.
+
+### Measured legacy VMware x64 runs
+
+Two final trials on the configuration above, 512 MiB, one vCPU, deterministic
+480x360 cube, four warm-up frames plus 120 timed frames. Each CPU/GPU pair uses
+the same shader model and sample binary; timings include uploads, fenced color/
+depth readback and window presentation:
+
+| Shader | Forced CPU (ms) | GPU (ms) | Paired frame-rate speedups |
+| --- | ---: | ---: | ---: |
+| SM4 | 1,158 / 1,148 | 901 / 795 | 1.28x / 1.44x |
+| SM5 | 1,224 / 1,252 | 1,167 / 908 | 1.05x / 1.38x |
+
+Each GPU case completes 124 GPU draws and zero CPU draws; the SM6 cube completes
+124 CPU fallback draws. All eight fixed-pose comparisons pass with zero bad
+pixels. Both CPU-only configurations (legacy VMware with 3D disabled, and modern
+hardware 16 with 3D enabled) retain CPU draws and pass the 16-check shader probe.
+These are limited paravirtual-GPU measurements, not a promise for other workloads,
+VMware versions or physical GPUs. No native x86 OS frame-rate claim is made.
 
 ### Measured x64 QEMU run
 
@@ -146,7 +227,7 @@ Rebuild `samples` afterward with MinGW-w64 targeting the classic MSVCRT supporte
 by WRLD, not a UCRT-only startup. The x86 samples also need an x87-compatible CRT
 (the checked-in x86 binaries use w64devkit 2.10): source-level `-mno-sse` cannot
 remove SSE2 from a newer prebuilt CRT. The Makefile supplies x87 flags for these
-two x86 samples; a small sample-local `_matherr` hook also avoids pulling in the
+shader samples (including `gpuverify`); a small sample-local `_matherr` hook also avoids pulling in the
 CRT's optional SIMD diagnostic printer. Their executable sections are audited
 for SSE/AVX/MMX instructions. `graphics.hlsl` owns general fixtures,
 `rejected.hlsl` owns deliberately unsupported resources/profiles, and
