@@ -496,7 +496,7 @@ static void signin_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st)
     if (s->subtitle[0]) draw_text(c, FONT_WEB_I, lx + 2, 98, s->subtitle, k[LC_TEXT]);
 
     /* the account */
-    int ty = MAX(124, H * 17 / 100);
+    int ty = MAX(146, H * 19 / 100);
     if (!st->selected) {
         bool hot = st->hot == HIT_USER;
         st->hit[HIT_USER] = R(80, ty - 6, 280, 64);
@@ -506,7 +506,7 @@ static void signin_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st)
         draw_text(c, FONT_UI, 148, ty + 21, user_password[0] ? "Password protected" : "Click to sign in",
                   hot ? k[LC_SUBTEXT] : mix(k[LC_BG_BOTTOM], k[LC_SUBTEXT], 150));
     } else {
-        rect_t pr = R(78, ty - 8, 310, 70);
+        rect_t pr = R(78, ty - 8, 320, 70);
         glass_panel(c, pr, 70, s);
         st->hit[HIT_USER] = R(pr.x, pr.y, 62, pr.h);
         framed_picture(c, 88, ty, 48, WHITE, 255);
@@ -519,7 +519,7 @@ static void signin_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st)
             int dx = 148 + text_width(FONT_UI_BOLD, "Signing in") + 8;
             for (int i = 0; i < 3; i++) fill_circle(c, dx + i * 10, ty + 39, 3, ((st->frame / 6) % 3) == i ? pt : mix(pt, k[LC_PANEL_BOTTOM], 190));
         } else if (user_password[0] || st->preview) {
-            rect_t b = R(148, ty + 30, 112, 20);
+            rect_t b = R(148, ty + 30, 122, 20);
             st->hit[HIT_PW] = b;
             fill_rect(c, b.x, b.y, b.w, b.h, WHITE);
             draw_rect(c, b.x, b.y, b.w, b.h, HEX(0x7F9DB9));
@@ -531,7 +531,7 @@ static void signin_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st)
                 for (int i = 0; i < n; i++) fill_circle(c, b.x + 8 + i * 7, b.y + b.h / 2, 2, BLACK);
                 vline(c, b.x + 6 + n * 7, b.y + 3, b.h - 6, BLACK);
             }
-            st->hit[HIT_SIGNIN] = R(270, ty + 26, 80, 28);
+            st->hit[HIT_SIGNIN] = R(280, ty + 26, 80, 28);
             pill(c, st->hit[HIT_SIGNIN], "Sign In", s, st->hot == HIT_SIGNIN);
         } else {
             st->hit[HIT_SIGNIN] = R(148, ty + 28, 80, 28);

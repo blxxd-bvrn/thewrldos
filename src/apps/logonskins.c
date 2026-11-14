@@ -266,8 +266,8 @@ static void mk_paint(window_t *w) {
     int by = pr.y + pr.h + 14;
     if (ui_button(w, R(px, by, 130, 26), "Preview full screen")) show_fullscreen(&m->sk);
     if (ui_button(w, R(px + 138, by, 80, 26), "New")) { logon_skin_t d; logon_skin_defaults(&d, m->sk.layout); strlcpy(d.name, "My Skin", sizeof d.name); mk_load(m, &d, false); m->dirty = true; m->status[0] = 0; }
-    if (ui_button(w, R(px + pw - 196, by, 80, 26), "Save")) mk_save(m, false);
-    if (ui_button_ex(w, R(px + pw - 110, by, 110, 26), "Save and use", true, true)) mk_save(m, true);
+    if (ui_button(w, R(px + pw - 196, by, 80, 26), "Save") && mk_save(m, false)) w->dirty = true;
+    if (ui_button_ex(w, R(px + pw - 110, by, 110, 26), "Save and use", true, true) && mk_save(m, true)) w->dirty = true;
     if (m->status[0]) draw_text_ellipsis(s, FONT_UI, px, by + 36, pw, m->status, T.gray_text);
     else draw_text_ellipsis(s, FONT_UI, px, by + 36, pw, "Skins are saved in " LOGON_SKIN_DIR ".", T.gray_text);
 }

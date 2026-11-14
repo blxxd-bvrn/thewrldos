@@ -49,7 +49,9 @@ from; open it in a browser to watch it live.
 
 | | |
 |---|---|
-| ![Welcome screen](docs/screenshots/welcome.png) | ![Start menu](docs/screenshots/start-menu.png) |
+| ![Sign-in screen (the default logon skin)](docs/screenshots/logon-signin.png) | ![XP Classic logon skin](docs/screenshots/welcome.png) |
+| ![Logon Skin Themer](docs/screenshots/logon-themer.png) | ![Logon Skin Maker](docs/screenshots/logon-maker.png) |
+| ![Start menu](docs/screenshots/start-menu.png) | |
 | ![Control Panel](docs/screenshots/control-panel.png) | ![Olive Green with a custom hue](docs/screenshots/olive-hue.png) |
 | ![Silver](docs/screenshots/silver.png) | ![WRLD Classic](docs/screenshots/classic.png) |
 | ![Win32 GUI program](docs/screenshots/win32-exe.png) | ![Win32 console program](docs/screenshots/console-exe.png) |
@@ -821,6 +823,26 @@ device manager's job is to say what the computer has and which driver runs it.
     including during transitions; covering windows receive the mouse input.
   - Tray balloons; desktop icons with context menus.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
+- **Logon skins**, all `.wrldlogon` files in `C:\WRLD\Resources\Logon Skins`:
+  - **Sign In** (the default): your account on the left of a deep blue glass background,
+    with the clock, **Power Off** and **Help and Settings** at the top right and
+    **Sign in as Guest** at the bottom left. With a password, the account opens into a panel
+    with the password box and a **Sign In** button.
+  - **XP Classic:** the previous XP-style screen with the divider down the middle.
+  - **Midnight**, **Sunrise** (sign-in layout) and **Olive Classic** (classic layout).
+  - **Logon Skin Themer** (All Programs, or Personalization > Welcome screen) shows every skin
+    as a thumbnail. You can apply one, preview it full screen, edit it or delete your own.
+  - **Logon Skin Maker** (All Programs) makes a skin from scratch or from an existing one:
+    - the layout;
+    - the title, subtitle and corner text;
+    - a background picture;
+    - which items are shown;
+    - every colour, with sliders, hex values or quick swatches.
+
+    The preview updates as you edit; **Save and use** applies the skin.
+  - **Help and Settings > Next skin** on the logon screen switches skins before you sign in.
+  - There's only one account, so **Sign in as Guest** only signs in when the account has no
+    password. With a password it says there's no Guest account.
 - **Visual styles**, all `.wrldstyle` files in `C:\WRLD\Resources\Themes`:
   - **Luna (Blue), Olive Green, Silver:** XP Luna.
   - **Royale:** XP's deeper, glossier blue with a dark navy taskbar (Luna renderer).
