@@ -1,0 +1,38 @@
+; THE WRLD OS logon skin, made with Logon Skin Maker. You can also edit it here.
+; Layout is signin or classic. Colours are #RRGGBB. Image is a PNG, JPEG, GIF or BMP
+; path (leave it empty for the drawn background).
+
+[Skin]
+Name=Sign In
+Description=The sign-in screen: your account on the left, the clock and Power Off at the top right, on deep blue glass.
+Layout=signin
+
+[Text]
+Title=welcome to
+Subtitle=Click on your name to sign in
+Brand=THE WRLD OS
+
+[Background]
+Image=
+
+[Options]
+ShowClock=1
+ShowGuest=1
+ShowHelp=1
+ShowGlobe=1
+
+[Colors]
+bg_top=#0A1CA6
+bg_bottom=#1A36C4
+glow1=#3A62F2
+glow2=#8A72C4
+glow3=#7C9ACC
+accent=#D8442A
+text=#FFFFFF
+subtext=#C4D2FF
+panel_top=#DCEBFF
+panel_bottom=#86ACF0
+panel_text=#08123C
+button_top=#FFFFFF
+button_bottom=#C4D6F6
+button_text=#0A2A8C

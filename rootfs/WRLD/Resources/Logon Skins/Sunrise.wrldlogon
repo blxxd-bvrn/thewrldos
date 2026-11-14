@@ -1,0 +1,38 @@
+; THE WRLD OS logon skin, made with Logon Skin Maker. You can also edit it here.
+; Layout is signin or classic. Colours are #RRGGBB. Image is a PNG, JPEG, GIF or BMP
+; path (leave it empty for the drawn background).
+
+[Skin]
+Name=Sunrise
+Description=The sign-in screen in warm morning colours.
+Layout=signin
+
+[Text]
+Title=good morning
+Subtitle=Click on your name to sign in
+Brand=THE WRLD OS
+
+[Background]
+Image=
+
+[Options]
+ShowClock=1
+ShowGuest=1
+ShowHelp=1
+ShowGlobe=1
+
+[Colors]
+bg_top=#5A1A3A
+bg_bottom=#C2502A
+glow1=#F08A3A
+glow2=#D84A6A
+glow3=#F6C26A
+accent=#B02020
+text=#FFFFFF
+subtext=#FFE2C8
+panel_top=#FFF4E6
+panel_bottom=#F2B482
+panel_text=#3A1408
+button_top=#FFFFFF
+button_bottom=#F6D2AE
+button_text=#7A2A08

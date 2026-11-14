@@ -1,0 +1,38 @@
+; THE WRLD OS logon skin, made with Logon Skin Maker. You can also edit it here.
+; Layout is signin or classic. Colours are #RRGGBB. Image is a PNG, JPEG, GIF or BMP
+; path (leave it empty for the drawn background).
+
+[Skin]
+Name=XP Classic
+Description=The XP-style welcome screen with the divider down the middle.
+Layout=classic
+
+[Text]
+Title=welcome
+Subtitle=To begin, click your user name
+Brand=
+
+[Background]
+Image=
+
+[Options]
+ShowClock=1
+ShowGuest=1
+ShowHelp=1
+ShowGlobe=1
+
+[Colors]
+bg_top=#00309C
+bg_bottom=#003CB4
+glow1=#7AA0F0
+glow2=#5A7EDC
+glow3=#B8D0FF
+accent=#E88A30
+text=#FFFFFF
+subtext=#D8E4F8
+panel_top=#00309C
+panel_bottom=#5A7EDC
+panel_text=#FFFFFF
+button_top=#FFC830
+button_bottom=#FFFFFF
+button_text=#0A2A8C

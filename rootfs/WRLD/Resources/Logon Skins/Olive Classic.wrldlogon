@@ -1,0 +1,38 @@
+; THE WRLD OS logon skin, made with Logon Skin Maker. You can also edit it here.
+; Layout is signin or classic. Colours are #RRGGBB. Image is a PNG, JPEG, GIF or BMP
+; path (leave it empty for the drawn background).
+
+[Skin]
+Name=Olive Classic
+Description=The XP-style welcome screen in olive green.
+Layout=classic
+
+[Text]
+Title=welcome
+Subtitle=To begin, click your user name
+Brand=
+
+[Background]
+Image=
+
+[Options]
+ShowClock=1
+ShowGuest=1
+ShowHelp=1
+ShowGlobe=1
+
+[Colors]
+bg_top=#3D5A1E
+bg_bottom=#56732A
+glow1=#B4C88A
+glow2=#8CA45C
+glow3=#E0ECC4
+accent=#E88A30
+text=#FFFFFF
+subtext=#EEF4DC
+panel_top=#3D5A1E
+panel_bottom=#8CA45C
+panel_text=#FFFFFF
+button_top=#FFC830
+button_bottom=#FFFFFF
+button_text=#3D5A1E

@@ -311,7 +311,14 @@ static void fonts_load(void) {
     }
     fonts_loaded = true;
 }
-static inline font_t *F(int f) { if (!fonts_loaded) fonts_load(); return &fonts[f]; }
+/* fonts past the generated set are TrueType sizes only; before the font files
+ * are loaded they are drawn with the nearest bitmap */
+static const uint8_t ext_fallback[FONT_ALL - FONT_COUNT] = { [FONT_DISPLAY_BI - FONT_COUNT] = FONT_HUGE };
+static inline font_t *F(int f) {
+    if (!fonts_loaded) fonts_load();
+    if (f >= FONT_COUNT && f < FONT_ALL) f = ext_fallback[f - FONT_COUNT];
+    return &fonts[f];
+}
 int font_height(int f) { return F(f)->height; }
 int font_ascent(int f) { return F(f)->ascent; }
 static inline const glyph_t *glyph(font_t *f, char ch) {
@@ -338,7 +345,7 @@ static const char *const ttf_files[TF_COUNT] = {
 };
 
 typedef struct { uint8_t face, px; } font_spec_t;
-static const font_spec_t font_specs[FONT_COUNT] = {
+static const font_spec_t font_specs[FONT_ALL] = {
     [FONT_UI]         = { TF_REGULAR, 12 },
     [FONT_UI_BOLD]    = { TF_BOLD, 12 },
     [FONT_TITLE]      = { TF_BOLD, 13 },
@@ -358,6 +365,7 @@ static const font_spec_t font_specs[FONT_COUNT] = {
     [FONT_H2]         = { TF_BOLD, 22 },
     [FONT_H3]         = { TF_BOLD, 17 },
     [FONT_WEB_SMALL]  = { TF_REGULAR, 12 },
+    [FONT_DISPLAY_BI] = { TF_BOLD_ITALIC, 30 },
 };
 
 static ttf_face_t *ttf_face[TF_COUNT];
@@ -398,7 +406,7 @@ static ttf_face_t *ttf_get(int which) {
     return f;
 }
 static ttf_face_t *font_face(int font) {
-    if (font < 0 || font >= FONT_COUNT) return NULL;
+    if (font < 0 || font >= FONT_ALL) return NULL;
     return ttf_get(font_specs[font].face);
 }
 

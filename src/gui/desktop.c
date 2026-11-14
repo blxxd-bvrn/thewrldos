@@ -1095,6 +1095,7 @@ static const sm_item_t all_programs[] = {
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
     { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },
     { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer" }, { "WRLD 3D", NULL, ICON_CP_DISPLAY, "wrld3d" },
+    { "Logon Skin Maker", NULL, ICON_CP_APPEARANCE, "logonmaker" }, { "Logon Skin Themer", NULL, ICON_CP_APPEARANCE, "logonthemer" },
     { "WRLD Security Center", NULL, ICON_CP_SYSTEM, "security" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },
     { NULL },
     { "Samples (EXE / DMG / SH)", NULL, ICON_FOLDER, "explorer:C:\\Samples" },
