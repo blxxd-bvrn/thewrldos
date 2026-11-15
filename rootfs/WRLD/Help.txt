@@ -96,6 +96,17 @@ MUSIC
   told 3D is unavailable.
 
 SOUND AND DISPLAY
+  WRLD Basic Display is the native firmware-framebuffer fallback on real PCs.
+  It uses BIOS/VESA or UEFI GOP output, firmware RGB masks, write combining
+  when available, and changed-region/cursor transfers. It does not provide
+  universal hardware-accelerated 3D or load Windows/Linux device drivers.
+  The firmware's resolution is retained; choose another supported mode in
+  GRUB before boot. video=basic forces this path (also in the recovery menu).
+  Command Prompt: display shows masks, cache mode and transfer diagnostics.
+  The x64 edition supports framebuffers above 4 GiB; x86 requires them below it.
+  Other devices still need their own native WRLD drivers; Device Manager
+  reports missing drivers instead of pretending every device is supported.
+
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
   shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High
   Definition Audio, AC'97 (Intel, nVidia, AMD, SiS, VIA), C-Media CMI8738,

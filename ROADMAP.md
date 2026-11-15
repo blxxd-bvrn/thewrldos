@@ -196,6 +196,21 @@ Already working, and not on the list below:
   from the native 2D raster stack: filters/blurs, box shadows, canvas, arbitrary CSS transforms
   and a full CSS layout engine.
 - The display path starts with the GRUB/UEFI linear framebuffer and a write-combining mapping.
+  **WRLD Basic Display** now preserves firmware masks/stride, supports direct RGB 15/16/24/32-bit
+  layouts and x64 framebuffer apertures above 4 GiB, and correctly pairs PAT PA1 with its page
+  selector (including a no-PAT uncached fallback). The shared presenter uses exact RAM damage
+  history, contiguous changed-region writes, x64 SSE2 streaming/native packing and small
+  cursor-only uploads. x86 remains no-SIMD. History allocation is optional; firmware scanout
+  remains usable without it. `video=basic` is an explicit recovery path and PCI ownership is
+  conservatively associated without BAR sizing writes or vendor GPU initialization.
+  A separate bounded UC MMIO window and opt-in 64-bit BAR decoding also support high
+  xHCI register apertures on UEFI systems. The old BAR accessor keeps its low-address
+  contract for other drivers; further ports remain explicit work, not an all-driver claim.
+  This is a **CPU-rendered basic display driver**, not physical GPU 3D acceleration or
+  compatibility with arbitrary Windows `.sys` / Linux `.ko` drivers. BIOS/UEFI QEMU and
+  synthetic high-framebuffer mapping are test coverage, not proof for all physical machines;
+  live-USB hardware validation remains necessary. Native GPU engines, runtime GOP-independent
+  mode setting, monitor hotplug/multi-monitor, power management and broad vendor coverage remain.
   QEMU/Bochs, VirtualBox and VMware adapters also support runtime mode changes via native drivers.
   There is no physical NVIDIA/AMD/Intel GPU driver, vsync or display-engine audio; the
   limited VMware D3D10 offload above is separate from the firmware framebuffer path.

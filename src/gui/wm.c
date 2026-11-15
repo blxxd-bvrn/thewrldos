@@ -878,13 +878,13 @@ extern void shell_restart_trampoline(void);
 #endif
 void video_update(int x, int y, int w, int h);
 static void wd_banner(const char *a, const char *b) {
-    canvas_t c; c.px = (uint32_t *)(uintptr_t)fb_info.addr; c.w = fb_info.width; c.h = fb_info.height;
-    c.stride = fb_info.pitch / 4; c.clip = R(0, 0, c.w, c.h);
-    int bw = MIN(c.w, 760), bx = (c.w - bw) / 2;
-    fill_rect(&c, bx, 0, bw, 50, HEX(0x9C1C1C));
-    draw_text(&c, FONT_UI_BOLD, bx + 10, 6, a, WHITE);
-    draw_text(&c, FONT_UI, bx + 10, 27, b, WHITE);
-    video_update(bx, 0, bw, 50);
+    static uint32_t pixels[760 * 50];
+    canvas_t c; int bw = MIN((int)fb_info.width, 760), bx = ((int)fb_info.width - bw) / 2;
+    canvas_init(&c, pixels, bw, 50);
+    fill_rect(&c, 0, 0, bw, 50, HEX(0x9C1C1C));
+    draw_text(&c, FONT_UI_BOLD, 10, 6, a, WHITE);
+    draw_text(&c, FONT_UI, 10, 27, b, WHITE);
+    gfx_emergency_present(&c, bx, 0);
 }
 static void watchdog(regs_t *r, uint32_t now) {
     /* Text-mode Setup runs on the GUI task and deliberately blocks it while it

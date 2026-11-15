@@ -24,6 +24,8 @@ extern canvas_t screen;
 extern int SCREEN_W, SCREEN_H;
 bool gfx_set_resolution(int w, int h);   /* runtime mode change (display driver) */
 void gfx_refresh_framebuffer(void);     /* driver handoff without resizing the canvas */
+void gfx_emergency_present(canvas_t *c, int x, int y);
+void gfx_display_diagnostics(char *out, size_t size);
 extern void (*gfx_resized_hook)(void);
 
 static inline rect_t R(int x, int y, int w, int h) { rect_t r = { x, y, w, h }; return r; }

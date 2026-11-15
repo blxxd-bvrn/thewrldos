@@ -5,11 +5,17 @@
 #include "theme.h"
 #include "ttf.h"
 #include "text.h"
+#include "basicfb.h"
 
 canvas_t screen;
 int SCREEN_W, SCREEN_H;
 fb_info_t fb_info;
-static uint32_t *fb;
+static basicfb_t display;
+static uint32_t *display_shadow;
+static size_t display_shadow_size;
+static int cur_x = -100, cur_y = -100, cur_kind;
+
+static void display_damage(void *unused, int x, int y, int w, int h) { (void)unused; video_update(x, y, w, h); }
 
 /* ---------------- canvas ---------------- */
 void canvas_init(canvas_t *c, uint32_t *px, int w, int h) { c->px = px; c->w = w; c->h = h; c->stride = w; c->clip = R(0, 0, w, h); }
@@ -42,26 +48,42 @@ void canvas_reset_clip(canvas_t *c) { c->clip = R(0, 0, c->w, c->h); }
 rect_t canvas_push_clip(canvas_t *c, rect_t r) { rect_t old = c->clip; c->clip = rect_intersect(old, r); return old; }
 
 void gfx_init(void) {
-    fb = (uint32_t *)(uintptr_t)fb_info.addr;
     SCREEN_W = fb_info.width; SCREEN_H = fb_info.height;
     canvas_init(&screen, kmalloc(SCREEN_W * SCREEN_H * 4), SCREEN_W, SCREEN_H);
+    if (!screen.px) panic("Not enough RAM for the display back buffer");
     memset32(screen.px, 0xFF000000, SCREEN_W * SCREEN_H);
+    gfx_refresh_framebuffer();
 }
 
 /* change the screen resolution: switch the adapter, then resize the back buffer */
 void (*gfx_resized_hook)(void);
 void gfx_refresh_framebuffer(void) {
-    fb = (uint32_t *)(uintptr_t)fb_info.addr;
-    paging_set_wc(fb_info.addr, fb_info.pitch * fb_info.height);
+    size_t need = (size_t)fb_info.width * fb_info.height * 4;
+    if (display_shadow_size < need) {
+        kfree(display_shadow); display_shadow = NULL; display_shadow_size = 0;
+        if (need <= 64u * 1024 * 1024 && (uint64_t)mm_used() + need + 16u * 1024 * 1024 < mm_total()) {
+            display_shadow = kmalloc(need); if (display_shadow) display_shadow_size = need;
+        }
+    }
+    basicfb_mode_t m = { fb_info.width, fb_info.height, fb_info.pitch, fb_info.bpp,
+        fb_info.red_pos, fb_info.red_bits, fb_info.green_pos, fb_info.green_bits, fb_info.blue_pos, fb_info.blue_bits };
+    if (!basicfb_bind(&display, (void *)fb_info.addr, &m, display_shadow, display_shadow_size, fb_info.write_combining, display_damage, NULL))
+        panic("Invalid display-driver framebuffer layout");
+    cur_x = cur_y = -100; cur_kind = CURSOR_ARROW;
+    klog("basicdisplay: presenter %s, %s, history %u KiB", display.streaming ? "SSE2 streaming / native packing" : "native word copies / packing",
+        display.shadow ? "32x16 changed-region tracking" : "full-copy low-memory fallback", (uint32_t)(display_shadow_size / 1024));
 }
 bool gfx_set_resolution(int w, int h) {
     if (w == SCREEN_W && h == SCREEN_H) return true;
-    if (!video_set_mode(w, h)) return false;
-    gfx_refresh_framebuffer();
+    if (!video_mode_ok(w, h)) return false;
+    uint32_t *pixels = kmalloc((size_t)w * h * 4);
+    if (!pixels) return false;
+    if (!video_set_mode(w, h)) { kfree(pixels); return false; }
     kfree(screen.px);
     SCREEN_W = w; SCREEN_H = h;
-    canvas_init(&screen, kmalloc(w * h * 4), w, h);
+    canvas_init(&screen, pixels, w, h);
     memset32(screen.px, 0xFF000000, w * h);
+    gfx_refresh_framebuffer();
     if (gfx_resized_hook) gfx_resized_hook();
     return true;
 }
@@ -947,7 +969,6 @@ static const cursor_t cursors[CURSOR_COUNT] = {
         ".......B......." ".......B......." ".......B......." ".......B......." ".......B......." "..............." "..............."
         "BBBBB.....BBBBB" "..............." "..............." ".......B......." ".......B......." ".......B......." ".......B......." ".......B......." },
 };
-static int cur_x = -100, cur_y = -100, cur_kind;
 
 /* ---------- custom cursor sets (Windows .cur files) ----------
  * A set is a folder under C:\WRLD\Cursors.  Files are matched by role:
@@ -1067,29 +1088,10 @@ static void cursor_metrics(int kind, int *w, int *h, int *hx, int *hy) {
     }
 }
 
-/* 32-bit pixels go straight to the framebuffer; a 24-bit boot mode (some
- * firmware picks one) is converted three bytes at a time. */
+/* Compose the cursor in RAM for sequential, format-correct device transfers.
+ * The canonical desktop is restored afterwards; no framebuffer reads occur. */
 static void fb_store(int x, int y, uint32_t col) {
-    if (fb_info.bpp == 24) {
-        uint8_t *p = (uint8_t *)(uintptr_t)fb + (size_t)y * fb_info.pitch + (size_t)x * 3;
-        p[0] = col & 0xFF; p[1] = (col >> 8) & 0xFF; p[2] = (col >> 16) & 0xFF;
-    } else fb[(size_t)y * (fb_info.pitch / 4) + x] = col;
-}
-static void fb_copy_rect(int x, int y, int w, int h) {
-    rect_t r = rect_intersect(R(x, y, w, h), R(0, 0, SCREEN_W, SCREEN_H));
-    if (fb_info.bpp == 24) {
-        for (int j = 0; j < r.h; j++) {
-            const uint32_t *src = screen.px + (r.y + j) * SCREEN_W + r.x;
-            uint8_t *dst = (uint8_t *)(uintptr_t)fb + (size_t)(r.y + j) * fb_info.pitch + (size_t)r.x * 3;
-            for (int i = 0; i < r.w; i++) {
-                dst[i * 3] = src[i] & 0xFF; dst[i * 3 + 1] = (src[i] >> 8) & 0xFF; dst[i * 3 + 2] = (src[i] >> 16) & 0xFF;
-            }
-        }
-    } else {
-        uint32_t pitch = fb_info.pitch / 4;
-        for (int j = 0; j < r.h; j++) memcpy(fb + (r.y + j) * pitch + r.x, screen.px + (r.y + j) * SCREEN_W + r.x, r.w * 4);
-    }
-    video_update(r.x, r.y, r.w, r.h);
+    screen.px[(size_t)y * screen.stride + x] = col | 0xFF000000u;
 }
 static void fb_draw_cursor(int kind, int mx, int my) {
     int w, h, hx, hy; cursor_metrics(kind, &w, &h, &hx, &hy);
@@ -1117,20 +1119,55 @@ static void fb_draw_cursor(int kind, int mx, int my) {
                 fb_store(x, y, col);
             }
     }
-    rect_t r = rect_intersect(R(ox, oy, w, h), R(0, 0, SCREEN_W, SCREEN_H));
-    video_update(r.x, r.y, r.w, r.h);
+}
+static uint32_t cursor_saved[64 * 64];
+static rect_t cursor_rect(int kind, int x, int y) {
+    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
+    int w, h, hx, hy; cursor_metrics(kind, &w, &h, &hx, &hy);
+    return rect_intersect(R(x - hx, y - hy, w, h), R(0, 0, SCREEN_W, SCREEN_H));
+}
+static void cursor_save(rect_t r, bool restore) {
+    if (r.w <= 0 || r.h <= 0) return;
+    for (int j = 0; j < r.h; j++) {
+        uint32_t *p = screen.px + (size_t)(r.y + j) * screen.stride + r.x;
+        if (restore) memcpy(p, cursor_saved + j * 64, r.w * 4);
+        else memcpy(cursor_saved + j * 64, p, r.w * 4);
+    }
+}
+static void display_rect(rect_t r) {
+    if (r.w > 0 && r.h > 0) basicfb_write(&display, r.x, r.y, r.w, r.h,
+        screen.px + (size_t)r.y * screen.stride + r.x, screen.stride);
 }
 void gfx_present(int kind, int mx, int my) {
-    fb_copy_rect(0, 0, SCREEN_W, SCREEN_H);
+    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
+    rect_t r = cursor_rect(kind, mx, my); cursor_save(r, false);
     fb_draw_cursor(kind, mx, my);
+    basicfb_present(&display, screen.px, screen.stride);
+    cursor_save(r, true);
     cur_x = mx; cur_y = my; cur_kind = kind;
 }
 void gfx_move_cursor(int kind, int mx, int my) {
+    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
     if (mx == cur_x && my == cur_y && kind == cur_kind) return;
-    int w, h, hx, hy; cursor_metrics(cur_kind, &w, &h, &hx, &hy);
-    fb_copy_rect(cur_x - hx, cur_y - hy, w, h);
+    if (!display.have_frame) { gfx_present(kind, mx, my); return; }
+    rect_t old = cursor_rect(cur_kind, cur_x, cur_y), r = cursor_rect(kind, mx, my);
+    cursor_save(r, false);
     fb_draw_cursor(kind, mx, my);
+    display_rect(old); display_rect(r);
+    cursor_save(r, true);
     cur_x = mx; cur_y = my; cur_kind = kind;
+}
+void gfx_emergency_present(canvas_t *c, int x, int y) {
+    basicfb_t emergency = display; emergency.shadow = NULL; emergency.streaming = false;
+    basicfb_invalidate(&display);
+    basicfb_write(&emergency, x, y, c->w, c->h, c->px, c->stride);
+}
+void gfx_display_diagnostics(char *out, size_t n) {
+    snprintf(out, n, "Firmware framebuffer: %llx, mapped %llx\nRGB masks: R%u:%u G%u:%u B%u:%u, pitch %u\nCache: %s; copies: %s\nDamage history: %u KiB; last present: %llu bytes in %u regions\nTotal presents: %llu; framebuffer bytes written: %llu\n",
+        (unsigned long long)fb_info.physical, (unsigned long long)fb_info.addr, fb_info.red_pos, fb_info.red_bits, fb_info.green_pos, fb_info.green_bits,
+        fb_info.blue_pos, fb_info.blue_bits, fb_info.pitch, fb_info.write_combining ? "PAT write-combining (PA1)" : "uncached",
+        display.streaming ? "SSE2 streaming" : "native word / pixel packing", (uint32_t)(display_shadow_size / 1024),
+        (unsigned long long)display.bytes_last, display.regions_last, (unsigned long long)display.frames, (unsigned long long)display.bytes_written);
 }
 
 /* ---------------- THE WRLD OS globe + wordmark ---------------- */

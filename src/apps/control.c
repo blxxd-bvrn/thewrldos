@@ -515,8 +515,8 @@ static void page_display(window_t *w, cp_t *c, int ox, int oy) {
         }
         y += 36;
     } else {
-        draw_text_wrapped(s, FONT_UI, x, y, s->w - x - 30, "This display adapter is driven through the boot framebuffer, so the resolution is fixed. "
-            "Supported adapters for changing it: QEMU/Bochs standard VGA, VirtualBox VBoxVGA and VMSVGA, VMware SVGA II.", W7_TEXT, 2);
+        draw_text_wrapped(s, FONT_UI, x, y, s->w - x - 30, "WRLD Basic Display keeps the firmware's current resolution. Choose a supported mode in firmware or GRUB at boot. "
+            "It uses CPU rendering, not vendor GPU acceleration. Native QEMU/VirtualBox/VMware adapters can offer mode changes.", W7_TEXT, 2);
         y += 60;
     }
     snprintf(b, sizeof b, "Colour depth: %u-bit true colour", fb_info.bpp);

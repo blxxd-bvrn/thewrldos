@@ -100,14 +100,11 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     klog("%s %s %s (build %s) starting", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
     klog("boot: %s, %s", bootinfo.from_mb2 ? "Multiboot 2" : "Multiboot 1",
          bootinfo.is_efi ? "EFI firmware" : "BIOS/legacy firmware");
-    if (!bootinfo.have_fb || (bootinfo.fb_bpp != 32 && bootinfo.fb_bpp != 24) || bootinfo.fb_type != 1 || bootinfo.fb_addr > 0xFFFFFFFFull)
-        panic("No usable 24/32-bit linear framebuffer from the bootloader (flags=%d bpp=%d type=%d addr=%llx).\n"
+    if (!video_boot_framebuffer())
+        panic("No usable direct-RGB firmware framebuffer (flags=%d bpp=%d type=%d addr=%llx).\n"
               "Boot with GRUB using the supplied grub.cfg.", bootinfo.have_fb, bootinfo.fb_bpp,
               bootinfo.fb_type, (unsigned long long)bootinfo.fb_addr);
-    fb_info.addr = (uint32_t)bootinfo.fb_addr; fb_info.pitch = bootinfo.fb_pitch;
-    fb_info.width = bootinfo.fb_width; fb_info.height = bootinfo.fb_height; fb_info.bpp = bootinfo.fb_bpp;
-    paging_set_wc(fb_info.addr, fb_info.pitch * fb_info.height);
-    klog("framebuffer %ux%ux%u at %08x pitch %u", fb_info.width, fb_info.height, fb_info.bpp, fb_info.addr, fb_info.pitch);
+    klog("framebuffer %ux%ux%u at %llx pitch %u", fb_info.width, fb_info.height, fb_info.bpp, (unsigned long long)fb_info.physical, fb_info.pitch);
     klog("memory: %llu MB detected, heap %u MB", (unsigned long long)(mm_phys_total() / (1024 * 1024)), mm_total() / (1024 * 1024));
     gfx_init();
     gfx_ready = true;

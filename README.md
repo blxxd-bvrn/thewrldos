@@ -294,6 +294,34 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Devices:**
   - PIT timer (1 kHz), CMOS RTC, PS/2 keyboard and wheel mouse.
   - **Display (`video.c`):**
+    - **WRLD Basic Display Driver** (`wrldbasic`, `src/gui/basicfb.c`): a native,
+      vendor-neutral fallback for the direct-color framebuffer set up by BIOS/VESA or
+      UEFI GOP. This is the basic-display-driver approach, **not universal GPU-accelerated
+      3D** and not a way to load Windows/Linux graphics drivers. It retains firmware scanout
+      without resetting or programming an unsupported Intel/AMD/NVIDIA GPU.
+      - Firmware RGB masks and padded pitch are preserved: RGB/BGR 32/24-bit, RGB565/555
+        and supported 32-bit bitmask layouts such as 10:10:10. Invalid/overlapping masks,
+        indexed/text modes and invalid apertures are rejected before framebuffer writes.
+        The x64 edition can map framebuffer apertures above 4 GiB; x86 still requires
+        them below 4 GiB. This does not enable high-RAM heap allocation.
+      - PAT entry **PA1** is programmed and selected consistently by the large-page PWT
+        bit. PAT/MSR capability is checked; an uncached path works when unavailable.
+        x64 has aligned SSE2 streaming stores for large native-format writes; x86 stays
+        SSE/MMX-free. RGB conversion uses native packing/lookups, not external libraries.
+      - Exact 32x16-pixel RAM history skips unchanged regions and merges adjacent changed
+        tiles, with no device-memory reads. Cursor composition is done in RAM and restored
+        afterwards; movement uploads only old/new cursor regions. History is optional
+        (at most 64 MiB with a RAM headroom check); allocation failure retains full-copy
+        presentation. A failed back-buffer allocation does not change the display mode.
+      - `video=basic` / `basicdisplay` forces firmware-only recovery; the GRUB menu has a
+        Basic Display live entry. PCI association uses read-only BAR bases and is conservative
+        on multi-GPU machines, rather than claiming or resetting an arbitrary adapter.
+        `display` reports the driver, masks, physical/mapped address, cache/copy path and
+        transfer counters. See [Basic Display and live-USB testing](docs/BASIC_DISPLAY.md).
+      - A bounded uncached high-MMIO window and read-only 64-bit PCI BAR decoder let
+        xHCI use UEFI-assigned USB-controller registers above 4 GiB. Other native
+        drivers retain their existing limits until ported; this is not universal
+        Windows/Linux driver compatibility.
     - Bochs/BGA "DISPI" driver for QEMU's standard VGA, Bochs and VirtualBox VBoxVGA.
     - VMware SVGA II driver (command FIFO) for VMware and VirtualBox VMSVGA.
       A native **legacy VMware SVGA3D** backend offloads eligible D3D10 draws; see
@@ -303,8 +331,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     - On real hardware the bootloader asks for the display's preferred 32-bit mode (a
       1920x1080x32-through-1024x768x32 list, then `auto`) and the kernel marks the framebuffer
       write-combining, so a real GPU gets a native-resolution, faster surface; a 24-bit boot mode
-      is converted too. A physical NVIDIA/AMD/Intel GPU driver is not included, so outside
-      the supported virtual adapters the GRUB/UEFI framebuffer remains the device, and the display-engine
+      is converted too. A physical NVIDIA/AMD/Intel **GPU-engine** driver is not included;
+      WRLD Basic Display uses the GRUB/UEFI framebuffer instead, and the display-engine
       half of HDMI audio still needs such a driver.
   - **Sound (`audio.c`):**
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
@@ -801,7 +829,8 @@ device manager's job is to say what the computer has and which driver runs it.
           fails this hardware verifier rather than passing a CPU-versus-CPU comparison.
           Synchronous per-draw transfers/readbacks are still costly: **GPU execution is not
           a guaranteed FPS improvement**, especially for small windows/simple shaders.
-          In two final one-vCPU, 512 MiB x64 VMware trials, the 120-frame 480x360 SM4 cube
+          In two GPU-stage trials at `a326397` (before Basic Display presentation changes),
+          one-vCPU, 512 MiB x64 VMware, the 120-frame 480x360 SM4 cube
           took **1,148–1,158 ms CPU vs 795–901 ms GPU** (paired 1.28–1.44x speedups);
           SM5 took **1,224–1,252 vs 908–1,167 ms** (1.05–1.38x). These include synchronous
           transfers and window presentation, not just shader time, and are not comparable

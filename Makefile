@@ -108,12 +108,12 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders shader-fixtures FORCE
+.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
 GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
-ifneq ($(filter-out clean check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders shader-fixtures,$(GOALS)),)
+ifneq ($(filter-out clean check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures,$(GOALS)),)
 ifneq ($(findstring MINGW,$(UNAME))$(findstring MSYS,$(UNAME))$(findstring CYGWIN,$(UNAME)),)
 $(error This is $(UNAME) (MSYS2/Cygwin). Its gcc makes Windows PE files, not the 32-bit ELF kernel THE WRLD OS needs, and it has no BIOS GRUB tools. Build inside WSL instead - see README.md, section "Building on Windows")
 endif
@@ -384,9 +384,9 @@ build64/d3d10test: tools/d3d10test.c tools/shadertest.c src/win32/d3d10.c $(SHAD
 build64/shadergputest: tools/shadergputest.c tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
 	@mkdir -p build64
 	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/shadergputest.c $(SHADER_CORE) -lm
-build64/svgatest: tools/svgatest.c src/kernel/video.c $(wildcard src/include/*.h)
+build64/svgatest: tools/svgatest.c src/kernel/video.c src/kernel/pci_resource.c src/gui/basicfb.c $(wildcard src/include/*.h)
 	@mkdir -p build64
-	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/svgatest.c
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/svgatest.c src/kernel/pci_resource.c src/gui/basicfb.c
 check-shaders: build64/shadertest build64/d3d10test build64/shadergputest build64/svgatest
 	./build64/shadertest
 	./build64/d3d10test
@@ -394,6 +394,17 @@ check-shaders: build64/shadertest build64/d3d10test build64/shadergputest build6
 	./build64/svgatest
 bench-shaders: build64/shadertest
 	./build64/shadertest --bench
+build64/basicfbtest: tools/basicfbtest.c src/gui/basicfb.c src/kernel/bootinfo.c src/include/basicfb.h src/include/fbmap.h src/include/bootinfo.h
+	@mkdir -p build64
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/basicfbtest.c src/gui/basicfb.c
+build64/gfxpresenttest: tools/gfxpresenttest.c tools/gfxpresent_assets.c src/gui/gfx.c src/gui/basicfb.c src/gui/ttf.c src/gui/text.c $(wildcard src/include/*.h)
+	@mkdir -p build64
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tools/gfxpresenttest.c tools/gfxpresent_assets.c src/gui/basicfb.c src/gui/ttf.c src/gui/text.c
+check-display: build64/basicfbtest build64/gfxpresenttest
+	./build64/basicfbtest
+	./build64/gfxpresenttest
+bench-display: build64/basicfbtest
+	./build64/basicfbtest --bench
 # Windows-only regeneration. DXC is a host build tool, not an OS dependency.
 shader-fixtures:
 	python3 tools/build_shader_fixtures.py $(if $(DXC),--dxc "$(DXC)")

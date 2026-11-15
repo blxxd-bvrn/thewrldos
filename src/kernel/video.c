@@ -9,6 +9,27 @@
 #include "devmgr.h"
 #include "gfx.h"
 #include "gpu3d.h"
+#include "bootinfo.h"
+#include "basicfb.h"
+
+bool video_boot_framebuffer(void) {
+    basicfb_mode_t m = { bootinfo.fb_width, bootinfo.fb_height, bootinfo.fb_pitch, bootinfo.fb_bpp,
+        bootinfo.fb_red_pos, bootinfo.fb_red_bits, bootinfo.fb_green_pos, bootinfo.fb_green_bits, bootinfo.fb_blue_pos, bootinfo.fb_blue_bits };
+    const char *why = NULL;
+    if (!bootinfo.have_fb || bootinfo.fb_type != 1 || !bootinfo.fb_rgb_valid || !basicfb_mode_valid(&m, &why)) {
+        klog("basicdisplay: %s", why ? why : "firmware did not supply a direct RGB framebuffer"); return false;
+    }
+    bool wc = false;
+    uintptr_t mapped = paging_map_framebuffer(bootinfo.fb_addr, m.pitch * m.height, &wc);
+    if (!mapped) { klog("basicdisplay: framebuffer address cannot be mapped (x86 requires an aperture below 4 GiB)"); return false; }
+    fb_info = (fb_info_t){ .addr = mapped, .pitch = m.pitch, .width = m.width, .height = m.height, .bpp = m.bpp,
+        .physical = bootinfo.fb_addr, .red_pos = m.red_pos, .red_bits = m.red_bits, .green_pos = m.green_pos,
+        .green_bits = m.green_bits, .blue_pos = m.blue_pos, .blue_bits = m.blue_bits, .write_combining = wc };
+    klog("basicdisplay: %s %ux%ux%u pitch=%u physical=%llx cache=%s", bootinfo.is_efi ? "UEFI GOP" : "VESA",
+        m.width, m.height, m.bpp, m.pitch, (unsigned long long)bootinfo.fb_addr, wc ? "PAT WC (PA1)" : "uncached");
+    klog("basicdisplay: RGB masks %u:%u %u:%u %u:%u; native CPU rendering", m.red_pos, m.red_bits, m.green_pos, m.green_bits, m.blue_pos, m.blue_bits);
+    return true;
+}
 
 /* ---- Bochs / BGA ---- */
 #define DISPI_INDEX 0x01CE
@@ -121,7 +142,7 @@ void video_svga_cpu_fallback(void) {
 
 enum { DRV_NONE, DRV_BGA, DRV_SVGA };
 static int drv;
-static char name[64] = "Standard VESA display (boot framebuffer)";
+static char name[64] = "WRLD Basic Display Driver (firmware framebuffer)";
 static uint32_t lfb, vram = 0, max_w = 0, max_h = 0;
 
 static bool bga_match(const pci_dev_t *p) { return (p->vendor == 0x1234 && p->device == 0x1111) || (p->vendor == 0x80EE && p->device == 0xBEEF); }
@@ -129,13 +150,47 @@ static bool svga_match(const pci_dev_t *p) { return p->vendor == 0x15AD && p->de
 DRIVER_PCI(drv_bga, "bga", "Bochs/QEMU and VirtualBox graphics (resolution changes)", DC_DISPLAY, bga_match);
 DRIVER_PCI(drv_vmsvga, "vmsvga", "VMware SVGA II (resolution changes)", DC_DISPLAY, svga_match);
 /* any other display adapter keeps the picture the firmware set up */
-static const driver_t drv_fb = { "vesafb", "Standard display on the firmware's framebuffer (VESA/GOP)", DC_DISPLAY, "PCI", NULL };
-DRIVER_REGISTER(drv_fb);
+const driver_t drv_basic_display = { "wrldbasic", "WRLD Basic Display Driver (VESA / UEFI GOP, CPU rendering)", DC_DISPLAY, "firmware", NULL };
+DRIVER_REGISTER(drv_basic_display);
+
+static bool basic_requested(void) {
+    const char *p = bootinfo.cmdline;
+    while (p && *p) {
+        while (*p == ' ' || *p == '\t') p++;
+        const char *end = p; while (*end && *end != ' ' && *end != '\t') end++;
+        size_t n = end - p;
+        if ((n == 11 && !memcmp(p, "video=basic", n)) || (n == 12 && !memcmp(p, "basicdisplay", n))) return true;
+        p = end;
+    }
+    return false;
+}
+/* Firmware gives no PCI BDF. Match exact memory BAR bases without ever writing
+ * BARs to size them; if ambiguous, keep a logical basic display rather than
+ * claiming an arbitrary GPU or switching a different adapter's output. */
+static const pci_dev_t *boot_adapter(pci_dev_t *devs, int n) {
+    const pci_dev_t *sole = NULL, *match = NULL; int displays = 0, matches = 0;
+    for (int i = 0; i < n; i++) if (devs[i].cls == 3) {
+        const pci_dev_t *p = &devs[i]; sole = p; displays++;
+        bool found = false;
+        for (int bar = 0; bar < 6; bar++) {
+            uint32_t lo = pci_cfg_read(p->bus, p->dev, p->fn, 0x10 + bar * 4);
+            if (!lo || lo == ~0u || (lo & 1)) continue;
+            uint64_t base = lo & ~0xFull;
+            if ((lo & 6) == 4 && bar < 5) { base |= (uint64_t)pci_cfg_read(p->bus, p->dev, p->fn, 0x14 + bar * 4) << 32; bar++; }
+            if (base && base == fb_info.physical) found = true;
+        }
+        if (found) { match = p; matches++; }
+    }
+    return matches == 1 ? match : !matches && displays == 1 ? sole : NULL;
+}
 
 void video_init(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
+    const pci_dev_t *boot = boot_adapter(devs, n);
+    bool basic = basic_requested();
     for (int i = 0; i < n && drv == DRV_NONE; i++) {
         pci_dev_t *p = &devs[i];
+        if (basic || p != boot) continue;
         if ((p->vendor == 0x1234 && p->device == 0x1111) || (p->vendor == 0x80EE && p->device == 0xBEEF)) {
             uint16_t id = dr(D_ID);
             if (id < 0xB0C0 || id > 0xB0CF) continue;
@@ -177,12 +232,12 @@ void video_init(void) {
         }
     }
     if (drv == DRV_NONE) {
-        /* no mode-setting driver: the first display adapter is the one showing the boot framebuffer */
-        const pci_dev_t *boot = NULL;
-        for (int i = 0; i < n; i++) if (devs[i].cls == 0x03 && (!boot || (devs[i].sub == 0 && boot->sub != 0))) boot = &devs[i];
-        if (boot) { char nm[96]; snprintf(nm, sizeof nm, "Standard display adapter (boot framebuffer, %ux%u)", fb_info.width, fb_info.height); dev_claim(boot, &drv_fb, nm); }
+        snprintf(name, sizeof name, "WRLD Basic Display Driver (%s)", bootinfo.is_efi ? "UEFI GOP" : "VESA");
+        if (boot) { char nm[96]; snprintf(nm, sizeof nm, "WRLD Basic Display (%04x:%04x, %ux%u)", boot->vendor, boot->device, fb_info.width, fb_info.height); dev_claim(boot, &drv_basic_display, nm); }
+        klog("basicdisplay: %s; firmware mode retained, no vendor GPU register writes", basic ? "explicit recovery selection" : "automatic firmware fallback");
     }
-    klog("video: %s, max %ux%u, %u MB video memory", name, max_w, max_h, vram >> 20);
+    if (drv == DRV_NONE) klog("video: %s, firmware mode %ux%u; VRAM size unknown; CPU rendering", name, fb_info.width, fb_info.height);
+    else klog("video: %s, max %ux%u, %u MB video memory", name, max_w, max_h, vram >> 20);
     if (drv == DRV_SVGA && !boot_safe_mode) gpu3d_init();
 }
 bool video_svga_start(void) {
@@ -226,7 +281,15 @@ bool video_set_mode(int w, int h) {
         video_svga_info(NULL, NULL, NULL);   /* also refresh after an ordinary 2D mode change */
         fb_info.addr = sr(S_FB_START) + sr(S_FB_OFFSET); fb_info.pitch = sr(S_BPL);
     } else return false;
+    fb_info.physical = fb_info.addr;
+    basicfb_mode_t mode = { w, h, fb_info.pitch, 32, 16, 8, 8, 8, 0, 8 };
+    if (!basicfb_mode_valid(&mode, NULL)) return false;
+    bool wc = false; uintptr_t mapped = paging_map_framebuffer(fb_info.physical, mode.pitch * mode.height, &wc);
+    if (!mapped) return false;
+    fb_info.addr = mapped; fb_info.write_combining = wc;
     fb_info.width = w; fb_info.height = h; fb_info.bpp = 32;
+    fb_info.red_pos = 16; fb_info.green_pos = 8; fb_info.blue_pos = 0;
+    fb_info.red_bits = fb_info.green_bits = fb_info.blue_bits = 8;
     klog("video: mode %dx%d, pitch %u", w, h, fb_info.pitch);
     return true;
 }

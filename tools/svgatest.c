@@ -22,6 +22,9 @@ static uint32_t memory[4096],registers[96],reads[96],writes[96],selected,now;
 static uint32_t seen[4096],nseen,kicks;
 static bool consume,ack_fences;
 static int checks,failures;
+static pci_dev_t test_pci[3];
+static uint32_t test_bars[3][6];
+static int test_pci_count,config_writes,claims;
 static void check(const char *name,bool good) {
     checks++;if(!good){printf("FAIL %s\n",name);failures++;}
 }
@@ -49,13 +52,18 @@ void *kmalloc(size_t n) { return malloc(n); }
 void kfree(void *p) { free(p); }
 void klog(const char *fmt,...) { (void)fmt; }
 void paging_set_uncached(uintptr_t p) { (void)p; }
+uintptr_t paging_map_framebuffer(uint64_t p,uint32_t n,bool *wc) { (void)n;if(wc)*wc=true;return (uintptr_t)p; }
 void gfx_refresh_framebuffer(void) { }
 void gpu3d_init(void) { }
-int pci_list(pci_dev_t **p) { *p=NULL;return 0; }
-uint32_t pci_cfg_read(uint8_t b,uint8_t d,uint8_t f,uint8_t o) { (void)b;(void)d;(void)f;(void)o;return 0; }
-void pci_cfg_write(uint8_t b,uint8_t d,uint8_t f,uint8_t o,uint32_t v) { (void)b;(void)d;(void)f;(void)o;(void)v; }
-void dev_claim(const pci_dev_t *p,const driver_t *d,const char *n) { (void)p;(void)d;(void)n; }
+int pci_list(pci_dev_t **p) { *p=test_pci;return test_pci_count; }
+uint32_t pci_cfg_read(uint8_t b,uint8_t d,uint8_t f,uint8_t o) {
+    for(int i=0;i<test_pci_count;i++)if(test_pci[i].bus==b&&test_pci[i].dev==d&&test_pci[i].fn==f&&o>=0x10&&o<0x28)return test_bars[i][(o-0x10)/4];
+    return 0;
+}
+void pci_cfg_write(uint8_t b,uint8_t d,uint8_t f,uint8_t o,uint32_t v) { (void)b;(void)d;(void)f;(void)o;(void)v;config_writes++; }
+void dev_claim(const pci_dev_t *p,const driver_t *d,const char *n) { (void)p;(void)d;(void)n;claims++; }
 fb_info_t fb_info;
+bootinfo_t bootinfo;
 bool boot_safe_mode;
 
 static void reset(void) {
@@ -67,6 +75,31 @@ static void reset(void) {
     memory[16]=0xDEADBEEF;registers[24]=0x1234; /* obsolete host data/cursor ID, NOT errors */
     now=selected=nseen=kicks=0;consume=ack_fences=true;
     drv=DRV_SVGA;max_w=2560;max_h=1600;vram=16u<<20;
+    test_pci_count=config_writes=claims=0;memset(test_bars,0,sizeof test_bars);memset(test_pci,0,sizeof test_pci);memset(&bootinfo,0,sizeof bootinfo);
+}
+static void display_selection(void) {
+    reset();test_pci_count=2;
+    test_pci[0]=(pci_dev_t){.bus=0,.dev=1,.cls=3,.vendor=0x8086,.device=0x1234};
+    test_pci[1]=(pci_dev_t){.bus=1,.dev=0,.cls=3,.vendor=0x10DE,.device=0x2507};
+    fb_info.physical=0xE0000000;test_bars[1][1]=0xE0000008;
+    check("boot BAR, not first GPU, owns display",boot_adapter(test_pci,2)==&test_pci[1]);
+    check("association never sizes BARs with writes",config_writes==0);
+    test_bars[1][1]=0;test_bars[1][2]=0x0020000C;test_bars[1][3]=1;fb_info.physical=0x100200000ull;
+    check("64-bit BAR ownership",boot_adapter(test_pci,2)==&test_pci[1]);
+    bool io=true;check("64-bit BAR decoder preserves high address",pci_bar64(&test_pci[1],2,&io)==0x100200000ull&&!io);
+    check("legacy BAR accessor still refuses high MMIO",pci_bar(&test_pci[1],2,NULL)==0);
+    test_bars[0][1]=0xC001;check("I/O BAR decode",pci_bar64(&test_pci[0],1,&io)==0xC000&&io);
+    check("invalid BAR index rejected",pci_bar64(&test_pci[0],6,NULL)==0&&pci_bar64(NULL,0,NULL)==0);
+    test_bars[0][5]=0xC;check("truncated 64-bit BAR rejected",pci_bar64(&test_pci[0],5,NULL)==0);
+    fb_info.physical=0xF0000000;check("ambiguous GPUs are not guessed",boot_adapter(test_pci,2)==NULL);
+    test_bars[0][0]=test_bars[1][0]=0xF0000008;check("duplicate BAR match remains ambiguous",boot_adapter(test_pci,2)==NULL);
+    check("sole adapter fallback",boot_adapter(test_pci,1)==&test_pci[0]);
+    bootinfo.cmdline="verbose video=basic";check("explicit basic recovery recognized",basic_requested());
+    bootinfo.cmdline="basicdisplay";check("basic recovery alias",basic_requested());
+    bootinfo.cmdline="xvideo=basic video=basic2";check("recovery requires whole token",!basic_requested());
+    bootinfo.cmdline="video=basic";drv=DRV_NONE;svga_on=false;bootinfo.is_efi=true;
+    video_init();check("forced Basic Display never initializes another GPU",drv==DRV_NONE&&config_writes==0&&!svga_on);
+    check("firmware fallback reports driver and fixed mode",strstr(video_driver_name(),"WRLD Basic Display Driver")&&!video_can_set_mode());
 }
 int main(void) {
     const uint32_t update[]={1,10,20,30,40};
@@ -102,6 +135,7 @@ int main(void) {
     check("refreshed fence capability works",video_svga_fence(1,25));
     reset();svga_caps=0;video_svga_cpu_fallback();check("legacy devices do not receive TRACES writes",writes[45]==0);
     svga_caps=0x00200000u;video_svga_cpu_fallback();check("advertised trace fallback enabled",writes[45]==1&&registers[45]==1);
+    display_selection();
     printf("SVGA transport tests: %s (%d checks)\n",failures?"FAILED":"passed",checks);
     return failures?1:0;
 }

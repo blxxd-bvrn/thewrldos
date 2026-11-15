@@ -134,6 +134,8 @@ void paging_free_dir(uint32_t *dir);
 #endif
 void paging_set_uncached(uintptr_t addr);
 void paging_set_wc(uintptr_t addr, uint32_t size);
+uintptr_t paging_map_framebuffer(uint64_t physical, uint32_t size, bool *write_combining);
+uintptr_t paging_map_mmio(uint64_t physical, uint32_t size); /* uncached; x64 supports high PCI BARs */
 static inline uint64_t dma_addr(const void *p) { return (uint64_t)(uintptr_t)p; }   /* memory is identity-mapped */
 
 /* ---- tasks (cooperative kernel scheduler) ---- */
@@ -185,6 +187,7 @@ int pci_scan(pci_dev_t *out, int max);
 int pci_list(pci_dev_t **out);            /* all devices (cached) */
 void pci_rescan(void);                    /* drop the cache and scan again */
 uintptr_t pci_bar(const pci_dev_t *p, int i, bool *is_io);
+uint64_t pci_bar64(const pci_dev_t *p, int i, bool *is_io);
 void pci_enable(const pci_dev_t *p, bool io, bool mem);   /* + bus mastering, INTx off */
 uint32_t pci_cfg_read(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off);
 void pci_cfg_write(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v);
@@ -200,8 +203,14 @@ const char *acpi_describe(void);
 void system_reboot(void);
 
 /* ---- boot info ---- */
-typedef struct { uint32_t addr; uint32_t pitch, width, height, bpp; } fb_info_t;
+typedef struct {
+    uintptr_t addr; uint32_t pitch, width, height, bpp;
+    uint64_t physical;
+    uint8_t red_pos, red_bits, green_pos, green_bits, blue_pos, blue_bits;
+    bool write_combining;
+} fb_info_t;
 extern fb_info_t fb_info;
+bool video_boot_framebuffer(void);
 /* display drivers (video.c) */
 void video_init(void);
 const char *video_driver_name(void);

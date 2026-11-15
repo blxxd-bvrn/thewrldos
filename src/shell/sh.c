@@ -1125,7 +1125,8 @@ static int b_js(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static int b_display(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2) {
-        out_f(io, "Adapter:    %s\nResolution: %d x %d, 32-bit colour\n", video_driver_name(), SCREEN_W, SCREEN_H);
+        out_f(io, "Adapter:    %s\nResolution: %d x %d, %u-bit scanout (32-bit rendering)\n", video_driver_name(), SCREEN_W, SCREEN_H, fb_info.bpp);
+        char diag[640]; gfx_display_diagnostics(diag, sizeof diag); out_s(io, diag);
         if (!video_can_set_mode()) { out_s(io, "This adapter cannot change resolution.\n"); return 0; }
         static const int mw[] = { 1024, 1152, 1280, 1280, 1280, 1280, 1366, 1440, 1600, 1600, 1680, 1920, 1920, 2560 }, mh[] = { 768, 864, 720, 800, 960, 1024, 768, 900, 900, 1200, 1050, 1080, 1200, 1440 };
         out_s(io, "Available:  ");
