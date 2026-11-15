@@ -6,7 +6,7 @@ have to be built.
 
 **Where it stands (November 2026):** **WebKit runs.** WebKitGTK 6 (2.52) renders pages inside a
 desktop window, with its web and network processes, JavaScript, canvas, images, and pages
-fetched over HTTP (`wrldweb`, below). Verified inside the OS by these test programs:
+real websites over HTTPS (`wrldweb`, below). Verified inside the OS by these test programs:
 
 - the C++ runtime (glibc's `libstdc++`): exceptions, RTTI, threads, `thread_local`, iostreams,
   `std::filesystem` (`samples/linux-cxx/cxxtest.cpp`, 14 checks);
@@ -280,9 +280,10 @@ Already working, and not on the list below:
 2. **Input under load.** Typing very fast into a WebKit page can drop a key after Shift; typing at
    normal speed, the address bar and all GTK widgets are fine. Not reproducible on the build
    machine or with `lxtrace on`, so it is a timing issue in the Linux layer still to be found.
-3. **Name resolution and HTTPS in practice.** DNS goes to the address DHCP hands out and HTTPS goes
-   through GIO's GnuTLS module with the build machine's CA list; both need checking on a network
-   that resolves names (the build environment does not).
+3. **More real sites.** Real HTTPS sites load (pypi.org directly, docs.python.org through an HTTP
+   proxy with `--proxy`); the build environment only reaches a few hosts, so heavier sites
+   (video, big JavaScript apps) are still untested. `resolve` checks name lookups the way GLib
+   makes them.
 4. **Memory.** The root file system lives in RAM, so the WebKit build needs a 3 GB VM; loading
    the WebKit libraries from disk instead would bring that down.
 

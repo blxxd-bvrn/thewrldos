@@ -1171,6 +1171,10 @@ static int64_t do_sockopt(lxproc_t *p, int fd, int level, int opt, uint64_t uval
             if (opt == 1) { int32_t v = s->nodelay; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
             return -ENOPROTOOPT;
         }
+        if (level == 0 && (opt == 2 || opt == 1 || opt == 10 || opt == 11)) {   /* IP_TTL, IP_TOS, MTU_DISCOVER, RECVERR */
+            int32_t v = opt == 2 ? 64 : 0;
+            return put(p, uval, &v, 4) ? 0 : -EFAULT;
+        }
         return -ENOPROTOOPT;
     }
     int32_t v = 0;
@@ -1180,14 +1184,19 @@ static int64_t do_sockopt(lxproc_t *p, int fd, int level, int opt, uint64_t uval
         switch (opt) {
         case 2: case 15: s->reuseaddr = v != 0; return 0;   /* SO_REUSEADDR, SO_REUSEPORT */
         case 6: case 9: case 10: case 12: case 13: case 20: case 21: case 18: case 19:
-            return 0;                                        /* accepted no-ops */
+        case 1: case 5: case 7: case 8: case 16: case 32: case 33:
+            return 0;                                        /* accepted no-ops (buffer sizes, SO_PASSCRED...) */
         default: return -ENOPROTOOPT;
         }
     }
     if (level == IPPROTO_TCP_) {
         if (opt == 1) { s->nodelay = v != 0; return 0; }     /* TCP_NODELAY */
+        if (opt == 4 || opt == 5 || opt == 6 || opt == 9 || opt == 18 || opt == 30) return 0;  /* keepalive tuning, timeouts */
         return -ENOPROTOOPT;
     }
+    /* IP options programs set and expect to succeed: TOS, TTL, PKTINFO, MTU discovery, RECVERR
+     * (GLib's resolver sockets), RECVTTL, RECVTOS; the IPv4 stack has no use for them */
+    if (level == 0 && (opt == 1 || opt == 2 || opt == 8 || opt == 10 || opt == 11 || opt == 12 || opt == 13)) return 0;
     return -ENOPROTOOPT;
 }
 

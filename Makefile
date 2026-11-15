@@ -344,7 +344,7 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 	  cp /usr/share/X11/xkb/rules/evdev $(LXROOT)/Linux/usr/share/X11/xkb/rules/; fi
 # WebKitGTK 6 (samples/linux-webkitgtk) through wrldcomp: WebKit's web and network processes and
 # about 210 MB of libraries, so only with  make ARCH=x86_64 LX_WEBKITGTK=1  (needs libwebkitgtk-6.0-dev;
-# implies LX_GTK=1). HTTPS goes through GIO's GnuTLS module and the build machine's CA list.
+# implies LX_GTK=1). HTTPS goes through GIO's GnuTLS module and the Mozilla CA list.
 WKGTK_DIR := /usr/lib/x86_64-linux-gnu/webkitgtk-6.0
 LXWEBKITGTK := $(if $(LX_WEBKITGTK),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
@@ -357,7 +357,12 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	    /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so | awk '/=> \// { print $$3 }' | sort -u); do \
 	  cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
 	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
-	@if [ -f /etc/ssl/certs/ca-certificates.crt ]; then cp -L /etc/ssl/certs/ca-certificates.crt $(LXROOT)/Linux/etc/ssl/certs/; fi
+	@# the distribution's Mozilla set, not the machine's own list, which may hold local or inspection CAs
+	@if ls /usr/share/ca-certificates/mozilla/*.crt >/dev/null 2>&1; then \
+	  cat /usr/share/ca-certificates/mozilla/*.crt > $(LXROOT)/Linux/etc/ssl/certs/ca-certificates.crt; \
+	elif [ -f /etc/ssl/certs/ca-certificates.crt ]; then cp -L /etc/ssl/certs/ca-certificates.crt $(LXROOT)/Linux/etc/ssl/certs/; fi
+	@# testing only: LX_CA_BUNDLE=file adds certificates (say, a TLS-inspecting proxy's) to that list
+	@if [ -n "$(LX_CA_BUNDLE)" ]; then cat "$(LX_CA_BUNDLE)" >> $(LXROOT)/Linux/etc/ssl/certs/ca-certificates.crt; echo "added $(LX_CA_BUNDLE) to the CA list"; fi
 # the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
 # replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
 LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)

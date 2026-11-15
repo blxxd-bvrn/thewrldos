@@ -1,7 +1,9 @@
 /* wrldweb: a small WebKitGTK 6 browser on THE WRLD OS, through the wrldcomp
  * Wayland compositor: back, forward, reload, an address bar and a WebKitWebView.
- *   C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]
- * With no address it shows a built-in test page. */
+ *   C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [--proxy URL] [address]
+ * With no address it shows a built-in test page. --proxy sends all traffic
+ * through an HTTP proxy (for example http://10.0.2.2:3128 from a QEMU guest);
+ * the WRLD_PROXY environment variable does the same. */
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 
@@ -78,8 +80,20 @@ int main(int argc, char **argv) {
     g_setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", FALSE);
     g_setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", FALSE);
     g_setenv("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1", FALSE);
+    const char *proxy = g_getenv("WRLD_PROXY"), *start = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--proxy") && i + 1 < argc) proxy = argv[++i];
+        else start = argv[i];
+    }
+    if (proxy && *proxy) {
+        const char *local[] = { "localhost", "127.0.0.0/8", NULL };
+        WebKitNetworkProxySettings *ps = webkit_network_proxy_settings_new(proxy, local);
+        webkit_network_session_set_proxy_settings(webkit_network_session_get_default(), WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
+        webkit_network_proxy_settings_free(ps);
+        g_print("wrldweb: using proxy %s\n", proxy);
+    }
     GtkApplication *app = gtk_application_new("os.wrld.Web", G_APPLICATION_NON_UNIQUE);
-    g_signal_connect(app, "activate", G_CALLBACK(activate), argc > 1 ? argv[1] : NULL);
+    g_signal_connect(app, "activate", G_CALLBACK(activate), (gpointer)start);
     int r = g_application_run(G_APPLICATION(app), 1, argv);
     g_object_unref(app);
     return r;
