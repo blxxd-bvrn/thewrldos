@@ -140,7 +140,7 @@ $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/media/%.o: src/media/%.c src/include/mp3glue.h third_party/minimp3/minimp3.h
+$(BUILD)/media/%.o: src/media/%.c src/include/mp3glue.h src/include/mediadec.h third_party/minimp3/minimp3.h
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -DLEXBOR_STATIC,$(LXB_CFLAGS)) -iquote src/include -Wall -Wno-unused-function -c $< -o $@
 $(BUILD)/lexbor/%.o: $(LXB)/source/%.c $(QSHIM)/include/qjs_libc.h

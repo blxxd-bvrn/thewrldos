@@ -1,7 +1,7 @@
 # THE WRLD OS
 
 An original x86 operating system written from scratch in C and assembly (about 20,000
-lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the Lexbor HTML parser and the minimp3 decoder), in a **32-bit**
+lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the Lexbor HTML parser and the minimp3, stb_vorbis, dr_flac and PL_MPEG decoders), in a **32-bit**
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
@@ -983,20 +983,50 @@ device manager's job is to say what the computer has and which driver runs it.
     Fonts, Ease of Access.
 - **Task Manager:** applications, processes, CPU/memory graphs.
 - **The WRLD Browser** (see above).
-- **THE WRLD Media Player** (`mediaplayer.c`): an all-in-one player in the style of the XP era,
-  with its own dark glossy skin.
-  - Now Playing shows the track's info and a visualisation drawn from the samples being heard
-    (a spectrum from a 512-point FFT, a scope, or an ambience); Library lists every `.mp3` and
-    `.wav` on the drives, with ID3 titles, artists and albums, and a search box; the Now Playing
-    list sits on the right.
-  - Transport bar: play/pause, stop, previous, next, a seek bar, shuffle, repeat, mute and volume.
-    Keys: Ctrl+P play/pause, Ctrl+S stop, Ctrl+F/Ctrl+B next/previous, Ctrl+H shuffle,
-    Ctrl+T repeat, Ctrl+O open, F8 mute, F9/F10 volume, Space and the arrow keys on Now Playing.
-  - MP3s (MPEG-1/2 layer III) are decoded by [minimp3](https://github.com/lieff/minimp3)
-    (`third_party/minimp3`, public domain; glue in `src/media/mp3.c`) on their own task, straight
-    into a sound of the full length: playback starts once half a second is ready.
-  - Opening an `.mp3` or `.wav` file opens it in the player. My Music has three original sample
-    tracks, synthesised by `tools/gen_music.py`.
+- **THE WRLD Media Player** (`mediaplayer.c`, `mpviz.c`): after the player that came with
+  Windows XP.
+  - A skinned window with its own rounded frame (`WF_SKINNED` windows draw their whole frame;
+    pixels with alpha 0 are see-through, and the app can ask the window manager to move or resize
+    it). The title band has the playlist selector and the caption buttons; the feature taskbar
+    down the left has Now Playing, Media Guide, Copy from CD, Media Library, Radio Tuner, Copy to
+    CD or Device, Premium Services and Skin Chooser, and can be hidden with its grip.
+  - Now Playing shows the video or the visualisation, its toolbar (visualisation menu, previous
+    and next, the name of the current look, full screen) and the playlist pane with the album
+    picture. Along the bottom: rewind, the seek bar and fast forward, then glassy round play/pause,
+    stop, previous, next and mute buttons, the volume slider, shuffle, repeat and a status box.
+  - **Visualisations** (`mpviz.c`), 29 looks in 7 collections. Ambience and Charge are feedback
+    effects: every frame the previous picture is warped (zoom, rotation, swirl, ripple, tunnel,
+    kaleidoscope, rising flames, mirror, waves), softened and faded, shapes driven by the music
+    (waveform lines and rings, spectrum rays, orbiting dots, beat bursts, lightning, stars) are
+    drawn on top, and the result is coloured through a drifting palette that flashes on the beat.
+    Charge's Randomization invents a new combination every 12 seconds or on a big beat. Bars and
+    Waves (bars, mirrored bars, scope, fire scope, spectrum circle), Plasma, Particles (starfield,
+    fountain, fireworks on the beat), Album Art, and Spectrum 3D (a landscape and towers drawn by
+    the WRLD 3D engine). Double-click the picture, click the full-screen button or press Alt+Enter
+    for full screen. The audio is analysed with a 512-point FFT into 32 bands, levels and beats.
+  - **Formats** (`src/media`, one decoder interface in `src/include/mediadec.h`; formats are
+    recognised by their contents): MP3, MP2 and MP1 ([minimp3](https://github.com/lieff/minimp3)),
+    Ogg Vorbis ([stb_vorbis](https://github.com/nothings/stb)), FLAC and Ogg FLAC
+    ([dr_flac](https://github.com/mackron/dr_libs)), WAV (PCM 8/16/24/32-bit, 32/64-bit float,
+    A-law, mu-law, IMA ADPCM, Microsoft ADPCM, WAVE_FORMAT_EXTENSIBLE, up to 8 channels folded to
+    stereo), AIFF and AIFC, Sun .au, and **MPEG-1 video** with MP2 sound (.mpg, .mpeg;
+    [PL_MPEG](https://github.com/phoboslab/pl_mpeg)), whose pictures are decoded in step with the
+    sound. Tags come from ID3v1/v2 and Vorbis comments. Decoding runs on its own task, straight
+    into a sound of the full length; playback starts once half a second is ready. Each decoder was
+    checked against ffmpeg's own decoding of the same files (signal-to-noise ratio 45 to 129 dB).
+    Not supported: AAC/M4A, WMA/WMV, Opus, MP4/H.264, AVI, MIDI and audio CDs.
+  - **Skins:** Windows XP Blue (the default), Silver, Olive Green, Midnight, Tangerine, Lavender,
+    and **Classic**, which uses the system window frame and grey 3D controls. The Skin Chooser
+    previews each one; the choice and the visualisation are remembered.
+  - Media Library: a tree (All Media, All Music, each artist and album, All Video) and a table
+    with search. Media Guide lists what is on the computer; Copy to CD or Device copies checked
+    items to My Music\Copied or another drive. Copy from CD, Radio Tuner and Premium Services
+    explain what is not available (audio CD reading, internet radio streams, online services).
+  - Keys: Ctrl+P play/pause, Ctrl+S stop, Ctrl+F/Ctrl+B next/previous, Ctrl+H shuffle, Ctrl+T
+    repeat, Ctrl+O open, Ctrl+1..8 the features, Alt+Enter full screen, F8 mute, F9/F10 volume;
+    on Now Playing, Space, Left/Right to seek and Up/Down to change the visualisation.
+  - Opening any of these files opens it in the player. My Music has three original sample
+    tracks (synthesised by `tools/gen_music.py`) and My Videos a short MPEG-1 clip.
 - **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
   Minesweeper, Pong, WRLD Security Center, Administrative Tools, Properties, Run, About, Setup.
 
@@ -1141,7 +1171,10 @@ third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this 
 third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against
 third_party/minimp3  minimp3 (MP3 decoding for the media player), public domain (CC0)
-src/media          MP3 glue for minimp3 (mp3.c)
+third_party/stb_vorbis  stb_vorbis (Ogg Vorbis), public domain or MIT
+third_party/dr_flac  dr_flac (FLAC), public domain or MIT-0
+third_party/pl_mpeg  PL_MPEG (MPEG-1 video, MP2), MIT
+src/media          decoder glue: one interface (mdec.c), WAV/AIFF/AU (pcm.c), MP3, Vorbis, FLAC, MPEG-1
 samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c, d3d10cube.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)

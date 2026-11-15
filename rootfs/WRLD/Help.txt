@@ -61,11 +61,18 @@ INSTALLING TO A HARD DISK
   virtio disks.
 
 MUSIC
-  THE WRLD Media Player (Start menu) plays MP3 and WAV files: double-click
-  one, or open the player and pick a song in the Library. Three sample
-  tracks are in My Documents\My Music. Now Playing shows a visualisation;
-  click the arrows under it to change it. Keys: Space play/pause, Ctrl+F
-  next, Ctrl+B previous, Ctrl+S stop, F8 mute, F9/F10 volume.
+  THE WRLD Media Player (Start menu) plays MP3, MP2, Ogg Vorbis, FLAC, WAV,
+  AIFF and .au sound and MPEG-1 video (.mpg): double-click a file, or open
+  the player and pick something in the Media Library. Sample tracks are in
+  My Documents\My Music and a short video in My Documents\My Videos.
+  The taskbar on the left switches between Now Playing, Media Guide, Copy
+  from CD, Media Library, Radio Tuner, Copy to CD or Device, Premium
+  Services and Skin Chooser. Now Playing shows the video or one of 29
+  visualisations: use the arrows or the menu under the picture, or Up/Down.
+  Double-click the picture or press Alt+Enter for full screen. Skin Chooser
+  has seven skins, including Classic. Keys: Space play/pause, Ctrl+F next,
+  Ctrl+B previous, Ctrl+S stop, Ctrl+H shuffle, Ctrl+T repeat, F8 mute,
+  F9/F10 volume.
 
 3D
   Control Panel > Visual Effects > Enable 3D acceleration turns the WRLD 3D

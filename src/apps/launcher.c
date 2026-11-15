@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "wm.h"
 #include "apps.h"
+#include "mediadec.h"
 #include "theme.h"
 #include "audio.h"
 
@@ -65,7 +66,8 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
     if (!strcasecmp(e, "wrldstyle")) return ICON_CP_APPEARANCE;
-    if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3") || !strcasecmp(e, "wma") || !strcasecmp(e, "m3u")) return ICON_MUSIC_FILE;
+    if (!strcasecmp(e, "mpg") || !strcasecmp(e, "mpeg") || !strcasecmp(e, "m1v") || !strcasecmp(e, "mpe")) return ICON_MEDIA_PLAYER;
+    if (mdec_known_ext(e) || !strcasecmp(e, "wma") || !strcasecmp(e, "m3u")) return ICON_MUSIC_FILE;
     if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) return ICON_IMAGE_FILE;
     if (!strcasecmp(e, "html") || !strcasecmp(e, "htm") || !strcasecmp(e, "url")) return ICON_BROWSER;
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
@@ -91,6 +93,12 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "wrldstyle")) return "Visual Style";
     if (!strcasecmp(e, "wav")) return "Wave Sound";
     if (!strcasecmp(e, "mp3")) return "MP3 Audio File";
+    if (!strcasecmp(e, "mp2") || !strcasecmp(e, "mp1") || !strcasecmp(e, "mpa")) return "MPEG Audio File";
+    if (!strcasecmp(e, "ogg") || !strcasecmp(e, "oga")) return "Ogg Vorbis Audio";
+    if (!strcasecmp(e, "flac") || !strcasecmp(e, "fla")) return "FLAC Audio";
+    if (!strcasecmp(e, "aif") || !strcasecmp(e, "aiff") || !strcasecmp(e, "aifc")) return "AIFF Sound";
+    if (!strcasecmp(e, "au") || !strcasecmp(e, "snd")) return "AU Sound";
+    if (!strcasecmp(e, "mpg") || !strcasecmp(e, "mpeg") || !strcasecmp(e, "m1v") || !strcasecmp(e, "mpe")) return "Movie File (MPEG)";
     if (!strcasecmp(e, "plist")) return "Property List";
     if (!strcasecmp(e, "c")) return "C Source File";
     return "File";
@@ -123,7 +131,7 @@ bool shell_open(const char *path, const char *cwd) {
         char l = dmg_mount(n, msg, sizeof msg);
         if (!l) err_box("Disk Image", msg);
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
-    } else if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3")) {
+    } else if (mdec_known_ext(e)) {
         mediaplayer_open(full);
     } else if (!strcasecmp(e, "wrldstyle")) {
         /* apply the visual style, then show it in Personalization */

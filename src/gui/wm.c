@@ -60,7 +60,7 @@ void wm_defer(wm_deferred_fn fn, void *arg) { if (defn < 64) { defq[defn].fn = f
 
 /* ---------------- geometry ---------------- */
 static int menubar_h(window_t *w) { return w->nmenus ? T.menubar_h : 0; }
-static bool framed(window_t *w) { return !(w->flags & WF_POPUP); }
+static bool framed(window_t *w) { return !(w->flags & (WF_POPUP | WF_SKINNED)); }
 rect_t wm_client_rect(window_t *w) {
     if (!framed(w)) return R(w->x, w->y, w->w, w->h);
     int b = T.border, th = T.title_h;
@@ -78,7 +78,7 @@ static void sync_surface(window_t *w) {
     w->dirty = true;
 }
 static void frame_size_for_client(int cw, int ch, int flags, int nmenus, int *ow, int *oh) {
-    if (flags & WF_POPUP) { *ow = cw; *oh = ch; return; }
+    if (flags & (WF_POPUP | WF_SKINNED)) { *ow = cw; *oh = ch; return; }
     *ow = cw + 2 * T.border;
     *oh = ch + T.title_h + T.border + (nmenus ? T.menubar_h : 0);
 }
@@ -437,7 +437,31 @@ static void paint_window_at(canvas_t *c, window_t *w, int x, int y) {
     }
     rect_t cr = wm_client_rect(w);
     cr.x += x - w->x; cr.y += y - w->y;
-    blit(c, cr.x, cr.y, w->surf, 0, 0, cr.w, cr.h);
+    if (!(w->flags & WF_SKINNED)) { blit(c, cr.x, cr.y, w->surf, 0, 0, cr.w, cr.h); return; }
+    /* skinned: the app's pixels with alpha 0 (rounded corners, cut-outs) show what is behind */
+    rect_t r = rect_intersect(R(cr.x, cr.y, cr.w, cr.h), c->clip);
+    for (int yy = r.y; yy < r.y + r.h; yy++) {
+        const uint32_t *s = w->surf->px + (size_t)(yy - cr.y) * w->surf->stride + (r.x - cr.x);
+        uint32_t *d = c->px + (size_t)yy * c->stride + r.x;
+        for (int xx = 0; xx < r.w; xx++) if (s[xx] >> 24) d[xx] = s[xx] | 0xFF000000u;
+    }
+}
+void wm_begin_move(window_t *w) {
+    if (!wm_alive(w) || w->state == WS_MAXIMIZED) return;
+    capture = NULL; w->ui.down = false;
+    drag.mode = DRAG_MOVE; drag.w = w; drag.mx = wm_mouse_x; drag.my = wm_mouse_y; drag.start = R(w->x, w->y, w->w, w->h);
+}
+void wm_begin_resize(window_t *w, int edges) {
+    if (!wm_alive(w) || w->state == WS_MAXIMIZED || !(w->flags & WF_RESIZABLE)) return;
+    capture = NULL; w->ui.down = false;
+    drag.mode = DRAG_RESIZE; drag.w = w; drag.edges = edges; drag.mx = wm_mouse_x; drag.my = wm_mouse_y; drag.start = R(w->x, w->y, w->w, w->h);
+}
+void wm_set_skinned(window_t *w, bool on) {
+    if (!wm_alive(w) || !!(w->flags & WF_SKINNED) == on) return;
+    if (on) w->flags |= WF_SKINNED; else w->flags &= ~WF_SKINNED;
+    effect_cancel_window(w);
+    sync_surface(w);                             /* same outer size, the client area follows */
+    wm_need_redraw = true;
 }
 
 static void effect_drop(window_effect_t *e) {
@@ -615,6 +639,12 @@ static void compose(void) {
     }
     effects_before(&screen, 0);
     taskbar_paint(&screen);
+    /* a full-screen topmost popup (a video or visualisation shown full screen) covers the taskbar too */
+    for (int i = 0; i < nwin; i++) {
+        window_t *w = wins[i];
+        if ((w->flags & (WF_POPUP | WF_TOPMOST)) == (WF_POPUP | WF_TOPMOST) && !(w->flags & WF_HIDDEN) &&
+            w->x <= 0 && w->y <= 0 && w->w >= SCREEN_W && w->h >= SCREEN_H) paint_window_at(&screen, w, w->x, w->y);
+    }
     shell_paint_overlays(&screen);
     popup_paint(&screen);
     gfx_present(current_cursor(), wm_mouse_x, wm_mouse_y);
@@ -723,7 +753,10 @@ static void handle_mouse(mouse_state_t *ms) {
         return;
     }
 
-    if (shell_mouse(moved && !pressed && !released ? ME_MOVE : pressed ? ME_DOWN : released ? ME_UP : ME_MOVE, mx, my, pressed ? pressed : released)) {
+    bool full_up = false;                      /* a full-screen popup takes the taskbar's place too */
+    for (int i = 0; i < nwin; i++) if ((wins[i]->flags & (WF_POPUP | WF_TOPMOST)) == (WF_POPUP | WF_TOPMOST) && !(wins[i]->flags & WF_HIDDEN) &&
+                                       wins[i]->w >= SCREEN_W && wins[i]->h >= SCREEN_H) full_up = true;
+    if (!full_up && shell_mouse(moved && !pressed && !released ? ME_MOVE : pressed ? ME_DOWN : released ? ME_UP : ME_MOVE, mx, my, pressed ? pressed : released)) {
         if (hover_win && wm_alive(hover_win)) { deliver_mouse(hover_win, ME_LEAVE, mx, my, 0); hover_win = NULL; }
         return;
     }
