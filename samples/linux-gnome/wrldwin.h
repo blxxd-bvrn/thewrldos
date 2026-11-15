@@ -19,7 +19,15 @@
 #define WRLDWIN_RESIZE  0x57A3
 #define WRLDWIN_TITLE   0x57A4
 #define WRLDWIN_INFO    0x57A5
+#define WRLDWIN_SETSIZE 0x57A6   /* struct wrldwin_size: resize the window itself (and the buffer; mmap again) */
+#define WRLDWIN_ACTION  0x57A7   /* WRLDWIN_DO_*: start a move or resize while the mouse button is held, ... */
 #define WRLDWIN_RESIZABLE 1
+#define WRLDWIN_FRAMELESS 2      /* no system frame: the program draws its own, alpha 0 pixels are see-through */
+#define WRLDWIN_DO_MOVE 1
+#define WRLDWIN_DO_RESIZE(edges) (2 | ((edges) << 8))   /* edges: 1 left, 2 right, 4 top, 8 bottom */
+#define WRLDWIN_DO_MINIMIZE 3
+#define WRLDWIN_DO_MAXIMIZE 4
+#define WRLDWIN_DO_RESTORE 5
 
 struct wrldwin_create { int32_t width, height; uint32_t flags; char title[100]; };
 struct wrldwin_size { int32_t width, height; };

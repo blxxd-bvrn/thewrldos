@@ -73,6 +73,7 @@ typedef struct lxsock {
     uint64_t dropped;
     struct lxsock *accept_head, *accept_next;
     struct lxsock *reg_next;
+    int cred_pid;                 /* the process this end belongs to, for SO_PEERCRED */
 
     /* AF_INET: addresses and ports are in host order, like the network stack */
     int family;
@@ -212,6 +213,8 @@ static lxsock_t *sock_new(int type) {
     lxsock_t *s = kzalloc(sizeof *s);
     if (!s) return NULL;
     s->type = type;
+    lxthread_t *t = lx_current();
+    s->cred_pid = t && t->proc ? t->proc->pid : 0;
     return s;
 }
 static lxsock_t *sock_lookup(const char *path) {
@@ -222,7 +225,10 @@ static void sock_unregister(lxsock_t *s) {
     for (lxsock_t **pp = &bound_list; *pp; pp = &(*pp)->reg_next)
         if (*pp == s) { *pp = s->reg_next; break; }
 }
-static bool sock_readable(lxsock_t *s) { return s->qhead != NULL || s->peer_gone || (!s->peer && s->connected); }
+static bool sock_readable(lxsock_t *s) {
+    if (s->listening) return s->accept_head != NULL;          /* a listening socket: a connection to accept */
+    return s->qhead != NULL || s->peer_gone || (!s->peer && s->connected);
+}
 static bool sock_writable(lxsock_t *s) { return s->peer && !s->peer_gone && !s->peer->peer_gone; }
 
 /* Returns a message, or NULL when the queue is empty. Consumes it unless peek. */
@@ -799,6 +805,7 @@ static int64_t do_connect(lxproc_t *p, int fd, uint64_t uaddr, int len) {
     if (!srv) return -ENOMEM;
     srv->connected = true; s->connected = true;
     srv->peer = s; s->peer = srv;
+    srv->cred_pid = l->cred_pid;                  /* the accepted end belongs to the listening process */
     srv->accept_next = NULL;
     if (!l->accept_head) l->accept_head = srv;
     else { lxsock_t *q = l->accept_head; while (q->accept_next) q = q->accept_next; q->accept_next = srv; }
@@ -1140,6 +1147,15 @@ static int64_t do_sockopt(lxproc_t *p, int fd, int level, int opt, uint64_t uval
                 return put(p, uval, tv, MIN(ulen, (uint64_t)sizeof tv)) ? 0 : -EFAULT;
             }
             case 9: case 13: { int32_t v = 0; return put(p, uval, &v, 4) ? 0 : -EFAULT; }
+            case 17: {                                /* SO_PEERCRED: the peer's pid, uid and gid (Wayland asks) */
+                if (s->family == AF_INET_ || !s->peer) return -ENOTCONN;
+                int32_t cred[3] = { s->peer->cred_pid, 1000, 1000 }, have = 0;
+                if (!ulen || !get(p, &have, ulen, 4)) return -EFAULT;          /* getsockopt's length is a pointer */
+                int32_t l = have < 12 ? (have < 0 ? 0 : have) : 12;
+                if ((l && !put(p, uval, cred, (uint64_t)l)) || !put(p, ulen, &l, 4)) return -EFAULT;
+                return 0;
+            }
+            case 16: { int32_t v = 0; return put(p, uval, &v, 4) ? 0 : -EFAULT; }   /* SO_PASSCRED */
             default: return -ENOPROTOOPT;
             }
         }

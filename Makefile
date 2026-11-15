@@ -299,7 +299,33 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkit/%.c
 	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(WEBKIT_PKGS))
 	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
 	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
-$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXWEBKIT)
+# A Wayland compositor on /dev/wrld/window and a test client (samples/linux-wayland), on the build
+# machine's libwayland; the xdg-shell glue comes from wayland-scanner and the keyboard map from
+# xkbcommon, compiled here (tools/gen_keymap.c) so the OS needs no XKB data
+WAYLAND_PKGS := wayland-server wayland-client xkbcommon
+XDG_SHELL_XML := $(firstword $(wildcard /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml))
+WLGEN := $(BUILD)/wayland
+LXWAYLAND := $(if $(and $(XDG_SHELL_XML),$(shell command -v wayland-scanner >/dev/null && pkg-config --exists $(WAYLAND_PKGS) 2>/dev/null && echo y)),\
+             $(LXROOT)/Linux/usr/local/bin/wrldcomp $(LXROOT)/Linux/usr/local/bin/wlhello $(LXROOT)/Linux/usr/share/wrld/keymap.xkb)
+$(WLGEN)/xdg-shell-protocol.c $(WLGEN)/xdg-shell-server-protocol.h $(WLGEN)/xdg-shell-client-protocol.h &: $(XDG_SHELL_XML)
+	@mkdir -p $(WLGEN)
+	wayland-scanner private-code $< $(WLGEN)/xdg-shell-protocol.c
+	wayland-scanner server-header $< $(WLGEN)/xdg-shell-server-protocol.h
+	wayland-scanner client-header $< $(WLGEN)/xdg-shell-client-protocol.h
+$(LXROOT)/Linux/usr/local/bin/wrldcomp: samples/linux-wayland/wrldcomp.c samples/linux-gnome/wrldwin.h $(WLGEN)/xdg-shell-protocol.c $(WLGEN)/xdg-shell-server-protocol.h
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64
+	gcc -O2 -Wall -Wno-unused-parameter -I$(WLGEN) -o $@ $< $(WLGEN)/xdg-shell-protocol.c $$(pkg-config --cflags --libs wayland-server)
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+$(LXROOT)/Linux/usr/local/bin/wlhello: samples/linux-wayland/wlhello.c $(WLGEN)/xdg-shell-protocol.c $(WLGEN)/xdg-shell-client-protocol.h
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu
+	gcc -O2 -Wall -Wno-unused-parameter -I$(WLGEN) -o $@ $< $(WLGEN)/xdg-shell-protocol.c $$(pkg-config --cflags --libs wayland-client)
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+$(LXROOT)/Linux/usr/share/wrld/keymap.xkb: tools/gen_keymap.c
+	@mkdir -p $(dir $@) $(WLGEN)
+	gcc -O2 -Wall -o $(WLGEN)/gen_keymap $< $$(pkg-config --cflags --libs xkbcommon)
+	$(WLGEN)/gen_keymap > $@
+$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXWEBKIT) $(LXWAYLAND)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"

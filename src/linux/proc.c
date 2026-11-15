@@ -491,10 +491,15 @@ void lx_return_check(regs_t *r) {
     if (now - th->slice_start >= 10) { task_yield(); th->slice_start = timer_ticks(); }
 }
 
+bool lx_strace;                          /* "lxtrace on" in the Command Prompt: every system call to the log */
 void lx_syscall_c(regs_t *r) {
     lxthread_t *th = lx_current();
     uint64_t nr = r->eax;
+    uint64_t a0 = r->edi, a1 = r->esi, a2 = r->edx;
     int64_t v = lx_syscall(r);
+    if (lx_strace && th && nr != 24 && nr != 228)          /* not sched_yield / clock_gettime: too many */
+        klog("lx %d: %llu(%llx, %llx, %llx) = %lld", th->proc ? th->proc->pid : -1, (unsigned long long)nr,
+             (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (long long)v);
     if (th) { th->sys_nr = (uint32_t)nr; th->sys_eintr = nr != 15 && v == -EINTR; }
     r->eax = (uint64_t)v;
 }

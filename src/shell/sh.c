@@ -1381,6 +1381,15 @@ static int b_open(sh_t *s, int argc, char **argv, io_t *io) {
     gui_launch("::open", full);
     return 0;
 }
+#ifdef __x86_64__
+static int b_lxtrace(sh_t *s, int argc, char **argv, io_t *io) {
+    (void)s;
+    extern bool lx_strace;
+    if (argc > 1) lx_strace = !strcasecmp(argv[1], "on");
+    out_s(io, lx_strace ? "Linux system calls are logged (serial port and the boot log).\n" : "Linux system call logging is off.\n");
+    return 0;
+}
+#endif
 static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2 || !strcmp(argv[1], "list")) {
         styles_load();
@@ -1541,6 +1550,9 @@ static const builtin_t builtins[] = {
     { "beep", b_beep, "PC speaker beep" }, { "color", b_color, "console colours (hex)" }, { "title", b_title, "window title" },
     { "tree", b_tree, "directory tree" }, { "find", b_find, "find files (-name PAT)" }, { "hexdump", b_hexdump, "hex dump a file" }, { "xxd", b_hexdump, NULL },
     { "mount", b_mount, "mount a .dmg / list drives" }, { "hdiutil", b_hdiutil, "disk image utility" }, { "open", b_open, "open with default app" }, { "start", b_open, NULL },
+#ifdef __x86_64__
+    { "lxtrace", b_lxtrace, "log Linux system calls (on/off)" },
+#endif
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
     { "passwd", b_passwd, "change the account password (-c clears)" }, { "logoff", b_logoff, "log off and show the welcome screen" },
     { "lspci", b_lspci, "list PCI devices" }, { "devices", b_devices, "devices and their drivers (-p problems, -i IDs)" }, { "lsdev", b_devices, NULL },
