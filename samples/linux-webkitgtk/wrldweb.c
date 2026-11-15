@@ -22,7 +22,10 @@ static GtkWidget *address;
 
 static void go(GtkEntry *e, WebKitWebView *v) {
     const char *t = gtk_editable_get_text(GTK_EDITABLE(e));
-    char *uri = strstr(t, "://") || g_str_has_prefix(t, "about:") || g_str_has_prefix(t, "data:") ? g_strdup(t) : g_strconcat("https://", t, NULL);
+    /* no scheme: https, except for a numeric address, localhost or an explicit port (local test servers) */
+    gboolean plain = g_ascii_isdigit(t[0]) || g_str_has_prefix(t, "localhost") || strchr(t, ':');
+    char *uri = strstr(t, "://") || g_str_has_prefix(t, "about:") || g_str_has_prefix(t, "data:") ? g_strdup(t)
+              : g_strconcat(plain ? "http://" : "https://", t, NULL);
     webkit_web_view_load_uri(v, uri);
     g_free(uri);
     gtk_widget_grab_focus(GTK_WIDGET(v));

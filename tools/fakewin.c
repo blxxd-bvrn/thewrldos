@@ -3,9 +3,10 @@
  * /dev/wrld/window. Opening it gives a pipe (so poll/epoll work), mmap gives
  * memory, the ioctls are answered here, and a thread replays scripted input:
  *
- *   WRLD_FAKE_EVENTS="2000 move 100 80; 2500 down 100 80 1; 2600 up 100 80 1; 3000 key 65 65; 4000 dump /tmp/f.ppm"
+ *   WRLD_FAKE_EVENTS="2000 move 100 80; 2500 down 100 80 1; 2600 up 100 80 1; 3000 key 65 65; 3100 kd 261 0 1; 3200 ku 261 0 0; 4000 dump /tmp/f.ppm"
  *   LD_PRELOAD=./fakewin.so wrldcomp -v ./gtkhello
  *
+ * ("key" presses and releases; "kd"/"ku" press or release alone: code ch mods.)
  * Times are milliseconds after the window is created; "dump" writes the window
  * as a PPM picture. Build: gcc -shared -fPIC -o fakewin.so tools/fakewin.c -ldl -lpthread */
 #define _GNU_SOURCE
@@ -64,6 +65,8 @@ static void *script(void *arg) {
         else if (!strcmp(what, "down")) push(WRLDWIN_EV_BUTTON_DOWN, a, b, c ? c : 1, 0, 0);
         else if (!strcmp(what, "up")) push(WRLDWIN_EV_BUTTON_UP, a, b, c ? c : 1, 0, 0);
         else if (!strcmp(what, "key")) { push(WRLDWIN_EV_KEY_DOWN, 0, 0, a, b, c); push(WRLDWIN_EV_KEY_UP, 0, 0, a, b, c); }
+        else if (!strcmp(what, "kd")) push(WRLDWIN_EV_KEY_DOWN, 0, 0, a, b, c);
+        else if (!strcmp(what, "ku")) push(WRLDWIN_EV_KEY_UP, 0, 0, a, b, c);
         else if (!strcmp(what, "wheel")) push(WRLDWIN_EV_WHEEL, a, b, c, 0, 0);
         else if (!strcmp(what, "resize")) push(WRLDWIN_EV_RESIZE, a, b, 0, 0, 0);
         else if (!strcmp(what, "close")) push(WRLDWIN_EV_CLOSE, 0, 0, 0, 0, 0);

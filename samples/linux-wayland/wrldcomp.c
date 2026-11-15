@@ -701,6 +701,7 @@ static void window_events(struct window *w) {
             keyboard_focus(keyboard_target(w));
             if (!kbd_focus) break;
             int code = evdev_code(e->code);
+            LOG("key %s %#x ch %#x mods %u -> evdev %d", e->type == WRLDWIN_EV_KEY_DOWN ? "down" : "up", e->code, e->ch, e->mods, code);
             struct kbd_arg a = { kbd_focus, (uint32_t)code, e->type == WRLDWIN_EV_KEY_DOWN, next_serial() };
             if (mods_now != e->mods) { mods_now = e->mods; send_to_client(&keyboards, wl_resource_get_client(kbd_focus->res), k_mods, &a); }
             if (code) send_to_client(&keyboards, wl_resource_get_client(kbd_focus->res), k_key, &a);

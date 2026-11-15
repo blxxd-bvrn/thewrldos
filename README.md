@@ -500,9 +500,14 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Shared memory:** `memfd_create` (with seals), `shm_open`/`shm_unlink` under `/dev/shm`,
   and `MAP_SHARED` of those or of anonymous memory share real pages between processes, across
   `fork` and through descriptors passed with `SCM_RIGHTS` (`shm` tests all of it).
+- **Wayland, GTK 4 and WebKit.** `wrldcomp` is a Wayland compositor that shows each Linux
+  program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
+  `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser
+  (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
+  `lxtrace on` in the Command Prompt logs every Linux system call to the serial port.
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
   loopback interface, `MAP_SHARED` write-back to ordinary files, and a real `vfork` (the child
-  gets a copy of the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
+  gets a copy of the parent). See `ROADMAP.md` for what is left before WebKit becomes the browser.
 
 ### USB (`src/usb`)
 - In **both editions** (`-DWRLD_NO_USB` builds a kernel without it).

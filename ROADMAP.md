@@ -1,11 +1,12 @@
 # Roadmap: from Linux programs to a browser engine
 
 The 64-bit edition runs unmodified x86-64 Linux programs in ring 3. This file lists what is
-still missing between that and running WPE WebKit as a browser on THE WRLD OS, in the order the
-pieces have to be built.
+still missing between that and running WebKit as THE WRLD OS's browser, in the order the pieces
+have to be built.
 
-**Where it stands (November 2026):** WebKit is *not* running yet. What runs today, verified by
-the test programs below inside the OS:
+**Where it stands (November 2026):** **WebKit runs.** WebKitGTK 6 (2.52) renders pages inside a
+desktop window, with its web and network processes, JavaScript, canvas, images, and pages
+fetched over HTTP (`wrldweb`, below). Verified inside the OS by these test programs:
 
 - the C++ runtime (glibc's `libstdc++`): exceptions, RTTI, threads, `thread_local`, iostreams,
   `std::filesystem` (`samples/linux-cxx/cxxtest.cpp`, 14 checks);
@@ -24,7 +25,18 @@ the test programs below inside the OS:
   program maps and draws (32-bit ARGB, what Cairo, pixman and Skia's CPU backend write), presents
   with an `ioctl`, and reads mouse, keyboard, resize and close events from with `read`, `poll`
   or `epoll` (`src/linux/wrldwin.c`, interface in `samples/linux-gnome/wrldwin.h`; the
-  `wrldpaint` demo draws with Cairo and takes clicks and typing).
+  `wrldpaint` demo draws with Cairo and takes clicks and typing);
+- **a Wayland compositor**, `wrldcomp` (`samples/linux-wayland`), on Ubuntu's libwayland-server:
+  `wl_compositor`, subsurfaces, `wl_shm`, `xdg_wm_base` (toplevels and popups), `wl_seat` with an
+  XKB keymap, `wl_output`. Each toplevel becomes a `/dev/wrld/window` window, frameless when the
+  client draws its own decorations; `wlhello` is a bare test client;
+- **GTK 4** with its Cairo renderer on `wrldcomp`: header bar, popovers, entries, buttons,
+  sliders (`samples/linux-gtk/gtkhello.c`, `make ARCH=x86_64 LX_GTK=1`, about 35 MB);
+- **WebKitGTK 6**: `wrldweb` (`samples/linux-webkitgtk`, `make ARCH=x86_64 LX_WEBKITGTK=1`, about
+  210 MB, so give the VM 3 GB) is a small browser with back, forward, reload and an address bar.
+  WebKit renders on the CPU; a stand-in `libEGL.so.1` gives it the EGL display it insists on
+  without shipping Mesa and LLVM. Run it with
+  `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
 
 ## Where the port stands
 
@@ -262,22 +274,17 @@ Already working, and not on the list below:
 
 ## The next steps to WebKit
 
-1. **WebKit on the window device.** No Ubuntu release packages WPE WebKit (checked up to 25.10),
-   and Debian's archive is not reachable from the build environment, so there are two routes:
-   - *WebKitGTK*, which Ubuntu packages: write a small Wayland compositor (with Ubuntu's
-     `libwayland-server`) that runs as a Linux program and shows each `wl_shm` surface in a
-     `/dev/wrld/window` window, then run GTK 4 with its Cairo renderer and WebKitGTK's
-     MiniBrowser on it. Needs `wl_compositor`, `wl_shm`, `xdg_wm_base`, `wl_seat` (with an XKB
-     keymap in a memfd) and `wl_output`, plus EGL/GBM avoided or provided by Mesa's llvmpipe.
-   - *WPE WebKit* built from source on a bigger build machine with the CPU Skia renderer and a
-     WRLD platform backend that writes frames straight into `/dev/wrld/window`.
-   The compositor route reuses packaged binaries, so it is the one to try first.
-2. **Networking for libsoup.** HTTP through libsoup 3 and TLS through glib-networking/GnuTLS,
-   on the existing socket layer; then IPv6 and loopback, which WebKit probes for.
-3. **Memory.** WebKit wants 1-2 GB per web process; the 3.75 GB ceiling and the in-RAM root file
-   system make a single web process the realistic target at first.
-4. **Input and lifecycle.** Keyboard and mouse events from the desktop window into WPE, resizing,
-   and tearing the processes down with the window.
+1. **WebKit as THE WRLD Browser.** `wrldweb` works but is a sample: start it from the Start menu
+   and the browser's shortcut, keep tabs and history, and fall back to the built-in browser on
+   the 32-bit edition and on machines with too little memory.
+2. **Input under load.** Typing very fast into a WebKit page can drop a key after Shift; typing at
+   normal speed, the address bar and all GTK widgets are fine. Not reproducible on the build
+   machine or with `lxtrace on`, so it is a timing issue in the Linux layer still to be found.
+3. **Name resolution and HTTPS in practice.** DNS goes to the address DHCP hands out and HTTPS goes
+   through GIO's GnuTLS module with the build machine's CA list; both need checking on a network
+   that resolves names (the build environment does not).
+4. **Memory.** The root file system lives in RAM, so the WebKit build needs a 3 GB VM; loading
+   the WebKit libraries from disk instead would bring that down.
 
 ## Milestones
 
@@ -309,7 +316,8 @@ Already working, and not on the list below:
 14. [x] **Shared memory between processes** - `memfd_create`, `/dev/shm`, real `MAP_SHARED`
    (`src/linux/shm.c`, `samples/linux/shm.c`).
 15. [x] **Desktop windows for Linux programs** - `/dev/wrld/window` (`src/linux/wrldwin.c`).
-16. [ ] **A Wayland compositor on `/dev/wrld/window`**, then GTK 4 and WebKitGTK's MiniBrowser.
+16. [x] **A Wayland compositor on `/dev/wrld/window`**, GTK 4 and WebKitGTK (`wrldcomp`, `gtkhello`,
+    `wrldweb`).
 17. [ ] **WebKit as a browser** on THE WRLD OS.
 
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
