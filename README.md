@@ -9,7 +9,7 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 
 - Boots from a GRUB CD image (BIOS or UEFI) into a spinning-globe boot screen, a log-on
   screen and the desktop.
-- **Two editions from the same sources:** `wrldos.iso` (32-bit, i686) runs 32-bit Win32
+- **Two editions from the same sources:** `wrldos.iso` (32-bit, any Pentium-class CPU or later) runs 32-bit Win32
   programs; `wrldos64.iso` (64-bit, x86-64 long mode) runs 64-bit (x64) Win32 programs.
   Everything else is the same.
 - Runs **live from the CD** or **installs to a hard disk** with a graphical Setup (a detailed
@@ -145,8 +145,10 @@ You can also choose the emulated hardware:
 Boot `wrldos.iso` (or `wrldos64.iso`, in a VM set up for a 64-bit guest, for example
 VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** or **UEFI** boot and at least
 **64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). The ISO
-is a hybrid image: a PC-BIOS core and an x86-64 EFI System Partition (`EFI/BOOT/BOOTX64.EFI`).
-UEFI firmware must be 64-bit (the usual kind); a 32-bit-only EFI machine cannot boot it. To install,
+is a hybrid image: a PC-BIOS core and an EFI System Partition with both `EFI/BOOT/BOOTX64.EFI` and
+`EFI/BOOT/BOOTIA32.EFI`, so 64-bit UEFI and 32-bit UEFI firmware (Bay Trail tablets and 2-in-1s,
+early Intel Macs) both boot it; Setup installs both loaders. See [real hardware](docs/HARDWARE.md)
+for what works on which generation of PC. To install,
 attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **NVMe**, or **SCSI**
 (VMware/VirtualBox **LSI Logic** and **LSI Logic SAS**, **VMware Paravirtual**, **virtio-scsi**), a
 **virtio-blk** disk in QEMU/KVM/Proxmox, or a **USB** disk behind a UHCI, OHCI, EHCI or xHCI
@@ -266,6 +268,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 ### 32-bit and 64-bit (`src/arch/i686`, `src/arch/x86_64`)
 - One set of C sources builds both editions; only the boot stub, the interrupt and
   context-switch assembly and the linker script are per architecture.
+- **32-bit:** compiled for the Pentium (i586, tuned for i686) without MMX or SSE, so it also runs
+  on Pentium MMX, AMD K6 and the VIA C3 of many thin clients; PAT, the local APIC, write-combining
+  and the TSC are used only when CPUID reports them.
 - **x86-64:** GRUB loads the 64-bit ELF kernel through Multiboot 2 (or Multiboot 1 on an older
   GRUB). A 32-bit stub checks for long mode, identity-maps the first 4 GiB with 2 MiB pages,
   enables PAE, long mode, the FPU and SSE, and calls the same `kmain`. Interrupt stubs save the
@@ -500,6 +505,17 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   gets a copy of the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
 
 ### USB (`src/usb`)
+- In **both editions** (`-DWRLD_NO_USB` builds a kernel without it).
+- **Taking over from the BIOS:** every controller is handed over properly before it is reset, so
+  the firmware's USB keyboard emulation (SMIs) stops cleanly: the xHCI and EHCI legacy support
+  capabilities (BIOS/OS semaphores, SMI enables cleared, up to a second for the BIOS to let go),
+  OHCI's ownership change request, and UHCI's LEGSUP register. On Intel 7- and 8-series chipsets
+  (Panther Point, Lynx Point, Wildcat Point) the ports shared between EHCI and xHCI are switched to
+  xHCI before anything is probed.
+- **Split transactions on EHCI:** full- and low-speed devices behind a high-speed hub, including
+  the hub built into Intel chipsets from about 2010 (which have no companion controllers, so every
+  keyboard and mouse sits behind it), are reached through the hub's transaction translator. Each
+  device address keeps its speed, translator hub and port, and endpoint 0's packet size.
 - **Host controllers:** all four kinds a PC uses. **xHCI** (`xhci.c`, USB 3.x, what every
   machine has had for the last decade), **EHCI** (`ehci.c`, USB 2.0 high speed),
   **UHCI** (`uhci.c`, USB 1.1 on PIIX/ICH chipsets) and **OHCI** (`ohci.c`, USB 1.1 on
@@ -1015,7 +1031,7 @@ device manager's job is to say what the computer has and which driver runs it.
     into a sound of the full length; playback starts once half a second is ready. Each decoder was
     checked against ffmpeg's own decoding of the same files (signal-to-noise ratio 45 to 129 dB).
     Not supported: AAC/M4A, WMA/WMV, Opus, MP4/H.264, AVI, MIDI and audio CDs.
-  - **Skins:** Windows XP Blue (the default), Silver, Olive Green, Midnight, Tangerine, Lavender,
+  - **Skins:** WRLD Blue (the default), Silver, Olive Green, Midnight, Tangerine, Lavender,
     and **Classic**, which uses the system window frame and grey 3D controls. The Skin Chooser
     previews each one; the choice and the visualisation are remembered.
   - Media Library: a tree (All Media, All Music, each artist and album, All Video) and a table

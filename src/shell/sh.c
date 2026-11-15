@@ -1496,7 +1496,7 @@ static int b_lsusb(sh_t *s, int argc, char **argv, io_t *io) {
         out_f(io, "%s  %-10s %s  (%s)\n", d->hwid + 4, d->drv ? d->drv->name : "no driver", d->name, d->location);
         n++;
     }
-    if (!n) out_s(io, ARCH_BITS == 64 ? "No USB devices are connected.\n" : "USB needs the 64-bit edition.\n");
+    if (!n) out_s(io, "No USB devices are connected.\n");
     return 0;
 }
 static int b_return(sh_t *s, int argc, char **argv, io_t *io) { s->ret = true; return argc > 1 ? atoi(argv[1]) : s->status; }

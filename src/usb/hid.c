@@ -7,7 +7,7 @@
  * (the usages) apply to the next main item only; an Input main item then
  * declares `count` fields of `size` bits. Fields are laid out in order, per
  * report ID, which is how the bit offsets below are found. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "hid.h"
 
 #define MAX_USAGES 16

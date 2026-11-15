@@ -376,7 +376,7 @@ static bool do_install(int disk, int slot, int mode) {
         "set timeout=4\nset default=0\n"
         "insmod all_video\n"
         "if [ \"$grub_platform\" = \"efi\" ]; then insmod efi_gop; fi\n"
-        "set gfxmode=1920x1080x32,1680x1050x32,1600x900x32,1440x900x32,1366x768x32,1280x1024x32,1280x800x32,1024x768x32,auto\n"
+        "set gfxmode=1920x1080x32,1680x1050x32,1600x900x32,1440x900x32,1366x768x32,1280x1024x32,1280x800x32,1024x768x32,1024x768x24,1024x768x16,800x600x32,800x600x24,800x600x16,auto\n"
         "set gfxpayload=keep\n\n"
         "menuentry \"" OS_NAME "\" {\n    multiboot2 /boot/wrld.elf root=%08X\n    boot\n}\n"
         "menuentry \"" OS_NAME " (verbose boot)\" {\n    multiboot2 /boot/wrld.elf root=%08X verbose\n    boot\n}\n"
@@ -394,6 +394,11 @@ static bool do_install(int disk, int slot, int mode) {
         vol_mkdir(v, "EFI\\BOOT");
         bool eok = vol_write(v, "EFI\\BOOT\\BOOTX64.EFI", efi, el, false);
         kfree(efi);
+        /* the 32-bit UEFI loader too, when the media has one: the firmware picks the one it can run */
+        uint32_t il = 0;
+        uint8_t *ia32 = vfs_read_file("C:\\boot\\grub\\BOOTIA32.EFI", &il);
+        if (ia32 && il && eok) eok = vol_write(v, "EFI\\BOOT\\BOOTIA32.EFI", ia32, il, false);
+        kfree(ia32);
         if (!eok) {
             message_screen("Setup could not write the UEFI boot loader to the disk.\n\nPress ENTER to return.", "ENTER=Continue");
             vol_unmount(v); kfree(bootimg); kfree(core); return false;

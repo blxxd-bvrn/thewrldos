@@ -3,7 +3,7 @@
  * scancodes and packets the rest of the system already understands (hid.c
  * reads their report formats); mass storage becomes an ordinary SCSI disk in
  * the block layer. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "disk.h"
 
@@ -1242,6 +1242,25 @@ void usb_init(void)
                  kind, ours ? "" : " (no driver for this controller yet)");
         }
     }
+    /* Intel 7- and 8-series chipsets start with every port wired to EHCI and
+     * switch them to xHCI only when asked (XUSB2PR, USB3_PSSEN): ask now, so
+     * the xHCI driver sees all speeds and EHCI keeps nothing it cannot reach */
+    {
+        pci_dev_t *devs = NULL;
+        int n = pci_list(&devs);
+        for (int i = 0; i < n; i++) {
+            pci_dev_t *pd = &devs[i];
+            if (pd->vendor != 0x8086 || pd->cls != 0x0C || pd->sub != 0x03 || pd->prog != 0x30) continue;
+            /* only the parts that have these registers: Panther Point, Lynx Point (and -LP), Wildcat Point (and -LP) */
+            if (pd->device != 0x1E31 && pd->device != 0x8C31 && pd->device != 0x9C31 && pd->device != 0x8CB1 && pd->device != 0x9CB1) continue;
+            uint32_t usb3 = pci_cfg_read(pd->bus, pd->dev, pd->fn, 0xDC), usb2 = pci_cfg_read(pd->bus, pd->dev, pd->fn, 0xD4);
+            if (!usb3 && !usb2) continue;                           /* not a switchable part */
+            if (usb3 == 0xFFFFFFFFu || usb2 == 0xFFFFFFFFu) continue;
+            pci_cfg_write(pd->bus, pd->dev, pd->fn, 0xD8, usb3);  /* SuperSpeed on the shared ports */
+            pci_cfg_write(pd->bus, pd->dev, pd->fn, 0xD0, usb2);  /* USB 2.0 ports routed to xHCI */
+            klog("usb: Intel xHCI %04x: ports switched from EHCI (USB3 %x, USB2 %x)", pd->device, usb3, usb2);
+        }
+    }
     /* EHCI first: it owns the ports and hands full/low-speed ones to the
      * companion, whose probe comes next and enumerates them. */
     ehci_probe();
@@ -1280,10 +1299,10 @@ void usb_init(void)
 }
 #else
 #include "usb.h"
-void usb_init(void) {}                          /* USB needs the 64-bit edition */
+void usb_init(void) {}                          /* built with -DWRLD_NO_USB */
 void usb_poll(void) {}
 int usb_count(void) { return 0; }
-const char *usb_boot_summary(void) { return "USB is only in the 64-bit edition"; }
+const char *usb_boot_summary(void) { return "USB is not built into this kernel"; }
 int usb_has_input(void) { return 0; }
 int usb_input_active(void) { return 0; }
 const char *usb_device_summary(void) { return ""; }

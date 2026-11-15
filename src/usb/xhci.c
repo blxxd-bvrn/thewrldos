@@ -16,7 +16,7 @@
  * the device has something to say, so a poll arms a TRB, returns nothing, and
  * collects the completion on a later poll. Bulk and control transfers are
  * awaited directly. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "devmgr.h"
 
@@ -816,8 +816,9 @@ static void xhci_handoff(xhci_t *x, uint32_t hcc1)
             if (cap & (1u << 16)) {
                 w32(x, off, (cap & ~0xE0u) | (1u << 17));
                 uint32_t t0 = timer_ticks();
-                while ((r32(x, off) & (1u << 16)) && (int32_t)(timer_ticks() - t0) < 100)
+                while ((r32(x, off) & (1u << 16)) && (int32_t)(timer_ticks() - t0) < 1000)
                     task_yield();
+                if (r32(x, off) & (1u << 16)) { klog("xhci: the BIOS kept the controller; taking it"); w32(x, off, (r32(x, off) & ~((1u << 16) | 0xE0u)) | (1u << 17)); }
             }
             w32(x, off + 4, 0);                           /* USBLEGCTLSTS: no SMI events */
             break;

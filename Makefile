@@ -13,7 +13,7 @@ NASMFMT := elf64
 BUILD   := build64
 ISO     := wrldos64.iso
 else ifeq ($(ARCH),i686)
-ARCHFLAGS := -m32 -march=i686 -mno-sse -mno-mmx
+ARCHFLAGS := -m32 -march=i586 -mtune=i686 -mno-sse -mno-mmx
 NASMFMT := elf32
 BUILD   := build
 ISO     := wrldos.iso
@@ -35,6 +35,10 @@ CSRC    := $(wildcard src/kernel/*.c src/gui/*.c src/apps/*.c src/win32/*.c src/
 MBED    := third_party/mbedtls
 MBED_SRC := $(wildcard $(MBED)/library/*.c $(MBED)/tf-psa-crypto/core/*.c $(MBED)/tf-psa-crypto/drivers/builtin/src/*.c \
             $(MBED)/tf-psa-crypto/platform/*.c $(MBED)/tf-psa-crypto/utilities/*.c $(MBED)/tf-psa-crypto/extras/*.c)
+# a TLS client only: no certificate/CSR writing, CRLs, PKCS#7, server side, session caches or sockets
+MBED_UNUSED := x509_create x509_csr x509_crl x509write x509write_crt x509write_csr pkcs7 \
+            ssl_cache ssl_cookie ssl_ticket ssl_tls12_server ssl_tls13_server net_sockets
+MBED_SRC := $(filter-out $(patsubst %,$(MBED)/library/%.c,$(MBED_UNUSED)),$(MBED_SRC))
 MBED_OBJ := $(patsubst $(MBED)/%.c,$(BUILD)/mbedtls/%.o,$(MBED_SRC)) $(patsubst src/tls/%.c,$(BUILD)/tls/%.o,$(wildcard src/tls/*.c))
 MBED_CFLAGS = $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector -fno-asynchronous-unwind-tables \
            -fno-builtin -O2 -g0 -nostdinc -isystem $(shell $(CC) $(firstword $(ARCHFLAGS)) -print-file-name=include) \
@@ -78,6 +82,9 @@ SAMPLE_EXES64 := $(patsubst samples/%.c,rootfs64/Samples/%.exe,$(SAMPLES))
 
 GRUBDIR ?= $(firstword $(wildcard /usr/lib/grub/i386-pc /usr/lib/grub2/i386-pc /usr/share/grub/i386-pc) /usr/lib/grub/i386-pc)
 GRUBEFIDIR ?= $(firstword $(wildcard /usr/lib/grub/x86_64-efi /usr/lib/grub2/x86_64-efi /usr/share/grub/x86_64-efi) /usr/lib/grub/x86_64-efi)
+# 32-bit UEFI (Bay Trail tablets and 2-in-1s, early Intel Macs): optional, used when installed
+GRUBIA32DIR ?= $(firstword $(wildcard /usr/lib/grub/i386-efi /usr/lib/grub2/i386-efi /usr/share/grub/i386-efi))
+EFI_IA32 = $(if $(wildcard $(GRUBIA32DIR)/kernel.img),$(SYS)/boot/grub/BOOTIA32.EFI)
 GRUB_MKRESCUE ?= $(firstword $(shell command -v grub-mkrescue grub2-mkrescue 2>/dev/null) grub-mkrescue)
 GRUB_MKIMAGE  ?= $(firstword $(shell command -v grub-mkimage grub2-mkimage 2>/dev/null) grub-mkimage)
 GRUB_MODS := biosdisk part_msdos part_gpt fat ntfs multiboot multiboot2 normal configfile boot vbe vga video_bochs video_cirrus echo test
@@ -242,6 +249,9 @@ $(SYS)/boot/grub/core%.img: Makefile
 $(SYS)/boot/grub/BOOTX64.EFI: grub/efi.cfg Makefile
 	@mkdir -p $(dir $@)
 	$(GRUB_MKIMAGE) -O x86_64-efi -d $(GRUBEFIDIR) -o $@ -p /boot/grub -c grub/efi.cfg $(GRUB_EFI_MODS)
+$(SYS)/boot/grub/BOOTIA32.EFI: grub/efi.cfg Makefile
+	@mkdir -p $(dir $@)
+	$(GRUB_MKIMAGE) -O i386-efi -d $(GRUBIA32DIR) -o $@ -p /boot/grub -c grub/efi.cfg $(GRUB_EFI_MODS)
 $(SYS)/boot/wrld.elf: $(KERNEL)
 	@mkdir -p $(dir $@)
 	cp $< $@
@@ -304,7 +314,7 @@ endif
 	@touch $@
 
 # initrd = rootfs/ plus the boot files Setup copies to the disk
-$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
+$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(EFI_IA32) $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
 	@mkdir -p $(BUILD)
 	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .) $(if $(filter x86_64,$(ARCH)),-C $(CURDIR)/$(LXROOT) Linux)
 
@@ -341,6 +351,7 @@ check-tools:
 	  if command -v $$t >/dev/null 2>&1; then echo "  ok       $$t"; else echo "  MISSING  $$t"; fi; done
 	@if [ -f $(GRUBDIR)/boot.img ]; then echo "  ok       GRUB BIOS files ($(GRUBDIR))"; else echo "  MISSING  GRUB BIOS files (grub-pc-bin)"; fi
 	@if [ -f $(GRUBEFIDIR)/kernel.img ]; then echo "  ok       GRUB EFI files ($(GRUBEFIDIR))"; else echo "  MISSING  GRUB EFI files (grub-efi-amd64-bin)"; fi
+	@if [ -n "$(EFI_IA32)" ]; then echo "  ok       GRUB 32-bit EFI files ($(GRUBIA32DIR))"; else echo "  optional GRUB 32-bit EFI files (grub-efi-ia32-bin): for 32-bit UEFI tablets"; fi
 
 # the HID report-format code touches no hardware: check it on this machine
 check-hid:
