@@ -1,4 +1,4 @@
-/* THE WRLD Media Player, after the media player that came with Windows XP:
+/* THE WRLD Media Player, after the media players of the XP era:
  * a skinned window with its own rounded frame, the feature taskbar down the
  * left (Now Playing, Media Guide, Copy from CD, Media Library, Radio Tuner,
  * Copy to CD or Device, Premium Services, Skin Chooser), the video or
@@ -64,7 +64,7 @@ typedef struct {
     uint32_t lcd, lcd_text;                         /* status box */
 } skin_t;
 static const skin_t skins[] = {
-    { "Windows XP Blue", "The default skin: blue frame, white taskbar, glassy buttons.", false,
+    { "WRLD Blue", "The default skin: blue frame, white taskbar, glassy buttons.", false,
       0xFF8CB0F0, 0xFF4A6FD0, 0xFF2A4AA8, 0xFF1A2E78,
       0xFFFFFFFF, 0xFFC6D6F4, 0xFF10246A, 0xFFDCE7FB, 0xFF9CB4E4, 0xFFEAF0FC,
       0xFF4C5EAE, 0xFF2C3C8E, 0xFF3A4C9E, 0xFFFFFFFF, 0xFFB8C8F0, 0xFF6A7CC6, 0xFF4A64C4,
@@ -91,7 +91,7 @@ static const skin_t skins[] = {
       0xFFF0A030, 0xFFF2F4E4,
       0xFFFFFFFA, 0xFF34401A, 0xFF7A8E4C, 0xFFFFFFFF, 0xFFF4F6E8, 0xFFE0E8C0,
       0xFF2E3A18, 0xFFE0FFA0 },
-    { "Classic", "The Windows Classic look: the system frame and grey 3D controls.", true,
+    { "Classic", "The WRLD Classic look: the system frame and grey 3D controls.", true,
       0xFFD4D0C8, 0xFFD4D0C8, 0xFFD4D0C8, 0xFF808080,
       0xFFD4D0C8, 0xFFD4D0C8, 0xFF000000, 0xFF0A246A, 0xFF808080, 0xFFE0DCD4,
       0xFFD4D0C8, 0xFFD4D0C8, 0xFFFFFFFF, 0xFF000000, 0xFF404040, 0xFF808080, 0xFF0A246A,
