@@ -615,6 +615,7 @@ typedef struct PACKED { uint32_t events; uint64_t data; } epevent_t;
 
 #define SOL_SOCKET_ 1
 #define SCM_RIGHTS_ 1
+#define MSG_CTRUNC_ 8
 #define MSG_PEEK_   2
 #define MSG_DONTWAIT_ 0x40
 #define MSG_TRUNC_  0x20
@@ -1038,7 +1039,7 @@ static int64_t do_recvmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
     }
     for (;;) {
         if (s->qhead) break;
-        if (s->peer_gone || !s->peer) { mh.flags = 0; put(p, umsg, &mh, sizeof mh); return 0; }
+        if (s->peer_gone || !s->peer) { mh.flags = 0; mh.controllen = 0; put(p, umsg, &mh, sizeof mh); return 0; }
         if (nb) return -EAGAIN;
         if (lx_block_interrupted(lx_current())) return -EINTR;
         task_sleep(1);
@@ -1078,8 +1079,15 @@ static int64_t do_recvmsg(lxproc_t *p, int fd, uint64_t umsg, int flags) {
         c->len = 16 + (uint64_t)passed * 4;
         put(p, mh.control, ctl, CMSG_ALIGN(c->len));
         mh.controllen = CMSG_ALIGN(c->len);
-    } else if (m->nfds) {
+        if (passed < m->nfds) mh.flags |= MSG_CTRUNC_;
+    } else {
+        /* no control data: say so, or the program parses whatever its buffer held */
+        if (m->nfds) mh.flags |= MSG_CTRUNC_;
         mh.controllen = 0;
+    }
+    if (m->nfds && !peek) {                 /* descriptors go with the first read of a message only */
+        for (int i = 0; i < m->nfds; i++) if (m->fds[i]) lx_file_put(m->fds[i]);
+        m->nfds = 0;
     }
     put(p, umsg, &mh, sizeof mh);
     if (!peek) {

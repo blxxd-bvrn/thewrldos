@@ -290,7 +290,7 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gnome/%.c
 	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
 	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
 # fontconfig settings for those programs: the OS's fonts, with the generic names mapped onto them
-LXFONTCONF := $(if $(LXGNOME)$(LXGTK),$(LXROOT)/Linux/etc/fonts/fonts.conf)
+LXFONTCONF := $(if $(LXGNOME)$(LXGTK)$(LXWEBKITGTK),$(LXROOT)/Linux/etc/fonts/fonts.conf)
 $(LXROOT)/Linux/etc/fonts/fonts.conf: Makefile
 	@mkdir -p $(dir $@)
 	@printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>/mnt/c/WRLD/Fonts</dir>\n  <cachedir>/tmp/fontconfig</cachedir>\n  <alias><family>sans-serif</family><prefer><family>Liberation Sans</family></prefer></alias>\n  <alias><family>serif</family><prefer><family>Liberation Sans</family></prefer></alias>\n  <alias><family>monospace</family><prefer><family>Liberation Mono</family></prefer></alias>\n  <alias><family>Cantarell</family><prefer><family>Liberation Sans</family></prefer></alias>\n  <config></config>\n</fontconfig>\n' > $(LXROOT)/Linux/etc/fonts/fonts.conf
@@ -331,7 +331,7 @@ $(LXROOT)/Linux/usr/share/wrld/keymap.xkb: tools/gen_keymap.c
 	$(WLGEN)/gen_keymap > $@
 # GTK 4 programs (samples/linux-gtk) through wrldcomp: about 35 MB of libraries, so only with
 #   make ARCH=x86_64 LX_GTK=1   (needs libgtk-4-dev)
-LXGTK := $(if $(LX_GTK),$(if $(shell pkg-config --exists gtk4 2>/dev/null && echo y),$(patsubst samples/linux-gtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gtk/*.c)),$(warning LX_GTK=1 needs libgtk-4-dev)))
+LXGTK := $(if $(LX_GTK)$(LX_WEBKITGTK),$(if $(shell pkg-config --exists gtk4 2>/dev/null && echo y),$(patsubst samples/linux-gtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gtk/*.c)),$(warning LX_GTK=1 needs libgtk-4-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/usr/share/glib-2.0/schemas
 	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs gtk4)
@@ -342,7 +342,29 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 	@if [ -d /usr/share/X11/xkb ]; then mkdir -p $(LXROOT)/Linux/usr/share/X11/xkb/rules && \
 	  cp -r /usr/share/X11/xkb/types /usr/share/X11/xkb/compat /usr/share/X11/xkb/keycodes /usr/share/X11/xkb/symbols $(LXROOT)/Linux/usr/share/X11/xkb/ && \
 	  cp /usr/share/X11/xkb/rules/evdev $(LXROOT)/Linux/usr/share/X11/xkb/rules/; fi
-$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK)
+# WebKitGTK 6 (samples/linux-webkitgtk) through wrldcomp: WebKit's web and network processes and
+# about 210 MB of libraries, so only with  make ARCH=x86_64 LX_WEBKITGTK=1  (needs libwebkitgtk-6.0-dev;
+# implies LX_GTK=1). HTTPS goes through GIO's GnuTLS module and the build machine's CA list.
+WKGTK_DIR := /usr/lib/x86_64-linux-gnu/webkitgtk-6.0
+LXWEBKITGTK := $(if $(LX_WEBKITGTK),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/ssl/certs
+	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0)
+	cp -L $(WKGTK_DIR)/WebKitWebProcess $(WKGTK_DIR)/WebKitNetworkProcess $(LXROOT)/Linux$(WKGTK_DIR)/
+	cp -L $(WKGTK_DIR)/injected-bundle/*.so $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle/
+	cp -L /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules/
+	@for lib in $$(ldd $@ $(WKGTK_DIR)/WebKitWebProcess $(WKGTK_DIR)/WebKitNetworkProcess $(WKGTK_DIR)/injected-bundle/*.so \
+	    /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so | awk '/=> \// { print $$3 }' | sort -u); do \
+	  cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+	@if [ -f /etc/ssl/certs/ca-certificates.crt ]; then cp -L /etc/ssl/certs/ca-certificates.crt $(LXROOT)/Linux/etc/ssl/certs/; fi
+# the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
+# replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
+LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)
+$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub: samples/linux-webkitgtk/stub/libEGL.c $(LXGTK) $(LXWEBKITGTK)
+	gcc -shared -fPIC -O2 -Wall -fvisibility=hidden -Wl,-soname,libEGL.so.1 -o $(dir $@)libEGL.so.1 $< -ldl
+	@touch $@
+$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK) $(LXWEBKITGTK) $(LXEGL)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"
