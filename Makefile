@@ -285,11 +285,15 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-cxx/%.cpp
 GNOME_PKGS := glib-2.0 gio-2.0 cairo cairo-ft fontconfig freetype2
 LXGNOME := $(if $(shell pkg-config --exists $(GNOME_PKGS) 2>/dev/null && echo y),$(patsubst samples/linux-gnome/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gnome/*.c)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gnome/%.c
-	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/fonts
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64
 	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(GNOME_PKGS)) -lm
 	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
 	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
-	@printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>/mnt/c/WRLD/Fonts</dir>\n  <cachedir>/tmp/fontconfig</cachedir>\n  <config></config>\n</fontconfig>\n' > $(LXROOT)/Linux/etc/fonts/fonts.conf
+# fontconfig settings for those programs: the OS's fonts, with the generic names mapped onto them
+LXFONTCONF := $(if $(LXGNOME)$(LXGTK),$(LXROOT)/Linux/etc/fonts/fonts.conf)
+$(LXROOT)/Linux/etc/fonts/fonts.conf: Makefile
+	@mkdir -p $(dir $@)
+	@printf '<?xml version="1.0"?>\n<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n<fontconfig>\n  <dir>/mnt/c/WRLD/Fonts</dir>\n  <cachedir>/tmp/fontconfig</cachedir>\n  <alias><family>sans-serif</family><prefer><family>Liberation Sans</family></prefer></alias>\n  <alias><family>serif</family><prefer><family>Liberation Sans</family></prefer></alias>\n  <alias><family>monospace</family><prefer><family>Liberation Mono</family></prefer></alias>\n  <alias><family>Cantarell</family><prefer><family>Liberation Sans</family></prefer></alias>\n  <config></config>\n</fontconfig>\n' > $(LXROOT)/Linux/etc/fonts/fonts.conf
 # Pieces of WebKit itself (samples/linux-webkit), from the build machine's WebKitGTK packages:
 # about 70 MB with ICU, so only with  make ARCH=x86_64 LX_WEBKIT=1
 WEBKIT_PKGS := javascriptcoregtk-4.1
@@ -325,7 +329,20 @@ $(LXROOT)/Linux/usr/share/wrld/keymap.xkb: tools/gen_keymap.c
 	@mkdir -p $(dir $@) $(WLGEN)
 	gcc -O2 -Wall -o $(WLGEN)/gen_keymap $< $$(pkg-config --cflags --libs xkbcommon)
 	$(WLGEN)/gen_keymap > $@
-$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXWEBKIT) $(LXWAYLAND)
+# GTK 4 programs (samples/linux-gtk) through wrldcomp: about 35 MB of libraries, so only with
+#   make ARCH=x86_64 LX_GTK=1   (needs libgtk-4-dev)
+LXGTK := $(if $(LX_GTK),$(if $(shell pkg-config --exists gtk4 2>/dev/null && echo y),$(patsubst samples/linux-gtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gtk/*.c)),$(warning LX_GTK=1 needs libgtk-4-dev)))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/usr/share/glib-2.0/schemas
+	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs gtk4)
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+	@if [ -f /usr/share/glib-2.0/schemas/gschemas.compiled ]; then cp /usr/share/glib-2.0/schemas/gschemas.compiled $(LXROOT)/Linux/usr/share/glib-2.0/schemas/; fi
+	@# GTK compiles a default keymap before the compositor's arrives: the XKB data it reads (no geometry)
+	@if [ -d /usr/share/X11/xkb ]; then mkdir -p $(LXROOT)/Linux/usr/share/X11/xkb/rules && \
+	  cp -r /usr/share/X11/xkb/types /usr/share/X11/xkb/compat /usr/share/X11/xkb/keycodes /usr/share/X11/xkb/symbols $(LXROOT)/Linux/usr/share/X11/xkb/ && \
+	  cp /usr/share/X11/xkb/rules/evdev $(LXROOT)/Linux/usr/share/X11/xkb/rules/; fi
+$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"

@@ -767,6 +767,18 @@ int main(int argc, char **argv) {
     frame_timer = wl_event_loop_add_timer(loop, frame_tick, NULL);
     wl_event_source_timer_update(frame_timer, 16);
     setenv("WAYLAND_DISPLAY", sock, 1);
+    /* what GTK and friends need here: no GL or Vulkan (CPU rendering with Cairo), no
+     * accessibility bus, portals or D-Bus session, settings kept in memory */
+    setenv("GDK_BACKEND", "wayland", 0);
+    setenv("GSK_RENDERER", "cairo", 0);
+    setenv("GDK_DEBUG", "gl-disable,vulkan-disable", 0);
+    setenv("GDK_DISABLE", "gl,vulkan", 0);
+    setenv("GTK_A11Y", "none", 0);
+    setenv("NO_AT_BRIDGE", "1", 0);
+    setenv("GTK_USE_PORTAL", "0", 0);
+    setenv("GSETTINGS_BACKEND", "memory", 0);
+    setenv("XDG_DATA_DIRS", "/usr/share", 0);
+    setenv("HOME", "/home/user", 0);
     fprintf(stderr, "wrldcomp: Wayland display %s/%s\n", getenv("XDG_RUNTIME_DIR"), sock);
     if (a < argc) {
         child_timer = wl_event_loop_add_timer(loop, child_check, NULL);
