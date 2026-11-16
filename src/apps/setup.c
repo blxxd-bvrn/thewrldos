@@ -93,7 +93,7 @@ static int ts_key(void) {
     for (;;) {
         while (mouse_poll(&m)) {}
         while (keyboard_poll(&e)) if (e.pressed) { int k = e.key ? e.key : (uint8_t)e.ch; return k < 0x100 ? tolower(k) : k; }
-        task_yield(); hlt();
+        task_yield(); idle_hlt();
     }
 }
 static int ts_key_timeout(uint32_t ms) {
@@ -102,7 +102,7 @@ static int ts_key_timeout(uint32_t ms) {
     while ((int32_t)(timer_ticks() - end) < 0) {
         while (mouse_poll(&m)) {}
         while (keyboard_poll(&e)) if (e.pressed) { int k = e.key ? e.key : (uint8_t)e.ch; return k < 0x100 ? tolower(k) : k; }
-        task_yield(); hlt();
+        task_yield(); idle_hlt();
     }
     return 0;
 }
@@ -1301,7 +1301,8 @@ static const struct { const char *name; int off; } zones[] = {
     { "(GMT+08:00) Beijing, Hong Kong, Singapore, Perth", 480 }, { "(GMT+09:00) Osaka, Seoul, Tokyo", 540 }, { "(GMT+10:00) Brisbane, Melbourne, Sydney", 600 },
     { "(GMT+12:00) Auckland, Wellington", 720 },
 };
-typedef struct { int page; char name[32], org[48], comp[32], pass[32], pass2[32]; int tz, tzscroll, pic; char err[96]; bool finish; } oobe_t;
+typedef struct { int page; char name[32], org[48], comp[32], pass[32], pass2[32]; int tz, tzscroll, pic, picscroll, style, stylescroll; char err[96]; bool finish; } oobe_t;
+#define OOBE_PAGES 6                       /* welcome, time zone, name, computer name, look, picture */
 static oobe_t O;
 static window_t ow;
 static canvas_t *obg;
@@ -1394,36 +1395,87 @@ static void oobe_paint(window_t *w) {
         break;
     }
     case 4: {
-        page_header(s, "Choose a Look", "Pick a visual style and an account picture. You can change both later in Control Panel.");
-        draw_text(s, FONT_UI_BOLD, bx, by - 6, "Visual style", BLACK);
-        for (int i = 0; i < THEME_BUILTIN && i < THEME_COUNT; i++) {
-            int x = bx + 4 + (i % 3) * 140, y = by + 10 + (i / 3) * 100;
-            cp_theme_thumb(s, x, y, i, theme_id == i ? theme_hue : 0, theme_id == i);
-            draw_text_centered(s, FONT_UI, R(x - 4, y + 83, 128, 16), style_name(i), BLACK);
-            if (ui_click_area(w, R(x - 4, y - 4, 128, 104))) {
-                theme_apply(i, 0);
-                const char *wp = style_wallpaper(i);
-                for (int j = 0; wp[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], wp)) { wallpaper_id = j; shell_wallpaper_changed(); }
-            }
+        page_header(s, "Choose a Look", "Pick a visual style and a colour. You can change both later in Control Panel.");
+        /* the styles on the left, a large live preview of the chosen one on the right */
+        int n = MIN(THEME_COUNT, 32), lh = s->h - 46 - 12 - by;
+        const char *names[32];
+        for (int i = 0; i < n; i++) names[i] = style_name(i);
+        O.style = theme_id;
+        ui_list(w, R(bx, by, 170, lh), names, n, &O.style, &O.stylescroll);
+        if (O.style != theme_id && O.style >= 0 && O.style < n) {
+            theme_apply(O.style, 0);
+            const char *wp = style_wallpaper(O.style);
+            for (int j = 0; wp[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], wp)) { wallpaper_id = j; shell_wallpaper_changed(); }
         }
-        draw_text(s, FONT_UI_BOLD, bx + 432, by - 6, "Picture", BLACK);
-        for (int i = 0; i < 4; i++) {
-            int x = bx + 436 + (i % 2) * 64, y = by + 14 + (i / 2) * 64;
-            if (O.pic == i) fill_round_rect(s, x - 4, y - 4, 60, 60, 5, T.select);
-            draw_user_picture(s, i, 48, x + 2, y + 2);
-            if (ui_click_area(w, R(x - 4, y - 4, 60, 60))) O.pic = i;
-        }
-        draw_text(s, FONT_UI, bx, by + 236, "Hue:", BLACK);
+        int px = bx + 186, pw = s->w - px - 20, ph = pw * 2 / 3;
+        if (ph > 200) { ph = 200; pw = 300; }
+        canvas_t *pre = cp_theme_preview(theme_id, theme_hue, pw, ph);
+        if (pre) blit(s, px, by, pre, 0, 0, pw, ph);
+        draw_rect(s, px - 1, by - 1, pw + 2, ph + 2, HEX(0x808080));
+        int ty = by + ph + 10;
+        draw_text(s, FONT_UI_BOLD, px, ty, style_name(theme_id), BLACK);
+        ty += 18;
+        ty += draw_text_wrapped(s, FONT_UI, px, ty, s->w - px - 20, style_desc(theme_id), HEX(0x404040), 2) + 8;
+        draw_text(s, FONT_UI, px, ty + 5, "Colour:", BLACK);
         int hue = theme_hue;
-        if (ui_slider(w, R(bx + 40, by + 230, 300, 24), &hue, 0, 359)) theme_apply(theme_id, hue);
-        if (ui_button(w, R(bx + 356, by + 230, 80, 24), "Reset")) theme_apply(theme_id, 0);
+        if (ui_slider(w, R(px + 52, ty, s->w - px - 20 - 52 - 72, 24), &hue, 0, 359)) theme_apply(theme_id, hue);
+        if (ui_button(w, R(s->w - 20 - 64, ty, 64, 24), "Reset")) theme_apply(theme_id, 0);
+        ty += 30;
+        bool dm = dark_mode;
+        if (ui_checkbox(w, px, ty, "Dark windows and menus", &dm) && dm != dark_mode) { dark_mode = dm; theme_apply(theme_id, theme_hue); }
+        break;
+    }
+    case 5: {
+        page_header(s, "Choose Your Picture", "The picture appears on the Welcome screen and at the top of the Start menu.");
+        /* the chosen picture, large, as the account tile will show it */
+        int tx = bx, tw = 128;
+        fill_round_rect(s, tx, by, tw, tw + 34, 8, HEX(0x2E50B8));
+        fill_round_rect(s, tx + 14, by + 10, 100, 100, 10, WHITE);
+        draw_user_picture(s, O.pic, 96, tx + 16, by + 12);
+        draw_text_centered(s, FONT_UI_BOLD, R(tx, by + 118, tw, 18), O.name[0] ? O.name : "User", WHITE);
+        draw_text_centered(s, FONT_SMALL, R(tx, by + 136, tw, 16), "Computer administrator", HEX(0xD0DCFF));
+        char cnt[48]; snprintf(cnt, sizeof cnt, "Picture %d of %d", O.pic + 1, user_picture_count);
+        draw_text_centered(s, FONT_UI, R(tx, by + tw + 46, tw, 16), cnt, HEX(0x404040));
+        if (ui_button(w, R(tx + 14, by + tw + 70, 100, 24), "Surprise me")) O.pic = (O.pic + 1 + (int)(timer_ticks() % (user_picture_count - 1))) % user_picture_count;
+        /* every picture, in a grid that scrolls */
+        int gx = tx + tw + 20, gw = s->w - gx - 20, gh = s->h - 46 - 12 - by;
+        int pitch = 56, cols = MAX(1, (gw - 4 - 18) / pitch), rows = (user_picture_count + cols - 1) / cols, vis = MAX(1, (gh - 4) / pitch);
+        rect_t box = R(gx, by, gw, gh);
+        draw_sunken_box(s, box, WHITE);
+        bool hot = ui_hover(w, box);
+        if (hot && w->ui.wheel) O.picscroll += w->ui.wheel;     /* the same direction as lists */
+        if (w->ui.has_key) {                                  /* arrow keys move the selection */
+            int k = w->ui.key.key, np = O.pic;
+            if (k == KEY_RIGHT) np++; else if (k == KEY_LEFT) np--; else if (k == KEY_DOWN) np += cols; else if (k == KEY_UP) np -= cols;
+            if (np != O.pic && np >= 0 && np < user_picture_count) { O.pic = np; w->ui.has_key = false;
+                if (np / cols < O.picscroll) O.picscroll = np / cols; if (np / cols >= O.picscroll + vis) O.picscroll = np / cols - vis + 1; }
+        }
+        rect_t sb = R(gx + gw - 18, by + 1, 17, gh - 2);
+        if (rows > vis && ui_click_area(w, sb)) {
+            int my = w->ui.my;
+            if (my < sb.y + 17) O.picscroll--; else if (my > sb.y + sb.h - 17) O.picscroll++;
+            else O.picscroll = (my - sb.y - 17) * (rows - vis) / MAX(1, sb.h - 34);
+        }
+        O.picscroll = CLAMP(O.picscroll, 0, MAX(0, rows - vis));
+        rect_t old = canvas_push_clip(s, R(gx + 2, by + 2, gw - 4 - 18, gh - 4));
+        int x0 = gx + 2 + ((gw - 4 - 18) - cols * pitch) / 2;
+        for (int i = O.picscroll * cols; i < user_picture_count && i < (O.picscroll + vis + 1) * cols; i++) {
+            int x = x0 + (i % cols) * pitch, y = by + 4 + (i / cols - O.picscroll) * pitch;
+            rect_t r = R(x + 2, y, pitch - 4, pitch - 4);
+            if (O.pic == i) fill_round_rect(s, r.x, r.y, r.w, r.h, 6, T.select);
+            else if (ui_hover(w, r)) fill_round_rect(s, r.x, r.y, r.w, r.h, 6, HEX(0xDCE6FA));
+            draw_user_picture(s, i, 44, r.x + (r.w - 44) / 2, r.y + (r.h - 44) / 2);
+            if (ui_click_area(w, r)) O.pic = i;
+        }
+        s->clip = old;
+        if (rows > vis) draw_scrollbar(s, sb, rows, vis, O.picscroll, true);
         break;
     }
     }
     int fy = s->h - 46;
     hline(s, 0, fy, s->w, HEX(0xA0A0A0)); hline(s, 0, fy + 1, s->w, WHITE);
     if (O.page > 0 && ui_button(w, R(s->w - 190, fy + 12, 80, 24), "< Back")) { O.page--; w->ui.focus = 0; }
-    if (ui_button_ex(w, R(s->w - 100, fy + 12, 80, 24), O.page == 4 ? "Finish" : "Next >", next_ok, true) || (O.finish && next_ok)) {
+    if (ui_button_ex(w, R(s->w - 100, fy + 12, 80, 24), O.page == OOBE_PAGES - 1 ? "Finish" : "Next >", next_ok, true) || (O.finish && next_ok)) {
         O.finish = false;
         if (O.page == 2 && !O.comp[0]) {
             int k = 0; for (const char *p = O.name; *p && k < 10; p++) if (isalnum(*p)) O.comp[k++] = toupper(*p);
@@ -1515,7 +1567,8 @@ void setup_oobe(void) {
     int prev = ms.buttons, frame = 0;
     uint32_t next_frame = 0;
     oobe_run_paint();
-    while (O.page < 5) {
+    bool moved = false;
+    while (O.page < OOBE_PAGES) {
         bool repaint = false;
         while (keyboard_poll(&ke)) {
             if (!ke.pressed) continue;
@@ -1533,17 +1586,19 @@ void setup_oobe(void) {
             if ((changed & 1) && !(ms.buttons & 1)) { ow.ui.down = false; ow.ui.released = true; repaint = true; }
             if (ms.wheel) { ow.ui.wheel = ms.wheel; repaint = true; }
             prev = ms.buttons;
-            if (repaint) { oobe_run_paint(); repaint = false; }
+            if (repaint) { oobe_run_paint(); repaint = false; } else moved = true;
         }
         if ((int32_t)(timer_ticks() - next_frame) >= 0) {
             next_frame = timer_ticks() + 50; frame++;
-            oobe_run_paint();
+            /* repaint the page for hover after the mouse moved, and twice a second for
+             * the caret; the globe animates in the composed frame either way */
+            if (moved || frame % 10 == 0) { oobe_run_paint(); moved = false; }
             const char *eta = O.page < 3 ? "3 minutes" : "2 minutes";
             oobe_compose(3, 70 + O.page * 4, eta, true, frame);
             int cur = ow.ui.cursor ? ow.ui.cursor : CURSOR_ARROW;
             gfx_present(cur, wm_mouse_x, wm_mouse_y);
         }
-        task_yield(); hlt();
+        task_yield(); idle_hlt();
     }
     /* finalize */
     strlcpy(user_name, O.name, sizeof user_name);

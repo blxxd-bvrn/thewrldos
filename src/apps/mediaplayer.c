@@ -148,6 +148,7 @@ typedef struct {
     char lib_filter[64];
     char search[48];
     uint32_t anim;
+    int quiet;                      /* ticks since anything last moved: no repaints after a second */
     char status[120];
     int last_click_row, last_click_where; uint32_t last_click_ms;
     canvas_t *art; char art_key[140];
@@ -1338,6 +1339,10 @@ static void mp_tick(window_t *w) {
     }
     if (m->vid && m->vframe && m->vid_track == m->cur && (m->state == ST_PLAY || m->state == ST_PAUSE))
         mvid_frame(m->vid, (double)pos_frames(m) / audio_rate(), m->vframe->px, m->vframe->stride);
+    /* repaint while something moves: playing, loading, or the visualizer settling
+     * for a second after a stop; a stopped player costs nothing */
+    if (m->state == ST_PLAY || m->state == ST_LOAD || m->job) m->quiet = 0; else if (m->quiet < 1000) m->quiet++;
+    if (m->quiet > 20) return;
     analyse(m);
     w->dirty = true;
     if (m->full && wm_alive(m->full)) m->full->dirty = true;

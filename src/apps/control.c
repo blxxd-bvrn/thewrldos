@@ -241,23 +241,57 @@ void style_create_from(int base) {
     vfs_mkdir_p(STYLE_DIR);
     if (vfs_write_file(path, body, strlen(body))) { styles_load(); notepad_open(path); }
 }
-void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
+/* a style's 120x80 preview (its wallpaper, a window, a taskbar). Rendering one
+ * means rescaling a full-size wallpaper, so previews are kept until something
+ * they show changes: the style files or colour overrides, hue, tone, dark mode
+ * or how wallpapers are fitted. */
+#define THUMB_CACHE 32
+typedef struct { canvas_t *c; int id, hue, sat, light, fit; bool dark; uint32_t gen; } thumb_t;
+static thumb_t thumb_cache[THUMB_CACHE], big_cache[THUMB_CACHE];
+/* a preview of style id at w x h; 120x80 (the Personalization grid) and one
+ * larger size (Setup's big preview) are cached separately */
+canvas_t *cp_theme_preview(int id, int hue, int pw, int ph) {
+    thumb_t *e = &(pw == 120 && ph == 80 ? thumb_cache : big_cache)[id % THUMB_CACHE];
+    if (e->c && (e->c->w != pw || e->c->h != ph)) { canvas_free(e->c); e->c = NULL; }
+    if (e->c && e->id == id && e->hue == hue && e->sat == theme_sat && e->light == theme_light &&
+        e->fit == wallpaper_fit && e->dark == dark_mode && e->gen == theme_generation)
+        return e->c;
+    if (!e->c) e->c = canvas_new(pw, ph);
+    canvas_t *pre = e->c;
+    if (!pre) return NULL;
     theme_t save = T;
     theme_compute(id, hue, &T);
-    canvas_t *pre = canvas_new(120, 80);
     gfx_clear(pre, id == THEME_OLIVE ? HEX(0x6E7F48) : id == THEME_SILVER ? HEX(0x8A90A8) : HEX(0x3A6EA5));
     int wp = id == THEME_CLASSIC ? wallpaper_count - 1 : 0;
     for (int j = 0; style_wallpaper(id)[0] && j < wallpaper_count; j++) if (!strcasecmp(wallpaper_names[j], style_wallpaper(id))) wp = j;
     wallpaper_render(pre, wp);
-    draw_window_frame(pre, R(10, 8, 100, 56), "Window", -1, true, 0, -1, -1, 0);
-    fill_rect(pre, 10 + T.border, 8 + T.title_h, 100 - 2 * T.border, 56 - T.title_h - T.border, T.face);
-    if (T.classic) fill_rect(pre, 0, 70, 120, 10, T.face); else gradient_v(pre, 0, 70, 120, 10, T.tb_top, T.tb_bot);
-    if (!T.classic) fill_round_rect(pre, 0, 70, 26, 10, 3, T.start_top); else { fill_rect(pre, 2, 71, 22, 8, T.face); bevel(pre, 2, 71, 22, 8, true); }
+    /* a window and a taskbar drawn at their real size, so a big preview stays crisp */
+    int tbh = ph >= 160 ? MAX(T.taskbar_h, 18) * ph / 320 + 10 : 10;
+    rect_t wr = ph >= 160 ? R(pw / 8, ph / 10, pw * 3 / 4, ph * 6 / 10) : R(10, 8, 100, 56);
+    draw_window_frame(pre, wr, "Window", -1, true, 0, -1, -1, 0);
+    fill_rect(pre, wr.x + T.border, wr.y + T.title_h, wr.w - 2 * T.border, wr.h - T.title_h - T.border, T.face);
+    if (ph >= 160) {                                         /* some content, so the colours show */
+        int cx = wr.x + T.border + 8, cy = wr.y + T.title_h + 8;
+        draw_text(pre, FONT_UI, cx, cy, "Sample text", T.text);
+        fill_rect(pre, cx, cy + 22, wr.w / 2, 18, T.select);
+        draw_text(pre, FONT_UI, cx + 4, cy + 24, "Selected", T.select_text);
+        draw_button(pre, R(wr.x + wr.w - T.border - 84, wr.y + wr.h - T.border - 30, 76, 22), "OK", false, false, false, true);
+    }
+    int ty = ph - tbh;
+    if (T.classic) fill_rect(pre, 0, ty, pw, tbh, T.face); else gradient_v(pre, 0, ty, pw, tbh, T.tb_top, T.tb_bot);
+    int sw = tbh * 26 / 10;
+    if (!T.classic) fill_round_rect(pre, 0, ty, sw, tbh, MAX(3, tbh / 3), T.start_top);
+    else { fill_rect(pre, 2, ty + 1, sw - 4, tbh - 2, T.face); bevel(pre, 2, ty + 1, sw - 4, tbh - 2, true); }
     T = save;
+    e->id = id; e->hue = hue; e->sat = theme_sat; e->light = theme_light;
+    e->fit = wallpaper_fit; e->dark = dark_mode; e->gen = theme_generation;
+    return pre;
+}
+void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
+    canvas_t *pre = cp_theme_preview(id, hue, 120, 80);
     if (sel) { fill_rect(s, x - 4, y - 4, 128, 88, mix(T.window_bg, T.select, 55)); draw_rect(s, x - 4, y - 4, 128, 88, T.select); }
-    blit(s, x, y, pre, 0, 0, 120, 80);
+    if (pre) blit(s, x, y, pre, 0, 0, 120, 80);
     draw_rect(s, x, y, 120, 80, HEX(0x808080));
-    canvas_free(pre);
 }
 static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -392,72 +426,171 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         }
     }
 }
+/* Advanced appearance, laid out like XP's dialog: a live preview of windows,
+ * menus, text and a message box drawn in the current colours (click a part to
+ * pick its colour), the item list, a palette and exact RGB values, and the
+ * cursor set. Roles are indices into theme.c's role table. */
+enum { R_FACE, R_WINDOW, R_TEXT, R_DIM, R_LINK, R_HEAD, R_SEL, R_SELTEXT, R_BTN_TOP, R_BTN_BOT, R_BTN_BORDER,
+       R_BTN_HOT_A, R_BTN_HOT_B, R_SB_TRACK, R_SB_THUMB_A, R_SB_THUMB_B, R_SB_BORDER, R_CHECK, R_MENU_BG, R_MENU_BORDER,
+       R_TB_TOP, R_TB_BOT, R_TB_TEXT, R_TITLE_TOP, R_TITLE_BOT, R_TITLE_TEXT, R_PANE_TOP, R_PANE_BOT, R_PANE_LINK, R_DESKTOP };
+typedef struct { rect_t r; int role; } adv_hit_t;
+static void adv_preview(canvas_t *s, rect_t pr, int sel, adv_hit_t *hits, int *nh) {
+    int n = 0;
+    #define HIT(rr, rl) do { if (n < 24) { hits[n].r = (rr); hits[n].role = (rl); n++; } } while (0)
+    rect_t old = canvas_push_clip(s, pr);
+    fill_rect(s, pr.x, pr.y, pr.w, pr.h, T.desktop_bg); HIT(pr, R_DESKTOP);
+    int tbh = 24, wy = pr.y + 12;
+    /* an inactive window behind */
+    rect_t iw = R(pr.x + 14, wy, pr.w * 50 / 100, 74);
+    draw_window_frame(s, iw, "Inactive Window", -1, false, 0, -1, -1, 0);
+    fill_rect(s, iw.x + T.border, iw.y + T.title_h, iw.w - 2 * T.border, iw.h - T.title_h - T.border, T.face);
+    HIT(iw, R_FACE); HIT(R(iw.x, iw.y, iw.w, T.title_h), R_TITLE_TOP);
+    /* the active window: menu bar, a document with text, a link, a selection and a scrollbar, and a button */
+    rect_t aw = R(pr.x + 40, wy + 34, pr.w * 58 / 100, pr.h - tbh - 34 - 24);
+    draw_window_frame(s, aw, "Active Window", -1, true, 0, -1, -1, 0);
+    int cx = aw.x + T.border, cy = aw.y + T.title_h, cw = aw.w - 2 * T.border, ch = aw.h - T.title_h - T.border;
+    fill_rect(s, cx, cy, cw, ch, T.face);
+    HIT(aw, R_FACE); HIT(R(aw.x, aw.y, aw.w, T.title_h), R_TITLE_TOP);
+    int tx = aw.x + 30, tw = text_width(FONT_UI_BOLD, "Active Window");
+    HIT(R(tx, aw.y + 2, tw + 4, T.title_h - 4), R_TITLE_TEXT);
+    int mx = cx + 6, my = cy + 3;
+    draw_text(s, FONT_UI, mx, my, "Normal", T.text); mx += text_width(FONT_UI, "Normal") + 14;
+    int dw = text_width(FONT_UI, "Disabled");
+    draw_text(s, FONT_UI, mx, my, "Disabled", T.gray_text); HIT(R(mx - 2, my - 2, dw + 4, 18), R_DIM); mx += dw + 14;
+    int sw2 = text_width(FONT_UI, "Selected") + 12;
+    fill_rect(s, mx - 6, my - 3, sw2, 20, T.select); draw_text(s, FONT_UI, mx, my, "Selected", T.select_text);
+    HIT(R(mx - 6, my - 3, sw2, 20), R_SEL);
+    hline(s, cx, cy + 20, cw, T.face_dark);
+    rect_t doc = R(cx + 6, cy + 26, cw - 12 - 90, ch - 32);
+    draw_sunken_box(s, doc, T.window_bg); HIT(doc, R_WINDOW);
+    draw_text(s, FONT_UI, doc.x + 8, doc.y + 6, "Window Text", T.text);
+    HIT(R(doc.x + 6, doc.y + 4, text_width(FONT_UI, "Window Text") + 4, 18), R_TEXT);
+    draw_text(s, FONT_UI, doc.x + 8, doc.y + 26, "Hyperlink", T.link);
+    hline(s, doc.x + 8, doc.y + 40, text_width(FONT_UI, "Hyperlink"), T.link);
+    HIT(R(doc.x + 6, doc.y + 24, text_width(FONT_UI, "Hyperlink") + 4, 18), R_LINK);
+    rect_t sb = R(doc.x + doc.w - 19, doc.y + 2, 17, doc.h - 4);
+    draw_scrollbar(s, sb, 10, 4, 2, true); HIT(sb, R_SB_TRACK);
+    HIT(R(sb.x, sb.y + 17 + (sb.h - 34) * 2 / 10, sb.w, (sb.h - 34) * 4 / 10), R_SB_THUMB_A);
+    rect_t bt = R(cx + cw - 84, cy + 30, 76, 24);
+    draw_button(s, bt, "Button", false, false, false, true); HIT(bt, R_BTN_TOP);
+    bool on = true; (void)on;
+    int kx = cx + cw - 84, ky = cy + 62;
+    draw_rect(s, kx, ky, 13, 13, T.btn_border); fill_rect(s, kx + 1, ky + 1, 11, 11, T.window_bg);
+    for (int i = 0; i < 3; i++) { put_pixel(s, kx + 3 + i, ky + 6 + i, T.check); put_pixel(s, kx + 3 + i, ky + 7 + i, T.check); }
+    for (int i = 0; i < 5; i++) { put_pixel(s, kx + 6 + i, ky + 8 - i, T.check); put_pixel(s, kx + 6 + i, ky + 9 - i, T.check); }
+    draw_text(s, FONT_UI, kx + 18, ky, "Check", T.text); HIT(R(kx - 2, ky - 2, 60, 18), R_CHECK);
+    /* a message box in front */
+    rect_t mb = R(pr.x + pr.w - 196, pr.y + pr.h - tbh - 104, 180, 88);
+    draw_window_frame(s, mb, "Message Box", -1, true, 0, -1, -1, 0);
+    fill_rect(s, mb.x + T.border, mb.y + T.title_h, mb.w - 2 * T.border, mb.h - T.title_h - T.border, T.face);
+    HIT(mb, R_FACE); HIT(R(mb.x, mb.y, mb.w, T.title_h), R_TITLE_TOP);
+    draw_text(s, FONT_UI, mb.x + 12, mb.y + T.title_h + 6, "Message Text", T.text);
+    HIT(R(mb.x + 10, mb.y + T.title_h + 4, text_width(FONT_UI, "Message Text") + 4, 18), R_TEXT);
+    rect_t ok = R(mb.x + mb.w / 2 - 34, mb.y + mb.h - T.border - 28, 68, 22);
+    draw_button(s, ok, "OK", false, false, false, true); HIT(ok, R_BTN_TOP);
+    /* the taskbar */
+    int ty = pr.y + pr.h - tbh;
+    if (T.classic) { fill_rect(s, pr.x, ty, pr.w, tbh, T.face); hline(s, pr.x, ty, pr.w, T.face_light); }
+    else gradient_v(s, pr.x, ty, pr.w, tbh, T.tb_top, T.tb_bot);
+    HIT(R(pr.x, ty, pr.w, tbh), R_TB_TOP);
+    draw_text(s, FONT_UI, pr.x + 12, ty + (tbh - font_height(FONT_UI)) / 2, "Taskbar text", T.tb_text);
+    HIT(R(pr.x + 10, ty + 2, text_width(FONT_UI, "Taskbar text") + 4, tbh - 4), R_TB_TEXT);
+    /* outline every part the selected item colours */
+    for (int i = 0; i < n; i++) if (hits[i].role == sel && hits[i].role != R_DESKTOP) {
+        rect_t r = hits[i].r;
+        for (int k = 0; k < r.w; k += 2) { put_pixel(s, r.x + k, r.y, BLACK); put_pixel(s, r.x + k, r.y + r.h - 1, BLACK); }
+        for (int k = 0; k < r.h; k += 2) { put_pixel(s, r.x, r.y + k, BLACK); put_pixel(s, r.x + r.w - 1, r.y + k, BLACK); }
+    }
+    s->clip = old;
+    *nh = n;
+    #undef HIT
+}
+static void adv_set(cp_t *c, int sel, uint32_t col, bool save) {
+    c->adv_r = C_R(col); c->adv_g = C_G(col); c->adv_b = C_B(col);
+    theme_role_set(sel, RGB(c->adv_r, c->adv_g, c->adv_b));
+    theme_apply(theme_id, theme_hue);
+    if (save) theme_overrides_save();
+    wm_defer(cp_refresh_theme, NULL);
+}
 static void page_advanced(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Advanced appearance", "Change individual colours and choose a cursor set. Changes are saved for this user.");
+    heading(s, ox + 20, oy + 16, "Advanced appearance", "Click a part of the preview, or pick an item, then choose its colour. Changes are saved for this user.");
     int n = theme_role_count();
     if (c->adv_sel < 0 || c->adv_sel >= n) c->adv_sel = 0;
-    int lx = ox + 20, ly = oy + 64, lw = 240, lh = MIN(390, s->h - ly - 24);
-    draw_sunken_box(s, R(lx, ly, lw, lh), T.window_bg);
+    int x0 = ox + 20, cw = MIN(s->w - ox - 40, 640);
+    /* the preview */
+    rect_t pr = R(x0, oy + 62, cw, 236);
+    adv_hit_t hits[24]; int nh = 0;
+    adv_preview(s, pr, c->adv_sel, hits, &nh);
+    draw_rect(s, pr.x - 1, pr.y - 1, pr.w + 2, pr.h + 2, T.face_dark);
+    if (ui_click_area(w, pr))
+        for (int i = nh - 1; i >= 0; i--) if (pt_in(hits[i].r, w->ui.mx, w->ui.my)) { c->adv_sel = hits[i].role; break; }
+    /* the item and its colour */
+    int y = pr.y + pr.h + 16;
     const char *names[40];
     for (int i = 0; i < n && i < 40; i++) names[i] = theme_role_name(i);
-    ui_list(w, R(lx + 1, ly + 1, lw - 2, lh - 2), names, n, &c->adv_sel, &c->adv_scroll);
+    draw_text(s, FONT_UI, x0, y + 4, "Item:", T.text);
+    ui_dropdown(w, R(x0 + 44, y, 230, 24), names, n, &c->adv_sel);
     if (!c->adv_init || c->adv_sel != c->adv_last) {
         c->adv_last = c->adv_sel; c->adv_init = true;
         uint32_t col = theme_role_effective(c->adv_sel);
         c->adv_r = C_R(col); c->adv_g = C_G(col); c->adv_b = C_B(col);
     }
-    int px = lx + lw + 24, pw = s->w - px - 20;
-    if (pw < 220) { px = lx; pw = lw; }
     int sel = CLAMP(c->adv_sel, 0, n - 1);
     uint32_t col = theme_role_effective(sel);
-    draw_text(s, FONT_LARGE, px, ly, theme_role_name(sel), T.text);
-    draw_text(s, FONT_UI, px, ly + 24, theme_role_is_set(sel) ? "Custom colour" : "Automatic (from the current style)", T.gray_text);
-    fill_rect(s, px, ly + 46, 120, 38, col);
-    draw_rect(s, px, ly + 46, 120, 38, T.face_dark);
-    char hx[16]; snprintf(hx, sizeof hx, "#%06X", col & 0xFFFFFF);
-    draw_text(s, FONT_UI, px + 132, ly + 56, hx, T.text);
-    int sy = ly + 100, changed = 0;
+    int cx = x0 + 296;
+    draw_text(s, FONT_UI, cx, y + 4, "Colour:", T.text);
+    fill_rect(s, cx + 52, y, 44, 24, col); draw_rect(s, cx + 52, y, 44, 24, T.face_dark);
+    char hx[48]; snprintf(hx, sizeof hx, "#%06X  %s", col & 0xFFFFFF, theme_role_is_set(sel) ? "custom" : "automatic");
+    draw_text(s, FONT_UI, cx + 106, y + 4, hx, T.gray_text);
+    /* a palette: XP's basic colours plus some system tones */
+    y += 36;
+    static const uint32_t pal[] = { 0x000000, 0x808080, 0x800000, 0x808000, 0x008000, 0x008080, 0x000080, 0x800080, 0x0A246A, 0x316AC5, 0x3A6EA5, 0x6E7F48,
+                                    0xFFFFFF, 0xC0C0C0, 0xFF0000, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0xFF00FF, 0xECE9D8, 0xD4D0C8, 0xF0F0F0, 0xFFC864 };
+    for (int i = 0; i < 24; i++) {
+        rect_t r = R(x0 + (i % 12) * 24, y + (i / 12) * 24, 20, 20);
+        bool cur = (col & 0xFFFFFF) == pal[i];
+        fill_rect(s, r.x, r.y, r.w, r.h, cur ? T.select : T.face_dark);
+        fill_rect(s, r.x + 2, r.y + 2, r.w - 4, r.h - 4, HEX(pal[i]));
+        if (ui_click_area(w, r)) adv_set(c, sel, pal[i], true);
+    }
+    /* exact values */
+    int sx = x0 + 12 * 24 + 20, sy = y - 2, changed = 0;
     const char *lab[] = { "Red", "Green", "Blue" };
     int *vv[] = { &c->adv_r, &c->adv_g, &c->adv_b };
+    int slw = MAX(120, x0 + cw - sx - 50 - 40);
     for (int i = 0; i < 3; i++) {
-        draw_text(s, FONT_UI, px, sy + 4, lab[i], T.text);
+        draw_text(s, FONT_UI, sx, sy + 4, lab[i], T.text);
         int v = *vv[i];
-        if (ui_slider(w, R(px + 58, sy, MIN(230, pw - 58), 22), &v, 0, 255)) { *vv[i] = v; changed = 1; }
-        char b[8]; snprintf(b, sizeof b, "%d", *vv[i]); draw_text(s, FONT_UI, px + pw - 32, sy + 4, b, T.text);
-        sy += 30;
+        if (ui_slider(w, R(sx + 44, sy, slw, 22), &v, 0, 255)) { *vv[i] = v; changed = 1; }
+        char b[8]; snprintf(b, sizeof b, "%d", *vv[i]); draw_text(s, FONT_UI, sx + 44 + slw + 8, sy + 4, b, T.text);
+        sy += 22;
     }
-    if (changed) {
-        theme_role_set(sel, RGB(c->adv_r, c->adv_g, c->adv_b));
-        theme_apply(theme_id, theme_hue);
-        if (!w->ui.down || w->ui.released) theme_overrides_save();
-        wm_defer(cp_refresh_theme, NULL);
-    }
-    sy += 4;
-    if (ui_button(w, R(px, sy, 90, 24), "Automatic")) {
+    if (changed) adv_set(c, sel, RGB(c->adv_r, c->adv_g, c->adv_b), !w->ui.down || w->ui.released);
+    y += 78;
+    if (ui_button(w, R(x0, y, 100, 24), "Automatic")) {
         theme_role_clear(sel); theme_apply(theme_id, theme_hue); theme_overrides_save();
         c->adv_init = false; wm_defer(cp_refresh_theme, NULL);
     }
-    if (ui_button(w, R(px + 100, sy, 90, 24), "Reset all")) {
+    if (ui_button(w, R(x0 + 110, y, 100, 24), "Reset all")) {
         theme_role_clear_all(); theme_apply(theme_id, theme_hue); theme_overrides_save();
         c->adv_init = false; wm_defer(cp_refresh_theme, NULL);
     }
-    sy += 42;
-    draw_text(s, FONT_UI_BOLD, px, sy, "Cursor set", T.link_head);
-    sy += 20;
+    /* the cursor set */
     int nc = cursor_set_count();
     const char *cn[16];
     for (int i = 0; i < nc && i < 16; i++) cn[i] = cursor_set_name(i);
     if (c->adv_cursor < 0 || c->adv_cursor >= nc) c->adv_cursor = cursor_set_current();
-    draw_sunken_box(s, R(px, sy, MIN(240, pw), MIN(90, MAX(26, nc * 18 + 4))), T.window_bg);
-    ui_list(w, R(px + 1, sy + 1, MIN(240, pw) - 2, MIN(90, MAX(26, nc * 18 + 4)) - 2), cn, nc, &c->adv_cursor, &c->adv_cursor_scroll);
+    int kx = x0 + 296;
+    draw_text(s, FONT_UI, kx, y + 4, "Cursors:", T.text);
+    ui_dropdown(w, R(kx + 60, y, 180, 24), cn, MIN(nc, 16), &c->adv_cursor);
     if (c->adv_cursor >= 0 && c->adv_cursor < nc && c->adv_cursor != cursor_set_current()) {
         cursor_set_load(cn[c->adv_cursor]);
         settings_save();
         wm_defer(cp_refresh_theme, NULL);
     }
-    sy += MIN(90, MAX(26, nc * 18 + 4)) + 8;
-    draw_text_wrapped(s, FONT_SMALL, px, sy, pw, "Put Windows .cur files in C:\\WRLD\\Cursors\\<set>\\ named arrow, ibeam, hand, sizens, sizewe, sizenwse, sizenesw, busy, move and cross. Missing files keep the built-in cursor.", T.gray_text, 3);
+    y += 34;
+    draw_text_wrapped(s, FONT_SMALL, x0, y, cw, "Cursor sets are folders in C:\\WRLD\\Cursors with Windows .cur files named arrow, ibeam, hand, sizens, sizewe, sizenwse, sizenesw, busy, move and cross. Missing files keep the built-in cursor.", T.gray_text, 3);
 }
 static const struct { int w, h; } modes[] = { { 1024, 768 }, { 1152, 864 }, { 1280, 720 }, { 1280, 800 }, { 1280, 960 }, { 1280, 1024 }, { 1360, 768 },
     { 1366, 768 }, { 1440, 900 }, { 1600, 900 }, { 1600, 1200 }, { 1680, 1050 }, { 1920, 1080 }, { 1920, 1200 }, { 2560, 1440 } };

@@ -23,7 +23,7 @@ endif
 CFLAGS  := $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector \
            -fno-asynchronous-unwind-tables -fno-builtin -O2 -g0 \
            -Wall -Wextra -Wno-unused-parameter -Wno-unused-function -Wno-missing-field-initializers \
-           -Wno-sign-compare -Wno-misleading-indentation -std=gnu11 -Isrc/include
+           -Wno-sign-compare -Wno-misleading-indentation -std=gnu11 -Isrc/include $(EXTRA_CFLAGS)
 LDFLAGS := $(firstword $(ARCHFLAGS)) -nostdlib -no-pie -static -T src/arch/$(ARCH)/linker.ld -Wl,--build-id=none -Wl,-z,noexecstack
 # --no-warn-rwx-segments only exists in binutils 2.39+ (Ubuntu 22.04 ships 2.38)
 LDFLAGS += $(shell $(CC) -Wl,--help 2>/dev/null | grep -q -- --no-warn-rwx-segments && echo -Wl,--no-warn-rwx-segments)

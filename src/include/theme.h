@@ -60,6 +60,7 @@ const char *theme_role_name(int i);
 uint32_t theme_role_color(int i);              /* 0 = automatic */
 bool theme_role_is_set(int i);
 uint32_t theme_role_effective(int i);          /* override or the current style colour */
+extern uint32_t theme_generation;      /* changes whenever a rendered preview of a style would */
 void theme_role_set(int i, uint32_t color);
 void theme_role_clear(int i);
 void theme_role_clear_all(void);

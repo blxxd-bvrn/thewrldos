@@ -165,7 +165,11 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
         else if (SCREEN_W < 900 || SCREEN_H < 650) setup_text_mode(false);
         else setup_gui_mode(false);
     }
+#ifdef WRLD_OOBE_TEST
+    setup_oobe();                                    /* make EXTRA_CFLAGS=-DWRLD_OOBE_TEST: the first-run pages on every boot */
+#else
     if (setup_oobe_pending()) setup_oobe();
+#endif
     welcome_screen();
     wm_redraw_all();
     if (system_sounds) { char err[64]; audio_play_file(SOUND_STARTUP, err, sizeof err); }

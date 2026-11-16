@@ -504,7 +504,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
   `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser
   (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
-  `lxtrace on` in the Command Prompt logs every Linux system call to the serial port.
+  `lxtrace on` in the Command Prompt logs every Linux system call to the serial port, and
+  `guiprof on` logs how long each window takes to paint, every 2 seconds.
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
   loopback interface, `MAP_SHARED` write-back to ordinary files, and a real `vfork` (the child
   gets a copy of the parent). See `ROADMAP.md` for what is left before WebKit becomes the browser.

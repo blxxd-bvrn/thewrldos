@@ -1390,6 +1390,13 @@ static int b_lxtrace(sh_t *s, int argc, char **argv, io_t *io) {
     return 0;
 }
 #endif
+static int b_guiprof(sh_t *s, int argc, char **argv, io_t *io) {
+    (void)s;
+    extern bool gui_profile;
+    if (argc > 1) gui_profile = !strcasecmp(argv[1], "on");
+    out_s(io, gui_profile ? "Painting times are logged every 2 seconds (serial port and the boot log).\n" : "Painting times are not logged.\n");
+    return 0;
+}
 static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2 || !strcmp(argv[1], "list")) {
         styles_load();
@@ -1553,6 +1560,7 @@ static const builtin_t builtins[] = {
 #ifdef __x86_64__
     { "lxtrace", b_lxtrace, "log Linux system calls (on/off)" },
 #endif
+    { "guiprof", b_guiprof, "log window painting times (on/off)" },
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
     { "passwd", b_passwd, "change the account password (-c clears)" }, { "logoff", b_logoff, "log off and show the welcome screen" },
     { "lspci", b_lspci, "list PCI devices" }, { "devices", b_devices, "devices and their drivers (-p problems, -i IDs)" }, { "lsdev", b_devices, NULL },

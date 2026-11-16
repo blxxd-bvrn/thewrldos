@@ -26,6 +26,7 @@ canvas_t *bmp_load(const uint8_t *d, uint32_t n);
 canvas_t *image_decode(const uint8_t *d, uint32_t n, char *err, int errcap);   /* PNG, GIF, JPEG, BMP */
 void browser_open(const char *url);
 void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel);
+canvas_t *cp_theme_preview(int id, int hue, int w, int h);   /* cached; owned by Control Panel */
 void about_open(void);
 void snake_open(void);
 void minesweeper_open(void);

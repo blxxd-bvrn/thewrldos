@@ -25,7 +25,7 @@ void timer_init(void) {
 uint32_t timer_ticks(void) { return ticks; }
 void sleep_ms(uint32_t ms) {
     uint32_t end = ticks + ms;
-    while ((int32_t)(end - ticks) > 0) hlt();
+    while ((int32_t)(end - ticks) > 0) idle_hlt();
 }
 
 /* ---------------- local APIC timer ----------------
@@ -246,6 +246,10 @@ int mouse_speed = 5;
 bool mouse_swap_buttons = false;
 static volatile int ms_x, ms_y, ms_buttons, ms_wheel;
 static volatile bool ms_changed;
+/* button changes are queued, not merged: a press and release that both arrive
+ * while the desktop is busy painting must still reach it as a click */
+static struct { int x, y, b; } ms_q[16];
+static int ms_qhead, ms_qn, ms_qb;
 static int ms_w, ms_h, ms_cycle, ms_pkt_size = 3;
 static uint8_t ms_pkt[4];
 
@@ -284,6 +288,10 @@ void mouse_inject(int dx, int dy, int buttons, int wheel)
     ms_y = CLAMP(ms_y - dy, 0, ms_h - 1);
     int btn = buttons & 7;
     if (mouse_swap_buttons) btn = (btn & 4) | ((btn & 1) << 1) | ((btn & 2) >> 1);
+    if (btn != ms_qb) {
+        if (ms_qn < 16) { int i = (ms_qhead + ms_qn) % 16; ms_q[i].x = ms_x; ms_q[i].y = ms_y; ms_q[i].b = btn; ms_qn++; }
+        ms_qb = btn;
+    }
     ms_buttons = btn;
     ms_wheel += wheel;
     ms_changed = true;
@@ -334,6 +342,12 @@ void mouse_init(int w, int h) {
 int ps2_detected(void) { ps2_ctl_present = ps2_ctl_seen; return (ps2_ctl_present ? 1 : 0) | (ps2_ctl_present && ps2_mouse_ack ? 2 : 0) | (ms_pkt_size == 4 ? 4 : 0); }
 bool mouse_poll(mouse_state_t *st) {
     uint32_t f = irq_save();
+    if (ms_qn) {                                 /* the oldest button change first, where it happened */
+        st->x = ms_q[ms_qhead].x; st->y = ms_q[ms_qhead].y; st->buttons = ms_q[ms_qhead].b; st->wheel = 0;
+        ms_qhead = (ms_qhead + 1) % 16; ms_qn--;
+        irq_restore(f);
+        return true;
+    }
     bool c = ms_changed;
     st->x = ms_x; st->y = ms_y; st->buttons = ms_buttons; st->wheel = ms_wheel;
     ms_wheel = 0; ms_changed = false;

@@ -32,6 +32,10 @@ static inline void io_wait(void) { outb(0x80, 0); }
 static inline void cli(void) { __asm__ volatile("cli"); }
 static inline void sti(void) { __asm__ volatile("sti"); }
 static inline void hlt(void) { __asm__ volatile("hlt"); }
+/* wait for the next interrupt, counted as idle time (Task Manager, uptime): every
+ * "nothing to do until something happens" wait uses this, not a bare hlt */
+extern volatile bool cpu_idle_flag;
+static inline void idle_hlt(void) { cpu_idle_flag = true; __asm__ volatile("hlt"); cpu_idle_flag = false; }
 static inline uintptr_t irq_save(void) { uintptr_t f; __asm__ volatile("pushf; pop %0; cli":"=r"(f)::"memory"); return f; }
 static inline void irq_restore(uintptr_t f) { __asm__ volatile("push %0; popf"::"r"(f):"memory","cc"); }
 

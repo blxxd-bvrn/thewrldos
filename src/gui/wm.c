@@ -266,14 +266,14 @@ void wm_theme_changed(void) {
 
 /* ---------------- popup menus ---------------- */
 static struct {
-    bool open; int x, y, w, h; menu_item_t items[24]; int n; int hot;
+    bool open; int x, y, w, h; menu_item_t items[32]; int n; int hot;
     popup_cb cb; void *ctx; window_t *menubar_win; int menubar_idx;
 } pm;
 #define PM_ITEM_H 22
 #define PM_SEP_H 8
 static int pm_item_y(int i) { int y = 3; for (int k = 0; k < i; k++) y += pm.items[k].label[0] == '-' ? PM_SEP_H : PM_ITEM_H; return y; }
 void popup_menu(int x, int y, const menu_item_t *items, int n, popup_cb cb, void *ctx) {
-    pm.n = MIN(n, 24);
+    pm.n = MIN(n, 32);
     memcpy(pm.items, items, pm.n * sizeof(menu_item_t));
     int w = 120, h = 6;
     for (int i = 0; i < pm.n; i++) {
@@ -284,7 +284,7 @@ void popup_menu(int x, int y, const menu_item_t *items, int n, popup_cb cb, void
         h += PM_ITEM_H;
     }
     if (x + w > SCREEN_W) x = SCREEN_W - w - 2;
-    if (y + h > SCREEN_H) y = MAX(0, y - h);
+    if (y + h > SCREEN_H) y = y - h >= 0 ? y - h : MAX(0, SCREEN_H - h);   /* above, or as high as it fits */
     pm.x = x; pm.y = y; pm.w = w; pm.h = h; pm.hot = -1; pm.cb = cb; pm.ctx = ctx; pm.open = true;
     pm.menubar_win = NULL;
     wm_need_redraw = true;
@@ -403,14 +403,41 @@ static window_t *window_at(int sx, int sy) {
 bool wm_window_at_point(int x, int y) { return window_at(x, y) != NULL || effect_covers(x, y); }
 
 /* ---------------- painting ---------------- */
+/* "guiprof on" in the Command Prompt: every 2 seconds, how long each window spent
+ * painting and how long composing the screen took (serial port and boot log) */
+bool gui_profile;
+static uint64_t prof_tsc_ms;                      /* TSC ticks per millisecond, measured */
+static struct { window_t *w; uint64_t t; int n; } prof_win[16];
+static uint64_t prof_compose_t; static int prof_compose_n; static uint32_t prof_start;
+static void prof_paint(window_t *w, uint64_t t) {
+    for (int i = 0; i < 16; i++) if (prof_win[i].w == w || !prof_win[i].w) { prof_win[i].w = w; prof_win[i].t += t; prof_win[i].n++; return; }
+}
+static void prof_report(void) {
+    uint32_t now = timer_ticks();
+    static uint64_t tsc0; static uint32_t tick0;
+    if (!tick0) { tick0 = now; tsc0 = rdtsc(); }
+    else if (!prof_tsc_ms && now - tick0 >= 500) prof_tsc_ms = (rdtsc() - tsc0) / (now - tick0);
+    if (!gui_profile || !prof_tsc_ms) { prof_start = now; return; }
+    if (now - prof_start < 2000) return;
+    char line[512]; int o = snprintf(line, sizeof line, "guiprof %u ms: compose %u ms (%d)", now - prof_start,
+                                     (unsigned)(prof_compose_t / prof_tsc_ms), prof_compose_n);
+    for (int i = 0; i < 16 && prof_win[i].w; i++)
+        if (wm_alive(prof_win[i].w) && o < (int)sizeof line - 60)
+            o += snprintf(line + o, sizeof line - o, ", '%.20s' %u ms (%d)", prof_win[i].w->title,
+                          (unsigned)(prof_win[i].t / prof_tsc_ms), prof_win[i].n);
+    klog("%s", line);
+    memset(prof_win, 0, sizeof prof_win); prof_compose_t = 0; prof_compose_n = 0; prof_start = now;
+}
 static void run_paint(window_t *w) {
     if (!w->paint) { w->dirty = false; return; }
     sync_surface(w);              /* e.g. a menu bar was attached after the window was created */
     w->dirty = false;             /* preserve invalidations made during this paint */
     canvas_reset_clip(w->surf);
+    uint64_t t0 = gui_profile ? rdtsc() : 0;
     ui_begin(w);
     w->paint(w);
     ui_end(w);
+    if (gui_profile) prof_paint(w, rdtsc() - t0);
     wm_need_redraw = true;
 }
 static void paint_menubar(canvas_t *c, window_t *w, int dx, int dy) {
@@ -1054,7 +1081,12 @@ void wm_run(void) {
             run_paint(w);
         }
         if (ndying) reap_windows();
-        if (wm_need_redraw) compose();
+        if (wm_need_redraw) {
+            uint64_t t0 = gui_profile ? rdtsc() : 0;
+            compose();
+            if (gui_profile) { prof_compose_t += rdtsc() - t0; prof_compose_n++; }
+        }
+        prof_report();
         if ((int32_t)(timer_ticks() - loop_t0) >= 150)
             usb_diag("gui: %u ms in one frame", timer_ticks() - loop_t0);
         task_yield();
