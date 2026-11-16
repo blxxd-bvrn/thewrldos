@@ -67,7 +67,8 @@ typedef struct { uint32_t set; uint32_t color, bg; int8_t display; /* 0 none, 1 
                  int8_t pos, flt, clr;        /* position; float 1 left 2 right; clear bits 1 left 2 right */
                  uint8_t oset, opct;          /* offsets set (top, right, bottom, left) and which are percentages */
                  int16_t off[4];
-                 uint32_t fill; bool fill_cur; } css_t;
+                 uint32_t fill; bool fill_cur;
+                 int8_t bsz;                  /* box-sizing: 0 not set, 1 content-box, 2 border-box */ } css_t;
 
 typedef struct node {
     uint8_t type;                 /* 0 element, 1 text */
@@ -91,6 +92,7 @@ typedef struct {
     char base[1024];
     char refresh[1024]; int refresh_s;
     uint32_t bgcolor, text, link, vlink;
+    bool rtl;                          /* <html dir=rtl> or <body dir=rtl>: right-to-left by default */
     css_rule_t *rules; int nrules, caprules;
     css_bucket_t *buckets[CSS_BUCKETS];
     void *selpool;
@@ -100,6 +102,7 @@ typedef struct {
     struct { char *text; int len, sheet; } *sheets; int nsheet_text, capsheet_text;
     /* CSS custom properties (--name: value), document-wide */
     char **vnames, **vvals; uint8_t *vprio; int nvars, capvars;
+    bool var_filter;                   /* the tree is complete: a rule's variables count only if it matches an element */
 } doc_t;
 
 doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char *url);

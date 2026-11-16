@@ -92,6 +92,8 @@ static int pick_font(sty_t *s) {
     switch (s->size) { case 1: return FONT_H1; case 2: return FONT_H2; case 3: return FONT_H3; case -1: return FONT_WEB_SMALL; }
     return s->bold ? (s->italic ? FONT_WEB_BI : FONT_WEB_B) : (s->italic ? FONT_WEB_I : FONT_WEB);
 }
+static bool lay_rtl;                           /* the current block runs right to left (dir="rtl") */
+static int measuring;                          /* > 0 while laying out only to measure */
 static void newline(lay_t *L, bool force, int font) {
     page_t *p = L->pg;
     /* a list marker waiting for its first line (e.g. <li><p>...) stays pending */
@@ -106,6 +108,19 @@ static void newline(lay_t *L, bool force, int font) {
     int ll = line_left(L), lr = line_right(L);
     int lw = L->cx - ll, shift = L->align == 1 ? (lr - ll - lw) / 2 : L->align == 2 ? lr - ll - lw : 0;
     if (shift < 0) shift = 0;
+    if (lay_rtl) {
+        /* right to left: the line's items in mirror order, flush right; each text run is
+         * already in visual order. Alignment then pulls the line back to the left */
+        for (int i = L->line_start; i < p->nitems; i++) {
+            item_t *it = &p->items[i];
+            if (it->grp == 3 || it->grp == 2) continue;
+            int nx = ll + lr - (it->x + it->w), dx = nx - it->x;
+            it->x = nx;
+            if (it->kind == IT_GROUP) for (int k = it->idx; k < i; k++) if (p->items[k].grp == 2) p->items[k].x += dx;
+        }
+        int free = MAX(0, lr - ll - lw);
+        shift = L->align == 1 ? -free / 2 : L->align == 2 ? 0 : -free;
+    }
     for (int i = L->line_start; i < p->nitems; i++) {
         item_t *it = &p->items[i];
         if (it->grp == 3) continue;                       /* a float or positioned box: already placed */
@@ -115,7 +130,10 @@ static void newline(lay_t *L, bool force, int font) {
     }
     for (int i = L->line_start; i < p->nitems; i++)
         if (p->items[i].kind == IT_GROUP) for (int k = p->items[i].idx; k < i; k++) if (p->items[k].grp == 2) p->items[k].y += p->items[i].y;
-    if (L->cx + shift > L->maxx) L->maxx = L->cx + shift;
+    /* while measuring, the natural width: a centred or right-aligned line must not make
+     * its box as wide as the space it was measured in */
+    if (lay_rtl || measuring) { if (L->cx > L->maxx) L->maxx = L->cx; }
+    else if (L->cx + shift > L->maxx) L->maxx = L->cx + shift;
     L->y += L->line_h; L->trail = 0;
     L->line_start = p->nitems; L->line_h = 0; L->line_asc = 0;
     L->cx = line_left(L); L->pending_space = false;
@@ -189,6 +207,7 @@ static void apply_css_style(node_t *n, sty_t *s) {
 }
 
 static node_t *blockify;                     /* a flex or grid item: laid out as a block whatever its tag */
+static node_t *last_block_done;              /* the last element laid out as a block (its box is in maxx) */
 static bool is_block(node_t *n) {
     if (n == blockify) return true;
     static const char *b[] = { "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "dl", "dt", "dd", "blockquote", "pre", "table",
@@ -208,7 +227,6 @@ static int text_content(node_t *n, char *buf, int cap, int len) {
 
 /* tables: two measuring passes (min/max content width) per cell, then placement */
 typedef struct { node_t *n; int span, minw, maxw; } cell_t;
-static int measuring;                        /* > 0 while laying out only to measure */
 static void measure(lay_t *L, node_t *cell, sty_t *s, int width, int *out_w) {
     page_t *p = L->pg;
     int save_items = p->nitems, save_links = p->nlinks;
@@ -228,12 +246,13 @@ static int measure_node(lay_t *L, node_t *n, sty_t *s, int width) {
     lay_t M = { p, 0, width, 0, 0, p->nitems, 0, 0, 0, 0, 0, false };
     measuring++;
     node_t *ob = blockify; blockify = n->type ? NULL : n;   /* measured as it will be placed: a flex item is a block */
+    last_block_done = NULL;
     layout_node(&M, n, s);
     blockify = ob;
     newline(&M, false, FONT_WEB);
     measuring--;
     int w = M.maxx;
-    if (!n->type) {                                   /* the right-hand side of its box */
+    if (!n->type && last_block_done != n) {           /* the right-hand side of its box, when the block path did not add it */
         const css_t *c = &n->css;
         if (c->pset & 2) w += c->pad[1];
         if ((c->set & ST_BORDER)) w += c->border;
@@ -348,7 +367,8 @@ static void layout_table(lay_t *L, node_t *t, sty_t *s) {
             uint32_t cb = 0; const char *cbs = node_attr(ce->n, "bgcolor");
             bool has_cb = (ce->n->css.set & ST_BG) ? (cb = ce->n->css.bg, true) : (cbs && parse_color(cbs, &cb));
             cbg[k] = -1;
-            if (has_cb) { item_t *it = add_item(p, IT_RECT); it->x = x; it->y = y; it->w = cw; it->color = cb; cbg[k] = p->nitems - 1; }
+            int cx = lay_rtl ? 2 * tx + total - x - cw : x;      /* right to left: columns from the right */
+            if (has_cb) { item_t *it = add_item(p, IT_RECT); it->x = cx; it->y = y; it->w = cw; it->color = cb; cbg[k] = p->nitems - 1; }
             cstart[k] = p->nitems;
             sty_t cs = *s; bool th = !strcmp(ce->n->tag, "th"); if (th) cs.bold = true;
             if (node_attr(ce->n, "nowrap")) cs.nowrap = true;
@@ -356,7 +376,8 @@ static void layout_table(lay_t *L, node_t *t, sty_t *s) {
             const char *ca = node_attr(ce->n, "align"); if (!ca) ca = node_attr(rows[r], "align");
             int align = ca ? (!strcasecmp(ca, "center") ? 1 : !strcasecmp(ca, "right") ? 2 : 0) : th ? 1 : 0;
             if (ce->n->css.set & ST_ALIGN) align = ce->n->css.align;
-            lay_t C = { p, x + pad, MAX(1, cw - 2 * pad), y + pad, x + pad, p->nitems, 0, 0, align, 1000, 0, false };
+            if (lay_rtl && !ca && !(ce->n->css.set & ST_ALIGN) && !th) align = 2;
+            lay_t C = { p, cx + pad, MAX(1, cw - 2 * pad), y + pad, cx + pad, p->nitems, 0, 0, align, 1000, 0, false };
             layout_children(&C, ce->n, &cs);
             newline(&C, false, FONT_WEB);
             cend[k] = p->nitems;
@@ -366,7 +387,7 @@ static void layout_table(lay_t *L, node_t *t, sty_t *s) {
             if (ch[k] > rowh) rowh = ch[k];
             const char *va = node_attr(ce->n, "valign"); if (!va) va = rva;
             cval[k] = va ? (!strcasecmp(va, "top") ? 't' : !strcasecmp(va, "bottom") ? 'b' : 'm') : 'm';
-            if (border) { item_t *it = add_item(p, IT_FRAME); it->x = x; it->y = y; it->w = cw; it->color = HEX(0x808080); it->idx = k; }
+            if (border) { item_t *it = add_item(p, IT_FRAME); it->x = cx; it->y = y; it->w = cw; it->color = HEX(0x808080); it->idx = k; }
             x += cw + spacing; col += span;
         }
         for (int k = 0; k < rowcells[r] && k < 64; k++) {
@@ -623,7 +644,9 @@ static void layout_inline_box(lay_t *L, node_t *n, sty_t *s, bool only_bg) {
     int h = MAX(1, C.y), base = h;
     for (int i = start; i < p->nitems; i++) if (p->items[i].kind == IT_TEXT) { base = p->items[i].y + p->items[i].asc; break; }
     int end = p->nitems;
-    for (int i = start; i < end; i++) if (p->items[i].grp != 3) p->items[i].grp = 2;
+    /* everything inside moves with the box, positioned children too: their offsets are
+     * relative to this box's origin until it is placed */
+    for (int i = start; i < end; i++) p->items[i].grp = 2;
     item_t *g = add_item(p, IT_GROUP);
     g->idx = start; g->grp = 1; g->link = -1;
     place_box(L, g, w, h, base);
@@ -717,7 +740,16 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
         if (n != placing && n != blockify && (c->oset & 0x10) && (c->pos == POS_ABSOLUTE || c->pos == POS_FIXED)) { layout_abs(L, n, &s); return; }
         if (n != placing && n != blockify && (c->set & ST_FLOAT) && c->flt) { layout_float(L, n, &s); return; }
     }
-    if (!strcmp(t, "br")) { newline(L, true, pick_font(&s)); return; }
+    if (!strcmp(t, "br")) {
+        newline(L, true, pick_font(&s));
+        const char *cl = node_attr(n, "clear");         /* <br clear="all">: below the floats */
+        int clr = cl ? (!strcasecmp(cl, "left") ? 1 : !strcasecmp(cl, "right") ? 2 : (!strcasecmp(cl, "all") || !strcasecmp(cl, "both")) ? 3 : 0) : 0;
+        if ((n->css.set & ST_CLEAR) && n->css.clr) clr = n->css.clr;
+        if ((clr & 1) && L->fl_lb > L->y) L->y = L->fl_lb;
+        if ((clr & 2) && L->fl_rb > L->y) L->y = L->fl_rb;
+        if (clr) L->cx = line_left(L);
+        return;
+    }
     if (!strcmp(t, "img")) { layout_image(L, n, &s); return; }
     if (!strcmp(t, "svg")) {                               /* inline SVG: drawn at paint time from the tree */
         int w, h; svg_intrinsic(n, &w, &h);
@@ -782,8 +814,9 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     if (!(cs->mauto & 8)) ml = CLAMP(ml, -L->x0, avail / 2);
     if (!(cs->mauto & 2)) mr = CLAMP(mr, -avail / 4, avail / 2);
     int boxw = avail - (cs->mauto & 8 ? 0 : ml) - (cs->mauto & 2 ? 0 : mr);
-    if (cs->set & ST_WIDTH) { int want = cs->wpct ? avail * cs->width / 100 : cs->width + pl + pr + 2 * bw; boxw = MIN(boxw, want); }
-    if (cs->set & ST_MAXW) { int cap = cs->mpct ? avail * cs->maxw / 100 : cs->maxw + pl + pr + 2 * bw; boxw = MIN(boxw, cap); }
+    int extra_w = cs->bsz == 2 ? 0 : pl + pr + 2 * bw;   /* box-sizing: border-box counts padding and border in */
+    if (cs->set & ST_WIDTH) { int want = cs->wpct ? avail * cs->width / 100 : cs->width + extra_w; boxw = MIN(boxw, want); }
+    if (cs->set & ST_MAXW) { int cap = cs->mpct ? avail * cs->maxw / 100 : cs->maxw + extra_w; boxw = MIN(boxw, cap); }
     boxw = MAX(boxw, 20);
     if ((cs->mauto & 8) && (cs->mauto & 2)) ml = (avail - boxw) / 2;          /* margin: 0 auto centres */
     else if (cs->mauto & 8) ml = avail - boxw - mr;
@@ -796,7 +829,11 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
         L->cx = line_left(L);
     }
     int ox0 = L->x0, ow = L->w, oal = L->align;
+    bool ortl = lay_rtl;
+    { const char *dir = node_attr(n, "dir");
+      if (dir && !strcasecmp(dir, "rtl")) { lay_rtl = true; L->align = 2; } else if (dir && !strcasecmp(dir, "ltr")) { lay_rtl = false; L->align = 0; } }
     int rel_start = p->nitems;
+    int content_max0 = L->maxx;
     int box_x = L->x0 + ml;
     L->x0 = box_x + bw + pl; L->w = MAX(20, boxw - 2 * bw - pl - pr); L->cx = L->x0;
     if (!strcmp(t, "center")) L->align = 1;
@@ -831,6 +868,7 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
     newline(L, false, pick_font(&s));
     if (cs->set & ST_HEIGHT) {                         /* height / min-height: the content box at least this tall */
         int want = MAX(cs->height, cs->minh), top_y = y0 + bw + pt;
+        if (cs->bsz == 2) want = MAX(0, want - pt - pb - 2 * bw);
         if (L->y < top_y + want) { L->y = top_y + want; L->trail = 0; }
     }
     /* a float that started in this box is enclosed by it (what clearfix does on real sites) */
@@ -850,6 +888,12 @@ static void layout_node_el(lay_t *L, node_t *n, sty_t *parent) {
             if (dx || dy) shift_items(p, rel_start, p->nitems, dx, dy);
         }
     }
+    /* the measured right edge includes this box's own right padding, border and margin,
+     * or its fixed width, so a box placed at its measured width does not wrap */
+    if (cs->set & ST_WIDTH && !cs->wpct) L->maxx = MAX(L->maxx, box_x + boxw + MAX(0, mr));
+    else if (L->maxx > content_max0) L->maxx = MAX(L->maxx, L->maxx + pr + bw + MAX(0, (cs->mset & 2) && !(cs->mauto & 2) ? cs->m[1] : 0));
+    last_block_done = n;
+    lay_rtl = ortl;
     L->x0 = ox0; L->w = ow; L->align = oal; L->cx = line_left(L);
     vspace(L, bottom, pick_font(&s));
 }
@@ -870,6 +914,8 @@ static void page_layout(page_t *p, int width) {
     bw = MAX(bw, 100);
     if ((rc->mauto & 10) == 10) ml = MAX(0, (width - bw) / 2);
     lay_t L = { p, ml, bw, mt, ml, 0, 0, 0, 0, 0, 0, false };
+    lay_rtl = p->doc->rtl;
+    if (lay_rtl && !(rc->set & ST_ALIGN)) L.align = 2;
     list_counter = 1;
     lay_el = p->doc->root;
     layout_children(&L, p->doc->root, &s);
