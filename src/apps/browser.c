@@ -2287,7 +2287,7 @@ static void br_menu(window_t *w, int id) {
     default: if (id >= BM_FAV0 && id < BM_FAV0 + (int)ARRAY_LEN(favs)) browser_navigate_ext(b, favs[id - BM_FAV0], NULL, true);
     }
 }
-void browser_open(const char *url) {
+void browser_classic_open(const char *url) {
     window_t *w = wm_create("The WRLD Browser", -1, -1, MIN(1000, SCREEN_W - 24), MIN(700, SCREEN_H - 60), WF_RESIZABLE);
     brwin_t *bw = kzalloc(sizeof *bw);
     bw->w = w;

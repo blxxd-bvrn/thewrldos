@@ -274,9 +274,12 @@ Already working, and not on the list below:
 
 ## The next steps to WebKit
 
-1. **WebKit as THE WRLD Browser.** `wrldweb` works but is a sample: start it from the Start menu
-   and the browser's shortcut, keep tabs and history, and fall back to the built-in browser on
-   the 32-bit edition and on machines with too little memory.
+1. **WebKit is The WRLD Browser** in the 64-bit edition (done): the desktop icon, the Start
+   menu and links from other programs open WebKit (`src/apps/webkit.c`) with tabs, a bookmarks
+   bar, find, zoom and downloads; one browser runs and later addresses open as tabs in it. The
+   built-in engine stays for the 32-bit edition, machines under about 2 GB, and as a choice
+   (Control Panel, Network: "Use WebKit"; or `start classicbrowser`). Next: history, saved
+   bookmarks, and loading the WebKit libraries from disk to need less memory.
 2. **Input under load.** Typing very fast into a WebKit page can drop a key after Shift; typing at
    normal speed, the address bar and all GTK widgets are fine. Not reproducible on the build
    machine or with `lxtrace on`, so it is a timing issue in the Linux layer still to be found.
@@ -319,7 +322,7 @@ Already working, and not on the list below:
 15. [x] **Desktop windows for Linux programs** - `/dev/wrld/window` (`src/linux/wrldwin.c`).
 16. [x] **A Wayland compositor on `/dev/wrld/window`**, GTK 4 and WebKitGTK (`wrldcomp`, `gtkhello`,
     `wrldweb`).
-17. [ ] **WebKit as a browser** on THE WRLD OS.
+17. [x] **WebKit as a browser** on THE WRLD OS: The WRLD Browser in the 64-bit edition.
 
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
 `fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.

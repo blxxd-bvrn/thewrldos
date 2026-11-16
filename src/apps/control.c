@@ -964,7 +964,21 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     y += 10;
     if (netif.present && ui_button(w, R(ox + 40, y, 150, 26), "Renew address (DHCP)")) dhcp_renew();
     if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open The WRLD Browser", W7_LINK)) browser_open(NULL);
-    y += 40;
+    y += 34;
+    {   /* the browser's engine: WebKit (64-bit edition, when the image has it) or the built-in one */
+        extern bool webkit_browser_available(char *why, int cap);
+        char why[96];
+        const char *pref = settings_get("browser");
+        bool classic = pref && !strcasecmp(pref, "classic");
+        bool can = webkit_browser_available(why, sizeof why);
+        if (can || classic) {
+            bool use = !classic;
+            if (ui_checkbox(w, ox + 40, y, "Use WebKit for The WRLD Browser (full modern websites; needs about 2 GB of memory)", &use)) {
+                settings_set("browser", use ? "webkit" : "classic"); settings_save();
+            }
+        } else draw_text(s, FONT_UI, ox + 40, y, "The WRLD Browser uses its built-in engine here: WebKit needs the 64-bit edition and about 2 GB of memory.", T.gray_text);
+        y += 28;
+    }
     snprintf(b, sizeof b, "Secure websites are checked against %d trusted root certificates (add your own in C:\\WRLD\\Certificates).", tls_trust_anchor_count());
     draw_text_wrapped(s, FONT_UI, ox + 30, y, s->w - ox - 60, netif.present ? b : "No supported network adapter was found. THE WRLD OS supports Intel PRO/1000, e1000e, I217-I219 and I210/I211/I350, Realtek RTL8111/8168/8125 and RTL8139, AMD PCnet, VMware VMXNET3 and VirtIO adapters. Wireless adapters are not supported.", W7_TEXT, 2);
 }

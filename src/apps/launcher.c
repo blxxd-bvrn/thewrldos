@@ -33,7 +33,8 @@ const app_info_t *app_find(const char *id) {
 void app_launch(const char *name, const char *arg) {
     if (!strcasecmp(name, "explorer")) explorer_open(arg ? arg : USER_DOCS);
     else if (!strcasecmp(name, "notepad")) notepad_open(arg);
-    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "xplorerlite") || !strcasecmp(name, "wrldbrowser") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
+    else if (!strcasecmp(name, "xplorerlite") || !strcasecmp(name, "classicbrowser")) browser_classic_open(arg);   /* the built-in engine */
+    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "wrldbrowser") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
     else if (!strcasecmp(name, "cmd") || !strcasecmp(name, "terminal") || !strcasecmp(name, "sh") || !strcasecmp(name, "bash")) terminal_open(arg, NULL);
     else if (!strcasecmp(name, "calc")) calc_open();
     else if (!strcasecmp(name, "paint") || !strcasecmp(name, "mspaint")) paint_open(arg);

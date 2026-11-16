@@ -36,7 +36,16 @@ typedef struct lxwin {
     bool closed;                                /* the user closed the window */
     bool frameless;
     uint32_t frames;
+    int owner;                                  /* pid of the process that created the window */
+    struct lxwin *next;
 } lxwin_t;
+static lxwin_t *all_wins;
+int lxwin_browser_pid;                          /* the WebKit browser's compositor (src/apps/webkit.c) */
+/* the desktop window a Linux process created, if it still has one */
+window_t *lxwin_window_of(int pid) {
+    for (lxwin_t *l = all_wins; l; l = l->next) if (l->owner == pid && l->w && !l->closed && wm_alive(l->w)) return l->w;
+    return NULL;
+}
 
 static void push(lxwin_t *lw, uint32_t type, int x, int y, uint32_t code, uint32_t ch, uint32_t mods) {
     int nt = (lw->tail + 1) % WQ;
@@ -110,6 +119,7 @@ void lxwin_release(void *o) {
     lxwin_t *lw = o;
     if (!lw) return;
     if (lw->w && wm_alive(lw->w)) { lw->w->data = NULL; wm_destroy(lw->w); }
+    for (lxwin_t **pp = &all_wins; *pp; pp = &(*pp)->next) if (*pp == lw) { *pp = lw->next; break; }
     shm_unref(lw->fb);
     kfree(lw);
 }
@@ -137,6 +147,10 @@ int64_t lxwin_ioctl(void *o, uint64_t cmd, uint64_t arg, uvm_t *vm) {
         w->data = lw; w->paint = win_paint; w->mouse = win_mouse; w->key = win_key;
         w->resized = win_resized; w->close = win_close; w->destroy = win_destroy;
         w->icon = ICON_EXE; w->min_w = 120; w->min_h = 80;
+        lxthread_t *th = lx_current();
+        lw->owner = th && th->proc ? th->proc->pid : 0;
+        if (lw->owner && lw->owner == lxwin_browser_pid) { w->icon = ICON_BROWSER; w->min_w = 480; w->min_h = 320; }
+        lw->next = all_wins; all_wins = lw;
         lw->w = w;
         wm_center(w);
         w->dirty = true;

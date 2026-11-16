@@ -239,6 +239,33 @@ fail:
     return -1;
 }
 
+/* a program started from the desktop has no console window: what it writes goes to
+ * the boot log a line at a time, and it reads end-of-file */
+static char logcon_buf[256]; static int logcon_len;
+static void logcon_write(console_t *c, const char *s, int n) {
+    (void)c;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == '\n' || logcon_len == (int)sizeof logcon_buf - 1) {
+            logcon_buf[logcon_len] = 0;
+            if (logcon_len) klog("linux: %s", logcon_buf);
+            logcon_len = 0;
+            if (s[i] == '\n') continue;
+        }
+        if (s[i] != '\r') logcon_buf[logcon_len++] = s[i];
+    }
+}
+static int logcon_readline(console_t *c, char *buf, int cap) { (void)c; if (cap) buf[0] = 0; return 0; }
+static int logcon_getkey(console_t *c) { (void)c; return -1; }
+static void logcon_none(console_t *c) { (void)c; }
+static void logcon_title(console_t *c, const char *t) { (void)c; (void)t; }
+static void logcon_color(console_t *c, int fg, int bg) { (void)c; (void)fg; (void)bg; }
+static bool logcon_alive(console_t *c) { (void)c; return true; }
+static console_t log_console = { logcon_write, logcon_readline, logcon_getkey, logcon_none, logcon_title, logcon_color, logcon_alive };
+/* start a Linux program in the background (for the desktop: no console) */
+int lx_launch(const char *wrld_path, int argc, char **argv, char **envp, char *err, int ecap) {
+    return lx_spawn(wrld_path, argc, argv, envp, &log_console, &log_console, err, ecap);
+}
+
 /* fork(): a second process with a copy of this address space, the same open
  * files and the same thread state. The child returns 0 from the same call. */
 int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid);

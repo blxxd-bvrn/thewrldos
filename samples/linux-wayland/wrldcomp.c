@@ -136,6 +136,12 @@ static void window_size(struct xdg *x, int *ww, int *wh, int *mx, int *my) {
     if (*ww < 1) *ww = 1;
     if (*wh < 1) *wh = 1;
 }
+/* client-side decorations (a GTK header bar with shadows) when the geometry sits inside
+ * the surface: a frameless window. A geometry covering the whole surface, or none, gets
+ * THE WRLD OS window frame */
+static int csd(struct xdg *t) {
+    return t->has_geom && (t->gx > 0 || t->gy > 0 || t->gw < t->s->w || t->gh < t->s->h);
+}
 static void composite(struct window *w) {
     struct xdg *t = w->top;
     if (!t || !t->s->pix) return;
@@ -144,10 +150,10 @@ static void composite(struct window *w) {
     if (w->fd < 0) {
         w->fd = open("/dev/wrld/window", O_RDWR | O_CLOEXEC);
         if (w->fd < 0) { perror("wrldcomp: /dev/wrld/window"); return; }
-        struct wrldwin_create c = { ww, wh, WRLDWIN_RESIZABLE | (t->has_geom ? WRLDWIN_FRAMELESS : 0), "" };
+        struct wrldwin_create c = { ww, wh, WRLDWIN_RESIZABLE | (csd(t) ? WRLDWIN_FRAMELESS : 0), "" };
         snprintf(c.title, sizeof c.title, "%s", t->title[0] ? t->title : "Wayland program");
         if (ioctl(w->fd, WRLDWIN_CREATE, &c)) { perror("wrldcomp: create window"); close(w->fd); w->fd = -1; return; }
-        w->w = ww; w->h = wh; w->frameless = t->has_geom;
+        w->w = ww; w->h = wh; w->frameless = csd(t);
         if (!map_window(w)) { perror("wrldcomp: mmap"); return; }
         w->src = wl_event_loop_add_fd(loop, w->fd, WL_EVENT_READABLE, on_window_fd, w);
         LOG("window %dx%d for '%s'%s", ww, wh, c.title, w->frameless ? " (client decorations)" : "");

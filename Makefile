@@ -331,7 +331,7 @@ $(LXROOT)/Linux/usr/share/wrld/keymap.xkb: tools/gen_keymap.c
 	$(WLGEN)/gen_keymap > $@
 # GTK 4 programs (samples/linux-gtk) through wrldcomp: about 35 MB of libraries, so only with
 #   make ARCH=x86_64 LX_GTK=1   (needs libgtk-4-dev)
-LXGTK := $(if $(LX_GTK)$(LX_WEBKITGTK),$(if $(shell pkg-config --exists gtk4 2>/dev/null && echo y),$(patsubst samples/linux-gtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gtk/*.c)),$(warning LX_GTK=1 needs libgtk-4-dev)))
+LXGTK := $(if $(LX_GTK)$(LX_WEBKITGTK_ON),$(if $(shell pkg-config --exists gtk4 2>/dev/null && echo y),$(patsubst samples/linux-gtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gtk/*.c)),$(warning LX_GTK=1 needs libgtk-4-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/usr/share/glib-2.0/schemas
 	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs gtk4)
@@ -346,7 +346,11 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 # about 210 MB of libraries, so only with  make ARCH=x86_64 LX_WEBKITGTK=1  (needs libwebkitgtk-6.0-dev;
 # implies LX_GTK=1). HTTPS goes through GIO's GnuTLS module and the Mozilla CA list.
 WKGTK_DIR := /usr/lib/x86_64-linux-gnu/webkitgtk-6.0
-LXWEBKITGTK := $(if $(LX_WEBKITGTK),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
+# on by default in the 64-bit edition when the build machine has WebKitGTK: it is The WRLD
+# Browser's engine there (src/apps/webkit.c). LX_WEBKITGTK=0 leaves it out (a smaller image).
+LX_WEBKITGTK ?= $(if $(filter x86_64,$(ARCH)),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),1))
+LX_WEBKITGTK_ON := $(filter-out 0,$(LX_WEBKITGTK))
+LXWEBKITGTK := $(if $(LX_WEBKITGTK_ON),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/ssl/certs
 	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0)
