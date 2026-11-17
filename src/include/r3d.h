@@ -5,7 +5,8 @@
  * the near plane, a depth buffer, perspective-correct texture mapping with
  * bilinear filtering, vertex colours and alpha blending. It draws into any
  * canvas, so the desktop (Flip 3D) and applications use the same engine.
- * Everything runs on the CPU; THE WRLD OS has no GPU driver. */
+ * This fixed-function engine stays on the CPU. D3D10's separate shader pipeline
+ * can use the native legacy VMware SVGA3D backend (gpu3d.h), with CPU fallback. */
 #ifndef R3D_H
 #define R3D_H
 #include "gfx.h"

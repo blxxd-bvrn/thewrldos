@@ -3,6 +3,7 @@
  * the first 4 GiB with 2 MiB pages; Win32 processes get private address spaces. */
 #include "kernel.h"
 #include "bootinfo.h"
+#include "fbmap.h"
 
 extern uint8_t kernel_end[];
 #ifndef __x86_64__
@@ -114,6 +115,20 @@ uint32_t mm_used(void) { return heap_used; }
 uint64_t mm_phys_total(void) { return phys_total; }
 
 /* ---------- paging ---------- */
+static bool pat_checked, pat_wc;
+static bool framebuffer_pat(void) {
+    if (pat_checked) return pat_wc;
+    pat_checked = true;
+    uint32_t a, b, c, d;
+    __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1), "c"(0));
+    if (!(d & (1u << 16)) || !(d & (1u << 5))) return false;
+    uintptr_t flags = irq_save();
+    uint32_t lo, hi;
+    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x277));
+    lo = (lo & ~0xFF00u & ~0xFF000000u) | 0x0100u; /* PA1 = WC, PA3 = UC */
+    __asm__ volatile("wbinvd; wrmsr" :: "c"(0x277), "a"(lo), "d"(hi) : "memory");
+    pat_wc = true; irq_restore(flags); return true;
+}
 #ifdef __x86_64__
 extern uint64_t boot_pml4[512], boot_pdpt[512], boot_pd[2048];
 uintptr_t paging_kernel_root(void) { return (uintptr_t)boot_pml4; }
@@ -121,7 +136,7 @@ static void flush_tlb(void) { uintptr_t cr3; __asm__ volatile("mov %%cr3,%0; mov
 /* device registers (MMIO) must not be cached: set PCD|PWT on the 2 MiB page */
 void paging_set_uncached(uintptr_t addr) {
     if (addr >= 0x100000000ull) return;
-    boot_pd[addr >> 21] |= 0x18;
+    boot_pd[addr >> 21] = fbmap_cache_bits(boot_pd[addr >> 21], false);
     flush_tlb();
 }
 /* The framebuffer is written far more than it is read: mark its page as
@@ -131,14 +146,70 @@ void paging_set_wc(uintptr_t addr, uint32_t size) {
     if (addr >= 0x100000000ull) return;
     uint64_t end = (uint64_t)addr + size;
     if (end > 0x100000000ull) end = 0x100000000ull;
-    uint32_t lo, hi;
-    __asm__ volatile("rdmsr" : "=a"(lo), "=d"(hi) : "c"(0x277));
-    uint64_t pat = ((uint64_t)hi << 32) | lo;
-    pat = (pat & ~0xFF00ull) | 0x0100ull;      /* PA1 = write-combining */
-    __asm__ volatile("wrmsr" :: "c"(0x277), "a"((uint32_t)pat), "d"((uint32_t)(pat >> 32)));
+    bool wc = framebuffer_pat(); bool changed = false;
+    uintptr_t flags = irq_save();
     for (uint64_t a = addr & ~0x1FFFFFull; a < end; a += 0x200000)
-        boot_pd[a >> 21] = (boot_pd[a >> 21] & ~0x18ull) | (1ull << 12);
+        if (boot_pd[a >> 21] != fbmap_cache_bits(boot_pd[a >> 21], wc)) changed = true;
+    if (changed) __asm__ volatile("wbinvd" ::: "memory");
+    for (uint64_t a = addr & ~0x1FFFFFull; a < end; a += 0x200000)
+        boot_pd[a >> 21] = fbmap_cache_bits(boot_pd[a >> 21], wc);
     flush_tlb();
+    irq_restore(flags);
+}
+/* A dedicated supervisor-only window for every x64 framebuffer, including
+ * apertures above 4 GiB. Application mappings must not shadow low framebuffer
+ * addresses. Static tables are inherited by later process roots; high RAM
+ * allocation is not enabled. Maximum framebuffer aperture is 256 MiB. */
+static uint64_t framebuffer_pdpt[512] __attribute__((aligned(4096)));
+static uint64_t framebuffer_pd[512] __attribute__((aligned(4096)));
+static unsigned physical_bits(void) {
+    uint32_t a,b,c,d;
+    __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(0x80000000u),"c"(0));
+    if(a<0x80000008u)return 36;
+    __asm__ volatile("cpuid" : "=a"(a),"=b"(b),"=c"(c),"=d"(d) : "a"(0x80000008u),"c"(0));
+    return a&255;
+}
+uintptr_t paging_map_framebuffer(uint64_t physical, uint32_t size, bool *wc) {
+    if (wc) *wc = false;
+    mmio_plan_t plan;
+    if (!mmio_plan(physical,size,256u*1024*1024,physical_bits(),&plan)) return 0;
+    uint64_t end = physical + size;
+    bool combined = framebuffer_pat();
+    if (physical < 0x100000000ull) paging_set_wc((uintptr_t)physical,
+        end > 0x100000000ull ? (uint32_t)(0x100000000ull - physical) : size);
+    if (wc) *wc = combined;
+    uintptr_t flags = irq_save();
+    memset(framebuffer_pdpt, 0, sizeof framebuffer_pdpt); memset(framebuffer_pd, 0, sizeof framebuffer_pd);
+    for (unsigned i = 0; i < plan.pages; i++) framebuffer_pd[i] = fbmap_cache_bits((plan.base + (uint64_t)i * 0x200000) | 0x83, combined);
+    framebuffer_pdpt[0] = (uintptr_t)framebuffer_pd | 3;
+    boot_pml4[256] = (uintptr_t)framebuffer_pdpt | 3;
+    flush_tlb(); irq_restore(flags);
+    return (uintptr_t)(0xFFFF800000000000ull + plan.offset);
+}
+/* Device registers never use WC. A separate bounded supervisor window is
+ * installed before any process roots are cloned, then populated on demand. */
+static uint64_t mmio_pdpt[512] __attribute__((aligned(4096)));
+static uint64_t mmio_pd[512] __attribute__((aligned(4096)));
+static struct { uint64_t physical; uint32_t pages, first; } mmio_maps[64];
+static unsigned mmio_count,mmio_pages;
+uintptr_t paging_map_mmio(uint64_t physical,uint32_t size) {
+    mmio_plan_t plan;if(!mmio_plan(physical,size,16u*1024*1024,physical_bits(),&plan))return 0;
+    if(physical<0x100000000ull)
+        for(uint64_t a=plan.base;a<physical+size&&a<0x100000000ull;a+=0x200000)paging_set_uncached(a);
+    if(physical+size<=0x100000000ull) {
+        return (uintptr_t)physical;
+    }
+    uintptr_t flags=irq_save();
+    for(unsigned i=0;i<mmio_count;i++)if(mmio_maps[i].physical==plan.base&&mmio_maps[i].pages>=plan.pages) {
+        uintptr_t result=0xFFFF808000000000ull+(uint64_t)mmio_maps[i].first*0x200000+plan.offset;
+        irq_restore(flags);return result;
+    }
+    if(mmio_count==ARRAY_LEN(mmio_maps)||plan.pages>512-mmio_pages){irq_restore(flags);return 0;}
+    unsigned first=mmio_pages;
+    for(unsigned i=0;i<plan.pages;i++)mmio_pd[first+i]=fbmap_cache_bits((plan.base+(uint64_t)i*0x200000)|0x83,false);
+    mmio_maps[mmio_count].physical=plan.base;mmio_maps[mmio_count].pages=plan.pages;mmio_maps[mmio_count++].first=first;
+    mmio_pages+=plan.pages;flush_tlb();irq_restore(flags);
+    return 0xFFFF808000000000ull+(uint64_t)first*0x200000+plan.offset;
 }
 /* Private address spaces for Win32 programs. Each has its own PML4 and PDPT;
  * page directories are shared with the kernel (identity 0..4 GiB) until a 2 MiB
@@ -211,7 +282,9 @@ void vm_space_free(uintptr_t root) {
     for (int i = 0; i < v->ntables; i++) kfree_aligned(v->tables[i]);
     v->ntables = 0; v->pml4 = NULL;
 }
-static void paging_init(void) { }                      /* done by the boot stub */
+static void paging_init(void) {
+    mmio_pdpt[0]=(uintptr_t)mmio_pd|3;boot_pml4[257]=(uintptr_t)mmio_pdpt|3;flush_tlb();
+}
 #else
 uint32_t *paging_kernel_dir(void) { return page_dir; }
 uintptr_t paging_kernel_root(void) { return (uintptr_t)page_dir; }
@@ -222,11 +295,31 @@ uint32_t *paging_new_dir(void) {
 }
 /* device registers (MMIO) must not be cached: set PCD|PWT on the 4 MiB page */
 void paging_set_uncached(uintptr_t addr) {
-    page_dir[addr >> 22] |= 0x18;
+    page_dir[addr >> 22] = fbmap_cache_bits(page_dir[addr >> 22], false);
     uint32_t cr3; __asm__ volatile("mov %%cr3,%0; mov %0,%%cr3" : "=r"(cr3) :: "memory");
 }
-/* write-combining needs the PAT/PAT MSR; the 32-bit build keeps the default */
-void paging_set_wc(uintptr_t addr, uint32_t size) { (void)addr; (void)size; }
+void paging_set_wc(uintptr_t addr, uint32_t size) {
+    uint64_t end = (uint64_t)addr + size; if (end > 0x100000000ull) end = 0x100000000ull;
+    bool wc = framebuffer_pat(); bool changed = false; uintptr_t flags = irq_save();
+    for (uint64_t a = (uint64_t)addr & ~0x3FFFFFull; a < end; a += 0x400000)
+        if (page_dir[a >> 22] != (uint32_t)fbmap_cache_bits(page_dir[a >> 22], wc)) changed = true;
+    if (changed) __asm__ volatile("wbinvd" ::: "memory");
+    for (uint64_t a = (uint64_t)addr & ~0x3FFFFFull; a < end; a += 0x400000)
+        page_dir[a >> 22] = fbmap_cache_bits(page_dir[a >> 22], wc);
+    uint32_t cr3; __asm__ volatile("mov %%cr3,%0; mov %0,%%cr3" : "=r"(cr3) :: "memory");
+    irq_restore(flags);
+}
+uintptr_t paging_map_framebuffer(uint64_t physical, uint32_t size, bool *wc) {
+    if (wc) *wc = false;
+    if (!physical || !size || size > 256u * 1024 * 1024 || physical + size < physical || physical + size > 0x100000000ull) return 0;
+    paging_set_wc((uintptr_t)physical, size); if (wc) *wc = pat_wc;
+    return (uintptr_t)physical;
+}
+uintptr_t paging_map_mmio(uint64_t physical,uint32_t size) {
+    if(!physical||!size||size>16u*1024*1024||physical+size<physical||physical+size>0x100000000ull)return 0;
+    for(uint64_t a=physical&~0x3FFFFFull;a<physical+size;a+=0x400000)paging_set_uncached(a);
+    return (uintptr_t)physical;
+}
 void paging_free_dir(uint32_t *d) { if (d && d != page_dir) kfree_aligned(d); }
 
 static void paging_init(void) {

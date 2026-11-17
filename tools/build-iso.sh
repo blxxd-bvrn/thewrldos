@@ -9,7 +9,7 @@ set -euo pipefail
 
 SRC="$(cd "${1:-.}" && pwd)"
 BUILD_DIR="${WRLD_BUILD_DIR:-$HOME/.cache/wrldos-build}"
-PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools"
+PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin grub-common xorriso mtools"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }

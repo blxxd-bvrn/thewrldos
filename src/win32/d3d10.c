@@ -1,10 +1,11 @@
-/* d3d10.dll and dxgi.dll for Win32 programs: Direct3D 10 on the processor.
+/* d3d10.dll and dxgi.dll: native Direct3D 10 with optional VMware GPU offload.
  *
  * Direct3D 10 has no fixed-function pipeline: every draw runs a vertex shader
- * and a pixel shader given as Shader Model 4 bytecode (compiled HLSL). The
- * bytecode is decoded and interpreted by dxbc.c, once per vertex and once per
- * pixel, and triangles are rasterised here with perspective-correct
- * interpolation of every shader output, a depth buffer, culling and blending.
+ * and a pixel shader in compiled HLSL bytecode. The native engine accepts SM4,
+ * an SM5.0 DXBC subset, and an SM6.0 DXIL subset (not D3D11/12 feature levels).
+ * Eligible draws lower the shared IR to legacy SVGA3D shaders and commit only
+ * fenced GPU readback. Other draws prepare both CPU interpreters once; scanline
+ * spans step only live varying components, with depth/culling/blending.
  *
  * Implemented: D3D10CreateDevice(AndSwapChain), CreateDXGIFactory, swap chains
  * that present into a window, buffers (vertex, index, constant; Map and
@@ -21,6 +22,8 @@
 #include "w32.h"
 #include "r3d.h"
 #include "dxbc.h"
+#include "shader_gpu.h"
+#include "gpu3d.h"
 
 bool w32_hwnd_client(uintptr_t hwnd, canvas_t **surf, rect_t *client);
 void blit_scaled_alpha(canvas_t *dst, rect_t r, canvas_t *src, int alpha);
@@ -111,10 +114,15 @@ typedef struct { int32_t a2c, enable[8]; uint32_t src, dst, op, src_a, dst_a, op
 typedef struct { uint32_t filter, au, av, aw; float bias; uint32_t aniso, cmp; float border[4], minlod, maxlod; } sampler_desc_t;
 
 typedef struct { com_t c; buffer_desc_t d; uint8_t *data; } buffer_t;
-typedef struct { com_t c; tex2d_desc_t d; uint32_t pitch, bpp; uint8_t *data, *scratch; } tex_t;
+typedef struct { com_t c; tex2d_desc_t d; uint32_t pitch, bpp; uint8_t *data, *scratch; bool gpu_depth24; } tex_t;
 typedef struct { com_t c; tex_t *tex; } view_t;
-typedef struct { com_t c; dxbc_shader_t *sh; } shader_t;
-typedef struct { int reg, slot, format, sysval; uint32_t offset; bool instance; } layout_elem_t;
+typedef struct {
+    com_t c; dxbc_shader_t *sh;
+    shader_gpu_t *gpu;
+    bool gpu_tried;
+    uint64_t gpu_link;
+} shader_t;
+typedef struct { int reg, slot, format, sysval, mask; uint32_t offset, step; bool instance; } layout_elem_t;
 typedef struct { com_t c; layout_elem_t e[DX_MAX_SIG]; int n; } layout_t;
 typedef struct { com_t c; sampler_desc_t d; } sampler_t;
 typedef struct { com_t c; rast_desc_t d; } rast_t;
@@ -134,6 +142,8 @@ typedef struct device {
     view_t *rtv, *dsv;
     viewport_t vp; bool vp_set;
     rast_t *rs; depthst_t *ds; blendst_t *bs;
+    bool force_cpu, last_gpu;
+    uint32_t gpu_draws, cpu_draws;
 } device_t;
 typedef struct { com_t c; swap_desc_t d; tex_t *back; canvas_t *frame; } swap_t;
 
@@ -163,15 +173,19 @@ static void read_px(uint32_t f, const uint8_t *p, float *o) {
     case F_BGRX8: o[0] = p[2] / 255.0f; o[1] = p[1] / 255.0f; o[2] = p[0] / 255.0f; break;
     case F_RG8: o[0] = p[0] / 255.0f; o[1] = p[1] / 255.0f; break;
     case F_R8: o[0] = p[0] / 255.0f; break;
+    case F_RGBA8_UINT: for (int i = 0; i < 4; i++) o[i] = (float)p[i]; break;
+    case F_R32_UINT: { uint32_t v; memcpy(&v, p, 4); o[0] = (float)v; break; }
     }
 }
 /* vertex attributes keep integer formats as raw integers */
 static void read_attr(uint32_t f, const uint8_t *p, vec4_t *o) {
     if (f == F_RGBA8_UINT) { for (int i = 0; i < 4; i++) o->u[i] = p[i]; return; }
-    if (f == F_R32_UINT) { o->u[0] = *(const uint32_t *)p; o->u[1] = o->u[2] = 0; o->u[3] = 1; return; }
-    read_px(f, p, o->f);
+    if (f == F_R32_UINT) { memcpy(&o->u[0], p, 4); o->u[1] = o->u[2] = 0; o->u[3] = 1; return; }
+    vec4_t aligned = { 0 }; memcpy(&aligned, p, fmt_bytes(f));
+    read_px(f, (const uint8_t *)&aligned, o->f);
 }
-static uint8_t to8(float v) { return v <= 0 ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255 + 0.5f); }
+static uint8_t to8(float v) { return !(v > 0) ? 0 : v >= 1 ? 255 : (uint8_t)(v * 255 + 0.5f); }
+static uint32_t to_uint(float v) { return !(v > 0) ? 0 : v >= 4294967296.0f ? ~0u : (uint32_t)v; }
 static void write_px(uint32_t f, uint8_t *p, const float *c) {
     float *fp = (float *)p;
     switch (f) {
@@ -183,6 +197,8 @@ static void write_px(uint32_t f, uint8_t *p, const float *c) {
     case F_BGRA8: case F_BGRA8_SRGB: case F_BGRX8: p[0] = to8(c[2]); p[1] = to8(c[1]); p[2] = to8(c[0]); p[3] = f == F_BGRX8 ? 255 : to8(c[3]); break;
     case F_RG8: p[0] = to8(c[0]); p[1] = to8(c[1]); break;
     case F_R8: p[0] = to8(c[0]); break;
+    case F_RGBA8_UINT: for (int i = 0; i < 4; i++) p[i] = MIN(to_uint(c[i]), 255u); break;
+    case F_R32_UINT: *(uint32_t *)p = to_uint(c[0]); break;
     }
 }
 static inline uint8_t *texel(tex_t *t, int x, int y) { return t->data + (size_t)y * t->pitch + (size_t)x * t->bpp; }
@@ -204,7 +220,7 @@ static uint32_t WINAPI Release(com_t *self) {
     case IF_BUFFER: kfree(((buffer_t *)self)->data); break;
     case IF_TEX2D: kfree(((tex_t *)self)->data); kfree(((tex_t *)self)->scratch); break;
     case IF_RTV: case IF_DSV: case IF_SRV: unref(((view_t *)self)->tex); break;
-    case IF_VS: case IF_PS: case IF_GS: dxbc_free(((shader_t *)self)->sh); break;
+    case IF_VS: case IF_PS: case IF_GS: shader_gpu_free(((shader_t *)self)->gpu); dxbc_free(((shader_t *)self)->sh); break;
     case IF_SWAP: unref(((swap_t *)self)->back); if (((swap_t *)self)->frame) canvas_free(((swap_t *)self)->frame); break;
     case IF_DEVICE: device_unbind_all((device_t *)self); break;
     }
@@ -227,7 +243,7 @@ static void WINAPI BufUnmap(buffer_t *b) { (void)b; }
 static void WINAPI BufGetDesc(buffer_t *b, buffer_desc_t *d) { if (d) *d = b->d; }
 typedef struct { void *data; uint32_t pitch; } mapped2d_t;
 static HRESULT WINAPI TexMap(tex_t *t, uint32_t sub, uint32_t type, uint32_t flags, mapped2d_t *m) {
-    (void)type; (void)flags;
+    (void)flags;
     if (!m) return E_INVALIDARG;
     uint32_t mip = sub % MAX(t->d.mips, 1);
     if (mip) {                                         /* smaller mips are accepted and not used */
@@ -236,6 +252,7 @@ static HRESULT WINAPI TexMap(tex_t *t, uint32_t sub, uint32_t type, uint32_t fla
         m->data = t->scratch; m->pitch = w * t->bpp;
         return t->scratch ? S_OK : E_OUTOFMEMORY;
     }
+    if(type!=1)t->gpu_depth24=false;          /* read-only mapping must retain depth precision */
     m->data = t->data; m->pitch = t->pitch;
     return S_OK;
 }
@@ -341,7 +358,7 @@ static HRESULT WINAPI AdapterGetDesc(com_t *a, uint16_t *d) {
     (void)a;
     if (!d) return E_INVALIDARG;
     memset(d, 0, 128 * 2 + 16 + 3 * sizeof(uintptr_t) + 8);
-    const char *n = "WRLD 3D (software rasterizer)";
+    const char *n = gpu3d_available() ? "VMware SVGA3D GPU (native CPU fallback)" : "WRLD 3D (software rasterizer)";
     for (int i = 0; n[i]; i++) d[i] = n[i];
     uintptr_t *mem = (uintptr_t *)((uint8_t *)d + 128 * 2 + 16);
     mem[2] = 256u << 20;                               /* shared system memory */
@@ -390,6 +407,7 @@ static HRESULT WINAPI CreateDepthStencilView(device_t *d, tex_t *t, const void *
     return make_view(d, IF_DSV, t, out);
 }
 static HRESULT make_shader(device_t *d, int kind, const void *code, uintptr_t len, shader_t **out) {
+    if (out) *out = NULL;
     char err[96];
     dxbc_shader_t *sh = dxbc_load(code, len, err, sizeof err);
     if (!sh) { klog("w32: d3d10: shader rejected: %s", err); return E_INVALIDARG; }
@@ -419,16 +437,17 @@ static HRESULT WINAPI CreateInputLayout(device_t *d, const elem_desc_t *el, uint
     uint32_t next_off[16] = { 0 };
     for (uint32_t i = 0; i < n; i++) {
         layout_elem_t *e = &l->e[l->n++];
-        e->slot = el[i].slot & 15; e->format = el[i].format; e->instance = el[i].cls == 1;
+        if (!el[i].name || el[i].slot >= 8 || el[i].cls > 1) { Release(&l->c); dxbc_free(sh); return E_INVALIDARG; }
+        e->slot = el[i].slot; e->format = el[i].format; e->instance = el[i].cls == 1; e->step = el[i].step;
         e->offset = el[i].offset == 0xFFFFFFFFu ? next_off[e->slot] : el[i].offset;
         next_off[e->slot] = e->offset + fmt_bytes(e->format);
         e->reg = -1;
-        for (int k = 0; k < ns; k++) if (!strcasecmp(sig[k].name, el[i].name) && sig[k].index == (int)el[i].index) e->reg = sig[k].reg;
+        for (int k = 0; k < ns; k++) if (!strcasecmp(sig[k].name, el[i].name) && sig[k].index == (int)el[i].index) { e->reg = sig[k].reg; e->mask = sig[k].mask; }
         if (!fmt_bytes(e->format)) { klog("w32: d3d10: vertex format %u is not supported", e->format); e->reg = -1; }
     }
     /* system values the shader reads (SV_VertexID, SV_InstanceID) */
     for (int k = 0; k < ns && l->n < DX_MAX_SIG; k++)
-        if (sig[k].sysval == 6 || sig[k].sysval == 8) { layout_elem_t *e = &l->e[l->n++]; e->reg = sig[k].reg; e->sysval = sig[k].sysval; e->format = 0; }
+        if (sig[k].sysval == 6 || sig[k].sysval == 8) { layout_elem_t *e = &l->e[l->n++]; e->reg = sig[k].reg; e->sysval = sig[k].sysval; e->mask = sig[k].mask; e->format = 0; }
     dxbc_free(sh);
     if (!out) { Release(&l->c); return S_FALSE; }
     *out = l;
@@ -511,6 +530,7 @@ static void WINAPI ClearDepthStencilView(device_t *d, view_t *v, uint32_t flags,
     (void)d; (void)stencil;
     if (!v || !v->tex || !(flags & 1)) return;
     tex_t *t = v->tex;
+    t->gpu_depth24=false;
     for (uint32_t y = 0; y < t->d.h; y++) { float *row = (float *)texel(t, 0, y); for (uint32_t x = 0; x < t->d.w; x++) row[x] = depth; }
 }
 static void WINAPI GenerateMips(device_t *d, view_t *v) { (void)d; (void)v; }
@@ -524,6 +544,7 @@ static void WINAPI UpdateSubresource(device_t *d, com_t *res, uint32_t sub, cons
         if (x0 < x1 && x1 <= b->d.bytes) memcpy(b->data + x0, src, x1 - x0);
     } else if (res->kind == IF_TEX2D && sub == 0) {
         tex_t *t = (tex_t *)res;
+        t->gpu_depth24=false;
         uint32_t x0 = box ? box[0] : 0, y0 = box ? box[1] : 0, x1 = box ? box[3] : t->d.w, y1 = box ? box[4] : t->d.h;
         if (x1 > t->d.w || y1 > t->d.h || x0 >= x1 || y0 >= y1) return;
         for (uint32_t y = y0; y < y1; y++) memcpy(texel(t, x0, y), (const uint8_t *)src + (size_t)(y - y0) * pitch, (x1 - x0) * t->bpp);
@@ -535,6 +556,7 @@ static void WINAPI CopyResource(device_t *d, com_t *dst, com_t *src) {
     if (dst->kind == IF_BUFFER) { buffer_t *a = (buffer_t *)dst, *b = (buffer_t *)src; memcpy(a->data, b->data, MIN(a->d.bytes, b->d.bytes)); }
     else if (dst->kind == IF_TEX2D) {
         tex_t *a = (tex_t *)dst, *b = (tex_t *)src;
+        a->gpu_depth24=b->gpu_depth24&&a->d.format==b->d.format;
         if (a->bpp == b->bpp) for (uint32_t y = 0; y < MIN(a->d.h, b->d.h); y++) memcpy(texel(a, 0, y), texel(b, 0, y), MIN(a->pitch, b->pitch));
     }
 }
@@ -568,6 +590,20 @@ static void fetch(tex_t *t, const sampler_desc_t *sd, int x, int y, float *o) {
     if (t->d.format == F_RGBA8 || t->d.format == F_RGBA8_SRGB) { const float k = 1 / 255.0f; o[0] = p[0] * k; o[1] = p[1] * k; o[2] = p[2] * k; o[3] = p[3] * k; return; }
     read_px(t->d.format, p, o);
 }
+/* Sampling coordinates are finite and clamped to +/-1e6 by cb_sample. Avoid
+ * x87 control-word changes for C float-to-int casts on the no-SSE x86 build. */
+static inline int sample_floor(float x) {
+#ifdef __SSE2__
+    int n = (int)x; return n - (x < n);
+#else
+    union { float f; uint32_t u; } b = { x };
+    unsigned magnitude = b.u & 0x7FFFFFFFu, sign = b.u >> 31;
+    int e = (int)(magnitude >> 23) - 127;
+    if (e < 0) return sign && magnitude ? -1 : 0;
+    unsigned shift = 23 - e, n = (0x800000u | (magnitude & 0x7FFFFFu)) >> shift;
+    return sign ? -(int)n - ((magnitude & ((1u << shift) - 1)) != 0) : (int)n;
+#endif
+}
 static void cb_sample(void *ctx, int ti, int si, const float *uv, float lod, float *out) {
     (void)lod;
     device_t *d = ((sctx_t *)ctx)->d;
@@ -581,8 +617,10 @@ static void cb_sample(void *ctx, int ti, int si, const float *uv, float lod, flo
     if (fx != fx) fx = 0;
     if (fy != fy) fy = 0;
     fx = CLAMP(fx, -1e6f, 1e6f); fy = CLAMP(fy, -1e6f, 1e6f);
-    if (!linear) { fetch(t, sd, (int)(fx + 0.5f + 1e5f) - 100000, (int)(fy + 0.5f + 1e5f) - 100000, out); return; }
-    int x0 = (int)(fx + 1e5f) - 100000, y0 = (int)(fy + 1e5f) - 100000;
+    if (!linear) {
+        fetch(t, sd, sample_floor(fx + .5f), sample_floor(fy + .5f), out); return;
+    }
+    int x0 = sample_floor(fx), y0 = sample_floor(fy);
     float ax = fx - x0, ay = fy - y0, p[4][4];
     fetch(t, sd, x0, y0, p[0]); fetch(t, sd, x0 + 1, y0, p[1]); fetch(t, sd, x0, y0 + 1, p[2]); fetch(t, sd, x0 + 1, y0 + 1, p[3]);
     for (int i = 0; i < 4; i++) {
@@ -604,18 +642,27 @@ static void cb_size(void *ctx, int ti, uint32_t *out) {
 }
 
 /* ---------------- drawing ---------------- */
-#define MAXV 16                                     /* interpolated vec4s between the shaders */
+#define MAXV 32                                     /* interpolated vec4s between the shaders */
 typedef struct { float pos[4]; vec4_t var[MAXV]; } pv_t;  /* a vertex after the vertex shader */
 typedef struct {
     device_t *d;
     dxbc_env_t vs_env, ps_env; sctx_t sctx;
+    dxbc_exec_t vs_exec, ps_exec;
+    vec4_t vs_in[DX_MAX_REG], vs_out[DX_MAX_REG], ps_in[DX_MAX_REG], ps_out[DX_MAX_REG];
     int pos_reg;                                    /* VS output holding SV_Position */
     int nvar; int vs_reg[MAXV], ps_reg[MAXV];       /* VS output -> PS input */
+    uint8_t var_mask[MAXV], interpolation[MAXV];
+    uint8_t var_src[MAXV][4];
+    vec4_t flat[MAXV];
+    pv_t poly[2][12];
     int ps_pos_reg, ps_face_reg, target_reg;
+    int ps_prim_reg, target_type;
     tex_t *rt, *ds;
     rect_t clip;
     float vx, vy, vw, vh, vminz, vmaxz;
     bool cull_back, cull_front, front_ccw, depth_on, depth_write, blend;
+    bool writes_depth;
+    uint8_t color_mask;
     uint32_t depth_func;
     const blend_desc_t *bd;
 } pipe_t;
@@ -625,10 +672,8 @@ static void env_for(pipe_t *P, dxbc_env_t *e, buffer_t **cbs) {
     for (int i = 0; i < 14; i++) if (cbs[i]) { e->cb[i] = (const vec4_t *)cbs[i]->data; e->cb_rows[i] = cbs[i]->d.bytes / 16; }
     e->ctx = &P->sctx; e->sample = cb_sample; e->load = cb_load; e->size = cb_size;
 }
-static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
+static bool vertex_inputs(pipe_t *P, uint32_t index, uint32_t instance, vec4_t *in) {
     device_t *d = P->d;
-    vec4_t in[DX_MAX_REG], out[DX_MAX_REG];
-    memset(in, 0, sizeof in); memset(out, 0, sizeof out);
     layout_t *l = d->layout;
     for (int k = 0; l && k < l->n; k++) {
         layout_elem_t *e = &l->e[k];
@@ -637,13 +682,22 @@ static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
         if (e->sysval == 8) { in[e->reg].u[0] = instance; continue; }
         buffer_t *b = d->vb[e->slot].b;
         if (!b) continue;
-        uint32_t at = d->vb[e->slot].offset + (e->instance ? instance : index) * d->vb[e->slot].stride + e->offset;
-        if (at + fmt_bytes(e->format) > b->d.bytes) return false;
-        read_attr(e->format, b->data + at, &in[e->reg]);
+        uint32_t element = e->instance ? (e->step ? instance / e->step : 0) : index;
+        uint64_t at = (uint64_t)d->vb[e->slot].offset + (uint64_t)element * d->vb[e->slot].stride + e->offset;
+        if (at > b->d.bytes || (uint32_t)fmt_bytes(e->format) > b->d.bytes - at) return false;
+        vec4_t value; read_attr(e->format, b->data + at, &value);
+        int component = 0;
+        for (int i = 0; i < 4; i++) if (e->mask & (1u << i)) in[e->reg].u[i] = value.u[component++];
     }
-    dxbc_run(d->vs->sh, &P->vs_env, in, out);
+    return true;
+}
+static bool run_vs(pipe_t *P, uint32_t index, uint32_t instance, pv_t *o) {
+    vec4_t *out = P->vs_out;
+    if (!vertex_inputs(P, index, instance, P->vs_in)) return false;
+    if (!dxbc_exec_run(&P->vs_exec)) return false;
     memcpy(o->pos, out[P->pos_reg].f, 16);
-    for (int i = 0; i < P->nvar; i++) o->var[i] = out[P->vs_reg[i]];
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i))
+        o->var[k].u[i] = out[P->vs_reg[k]].u[P->var_src[k][i]];
     return true;
 }
 
@@ -669,58 +723,113 @@ static bool depth_pass(uint32_t f, float z, float cur) {
     }
     return true;
 }
+static float quantized_depth(pipe_t *P,float z) {
+    /* Match a D24 GPU readback during later unsupported/CPU draws, including
+     * EQUAL/LESS_EQUAL. D32F never uses the reduced-precision hardware path. */
+    if(!P->ds||!P->ds->gpu_depth24||!(z>=0&&z<=1)||z==1)return z;
+    uint32_t n=(uint32_t)((double)z*16777215.0+.5);return (float)((double)n/16777215.0);
+}
 
 /* screen-space vertex: position, 1/w and varyings divided by w */
 typedef struct { float x, y, z, iw; vec4_t v[MAXV]; } sv_t;
+typedef struct { float origin, dx, dy, value; float *input; bool perspective; } plane_t;
+static plane_t make_plane(float a, float b, float c, float w0, float w1, float dx0, float dx1, float dy0, float dy1) {
+    return (plane_t){ c + w0 * (a - c) + w1 * (b - c), dx0 * (a - c) + dx1 * (b - c), dy0 * (a - c) + dy1 * (b - c) };
+}
+static int64_t floor_div(int64_t a, int64_t positive_b) { return a >= 0 ? a / positive_b : -1 - ((-1 - a) / positive_b); }
+static void write_fragment(pipe_t *P, int x, int y) {
+    if (!P->rt || !P->color_mask) return;
+    uint8_t *dst = texel(P->rt, x, y);
+    vec4_t *value = &P->ps_out[P->target_reg];
+    if (P->target_type == 1) {
+        if (P->rt->d.format == F_R32_UINT) { if (P->color_mask & 1) *(uint32_t *)dst = value->u[0]; }
+        else for (int i = 0; i < 4; i++) if (P->color_mask & (1u << i)) dst[i] = MIN(value->u[i], 255u);
+        return;
+    }
+    const float *s = value->f;
+    float col[4];
+    if (P->blend) {
+        float dc[4]; read_px(P->rt->d.format, dst, dc);
+        const blend_desc_t *bd = P->bd;
+        for (int i = 0; i < 3; i++) col[i] = blend_op(bd->op, s[i] * blend_factor(bd->src, i, s, dc), dc[i] * blend_factor(bd->dst, i, s, dc));
+        col[3] = blend_op(bd->op_a, s[3] * blend_factor(bd->src_a, 3, s, dc), dc[3] * blend_factor(bd->dst_a, 3, s, dc));
+    } else for (int i = 0; i < 4; i++) col[i] = s[i];
+    if (P->color_mask != 15) { float dc[4]; read_px(P->rt->d.format, dst, dc); for (int i = 0; i < 4; i++) if (!(P->color_mask & (1u << i))) col[i] = dc[i]; }
+    write_px(P->rt->d.format, dst, col);
+}
 static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *c) {
     float area = (b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y);
     if (area == 0 || area != area) return;
     bool cw = area > 0;                             /* clockwise on screen (y grows downwards) */
     bool front = P->front_ccw ? !cw : cw;
     if ((front && P->cull_front) || (!front && P->cull_back)) return;
-    int x0 = (int)floorf_(MIN(a->x, MIN(b->x, c->x))), x1 = (int)ceilf_(MAX(a->x, MAX(b->x, c->x)));
-    int y0 = (int)floorf_(MIN(a->y, MIN(b->y, c->y))), y1 = (int)ceilf_(MAX(a->y, MAX(b->y, c->y)));
-    x0 = MAX(x0, P->clip.x); y0 = MAX(y0, P->clip.y);
-    x1 = MIN(x1, P->clip.x + P->clip.w); y1 = MIN(y1, P->clip.y + P->clip.h);
+    if (!cw) { const sv_t *swap = b; b = c; c = swap; area = -area; }
+    int x0 = (int)floorf_(MAX((float)P->clip.x, MIN(a->x, MIN(b->x, c->x))));
+    int x1 = (int)ceilf_(MIN((float)(P->clip.x + P->clip.w), MAX(a->x, MAX(b->x, c->x))));
+    int y0 = (int)floorf_(MAX((float)P->clip.y, MIN(a->y, MIN(b->y, c->y))));
+    int y1 = (int)ceilf_(MIN((float)(P->clip.y + P->clip.h), MAX(a->y, MAX(b->y, c->y))));
     if (x0 >= x1 || y0 >= y1) return;
+    /* Eight subpixel bits and a top-left rule give shared edges one owner.
+     * Solve three half-planes per row, not three coverage tests per pixel. */
+    const sv_t *v[3] = { a, b, c };
+    int64_t fx[3], fy[3], edge[3], ex[3], ey[3];
+    for (int i = 0; i < 3; i++) { fx[i] = (int64_t)floorf_(v[i]->x * 256 + .5f); fy[i] = (int64_t)floorf_(v[i]->y * 256 + .5f); }
+    int64_t fixed_area = (fx[1] - fx[0]) * (fy[2] - fy[0]) - (fx[2] - fx[0]) * (fy[1] - fy[0]);
+    if (fixed_area <= 0) return;
+    for (int i = 0; i < 3; i++) {
+        int j = (i + 1) % 3; int64_t dx = fx[j] - fx[i], dy = fy[j] - fy[i];
+        bool top_left = dy < 0 || (!dy && dx > 0);
+        ex[i] = -dy * 256; ey[i] = dx * 256;
+        edge[i] = dx * ((int64_t)y0 * 256 + 128 - fy[i]) - dy * ((int64_t)x0 * 256 + 128 - fx[i]) - !top_left;
+    }
     float inv = 1.0f / area;
-    vec4_t in[DX_MAX_REG], out[DX_MAX_REG];
-    memset(in, 0, sizeof in);
-    /* barycentric weights are linear in x: step them along each row */
-    float dw0 = (b->y - c->y) * inv, dw1 = (c->y - a->y) * inv;
+    vec4_t *in = P->ps_in, *out = P->ps_out;
+    float dx0 = (b->y - c->y) * inv, dx1 = (c->y - a->y) * inv;
+    float dy0 = (c->x - b->x) * inv, dy1 = (a->x - c->x) * inv;
+    float px = x0 + .5f, py = y0 + .5f;
+    float w0 = ((b->x - px) * (c->y - py) - (c->x - px) * (b->y - py)) * inv;
+    float w1 = ((c->x - px) * (a->y - py) - (a->x - px) * (c->y - py)) * inv;
+    plane_t zplane = make_plane(a->z, b->z, c->z, w0, w1, dx0, dx1, dy0, dy1);
+    plane_t iwplane = make_plane(a->iw, b->iw, c->iw, w0, w1, dx0, dx1, dy0, dy1);
+    plane_t attrs[MAXV * 4]; int nattrs = 0;
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i)) {
+        if (P->interpolation[k] == 1) { in[P->ps_reg[k]].u[i] = P->flat[k].u[i]; continue; }
+        plane_t *q = &attrs[nattrs++];
+        *q = make_plane(a->v[k].f[i], b->v[k].f[i], c->v[k].f[i], w0, w1, dx0, dx1, dy0, dy1);
+        q->input = &in[P->ps_reg[k]].f[i]; q->perspective = P->interpolation[k] != 4;
+    }
+    if (P->ps_face_reg >= 0) in[P->ps_face_reg].u[0] = front ? ~0u : 0;
+    if (P->ps_prim_reg >= 0) in[P->ps_prim_reg].u[0] = P->ps_env.primitive_id;
     for (int y = y0; y < y1; y++) {
-        float py = y + 0.5f, px0 = x0 + 0.5f;
-        float w0r = ((b->x - px0) * (c->y - py) - (c->x - px0) * (b->y - py)) * inv;
-        float w1r = ((c->x - px0) * (a->y - py) - (a->x - px0) * (c->y - py)) * inv;
-        for (int x = x0; x < x1; x++, w0r += dw0, w1r += dw1) {
-            float px = x + 0.5f;
-            float w0 = w0r, w1 = w1r, w2 = 1 - w0 - w1;
-            if (w0 < 0 || w1 < 0 || w2 < 0) continue;
-            float z = w0 * a->z + w1 * b->z + w2 * c->z;
-            if (z < 0 || z > 1) continue;
-            float zv = P->vminz + z * (P->vmaxz - P->vminz);
+        int64_t lo = 0, hi = x1 - x0 - 1;
+        for (int i = 0; i < 3; i++) {
+            int64_t e = edge[i]; edge[i] += ey[i];
+            if (ex[i] > 0) lo = MAX(lo, -floor_div(e, ex[i]));
+            else if (ex[i] < 0) hi = MIN(hi, floor_div(e, -ex[i]));
+            else if (e < 0) hi = -1;
+        }
+        if (lo > hi) continue;
+        int xs = x0 + (int)lo, xe = x0 + (int)hi + 1;
+        float z = zplane.origin + zplane.dy * (y - y0) + zplane.dx * (xs - x0);
+        float iw = iwplane.origin + iwplane.dy * (y - y0) + iwplane.dx * (xs - x0);
+        for (int i = 0; i < nattrs; i++) attrs[i].value = attrs[i].origin + attrs[i].dy * (y - y0) + attrs[i].dx * (xs - x0);
+        for (int x = xs; x < xe; x++) {
+            float zv = quantized_depth(P,P->vminz + z * (P->vmaxz - P->vminz));
             float *dz = P->ds ? (float *)texel(P->ds, x, y) : NULL;
-            if (dz && P->depth_on && !depth_pass(P->depth_func, zv, *dz)) continue;
-            float iw = w0 * a->iw + w1 * b->iw + w2 * c->iw, w = iw != 0 ? 1.0f / iw : 0;
-            for (int k = 0; k < P->nvar; k++) {
-                vec4_t *r = &in[P->ps_reg[k]];
-                for (int i = 0; i < 4; i++) r->f[i] = (w0 * a->v[k].f[i] + w1 * b->v[k].f[i] + w2 * c->v[k].f[i]) * w;
+            if (z >= 0 && z <= 1 && (!dz || !P->depth_on || P->writes_depth || depth_pass(P->depth_func, zv, *dz))) {
+                float w = iw != 0 ? 1.0f / iw : 0;
+                for (int i = 0; i < nattrs; i++) *attrs[i].input = attrs[i].value * (attrs[i].perspective ? w : 1);
+                if (P->ps_pos_reg >= 0) { vec4_t *r = &in[P->ps_pos_reg]; r->f[0] = x + .5f; r->f[1] = y + .5f; r->f[2] = zv; r->f[3] = iw; }
+                if (dxbc_exec_run(&P->ps_exec)) {
+                    if (P->writes_depth) zv = quantized_depth(P,out[DX_MAX_REG - 1].f[0]);
+                    if (!P->writes_depth || (zv >= 0 && zv <= 1 && (!dz || !P->depth_on || depth_pass(P->depth_func, zv, *dz)))) {
+                        if (dz && P->depth_on && P->depth_write) *dz = zv;
+                        write_fragment(P, x, y);
+                    }
+                }
             }
-            if (P->ps_pos_reg >= 0) { vec4_t *r = &in[P->ps_pos_reg]; r->f[0] = px; r->f[1] = py; r->f[2] = zv; r->f[3] = iw; }
-            if (P->ps_face_reg >= 0) in[P->ps_face_reg].u[0] = front ? ~0u : 0;
-            memset(out, 0, sizeof(vec4_t) * (P->target_reg + 1));
-            if (!dxbc_run(P->d->ps->sh, &P->ps_env, in, out)) continue;
-            if (dz && P->depth_on && P->depth_write) *dz = zv;
-            if (!P->rt) continue;
-            uint8_t *dst = texel(P->rt, x, y);
-            float *s = out[P->target_reg].f, col[4];
-            if (P->blend) {
-                float dc[4]; read_px(P->rt->d.format, dst, dc);
-                const blend_desc_t *bd = P->bd;
-                for (int i = 0; i < 3; i++) col[i] = blend_op(bd->op, s[i] * blend_factor(bd->src, i, s, dc), dc[i] * blend_factor(bd->dst, i, s, dc));
-                col[3] = blend_op(bd->op_a, s[3] * blend_factor(bd->src_a, 3, s, dc), dc[3] * blend_factor(bd->dst_a, 3, s, dc));
-            } else memcpy(col, s, 16);
-            write_px(P->rt->d.format, dst, col);
+            z += zplane.dx; iw += iwplane.dx;
+            for (int i = 0; i < nattrs; i++) attrs[i].value += attrs[i].dx;
         }
     }
 }
@@ -730,35 +839,55 @@ static void to_screen(pipe_t *P, const pv_t *v, sv_t *s) {
     s->y = P->vy + (1 - v->pos[1] * iw) * 0.5f * P->vh;
     s->z = v->pos[2] * iw;
     s->iw = iw;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) s->v[k].f[i] = v->var[k].f[i] * iw;
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i)) {
+        if (P->interpolation[k] == 1) s->v[k].u[i] = v->var[k].u[i];
+        else s->v[k].f[i] = v->var[k].f[i] * (P->interpolation[k] == 4 ? 1 : iw);
+    }
 }
 static void lerp_pv(pipe_t *P, const pv_t *a, const pv_t *b, float t, pv_t *o) {
     for (int i = 0; i < 4; i++) o->pos[i] = a->pos[i] + (b->pos[i] - a->pos[i]) * t;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) o->var[k].f[i] = a->var[k].f[i] + (b->var[k].f[i] - a->var[k].f[i]) * t;
+    for (int k = 0; k < P->nvar; k++) {
+        float f = P->interpolation[k] == 4 && o->pos[3] != 0 ? t * b->pos[3] / o->pos[3] : t;
+        for (int i = 0; i < 4; i++) if (P->var_mask[k] & (1u << i)) {
+            if (P->interpolation[k] == 1) o->var[k].u[i] = a->var[k].u[i];
+            else o->var[k].f[i] = a->var[k].f[i] + (b->var[k].f[i] - a->var[k].f[i]) * f;
+        }
+    }
 }
-/* clip against z >= 0 and w > 0 (Direct3D's near plane), then fan the polygon */
+static float clip_distance(const pv_t *v, int plane) {
+    switch (plane) {
+    case 0: return v->pos[2]; case 1: return v->pos[3] - v->pos[2];
+    case 2: return v->pos[3] + v->pos[0]; case 3: return v->pos[3] - v->pos[0];
+    case 4: return v->pos[3] + v->pos[1]; case 5: return v->pos[3] - v->pos[1];
+    default: return v->pos[3] - 1e-6f;
+    }
+}
+/* Homogeneous frustum clipping also bounds screen coordinates before fixed-
+ * point conversion. Scratch belongs to the draw, not a shared static array. */
 static void draw_triangle(pipe_t *P, const pv_t *a, const pv_t *b, const pv_t *c) {
-    static pv_t poly[2][8];
     const pv_t *in[3] = { a, b, c };
     int n = 0;
     bool all_in = true;
-    for (int i = 0; i < 3; i++) if (!(in[i]->pos[2] >= 0 && in[i]->pos[3] > 1e-6f)) all_in = false;
-    sv_t s[8];
+    for (int i = 0; i < 3; i++) {
+        for (int k = 0; k < 4; k++) if (!(in[i]->pos[k] > -1e20f && in[i]->pos[k] < 1e20f)) return;
+        for (int plane = 0; plane < 7; plane++) if (!(clip_distance(in[i], plane) >= 0)) all_in = false;
+    }
+    sv_t s[12];
     if (all_in) {
         for (int i = 0; i < 3; i++) to_screen(P, in[i], &s[i]);
         shade_triangle(P, &s[0], &s[1], &s[2]);
         return;
     }
-    pv_t *src = poly[0], *dst = poly[1];
+    pv_t *src = P->poly[0], *dst = P->poly[1];
     for (int i = 0; i < 3; i++) src[i] = *in[i];
     n = 3;
-    for (int plane = 0; plane < 2; plane++) {
+    for (int plane = 0; plane < 7; plane++) {
         int m = 0;
         for (int i = 0; i < n; i++) {
             pv_t *p = &src[i], *q = &src[(i + 1) % n];
-            float dp = plane ? p->pos[3] - 1e-5f : p->pos[2], dq = plane ? q->pos[3] - 1e-5f : q->pos[2];
-            if (dp >= 0) dst[m++] = *p;
-            if ((dp >= 0) != (dq >= 0) && m < 8) lerp_pv(P, p, q, dp / (dp - dq), &dst[m++]);
+            float dp = clip_distance(p, plane), dq = clip_distance(q, plane);
+            if (dp >= 0) { if (m == 12) return; dst[m++] = *p; }
+            if ((dp >= 0) != (dq >= 0)) { if (m == 12) return; lerp_pv(P, p, q, dp / (dp - dq), &dst[m++]); }
         }
         n = m; pv_t *t = src; src = dst; dst = t;
         if (n < 3) return;
@@ -782,21 +911,39 @@ static bool setup(pipe_t *P, device_t *d) {
     P->pos_reg = -1;
     for (int i = 0; i < nvo; i++) if (vo[i].sysval == 1) P->pos_reg = vo[i].reg;
     if (P->pos_reg < 0) { klog("w32: d3d10: the vertex shader writes no SV_Position"); return false; }
-    P->ps_pos_reg = P->ps_face_reg = -1;
+    P->ps_pos_reg = P->ps_face_reg = P->ps_prim_reg = -1;
     for (int i = 0; i < npi; i++) {
+        if (!dxbc_read_mask(d->ps->sh, pi[i].reg)) continue;
         if (pi[i].sysval == 1) { P->ps_pos_reg = pi[i].reg; continue; }
         if (pi[i].sysval == 9) { P->ps_face_reg = pi[i].reg; continue; }
+        if (pi[i].sysval == 7) { P->ps_prim_reg = pi[i].reg; continue; }
+        bool linked = false;
         for (int k = 0; k < nvo; k++)
             if (!strcasecmp(vo[k].name, pi[i].name) && vo[k].index == pi[i].index && P->nvar < MAXV) {
-                P->vs_reg[P->nvar] = vo[k].reg; P->ps_reg[P->nvar] = pi[i].reg; P->nvar++;
+                if (vo[k].component_type != pi[i].component_type) return false;
+                P->vs_reg[P->nvar] = vo[k].reg; P->ps_reg[P->nvar] = pi[i].reg;
+                P->var_mask[P->nvar] = dxbc_read_mask(d->ps->sh, pi[i].reg) & pi[i].mask;
+                P->interpolation[P->nvar] = dxbc_interpolation(d->ps->sh, pi[i].reg);
+                if (pi[i].component_type != 3 && P->interpolation[P->nvar] != 1) { klog("w32: d3d10: integer varyings require nointerpolation"); return false; }
+                int from = 0;
+                for (int to = 0; to < 4; to++) if (pi[i].mask & (1u << to)) {
+                    while (from < 4 && !(vo[k].mask & (1u << from))) from++;
+                    if (from == 4) { klog("w32: d3d10: varying component mismatch"); return false; }
+                    P->var_src[P->nvar][to] = from++;
+                }
+                P->nvar++;
+                linked = true;
                 break;
             }
+        if (!linked) { klog("w32: d3d10: pixel input %s%u has no vertex output", pi[i].name, pi[i].index); return false; }
     }
-    P->target_reg = 0;
-    for (int i = 0; i < npo; i++) if (!strncasecmp(po[i].name, "SV_Target", 9) && po[i].index == 0) P->target_reg = po[i].reg;
-    P->target_reg = CLAMP(P->target_reg, 0, DX_MAX_REG - 2);
+    P->target_reg = -1; P->target_type = 3;
+    for (int i = 0; i < npo; i++) if (!strncasecmp(po[i].name, "SV_Target", 9) && po[i].index == 0) { P->target_reg = po[i].reg; P->target_type = po[i].component_type; }
+    bool integer_target = P->rt && (P->rt->d.format == F_RGBA8_UINT || P->rt->d.format == F_R32_UINT);
+    if (P->rt && P->target_reg >= 0 && (P->target_type == 2 || ((P->target_type == 1) != integer_target))) { klog("w32: d3d10: pixel output/render target type mismatch (signed targets are not implemented)"); return false; }
     viewport_t vp = d->vp;
     if (!d->vp_set) vp = (viewport_t){ 0, 0, size_of->d.w, size_of->d.h, 0, 1 };
+    if (!vp.w || !vp.h || vp.w > 16384 || vp.h > 16384 || vp.x < -1048576 || vp.x > 1048576 || vp.y < -1048576 || vp.y > 1048576 || !(vp.minz >= 0 && vp.maxz <= 1 && vp.minz <= vp.maxz)) return false;
     P->vx = vp.x; P->vy = vp.y; P->vw = vp.w; P->vh = vp.h; P->vminz = vp.minz; P->vmaxz = vp.maxz;
     P->clip = rect_intersect(R(vp.x, vp.y, vp.w, vp.h), R(0, 0, size_of->d.w, size_of->d.h));
     if (P->ds && P->rt && (P->ds->d.w < P->rt->d.w || P->ds->d.h < P->rt->d.h)) P->clip = rect_intersect(P->clip, R(0, 0, P->ds->d.w, P->ds->d.h));
@@ -807,13 +954,97 @@ static bool setup(pipe_t *P, device_t *d) {
     P->depth_write = d->ds ? d->ds->d.write_mask != 0 : true;
     P->depth_func = d->ds ? d->ds->d.func : 2;
     P->blend = d->bs && d->bs->d.enable[0];
+    if (integer_target && P->blend) { klog("w32: d3d10: integer render targets do not support blending"); return false; }
+    P->color_mask = P->target_reg < 0 ? 0 : d->bs ? d->bs->d.mask[0] & 15 : 15;
     P->bd = d->bs ? &d->bs->d : NULL;
-    return P->clip.w > 0 && P->clip.h > 0;
+    P->writes_depth = dxbc_writes_depth(d->ps->sh);
+    if (P->clip.w <= 0 || P->clip.h <= 0) return false;
+    return true;
+}
+static void free_pipe(pipe_t *P) { dxbc_exec_fini(&P->vs_exec); dxbc_exec_fini(&P->ps_exec); kfree(P); }
+static shader_gpu_t *gpu_program(shader_t *s, const dxbc_shader_t *vs, uint64_t link) {
+    if (!s->gpu_tried || s->gpu_link != link) {
+        shader_gpu_free(s->gpu); s->gpu = NULL; s->gpu_tried = true; s->gpu_link = link;
+        char error[128]; s->gpu = shader_gpu_compile(s->sh, vs, error, sizeof error);
+        if (!s->gpu) klog("w32: d3d10: %s", error);
+    }
+    return s->gpu;
+}
+static bool draw_gpu(pipe_t *P, uint32_t count, const void *idx, int idx32, int32_t base, uint32_t first, uint32_t instance, uint32_t lo, uint32_t span) {
+    device_t *d = P->d;
+    if (d->force_cpu || !gpu3d_available() || !P->rt || P->target_type != 3 || P->writes_depth ||
+        (P->rt->d.format != F_RGBA8 && P->rt->d.format != F_BGRA8) ||
+        P->rt->d.w > 2048 || P->rt->d.h > 2048 || span > 65536 || count > 196608 ||
+        P->vx < 0 || P->vy < 0 || P->clip.x != (int)P->vx || P->clip.y != (int)P->vy ||
+        P->clip.w != (int)P->vw || P->clip.h != (int)P->vh || P->ps_pos_reg >= 0 || P->ps_face_reg >= 0 || P->ps_prim_reg >= 0) return false;
+    if (P->ds && (P->ds->d.w != P->rt->d.w || P->ds->d.h != P->rt->d.h || (P->ds->d.format != F_D32F && P->ds->d.format != F_D24S8))) return false;
+    if(P->ds&&P->ds->d.format==F_D32F&&!gpu3d_float_depth())return false;
+    if (d->ds && d->ds->d.stencil) return false;
+    if (d->rs && (d->rs->d.fill != 3 || d->rs->d.bias || d->rs->d.bias_clamp != 0 || d->rs->d.slope_bias != 0 ||
+        !d->rs->d.depth_clip || d->rs->d.scissor || d->rs->d.ms || d->rs->d.aa)) return false;
+    for (int i = 0; i < P->nvar; i++) if (P->interpolation[i] != 2) return false;
+    if (d->bs && (d->bs->d.a2c || (P->blend && (d->bs->d.src < 1 || d->bs->d.src > 11 || d->bs->d.dst < 1 || d->bs->d.dst > 11 ||
+        d->bs->d.src_a < 1 || d->bs->d.src_a > 11 || d->bs->d.dst_a < 1 || d->bs->d.dst_a > 11 ||
+        d->bs->d.op < 1 || d->bs->d.op > 3 || d->bs->d.op_a < 1 || d->bs->d.op_a > 3)))) return false;
+    shader_gpu_t *vs = gpu_program(d->vs, NULL, 0);
+    if (!vs || !vs->ninputs) return false;
+    shader_gpu_t *ps = gpu_program(d->ps, d->vs->sh, vs->link_key);
+    if (!ps) return false;
+    for (int i = 0; i < ps->ntextures; i++) {
+        view_t *v = d->srv[ps->texture[i].texture]; sampler_t *sm = d->smp[ps->texture[i].sampler];
+        if (!v || !v->tex || v->tex == P->rt || v->tex == P->ds || (v->tex->d.format != F_RGBA8 && v->tex->d.format != F_BGRA8)) return false;
+        if (sm) {
+            if ((sm->d.filter != 0 && sm->d.filter != 0x15) || sm->d.au < 1 || sm->d.au > 4 || sm->d.av < 1 || sm->d.av > 4) return false;
+            for (int c = 0; c < 4; c++) if (!(sm->d.border[c] >= 0 && sm->d.border[c] <= 1)) return false;
+        }
+    }
+    typedef struct { gpu3d_draw_t draw; float vs_const[256][4], ps_const[224][4]; } data_t;
+    size_t vb = (size_t)span * vs->ninputs * 16, ib = (size_t)count * 2;
+    if (vb + ib + (size_t)P->rt->d.w * P->rt->d.h * (P->ds ? 8 : 4) > 16u * 1024 * 1024) return false;
+    data_t *data = kzalloc(sizeof *data + vb + ib);
+    if (!data) return false;
+    float *vertices = (float *)(data + 1); uint16_t *indices = (uint16_t *)((uint8_t *)vertices + vb);
+    vec4_t in[DX_MAX_REG];
+    for (uint32_t i = 0; i < span; i++) {
+        memset(in, 0, sizeof in);
+        if (!vertex_inputs(P, lo + i, instance, in)) { kfree(data); return false; }
+        for (int k = 0; k < vs->ninputs; k++) memcpy(vertices + ((size_t)i * vs->ninputs + k) * 4, &in[vs->input_reg[k]], 16);
+    }
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t k = idx ? (idx32 ? ((const uint32_t *)idx)[i] : ((const uint16_t *)idx)[i]) + base : first + i;
+        if (k < lo || k - lo >= span) { kfree(data); return false; } indices[i] = k - lo;
+    }
+    gpu3d_draw_t *r = &data->draw;
+    r->width = P->rt->d.w; r->height = P->rt->d.h; r->color_pitch = P->rt->pitch; r->color = P->rt->data; r->bgra = P->rt->d.format == F_BGRA8;
+    if (P->ds) { r->depth = (float *)P->ds->data; r->depth_pitch = P->ds->pitch; }
+    r->vertices = vertices; r->nvertices = span; r->input_slots = vs->ninputs; r->input_mask = (1u << vs->ninputs) - 1;
+    r->indices = indices; r->nindices = count; r->strip = d->topology == 5;
+    r->vx = P->vx; r->vy = P->vy; r->vw = P->vw; r->vh = P->vh; r->minz = P->vminz; r->maxz = P->vmaxz;
+    r->depth_test = P->depth_on; r->depth_write = P->depth_write; r->depth_func = P->depth_func;
+    r->cull = d->rs ? d->rs->d.cull : 3; r->front_ccw = P->front_ccw; r->color_mask = P->color_mask; r->blend = P->blend;
+    r->src_blend = r->src_alpha = 2; r->dst_blend = r->dst_alpha = 1; r->blend_op = r->alpha_op = 1;
+    if (P->blend) { const blend_desc_t *b = P->bd; r->src_blend = b->src; r->dst_blend = b->dst; r->blend_op = b->op; r->src_alpha = b->src_a; r->dst_alpha = b->dst_a; r->alpha_op = b->op_a; }
+    shader_gpu_constants(vs, &P->vs_env, data->vs_const, P->vw, P->vh);
+    shader_gpu_constants(ps, &P->ps_env, data->ps_const, P->vw, P->vh);
+    r->vs = (gpu3d_stage_t){ vs->words, vs->nwords, vs->serial, data->vs_const, 256 };
+    r->ps = (gpu3d_stage_t){ ps->words, ps->nwords, ps->serial, data->ps_const, ps->ncb };
+    r->ntextures = ps->ntextures;
+    for (int i = 0; i < ps->ntextures; i++) {
+        tex_t *t = d->srv[ps->texture[i].texture]->tex; sampler_t *sm = d->smp[ps->texture[i].sampler];
+        gpu3d_texture_t *g = &r->texture[i]; g->data = t->data; g->width = t->d.w; g->height = t->d.h; g->pitch = t->pitch; g->bgra = t->d.format == F_BGRA8;
+        g->address_u = sm ? sm->d.au : 3; g->address_v = sm ? sm->d.av : 3; g->linear = !sm || sm->d.filter == 0x15;
+        if (sm) g->border = ((uint32_t)to8(sm->d.border[3]) << 24) | ((uint32_t)to8(sm->d.border[0]) << 16) | ((uint32_t)to8(sm->d.border[1]) << 8) | to8(sm->d.border[2]);
+    }
+    bool ok = gpu3d_draw(r); kfree(data);
+    if(ok&&P->ds)P->ds->gpu_depth24=!gpu3d_float_depth();
+    if (ok && !d->gpu_draws) klog("w32: d3d10: GPU draw path active (%s), fenced readback", gpu3d_name());
+    return ok;
 }
 static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_t base, uint32_t first, uint32_t instance) {
+    if (count < 3) return;
     pipe_t *P = kmalloc(sizeof(pipe_t));
     if (!P) return;
-    if (!setup(P, d) || count < 3) { kfree(P); return; }
+    if (!setup(P, d)) { free_pipe(P); return; }
     /* vertices go through the vertex shader once each */
     uint32_t lo = 0xFFFFFFFFu, hi = 0;
     for (uint32_t i = 0; i < count; i++) {
@@ -821,10 +1052,14 @@ static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_
         lo = MIN(lo, k); hi = MAX(hi, k);
     }
     uint32_t span = hi - lo + 1;
-    if (span > (1u << 20)) { kfree(P); return; }
+    if (!span || span > (1u << 20)) { free_pipe(P); return; }
+    if (draw_gpu(P, count, idx, idx32, base, first, instance, lo, span)) { d->last_gpu = true; d->gpu_draws++; free_pipe(P); return; }
+    d->last_gpu = false; d->cpu_draws++;
+    if (!dxbc_exec_init(&P->vs_exec, d->vs->sh, &P->vs_env, P->vs_in, P->vs_out) ||
+        !dxbc_exec_init(&P->ps_exec, d->ps->sh, &P->ps_env, P->ps_in, P->ps_out)) { free_pipe(P); return; }
     pv_t *cache = kmalloc(sizeof(pv_t) * span);
     uint8_t *done = kzalloc(span);
-    if (!cache || !done) { kfree(cache); kfree(done); kfree(P); return; }
+    if (!cache || !done) { kfree(cache); kfree(done); free_pipe(P); return; }
     #define VTX(i, out) do { uint32_t k_ = idx ? (idx32 ? ((const uint32_t *)idx)[i] : ((const uint16_t *)idx)[i]) + base : first + (i); \
         uint32_t s_ = k_ - lo; if (!done[s_]) { done[s_] = run_vs(P, k_, instance, &cache[s_]) ? 1 : 2; } out = done[s_] == 1 ? &cache[s_] : NULL; } while (0)
     uint32_t ntri = d->topology == 4 ? count / 3 : count - 2;
@@ -835,17 +1070,22 @@ static void draw(device_t *d, uint32_t count, const void *idx, int idx32, int32_
         else { i0 = t; i1 = t + 1; i2 = t + 2; }
         const pv_t *a, *b, *c;
         VTX(i0, a); VTX(i1, b); VTX(i2, c);
-        if (a && b && c) draw_triangle(P, a, b, c);
+        if (a && b && c) {
+            const pv_t *leading = d->topology == 5 && (t & 1) ? b : a;
+            for (int k = 0; k < P->nvar; k++) if (P->interpolation[k] == 1) P->flat[k] = leading->var[k];
+            P->ps_env.primitive_id = t;
+            draw_triangle(P, a, b, c);
+        }
     }
     #undef VTX
-    kfree(cache); kfree(done); kfree(P);
+    kfree(cache); kfree(done); free_pipe(P);
 }
 static void WINAPI Draw(device_t *d, uint32_t count, uint32_t start) { draw(d, count, NULL, 0, 0, start, 0); }
 static void WINAPI DrawIndexed(device_t *d, uint32_t count, uint32_t start, int32_t base) {
     buffer_t *ib = d->ib;
     if (!ib) return;
     int sz = d->ib_format == F_R32_UINT ? 4 : 2;
-    uint32_t off = d->ib_offset + start * sz;
+    uint64_t off = (uint64_t)d->ib_offset + (uint64_t)start * sz;
     if (off + (uint64_t)count * sz > ib->d.bytes) return;
     draw(d, count, ib->data + off, sz == 4, base, 0, 0);
 }
@@ -910,18 +1150,19 @@ static void build_vtables(void) {
 }
 
 /* ---------------- exports ---------------- */
-static HRESULT new_device(device_t **out) {
+static HRESULT new_device(device_t **out, bool force_cpu) {
     if (!accel3d) { klog("w32: Direct3D 10 device refused: 3D acceleration is turned off"); return DXGI_ERROR_UNSUPPORTED; }
     device_t *d = com_new(IF_DEVICE, sizeof(device_t), NULL);
     if (!d) return E_OUTOFMEMORY;
     d->c.dev = d;
+    d->force_cpu = force_cpu;
     *out = d;
     return S_OK;
 }
 static HRESULT WINAPI D3D10CreateDevice(void *adapter, uint32_t type, uintptr_t sw, uint32_t flags, uint32_t sdk, device_t **out) {
-    (void)adapter; (void)type; (void)sw; (void)flags; (void)sdk;
+    (void)adapter; (void)sw; (void)flags; (void)sdk;
     device_t *d;
-    HRESULT hr = new_device(&d);
+    HRESULT hr = new_device(&d, type != 0);
     if (hr) { if (out) *out = NULL; return hr; }
     if (out) *out = d; else Release(&d->c);
     return S_OK;
@@ -932,7 +1173,7 @@ static HRESULT WINAPI D3D10CreateDeviceAndSwapChain(void *adapter, uint32_t type
     if (swap) *swap = NULL;
     if (out) *out = NULL;
     device_t *d;
-    HRESULT hr = new_device(&d);
+    HRESULT hr = new_device(&d, type != 0);
     if (hr) return hr;
     if (swap) { hr = make_swapchain(d, sd, swap); if (hr) { Release(&d->c); return hr; } }
     if (out) *out = d; else Release(&d->c);
@@ -949,6 +1190,15 @@ static HRESULT WINAPI D3D10CompileShader(const char *src, uintptr_t len, const c
 static const char *WINAPI D3D10GetVertexShaderProfile(void *dev) { (void)dev; return "vs_4_0"; }
 static const char *WINAPI D3D10GetPixelShaderProfile(void *dev) { (void)dev; return "ps_4_0"; }
 static const char *WINAPI D3D10GetGeometryShaderProfile(void *dev) { (void)dev; return "gs_4_0"; }
+/* Optional WRLD diagnostics, not new Direct3D feature levels. */
+static const char *WINAPI WRLDGetD3D10Backend(device_t *d) {
+    if (!d || d->force_cpu) return "native CPU";
+    return d->last_gpu ? "VMware SVGA3D GPU" : "native CPU (fallback)";
+}
+static void WINAPI WRLDGetD3D10DrawStats(device_t *d, uint32_t *gpu, uint32_t *cpu) {
+    if (gpu) *gpu = d ? d->gpu_draws : 0;
+    if (cpu) *cpu = d ? d->cpu_draws : 0;
+}
 static HRESULT WINAPI CreateDXGIFactory(const void *iid, com_t **out) {
     (void)iid;
     if (!out) return E_INVALIDARG;
@@ -968,6 +1218,7 @@ static HRESULT WINAPI D3DCompile(const void *src, uintptr_t len, const char *nam
 const w32_export_t d3d10_exports[] = {
     E(D3D10CreateDevice), E(D3D10CreateDeviceAndSwapChain), E(D3D10CompileShader),
     E(D3D10GetVertexShaderProfile), E(D3D10GetPixelShaderProfile), E(D3D10GetGeometryShaderProfile),
+    E(WRLDGetD3D10Backend), E(WRLDGetD3D10DrawStats),
 };
 const int d3d10_count = ARRAY_LEN(d3d10_exports);
 const w32_export_t dxgi_exports[] = { E(CreateDXGIFactory), { "CreateDXGIFactory1", (void *)CreateDXGIFactory } };

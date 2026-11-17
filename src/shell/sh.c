@@ -1125,7 +1125,8 @@ static int b_js(sh_t *s, int argc, char **argv, io_t *io) {
 }
 static int b_display(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2) {
-        out_f(io, "Adapter:    %s\nResolution: %d x %d, 32-bit colour\n", video_driver_name(), SCREEN_W, SCREEN_H);
+        out_f(io, "Adapter:    %s\nResolution: %d x %d, %u-bit scanout (32-bit rendering)\n", video_driver_name(), SCREEN_W, SCREEN_H, fb_info.bpp);
+        char diag[640]; gfx_display_diagnostics(diag, sizeof diag); out_s(io, diag);
         if (!video_can_set_mode()) { out_s(io, "This adapter cannot change resolution.\n"); return 0; }
         static const int mw[] = { 1024, 1152, 1280, 1280, 1280, 1280, 1366, 1440, 1600, 1600, 1680, 1920, 1920, 2560 }, mh[] = { 768, 864, 720, 800, 960, 1024, 768, 900, 900, 1200, 1050, 1080, 1200, 1440 };
         out_s(io, "Available:  ");
@@ -1380,6 +1381,22 @@ static int b_open(sh_t *s, int argc, char **argv, io_t *io) {
     gui_launch("::open", full);
     return 0;
 }
+#ifdef __x86_64__
+static int b_lxtrace(sh_t *s, int argc, char **argv, io_t *io) {
+    (void)s;
+    extern bool lx_strace;
+    if (argc > 1) lx_strace = !strcasecmp(argv[1], "on");
+    out_s(io, lx_strace ? "Linux system calls are logged (serial port and the boot log).\n" : "Linux system call logging is off.\n");
+    return 0;
+}
+#endif
+static int b_guiprof(sh_t *s, int argc, char **argv, io_t *io) {
+    (void)s;
+    extern bool gui_profile;
+    if (argc > 1) gui_profile = !strcasecmp(argv[1], "on");
+    out_s(io, gui_profile ? "Painting times are logged every 2 seconds (serial port and the boot log).\n" : "Painting times are not logged.\n");
+    return 0;
+}
 static int b_theme(sh_t *s, int argc, char **argv, io_t *io) {
     if (argc < 2 || !strcmp(argv[1], "list")) {
         styles_load();
@@ -1495,7 +1512,7 @@ static int b_lsusb(sh_t *s, int argc, char **argv, io_t *io) {
         out_f(io, "%s  %-10s %s  (%s)\n", d->hwid + 4, d->drv ? d->drv->name : "no driver", d->name, d->location);
         n++;
     }
-    if (!n) out_s(io, ARCH_BITS == 64 ? "No USB devices are connected.\n" : "USB needs the 64-bit edition.\n");
+    if (!n) out_s(io, "No USB devices are connected.\n");
     return 0;
 }
 static int b_return(sh_t *s, int argc, char **argv, io_t *io) { s->ret = true; return argc > 1 ? atoi(argv[1]) : s->status; }
@@ -1540,6 +1557,10 @@ static const builtin_t builtins[] = {
     { "beep", b_beep, "PC speaker beep" }, { "color", b_color, "console colours (hex)" }, { "title", b_title, "window title" },
     { "tree", b_tree, "directory tree" }, { "find", b_find, "find files (-name PAT)" }, { "hexdump", b_hexdump, "hex dump a file" }, { "xxd", b_hexdump, NULL },
     { "mount", b_mount, "mount a .dmg / list drives" }, { "hdiutil", b_hdiutil, "disk image utility" }, { "open", b_open, "open with default app" }, { "start", b_open, NULL },
+#ifdef __x86_64__
+    { "lxtrace", b_lxtrace, "log Linux system calls (on/off)" },
+#endif
+    { "guiprof", b_guiprof, "log window painting times (on/off)" },
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
     { "passwd", b_passwd, "change the account password (-c clears)" }, { "logoff", b_logoff, "log off and show the welcome screen" },
     { "lspci", b_lspci, "list PCI devices" }, { "devices", b_devices, "devices and their drivers (-p problems, -i IDs)" }, { "lsdev", b_devices, NULL },

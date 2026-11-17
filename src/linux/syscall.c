@@ -286,6 +286,8 @@ int64_t lx_syscall(regs_t *r) {
         p->fds[a1] = f; f->refs++; p->fdflags[a1] = (nr == 292 && (a2 & 02000000)) ? 1 : 0;
         return a1;
     }
+    case 73:                                                          /* flock: granted, like fcntl locks (one user, files in RAM) */
+        return lx_fd_get(p, a0) ? 0 : -EBADF;
     case 72: {                                                        /* fcntl */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
         switch (a1) {
@@ -294,7 +296,7 @@ int64_t lx_syscall(regs_t *r) {
         case 2: p->fdflags[a0] = a2 & 1; return 0;
         case 3: return f->oflags;
         case 4: f->oflags = (f->oflags & ~(02000 | 04000)) | (a2 & (02000 | 04000)); return 0;
-        case 5: case 6: case 7: return 0;                                                   /* locks: always granted */
+        case 5: case 6: case 7: case 36: case 37: case 38: return 0;                        /* locks (and OFD locks): always granted */
         case 1033: {                                                                        /* F_ADD_SEALS */
             if (f->type != FD_SHM) return -EINVAL;
             shmobj_t *o = f->obj;
@@ -308,7 +310,8 @@ int64_t lx_syscall(regs_t *r) {
         }
     }
     case 7: {                                                         /* poll */
-        uint32_t deadline = timer_ticks() + ((int64_t)a2 > 0 ? (uint32_t)a2 : 0);
+        int32_t tmo = (int32_t)a2;                                    /* an int: -1 waits for ever */
+        uint32_t deadline = timer_ticks() + (tmo > 0 ? (uint32_t)tmo : 0);
         for (;;) {
             int ready = 0;
             for (uint64_t i = 0; i < a1 && i < 1024; i++) {
@@ -333,8 +336,8 @@ int64_t lx_syscall(regs_t *r) {
                 if (!uout(a0 + i * 8, &pf, 8)) return -EFAULT;
             }
             if (ready) return ready;
-            if ((int64_t)a2 == 0) return 0;
-            if ((int64_t)a2 > 0 && (int32_t)(timer_ticks() - deadline) >= 0) return 0;
+            if (tmo == 0) return 0;
+            if (tmo > 0 && (int32_t)(timer_ticks() - deadline) >= 0) return 0;
             if (p->exiting) return -EINTR;
             task_sleep(1);
         }

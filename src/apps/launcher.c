@@ -2,6 +2,7 @@
 #include "kernel.h"
 #include "wm.h"
 #include "apps.h"
+#include "mediadec.h"
 #include "theme.h"
 #include "audio.h"
 #include "logon.h"
@@ -35,7 +36,8 @@ const app_info_t *app_find(const char *id) {
 void app_launch(const char *name, const char *arg) {
     if (!strcasecmp(name, "explorer")) explorer_open(arg ? arg : USER_DOCS);
     else if (!strcasecmp(name, "notepad")) notepad_open(arg);
-    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "xplorerlite") || !strcasecmp(name, "wrldbrowser") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
+    else if (!strcasecmp(name, "xplorerlite") || !strcasecmp(name, "classicbrowser")) browser_classic_open(arg);   /* the built-in engine */
+    else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "wrldbrowser") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
     else if (!strcasecmp(name, "cmd") || !strcasecmp(name, "terminal") || !strcasecmp(name, "sh") || !strcasecmp(name, "bash")) terminal_open(arg, NULL);
     else if (!strcasecmp(name, "calc")) calc_open();
     else if (!strcasecmp(name, "paint") || !strcasecmp(name, "mspaint")) paint_open(arg);
@@ -97,6 +99,12 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "wrldlogon")) return "Logon Skin";
     if (!strcasecmp(e, "wav")) return "Wave Sound";
     if (!strcasecmp(e, "mp3")) return "MP3 Audio File";
+    if (!strcasecmp(e, "mp2") || !strcasecmp(e, "mp1") || !strcasecmp(e, "mpa")) return "MPEG Audio File";
+    if (!strcasecmp(e, "ogg") || !strcasecmp(e, "oga")) return "Ogg Vorbis Audio";
+    if (!strcasecmp(e, "flac") || !strcasecmp(e, "fla")) return "FLAC Audio";
+    if (!strcasecmp(e, "aif") || !strcasecmp(e, "aiff") || !strcasecmp(e, "aifc")) return "AIFF Sound";
+    if (!strcasecmp(e, "au") || !strcasecmp(e, "snd")) return "AU Sound";
+    if (!strcasecmp(e, "mpg") || !strcasecmp(e, "mpeg") || !strcasecmp(e, "m1v") || !strcasecmp(e, "mpe")) return "Movie File (MPEG)";
     if (!strcasecmp(e, "plist")) return "Property List";
     if (!strcasecmp(e, "c")) return "C Source File";
     return "File";
@@ -129,7 +137,7 @@ bool shell_open(const char *path, const char *cwd) {
         char l = dmg_mount(n, msg, sizeof msg);
         if (!l) err_box("Disk Image", msg);
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
-    } else if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3")) {
+    } else if (mdec_known_ext(e)) {
         mediaplayer_open(full);
     } else if (!strcasecmp(e, "wrldlogon")) {
         /* install it into the skin folder if it is elsewhere, then edit it */

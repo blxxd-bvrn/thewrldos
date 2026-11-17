@@ -1,0 +1,4 @@
+dr_flac 0.13.5 (https://github.com/mackron/dr_libs), the FLAC decoder used by
+THE WRLD Media Player. Public domain or MIT No Attribution, at your choice (see
+the end of dr_flac.h). Vendored unmodified; compiled freestanding against the C
+library shim by src/media/flac.c, with SIMD, stdio and wchar support turned off.

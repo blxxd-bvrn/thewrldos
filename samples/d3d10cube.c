@@ -1,16 +1,31 @@
 /* Direct3D 10 program: a textured, lit cube drawn entirely by shaders - a vertex
  * shader transforms and lights each corner, a pixel shader samples the texture
  * and sweeps a band of light across the faces. The shaders are Shader Model 4
- * bytecode in d3d10cube_shaders.h, assembled from d3d10cube.sm4.
- * On THE WRLD OS d3d10.dll runs both shaders on the processor; Control Panel >
- * Visual Effects > 3D acceleration must be on.
+ * bytecode in d3d10cube_shaders.h, assembled from d3d10cube.sm4. --sm5 / --sm6
+ * select real FXC/DXC fixtures; these are WRLD extensions, not D3D11/12 APIs.
+ * --bench renders 120 deterministic frames and reports timing with
+ * OutputDebugString (captured by WRLD's serial log).
+ * On THE WRLD OS supported shaders use the native legacy VMware SVGA3D GPU
+ * backend, otherwise the native CPU interpreter. --cpu forces the latter for
+ * comparisons. Control Panel > Visual Effects > 3D acceleration must be on.
  * Build: i686-w64-mingw32-gcc -O2 -mwindows d3d10cube.c -ld3d10 -ldxguid */
 #define COBJMACROS
+#define __USE_MINGW_ANSI_STDIO 0
 #include <windows.h>
 #include <d3d10.h>
 #include <stdio.h>
 #include <math.h>
 #include "d3d10cube_shaders.h"
+#include "d3d10cube_modern_shaders.h"
+
+#if defined(__MINGW32__) && defined(__i386__)
+/* Do not pull in MinGW's diagnostic _matherr printer: some x86 CRT builds
+ * use SSE2 just to copy its double arguments. WRLD's x86 path is x87-only. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+int _matherr(struct _exception *e) { (void)e; return 0; }
+#pragma GCC diagnostic pop
+#endif
 
 typedef struct { float x, y, z, nx, ny, nz, u, v; } vertex_t;
 typedef struct { float wvp[16], world[16], light[4], time[4]; } constants_t;   /* rows of cb0 */
@@ -21,6 +36,13 @@ static ID3D10RenderTargetView *rtv;
 static ID3D10DepthStencilView *dsv;
 static ID3D10Buffer *vb, *ib, *cb;
 static int width = 480, height = 360;
+static int shader_model = 4;
+static int force_cpu;
+typedef const char *(WINAPI *backend_fn_t)(ID3D10Device *);
+typedef void (WINAPI *stats_fn_t)(ID3D10Device *, UINT *, UINT *);
+static backend_fn_t backend_fn;
+static stats_fn_t stats_fn;
+static const char *backend_name(void) { return backend_fn ? backend_fn(dev) : "D3D10 driver"; }
 
 /* row-vector matrices (Direct3D's convention): p' = p * M */
 static void identity(float *m) { memset(m, 0, 64); m[0] = m[5] = m[10] = m[15] = 1; }
@@ -61,19 +83,25 @@ static HRESULT init(HWND hwnd) {
     sd.BufferCount = 1;
     sd.OutputWindow = hwnd;
     sd.Windowed = TRUE;
-    HRESULT hr = D3D10CreateDeviceAndSwapChain(NULL, D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &sd, &swap, &dev);
+    HRESULT hr = D3D10CreateDeviceAndSwapChain(NULL, force_cpu ? D3D10_DRIVER_TYPE_REFERENCE : D3D10_DRIVER_TYPE_HARDWARE, NULL, 0, D3D10_SDK_VERSION, &sd, &swap, &dev);
     if (FAILED(hr)) return hr;
+    HMODULE module = GetModuleHandleA("d3d10.dll");
+    if (module) { backend_fn = (backend_fn_t)GetProcAddress(module, "WRLDGetD3D10Backend"); stats_fn = (stats_fn_t)GetProcAddress(module, "WRLDGetD3D10DrawStats"); }
     if (FAILED(hr = make_targets())) return hr;
 
     ID3D10VertexShader *vs; ID3D10PixelShader *ps; ID3D10InputLayout *layout;
-    if (FAILED(hr = ID3D10Device_CreateVertexShader(dev, g_vs, sizeof g_vs, &vs))) return hr;
-    if (FAILED(hr = ID3D10Device_CreatePixelShader(dev, g_ps, sizeof g_ps, &ps))) return hr;
+    const void *vs_code = shader_model == 6 ? g_vs6 : shader_model == 5 ? g_vs5 : g_vs;
+    const void *ps_code = shader_model == 6 ? g_ps6 : shader_model == 5 ? g_ps5 : g_ps;
+    SIZE_T vs_size = shader_model == 6 ? sizeof g_vs6 : shader_model == 5 ? sizeof g_vs5 : sizeof g_vs;
+    SIZE_T ps_size = shader_model == 6 ? sizeof g_ps6 : shader_model == 5 ? sizeof g_ps5 : sizeof g_ps;
+    if (FAILED(hr = ID3D10Device_CreateVertexShader(dev, vs_code, vs_size, &vs))) return hr;
+    if (FAILED(hr = ID3D10Device_CreatePixelShader(dev, ps_code, ps_size, &ps))) return hr;
     D3D10_INPUT_ELEMENT_DESC el[] = {
         { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D10_INPUT_PER_VERTEX_DATA, 0 },
         { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D10_INPUT_PER_VERTEX_DATA, 0 },
         { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D10_INPUT_PER_VERTEX_DATA, 0 },
     };
-    if (FAILED(hr = ID3D10Device_CreateInputLayout(dev, el, 3, g_vs, sizeof g_vs, &layout))) return hr;
+    if (FAILED(hr = ID3D10Device_CreateInputLayout(dev, el, 3, vs_code, vs_size, &layout))) return hr;
 
     /* the cube: 4 vertices and 2 triangles per face, clockwise seen from outside */
     static const float n[6][3] = { {0,0,-1}, {0,0,1}, {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0} };
@@ -123,11 +151,12 @@ static HRESULT init(HWND hwnd) {
     ID3D10Device_PSSetConstantBuffers(dev, 0, 1, &cb);
     ID3D10Device_PSSetShaderResources(dev, 0, 1, &srv);
     ID3D10Device_PSSetSamplers(dev, 0, 1, &smp);
+    ID3D10VertexShader_Release(vs); ID3D10PixelShader_Release(ps); ID3D10InputLayout_Release(layout);
+    ID3D10Texture2D_Release(tex); ID3D10ShaderResourceView_Release(srv); ID3D10SamplerState_Release(smp);
     return S_OK;
 }
 
-static void render(void) {
-    float t = GetTickCount() / 1000.0f;
+static void render(float t) {
     ID3D10Device_OMSetRenderTargets(dev, 1, &rtv, dsv);
     D3D10_VIEWPORT vp = { 0, 0, width, height, 0, 1 };
     ID3D10Device_RSSetViewports(dev, 1, &vp);
@@ -162,7 +191,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
-    (void)prev; (void)cmd;
+    (void)prev;
+    int bench = strstr(cmd, "--bench") != NULL, bench_frames = 0;
+    force_cpu = strstr(cmd, "--cpu") != NULL;
+    if (strstr(cmd, "--sm6")) shader_model = 6;
+    else if (strstr(cmd, "--sm5")) shader_model = 5;
     WNDCLASSA wc = { 0 };
     wc.lpfnWndProc = WndProc;
     wc.hInstance = inst;
@@ -176,32 +209,47 @@ int WINAPI WinMain(HINSTANCE inst, HINSTANCE prev, LPSTR cmd, int show) {
     HRESULT hr = init(hwnd);
     if (FAILED(hr)) {
         char msg[200];
+        sprintf(msg, "D3D10CUBE model=%d init rejected hr=%08lX", shader_model, (unsigned long)hr);
+        OutputDebugStringA(msg);
         sprintf(msg, "Direct3D 10 is not available (error 0x%08lX).\n\nTurn on 3D acceleration in Control Panel > Visual Effects and run this program again.", (unsigned long)hr);
         MessageBoxA(hwnd, msg, "Direct3D 10 cube", MB_OK | MB_ICONEXCLAMATION);
         return 1;
     }
     ShowWindow(hwnd, show);
+    if (bench) for (int i = 0; i < 4; i++) render(0);
     MSG m;
     int frames = 0;
     DWORD start = GetTickCount();
+    DWORD bench_start = start;
     for (;;) {
         while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
             if (m.message == WM_QUIT) goto done;
             TranslateMessage(&m);
             DispatchMessageA(&m);
         }
-        render();
+        render(bench ? bench_frames * (1.0f / 60) : GetTickCount() / 1000.0f);
         frames++;
+        if (bench && ++bench_frames == 120) {
+            char result[240]; UINT gpu = 0, cpu = 0;
+            if (stats_fn) stats_fn(dev, &gpu, &cpu);
+            sprintf(result, "D3D10BENCH model=%d frames=120 ms=%lu size=%dx%d backend=%s gpu_draws=%u cpu_draws=%u", shader_model,
+                    (unsigned long)(GetTickCount() - bench_start), width, height, backend_name(), gpu, cpu);
+            OutputDebugStringA(result);
+            goto done;
+        }
         DWORD now = GetTickCount();
         if (now - start >= 1000) {
             char title[96];
-            sprintf(title, "Direct3D 10 cube - %d frames/s - shaders on WRLD 3D", frames * 1000 / (int)(now - start));
+            _snprintf(title, sizeof title, "Direct3D 10 cube - SM%d - %d frames/s - %s", shader_model, frames * 1000 / (int)(now - start), backend_name());
+            title[sizeof title-1]=0;
             SetWindowTextA(hwnd, title);
             frames = 0; start = now;
         }
     }
 done:
     ID3D10Device_ClearState(dev);
+    ID3D10RenderTargetView_Release(rtv); ID3D10DepthStencilView_Release(dsv);
+    ID3D10Buffer_Release(vb); ID3D10Buffer_Release(ib); ID3D10Buffer_Release(cb);
     IDXGISwapChain_Release(swap);
     ID3D10Device_Release(dev);
     return 0;

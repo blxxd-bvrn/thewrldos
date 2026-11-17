@@ -1,0 +1,4 @@
+PL_MPEG (https://github.com/phoboslab/pl_mpeg), the MPEG-1 video, MP2 audio and
+MPEG-PS demuxer used by THE WRLD Media Player for .mpg/.mpeg files. MIT licence
+(see the top and end of pl_mpeg.h). Vendored unmodified; compiled freestanding
+against the C library shim by src/media/mpeg.c.

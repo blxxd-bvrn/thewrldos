@@ -7,7 +7,7 @@
  * status dword keeps the actual length in bits 10..0 and the flags from bit 17
  * up, and the token's length field counts one less than the packet (0x7FF for a
  * zero-length packet). */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "devmgr.h"
 
@@ -268,6 +268,12 @@ static int uhci_init(uhci_t *u, const pci_dev_t *pd)
     uintptr_t bar = pci_bar(pd, 4, &is_io);
     if (!bar || !is_io) return -1;
     u->io = (uint16_t)bar;
+    /* LEGSUP (config 0xC0): stop the BIOS's keyboard emulation and its SMIs,
+     * clearing the status bits, before touching the controller */
+    {
+        uint32_t v = pci_cfg_read(pd->bus, pd->dev, pd->fn, 0xC0);
+        pci_cfg_write(pd->bus, pd->dev, pd->fn, 0xC0, (v & 0xFFFF0000u) | 0x8F00u);
+    }
     pci_enable(pd, true, false);
 
     uwreg16(u, UHCI_CMD, CMD_HCRESET);                   /* self-clearing */

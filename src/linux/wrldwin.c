@@ -19,7 +19,10 @@
 #define WIN_RESIZE  0x57A3      /* struct { int32 width, height; }: resize the buffer (then mmap again) */
 #define WIN_TITLE   0x57A4      /* char title[100] */
 #define WIN_INFO    0x57A5      /* struct { int32 width, height, buf_width, buf_height; } */
+#define WIN_SETSIZE 0x57A6      /* struct { int32 width, height; }: resize the window and its buffer */
+#define WIN_ACTION  0x57A7      /* 1 move, 2 | edges << 8 resize (while the button is held), 3 minimise, 4 maximise, 5 restore */
 #define WINF_RESIZABLE 1
+#define WINF_FRAMELESS 2        /* the program draws its own frame; pixels with alpha 0 are see-through */
 
 enum { WEV_MOTION = 1, WEV_BUTTON_DOWN, WEV_BUTTON_UP, WEV_WHEEL, WEV_KEY_DOWN, WEV_KEY_UP, WEV_RESIZE, WEV_CLOSE, WEV_LEAVE };
 typedef struct { uint32_t type; int32_t x, y; uint32_t code; uint32_t ch; uint32_t mods; } wev_t;
@@ -31,8 +34,18 @@ typedef struct lxwin {
     int bw, bh;                                 /* buffer size */
     wev_t q[WQ]; int head, tail;
     bool closed;                                /* the user closed the window */
+    bool frameless;
     uint32_t frames;
+    int owner;                                  /* pid of the process that created the window */
+    struct lxwin *next;
 } lxwin_t;
+static lxwin_t *all_wins;
+int lxwin_browser_pid;                          /* the WebKit browser's compositor (src/apps/webkit.c) */
+/* the desktop window a Linux process created, if it still has one */
+window_t *lxwin_window_of(int pid) {
+    for (lxwin_t *l = all_wins; l; l = l->next) if (l->owner == pid && l->w && !l->closed && wm_alive(l->w)) return l->w;
+    return NULL;
+}
 
 static void push(lxwin_t *lw, uint32_t type, int x, int y, uint32_t code, uint32_t ch, uint32_t mods) {
     int nt = (lw->tail + 1) % WQ;
@@ -64,7 +77,8 @@ static void win_paint(window_t *w) {
             uint64_t at = off + (uint64_t)x * 4;
             uint8_t *pg = shm_page(lw->fb, at / PAGE, false);
             int run = MIN(cw - x, (int)((PAGE - (at & (PAGE - 1))) / 4));
-            if (pg) { const uint32_t *src = (const uint32_t *)(pg + (at & (PAGE - 1))); for (int i = 0; i < run; i++) dst[x + i] = src[i] | 0xFF000000u; }
+            if (pg && lw->frameless) { const uint32_t *src = (const uint32_t *)(pg + (at & (PAGE - 1))); for (int i = 0; i < run; i++) dst[x + i] = src[i] >> 24 ? src[i] | 0xFF000000u : 0; }
+            else if (pg) { const uint32_t *src = (const uint32_t *)(pg + (at & (PAGE - 1))); for (int i = 0; i < run; i++) dst[x + i] = src[i] | 0xFF000000u; }
             else for (int i = 0; i < run; i++) dst[x + i] = 0xFF000000u;
             x += run;
         }
@@ -105,6 +119,7 @@ void lxwin_release(void *o) {
     lxwin_t *lw = o;
     if (!lw) return;
     if (lw->w && wm_alive(lw->w)) { lw->w->data = NULL; wm_destroy(lw->w); }
+    for (lxwin_t **pp = &all_wins; *pp; pp = &(*pp)->next) if (*pp == lw) { *pp = lw->next; break; }
     shm_unref(lw->fb);
     kfree(lw);
 }
@@ -125,11 +140,17 @@ int64_t lxwin_ioctl(void *o, uint64_t cmd, uint64_t arg, uvm_t *vm) {
         memcpy(&a, (void *)(uintptr_t)arg, sizeof a); a.title[99] = 0;
         if (lw->w) return -EEXIST;
         int r = set_buffer(lw, a.w, a.h); if (r) return r;
-        window_t *w = wm_create(a.title[0] ? a.title : "Linux program", -1, -1, a.w, a.h, (a.flags & WINF_RESIZABLE) ? WF_RESIZABLE : 0);
+        lw->frameless = (a.flags & WINF_FRAMELESS) != 0;
+        window_t *w = wm_create(a.title[0] ? a.title : "Linux program", -1, -1, a.w, a.h,
+                                ((a.flags & WINF_RESIZABLE) ? WF_RESIZABLE : 0) | (lw->frameless ? WF_SKINNED : 0));
         if (!w) return -ENOMEM;
         w->data = lw; w->paint = win_paint; w->mouse = win_mouse; w->key = win_key;
         w->resized = win_resized; w->close = win_close; w->destroy = win_destroy;
         w->icon = ICON_EXE; w->min_w = 120; w->min_h = 80;
+        lxthread_t *th = lx_current();
+        lw->owner = th && th->proc ? th->proc->pid : 0;
+        if (lw->owner && lw->owner == lxwin_browser_pid) { w->icon = ICON_BROWSER; w->min_w = 480; w->min_h = 320; }
+        lw->next = all_wins; all_wins = lw;
         lw->w = w;
         wm_center(w);
         w->dirty = true;
@@ -143,6 +164,32 @@ int64_t lxwin_ioctl(void *o, uint64_t cmd, uint64_t arg, uvm_t *vm) {
         int r = set_buffer(lw, s[0], s[1]);
         if (!r && lw->w) lw->w->dirty = true;
         return r;
+    }
+    case WIN_SETSIZE: {
+        int32_t s[2];
+        if (!uvm_check(vm, arg, 8, false)) return -EFAULT;
+        memcpy(s, (void *)(uintptr_t)arg, 8);
+        int r = set_buffer(lw, s[0], s[1]);
+        if (!r && lw->w && (lw->w->surf->w != s[0] || lw->w->surf->h != s[1])) {
+            void (*rs)(window_t *) = lw->w->resized;
+            lw->w->resized = NULL;                               /* the program asked: no resize event back */
+            wm_resize_client(lw->w, s[0], s[1]);
+            lw->w->resized = rs;
+            lw->w->dirty = true;
+        }
+        return r;
+    }
+    case WIN_ACTION: {
+        if (!lw->w) return -ENODEV;
+        switch (arg & 0xFF) {
+        case 1: wm_begin_move(lw->w); break;
+        case 2: wm_begin_resize(lw->w, (int)((arg >> 8) & 0xF)); break;
+        case 3: wm_minimize(lw->w); break;
+        case 4: wm_maximize(lw->w, true); break;
+        case 5: wm_maximize(lw->w, false); break;
+        default: return -EINVAL;
+        }
+        return 0;
     }
     case WIN_TITLE: {
         char t[100];

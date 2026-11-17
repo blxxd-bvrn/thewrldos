@@ -75,11 +75,18 @@ INSTALLING TO A HARD DISK
   virtio disks.
 
 MUSIC
-  THE WRLD Media Player (Start menu) plays MP3 and WAV files: double-click
-  one, or open the player and pick a song in the Library. Three sample
-  tracks are in My Documents\My Music. Now Playing shows a visualisation;
-  click the arrows under it to change it. Keys: Space play/pause, Ctrl+F
-  next, Ctrl+B previous, Ctrl+S stop, F8 mute, F9/F10 volume.
+  THE WRLD Media Player (Start menu) plays MP3, MP2, Ogg Vorbis, FLAC, WAV,
+  AIFF and .au sound and MPEG-1 video (.mpg): double-click a file, or open
+  the player and pick something in the Media Library. Sample tracks are in
+  My Documents\My Music and a short video in My Documents\My Videos.
+  The taskbar on the left switches between Now Playing, Media Guide, Copy
+  from CD, Media Library, Radio Tuner, Copy to CD or Device, Premium
+  Services and Skin Chooser. Now Playing shows the video or one of 29
+  visualisations: use the arrows or the menu under the picture, or Up/Down.
+  Double-click the picture or press Alt+Enter for full screen. Skin Chooser
+  has seven skins, including Classic. Keys: Space play/pause, Ctrl+F next,
+  Ctrl+B previous, Ctrl+S stop, Ctrl+H shuffle, Ctrl+T repeat, F8 mute,
+  F9/F10 volume.
 
 3D
   Control Panel > Visual Effects > Enable 3D acceleration turns the WRLD 3D
@@ -89,14 +96,38 @@ MUSIC
   shows a 3D test scene. The engine runs on the processor.
   Windows programs can draw 3D through OpenGL 1.1 (opengl32.dll, glu32.dll),
   Direct3D 9 (d3d9.dll, fixed function) and Direct3D 10 (d3d10.dll, with
-  vertex and pixel shaders run on the processor). Try C:\Samples\glcube.exe,
-  d3dcube.exe and d3d10cube.exe. Direct3D 10 programs must ship compiled
-  shaders: compiling HLSL while the program runs is not supported. Vulkan is not
+  vertex and pixel shaders). OpenGL and Direct3D 9 stay on the processor.
+  Direct3D 10 uses a native legacy VMware SVGA3D GPU for supported draws,
+  with native CPU fallback. Tested: Workstation 15, virtual hardware 7,
+  accelerated 3D enabled; modern guest-backed GPU objects are not supported.
+  This is not a physical NVIDIA/AMD/Intel driver. Try C:\Samples\glcube.exe,
+  d3dcube.exe and d3d10cube.exe. The shader cube defaults to SM4; --sm5 or --sm6
+  selects WRLD's staged SM5.0 DXBC / SM6.0 DXIL vertex/pixel extensions, not
+  D3D11/12 compatibility. --bench logs a fixed 120-frame benchmark, backend
+  and GPU/CPU draw counts. --cpu forces CPU rendering for a comparison.
+  The supplied SM4/SM5 cubes can use the GPU; the larger SM6 cube falls back.
+  C:\Samples\gpuverify.exe compares fixed-pose CPU/GPU readbacks (requires
+  a working GPU); --show displays both images. Readback overhead means GPU
+  offload is not always faster, especially in small windows.
+  C:\Samples\shaderprobe.exe checks uploads, rejections and profile queries.
+  Direct3D 10 programs must ship compiled shaders: compiling HLSL while the
+  program runs is not supported. Vulkan is not
   available: vulkan-1.dll reports no device, so programs that try it fall
   back to Direct3D or OpenGL. With 3D acceleration off, these programs are
   told 3D is unavailable.
 
 SOUND AND DISPLAY
+  WRLD Basic Display is the native firmware-framebuffer fallback on real PCs.
+  It uses BIOS/VESA or UEFI GOP output, firmware RGB masks, write combining
+  when available, and changed-region/cursor transfers. It does not provide
+  universal hardware-accelerated 3D or load Windows/Linux device drivers.
+  The firmware's resolution is retained; choose another supported mode in
+  GRUB before boot. video=basic forces this path (also in the recovery menu).
+  Command Prompt: display shows masks, cache mode and transfer diagnostics.
+  The x64 edition supports framebuffers above 4 GiB; x86 requires them below it.
+  Other devices still need their own native WRLD drivers; Device Manager
+  reports missing drivers instead of pretending every device is supported.
+
   Control Panel > Hardware and Sound > Sound: volume, mute, and the startup /
   shutdown sounds (C:\WRLD\Media). Supported sound cards: Intel High
   Definition Audio, AC'97 (Intel, nVidia, AMD, SiS, VIA), C-Media CMI8738,

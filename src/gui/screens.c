@@ -161,7 +161,7 @@ static int dialog_loop(const char *title, int kind) {
             if (click && nh >= 0) result = nh == 9 ? -1 : nh;
             if (nh != hot) { hot = nh; redraw = true; } else gfx_move_cursor(CURSOR_ARROW, ms.x, ms.y);
         }
-        task_yield(); hlt();          /* the USB task polls the mouse and keyboard */
+        task_yield(); idle_hlt();          /* the USB task polls the mouse and keyboard */
     }
     canvas_free(bg);
     memcpy(screen.px, saved->px, SCREEN_W * SCREEN_H * 4);
@@ -177,7 +177,7 @@ void shell_show_shutdown(void) {
         for (;;) {
             gui_heartbeat = timer_ticks();           /* asleep on purpose, not hung */
             if (keyboard_poll(&ke) || mouse_poll(&ms)) break;
-            task_yield(); hlt();                     /* a USB keyboard or mouse must run to wake it */
+            task_yield(); idle_hlt();                     /* a USB keyboard or mouse must run to wake it */
         }
         wm_redraw_all();
     } else if (r == 1) final_screen("Shutting down...", false);

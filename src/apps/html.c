@@ -348,6 +348,7 @@ static void css_decls(const char *s, int n, css_t *c) {
         }
         else if (!strcmp(k, "width")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && px > 0) { c->width = (int16_t)px; c->wpct = pc; c->set |= ST_WIDTH; } }
         else if (!strcmp(k, "height")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && !pc && px > 0) { c->height = (int16_t)px; c->set |= ST_HEIGHT; } }
+        else if (!strcmp(k, "box-sizing")) c->bsz = !strncmp(v, "border", 6) ? 2 : 1;
         else if (!strcmp(k, "min-height")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && !pc && px > 0) { c->minh = (int16_t)px; c->set |= ST_HEIGHT; } }
         else if (!strcmp(k, "max-width")) { bool a, pc; int px = css_len(v, &pc, &a); if (!a && px > 0) { c->maxw = (int16_t)px; c->mpct = pc; c->set |= ST_MAXW; } }
         else if (!strcmp(k, "border-width")) { c->set |= ST_BORDER; c->border = (int16_t)CLAMP(css_len(v, NULL, NULL), 0, 32); if (!c->border_color) c->border_color = BLACK; }
@@ -463,6 +464,7 @@ static void css_merge(css_t *dst, const css_t *src) {
     if (src->set & ST_FLOAT) dst->flt = src->flt;
     if (src->set & ST_FILL) { dst->fill = src->fill; dst->fill_cur = src->fill_cur; }
     if (src->set & ST_CLEAR) dst->clr = src->clr;
+    if (src->bsz) dst->bsz = src->bsz;
     if (src->set & ST_HEIGHT) { if (src->height) dst->height = src->height; if (src->minh) dst->minh = src->minh; }
     if (src->set & ST_FLEX) {
         uint16_t f = src->fset;
@@ -555,7 +557,11 @@ static void sink_start(void *ctx, const char *name, unsigned nl, const lxg_attr_
     tag[k] = 0;
     int kind = b->sp ? b->st[b->sp - 1].kind : FR_NODE;
     if (kind == FR_SKIP || kind == FR_TITLE || kind == FR_STYLE) { push(b, NULL, FR_SKIP); return; }
-    if (!strcmp(tag, "html") || !strcmp(tag, "head")) { push(b, top_node(b), FR_PASS); return; }
+    if (!strcmp(tag, "html") || !strcmp(tag, "head")) {
+        for (int i = 0; !strcmp(tag, "html") && i < na; i++)        /* <html dir="rtl"> */
+            if (a[i].name_len == 3 && !memcmp(a[i].name, "dir", 3)) d->rtl = a[i].value_len == 3 && !strncasecmp(a[i].value, "rtl", 3);
+        push(b, top_node(b), FR_PASS); return;
+    }
     if (!strcmp(tag, "body")) {
         b->in_body = true;
         node_t *r = d->root;                       /* the root stands in for <body>: keep its attributes for selectors */
@@ -566,6 +572,7 @@ static void sink_start(void *ctx, const char *name, unsigned nl, const lxg_attr_
             else if (!strcmp(nm, "text")) parse_color(v, &d->text);
             else if (!strcmp(nm, "link")) parse_color(v, &d->link);
             else if (!strcmp(nm, "vlink")) parse_color(v, &d->vlink);
+            else if (!strcmp(nm, "dir")) d->rtl = !strcasecmp(v, "rtl");
         }
         push(b, r, FR_PASS);
         return;
@@ -745,10 +752,36 @@ static int css_block_end(const char *s, int n, int i) {
     }
     return n;
 }
+/* does any element of the finished tree match one of a rule's selectors? Variables
+ * live per element in CSS; this engine keeps one set per page, so a rule that matches
+ * nothing (a dark-mode or state variant such as .bar.dark) must not set them */
+static const lxg_tree_t tree_ops;
+static void *varsel_pool;
+typedef struct { void *v[16]; int n; } varsel_t;
+static void varsel_add(void *ctx, void *sel, unsigned spec, int kind, const char *key, unsigned kl) {
+    (void)spec; (void)kind; (void)key; (void)kl;
+    varsel_t *l = ctx; if (l->n < 16) l->v[l->n++] = sel;
+}
+static bool rule_matches_any(doc_t *d, const char *sel, int sl) {
+    if (!varsel_pool) varsel_pool = lxg_pool_new();
+    varsel_t l = { .n = 0 };
+    if (lxg_selectors(varsel_pool, sel, sl, varsel_add, &l) < 0 || !l.n) return false;
+    for (node_t *n = d->root; n; ) {
+        if (!n->type) for (int i = 0; i < l.n; i++) if (lxg_match(l.v[i], n, &tree_ops)) return true;
+        if (!n->type && n->first) { n = n->first; continue; }
+        while (n && !n->next) n = n->parent;
+        if (n) n = n->next;
+    }
+    return false;
+}
 /* the custom properties in one rule body; :root, html and body set the page's values */
 static void collect_vars(doc_t *d, const char *sel, int sl, const char *b, int bl) {
     int prio = 1;
     for (int i = 0; i < sl; i++) if (!strncmp(sel + i, ":root", 5) || ((i == 0 || sel[i - 1] == ',' || sel[i - 1] == ' ') && (!strncmp(sel + i, "html", 4) || !strncmp(sel + i, "body", 4)) && (i + 4 >= sl || !isalnum(sel[i + 4]) )) ) { prio = 2; break; }
+    bool any = false;                                  /* skip the matching for rules without variables */
+    for (int k = 0; k + 1 < bl; k++) if (b[k] == '-' && b[k + 1] == '-') { any = true; break; }
+    if (!any) return;
+    if (prio == 1 && d->var_filter && !rule_matches_any(d, sel, sl)) return;
     int i = 0;
     while (i < bl) {
         while (i < bl && (isspace(b[i]) || b[i] == ';')) i++;
@@ -810,18 +843,32 @@ static void parse_stylesheet(doc_t *d, const char *s, int n, int sheet) {
 }
 /* a linked sheet arrived: its variables may be used by sheets parsed before it, so every
  * sheet's rules are parsed again, in document order */
-void html_add_stylesheet(doc_t *d, const char *css, uint32_t len, int sheet) {
-    store_sheet(d, css, (int)len, sheet);
+/* parse every stored sheet's rules again, in sheet order */
+static void reparse_sheets(doc_t *d) {
     for (int i = 0; i < CSS_BUCKETS; i++) { for (css_bucket_t *b = d->buckets[i]; b; b = b->next) kfree(b->idx); d->buckets[i] = NULL; }
     d->nrules = 0;
     if (d->selpool) { lxg_pool_free(d->selpool); d->selpool = NULL; }
-    /* sort by sheet number (insertion sort: a page has few sheets), then parse */
-    for (int i = 1; i < d->nsheet_text; i++) {
+    for (int i = 1; i < d->nsheet_text; i++) {                /* insertion sort: a page has few sheets */
         typeof(d->sheets[0]) t = d->sheets[i]; int j = i - 1;
         while (j >= 0 && d->sheets[j].sheet > t.sheet) { d->sheets[j + 1] = d->sheets[j]; j--; }
         d->sheets[j + 1] = t;
     }
     for (int i = 0; i < d->nsheet_text; i++) { int rn = 0; parse_rules(d, d->sheets[i].text, d->sheets[i].len, d->sheets[i].sheet, &rn, 0); }
+}
+/* the tree is complete: collect the variables again from the rules that match
+ * something, and parse the rules with them */
+static void refilter_vars(doc_t *d) {
+    d->var_filter = true;
+    if (!d->nvars) return;
+    d->nvars = 0;
+    for (int i = 0; i < d->nsheet_text; i++) { int rn = 0; parse_rules_mode(d, d->sheets[i].text, d->sheets[i].len, d->sheets[i].sheet, &rn, 0, true); }
+    reparse_sheets(d);
+    if (varsel_pool) { lxg_pool_free(varsel_pool); varsel_pool = NULL; }
+}
+void html_add_stylesheet(doc_t *d, const char *css, uint32_t len, int sheet) {
+    store_sheet(d, css, (int)len, sheet);
+    if (varsel_pool) { lxg_pool_free(varsel_pool); varsel_pool = NULL; }
+    reparse_sheets(d);
 }
 
 /* the matcher's view of the tree: the root stands in for <body> */
@@ -927,6 +974,7 @@ doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char
     lxg_sink_t sink = { b, sink_start, sink_end, sink_text };
     if (lxg_parse_html(src, len, &sink) != 0) klog("xplorerlite: the HTML parser failed on %s", url ? url : "a page");
     kfree(b->buf); kfree(b); kfree(conv);
+    refilter_vars(d);
     style_root(d);
     apply_css(d, d->root->first);
     return d;

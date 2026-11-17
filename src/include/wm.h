@@ -12,6 +12,7 @@
 #define WF_HIDDEN    0x040
 #define WF_MODAL     0x080
 #define WF_NOCLOSE   0x100
+#define WF_SKINNED   0x200   /* the app draws its own frame; pixels with alpha 0 are see-through */
 
 enum { WS_NORMAL, WS_MINIMIZED, WS_MAXIMIZED };
 enum { ME_MOVE, ME_DOWN, ME_UP, ME_DBLCLICK, ME_WHEEL, ME_LEAVE };
@@ -85,6 +86,11 @@ void wm_show(window_t *w);
 void wm_focus(window_t *w);
 void wm_minimize(window_t *w);
 void wm_maximize(window_t *w, bool on);
+/* for skinned windows, from a paint while the left button is held: let the
+ * window manager move or resize (edges: 1 left, 2 right, 4 top, 8 bottom) */
+void wm_begin_move(window_t *w);
+void wm_begin_resize(window_t *w, int edges);
+void wm_set_skinned(window_t *w, bool on);   /* switch between the app's frame and the system frame */
 void wm_set_title(window_t *w, const char *t);
 void wm_invalidate(window_t *w);
 void wm_redraw_all(void);

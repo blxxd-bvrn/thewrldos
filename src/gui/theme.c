@@ -50,14 +50,15 @@ static const role_t roles[] = {
 };
 #define NROLES ((int)ARRAY_LEN(roles))
 static uint32_t role_override[NROLES];
+uint32_t theme_generation = 1;     /* bumped when styles or colour overrides change: caches of rendered previews go stale */
 int theme_role_count(void) { return NROLES; }
 const char *theme_role_name(int i) { return i >= 0 && i < NROLES ? roles[i].name : ""; }
 uint32_t theme_role_color(int i) { return i >= 0 && i < NROLES ? role_override[i] : 0; }
 bool theme_role_is_set(int i) { return i >= 0 && i < NROLES && role_override[i] != 0; }
 uint32_t theme_role_effective(int i) { return i >= 0 && i < NROLES ? (role_override[i] ? role_override[i] : *(uint32_t *)((uint8_t *)&T + roles[i].off)) : 0; }
-void theme_role_set(int i, uint32_t color) { if (i >= 0 && i < NROLES) { role_override[i] = color ? (0xFF000000u | (color & 0xFFFFFFu)) : 0; } }
-void theme_role_clear(int i) { if (i >= 0 && i < NROLES) role_override[i] = 0; }
-void theme_role_clear_all(void) { memset(role_override, 0, sizeof role_override); }
+void theme_role_set(int i, uint32_t color) { if (i >= 0 && i < NROLES) { role_override[i] = color ? (0xFF000000u | (color & 0xFFFFFFu)) : 0; theme_generation++; } }
+void theme_role_clear(int i) { if (i >= 0 && i < NROLES) role_override[i] = 0; theme_generation++; }
+void theme_role_clear_all(void) { memset(role_override, 0, sizeof role_override); theme_generation++; }
 void theme_overrides_load(void) {
     uint32_t len = 0;
     uint8_t *b = vfs_read_file(OVERRIDE_FILE, &len);
@@ -262,6 +263,7 @@ static void add_style(const char *file) {
 }
 void styles_load(void) {
     nstyles = 0;
+    theme_generation++;
     for (int i = 0; i < THEME_BUILTIN; i++) add_style(builtin_files[i]);
     vnode_t *d = vfs_resolve(STYLE_DIR, NULL);
     if (d) {

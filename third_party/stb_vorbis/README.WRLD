@@ -1,0 +1,4 @@
+stb_vorbis v1.24 (https://github.com/nothings/stb), the Ogg Vorbis decoder used
+by THE WRLD Media Player. Public domain or MIT, at your choice (see the end of
+stb_vorbis.c). Vendored unmodified; compiled freestanding against the C library
+shim by src/media/vorbis.c.

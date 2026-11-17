@@ -25,7 +25,7 @@ typedef struct PACKED { uint32_t start, end, cmdline, pad; } mb1_mod_t;
 
 typedef struct PACKED { uint32_t type, size; } mb2_tag_t;
 typedef struct PACKED { uint32_t type, size; uint32_t start, end; } mb2_mod_t;
-typedef struct PACKED { uint32_t type, size; uint64_t addr; uint32_t pitch, width, height; uint8_t bpp, fb_type; } mb2_fb_t;
+typedef struct PACKED { uint32_t type, size; uint64_t addr; uint32_t pitch, width, height; uint8_t bpp, fb_type; uint16_t reserved; } mb2_fb_t;
 typedef struct PACKED { uint64_t addr, len; uint32_t type, zero; } mb2_mmap_t;
 typedef struct PACKED { uint32_t type, size, entry_size, version; } mb2_mmap_tag_t;
 
@@ -33,6 +33,12 @@ static void copy_cmdline(const char **dst, const char *src) {
     if (!src) return;
     if ((uintptr_t)src >= 0xFFFFFFFFu) return;      /* not addressable in the identity map */
     *dst = src;
+}
+static void framebuffer_rgb(const uint8_t *p) {
+    bootinfo.fb_red_pos = p[0]; bootinfo.fb_red_bits = p[1];
+    bootinfo.fb_green_pos = p[2]; bootinfo.fb_green_bits = p[3];
+    bootinfo.fb_blue_pos = p[4]; bootinfo.fb_blue_bits = p[5];
+    bootinfo.fb_rgb_valid = true;
 }
 
 static void parse_mb1(uintptr_t addr) {
@@ -75,6 +81,7 @@ static void parse_mb1(uintptr_t addr) {
         bootinfo.fb_height = mb->fb_height;
         bootinfo.fb_bpp = mb->fb_bpp;
         bootinfo.fb_type = mb->fb_type;
+        if (mb->fb_type == 1) framebuffer_rgb((const uint8_t *)mb + sizeof *mb);
     }
 }
 
@@ -131,6 +138,7 @@ static void parse_mb2(uintptr_t addr) {
         case 8: {                                                   /* framebuffer */
             const mb2_fb_t *fb = (const mb2_fb_t *)p;
             if (t->size >= sizeof *fb) {
+                bootinfo.fb_rgb_valid = false;
                 bootinfo.have_fb = true;
                 bootinfo.fb_addr = fb->addr;
                 bootinfo.fb_pitch = fb->pitch;
@@ -138,14 +146,18 @@ static void parse_mb2(uintptr_t addr) {
                 bootinfo.fb_height = fb->height;
                 bootinfo.fb_bpp = fb->bpp;
                 bootinfo.fb_type = fb->fb_type;
+                if (fb->fb_type == 1 && t->size >= sizeof *fb + 6) framebuffer_rgb((const uint8_t *)fb + sizeof *fb);
             }
             break;
         }
-        case 11:                                                    /* EFI system table */
+        case 11:                                                    /* EFI32 system table */
+            if (t->size >= 12) { bootinfo.is_efi = true; bootinfo.efi_system_table = *(const uint32_t *)(p + 8); }
+            break;
+        case 12:                                                    /* EFI64 system table */
             if (t->size >= 16) { bootinfo.is_efi = true; bootinfo.efi_system_table = *(const uint64_t *)(p + 8); }
             break;
-        case 12:                                                    /* EFI boot services */
-            if (t->size >= 16) bootinfo.is_efi = true;
+        case 18:                                                    /* EFI boot services not terminated */
+            bootinfo.is_efi = true;
             break;
         case 14:                                                    /* ACPI 1.0 RSDP (copy) */
             if (t->size >= 8 + 20 && !memcmp((const void *)(p + 8), "RSD PTR ", 8) && bootinfo.acpi_rsdp_len < 36) {

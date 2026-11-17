@@ -6,7 +6,7 @@
  * them as the controller reports them sent. A device that offers both classes
  * uses its class 2 stream. Only the format the mixer produces (stereo, 16-bit,
  * 48 kHz or 44.1 kHz) is used; a device that cannot do either is left alone. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "audio.h"
 #include "uac.h"

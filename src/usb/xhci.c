@@ -16,7 +16,7 @@
  * the device has something to say, so a poll arms a TRB, returns nothing, and
  * collects the completion on a later poll. Bulk and control transfers are
  * awaited directly. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "devmgr.h"
 
@@ -809,31 +809,34 @@ static bool xhci_new_device(usb_hcd_t *h, int root_port, int route, bool low,
  * handlers). Take it over before resetting the controller. */
 static void xhci_handoff(xhci_t *x, uint32_t hcc1)
 {
-    uint32_t off = (hcc1 >> 16) & 0xFFFF;
+    uint32_t off = ((hcc1 >> 16) & 0xFFFF) * 4;
     for (int guard = 0; off && guard < 64; guard++) {
         uint32_t cap = r32(x, off);
         if ((cap & 0xFF) == 1) {                          /* USB Legacy Support */
             if (cap & (1u << 16)) {
                 w32(x, off, (cap & ~0xE0u) | (1u << 17));
                 uint32_t t0 = timer_ticks();
-                while ((r32(x, off) & (1u << 16)) && (int32_t)(timer_ticks() - t0) < 100)
+                while ((r32(x, off) & (1u << 16)) && (int32_t)(timer_ticks() - t0) < 1000)
                     task_yield();
+                if (r32(x, off) & (1u << 16)) { klog("xhci: the BIOS kept the controller; taking it"); w32(x, off, (r32(x, off) & ~((1u << 16) | 0xE0u)) | (1u << 17)); }
             }
             w32(x, off + 4, 0);                           /* USBLEGCTLSTS: no SMI events */
             break;
         }
-        off = (cap >> 8) & 0xFF;
+        uint32_t next = (cap >> 8) & 0xFF;
+        if (!next) break;
+        off += next * 4;
     }
 }
 
 static int xhci_init(xhci_t *x, const pci_dev_t *pd)
 {
     bool is_io = false;
-    uintptr_t bar = pci_bar(pd, 0, &is_io);
-    if (!bar || is_io) return -1;
-    if (bar >= 0x100000000ull) { klog("xhci: MMIO at %llx is above the identity map", (unsigned long long)bar); return -1; }
+    uint64_t physical = pci_bar64(pd, 0, &is_io);
+    if (!physical || is_io) return -1;
+    uintptr_t bar = paging_map_mmio(physical, 1024 * 1024);
+    if (!bar) { klog("xhci: cannot map register aperture at %llx", (unsigned long long)physical); return -1; }
     pci_enable(pd, false, true);
-    paging_set_uncached(bar);
     x->mmio = (volatile uint32_t *)bar;
     x->op = (uint16_t)(*(volatile uint8_t *)bar);             /* CAPLENGTH */
     uint32_t hcs1 = r32(x, HCSPARAMS1);
@@ -844,7 +847,10 @@ static int xhci_init(xhci_t *x, const pci_dev_t *pd)
     x->ctx = (hcc1 & (1u << 2)) ? 64 : 32;
     x->dboff = r32(x, DBOFF) & ~3u;
     x->rtsoff = r32(x, RTSOFF) & ~31u;
-    if (!x->max_slots || !x->max_ports) return -1;
+    if (!x->max_slots || !x->max_ports || x->op < 0x20 ||
+        x->dboff > 1024u * 1024 - 256u * 4 || x->rtsoff > 1024u * 1024 - 0x1000) return -1;
+    if (physical >= 0x100000000ull) klog("xhci: high MMIO physical=%llx mapped=%llx (uncached)",
+        (unsigned long long)physical, (unsigned long long)bar);
 
     xhci_handoff(x, hcc1);
     w32(x, x->op + USBCMD, CMD_HCRST);

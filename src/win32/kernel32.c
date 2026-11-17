@@ -464,7 +464,10 @@ static BOOL WINAPI GetDiskFreeSpaceExA(const char *d, uint64_t *a, uint64_t *t, 
 
 /* ---------------- modules ---------------- */
 #define KMOD(i) (0x7C000000u + (i) * 0x10000)
-static const char *modnames[] = { "kernel32.dll", "msvcrt.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "ntdll.dll", "kernelbase.dll", "ucrtbase.dll" };
+static const char *modnames[] = {
+    "kernel32.dll", "msvcrt.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "ntdll.dll", "kernelbase.dll", "ucrtbase.dll",
+    "d3d10.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d9.dll", "opengl32.dll", "glu32.dll"
+};
 static HMODULE mod_handle(const char *n) {
     if (!n) return P->base;
     char b[64]; strlcpy(b, path_basename(n), sizeof b);

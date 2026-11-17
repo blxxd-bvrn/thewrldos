@@ -1,8 +1,9 @@
 /* EHCI: the USB 2.0 host controller, the companion of a UHCI or OHCI
  * controller on chipsets from about 2002 to 2012. It is the high-speed bus:
  * 480 Mbit/s devices live here, while full- and low-speed ones are left to the
- * companion controller (or, behind a high-speed hub, need split transactions,
- * which this driver does not do).
+ * companion controller. Behind a high-speed hub (and behind the hub built into
+ * Intel chipsets from about 2010, which have no companions) they are reached
+ * with split transactions through the hub's transaction translator.
  *
  * Transfers are queue heads and queue element transfer descriptors in memory.
  * Control and bulk transfers go through the asynchronous schedule; interrupt
@@ -13,7 +14,7 @@
  * Layout follows the EHCI 1.0 specification: the capability registers start at
  * the BAR, the operational registers at CAPLENGTH (normally 0x20), and every
  * queue element is 32 bytes with a 32-byte-aligned address. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "devmgr.h"
 
@@ -112,6 +113,10 @@ typedef struct {
     int nqtd;
     uint16_t qlen[64];          /* bytes asked of each qTD */
     uint16_t iqlen;
+    /* how each device address is reached: speed, the transaction translator
+     * (hub address and port) for full- and low-speed devices, endpoint 0's
+     * packet size. Entry 0 is the device being enumerated. */
+    struct { uint8_t speed, tt_hub, tt_port, mp0; } rt[128];
 } ehci_t;
 
 static uint32_t er32(ehci_t *e, int off) { return e->mmio[off / 4]; }
@@ -153,6 +158,36 @@ static void qh_reset(qh_t *q, int addr, int ep, int speed, int maxpkt, int contr
     q->qtd_next = 1;
     q->alt_next = 1;
     q->token = QTD_ACTIVE;
+}
+
+/* ---------------- routes (split transactions) ---------------- */
+static void route_set(ehci_t *e, int addr, uint32_t speed, int hub, int port) {
+    e->rt[addr].speed = (uint8_t)speed; e->rt[addr].tt_hub = (uint8_t)hub; e->rt[addr].tt_port = (uint8_t)port;
+    e->rt[addr].mp0 = speed == QH_LS ? 8 : 64;
+}
+/* a device was found: on a root port it is high speed; behind a hub take the
+ * hub's speed into account - a full- or low-speed device behind a high-speed
+ * hub uses that hub's translator, behind a full-speed hub its parent's */
+static bool ehci_new_device(usb_hcd_t *h, int root_port, int route, bool low, int hub_addr, int hub_port, int speed) {
+    ehci_t *e = h->priv;
+    (void)root_port; (void)route;
+    if (!hub_addr || hub_addr > 127) { route_set(e, 0, QH_HS, 0, 0); return true; }
+    uint32_t sp = speed == 3 ? QH_HS : (speed == 2 || low) ? QH_LS : QH_FS;
+    if (sp == QH_HS) route_set(e, 0, QH_HS, 0, 0);
+    else if (e->rt[hub_addr].speed == QH_HS) route_set(e, 0, sp, hub_addr, hub_port);
+    else route_set(e, 0, sp, e->rt[hub_addr].tt_hub, e->rt[hub_addr].tt_port);
+    return true;
+}
+static void ehci_del_device(usb_hcd_t *h, int addr) {
+    ehci_t *e = h->priv;
+    if (addr >= 0 && addr < 128) route_set(e, addr, QH_HS, 0, 0);
+}
+/* the queue head fields for a full- or low-speed device: its translator, and for
+ * a periodic (interrupt) queue head the start-split and complete-split masks */
+static uint32_t tt_info2(ehci_t *e, int addr, bool periodic) {
+    uint32_t v = (uint32_t)e->rt[addr].tt_hub << 16 | (uint32_t)e->rt[addr].tt_port << 23;
+    if (periodic) v |= 0x01u | (0x1Cu << 8);           /* start in microframe 0, complete in 2, 3, 4 */
+    return v;
 }
 
 /* ---------------- asynchronous transfers ---------------- */
@@ -223,14 +258,18 @@ static int ehci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
                         uint16_t value, uint16_t index, void *buf, int len)
 {
     ehci_t *e = h->priv;
-    if (low) return -1;                                   /* split transactions are not implemented */
+    (void)low;
+    if (addr < 0 || addr > 127) return -1;
     if (len > 2048) len = 2048;
+    uint32_t sp = e->rt[addr].speed;
+    int mp = e->rt[addr].mp0 ? e->rt[addr].mp0 : 64;
     uint8_t *data = e->bounce;
     uint8_t setup[8] = { type, req, (uint8_t)value, (uint8_t)(value >> 8),
                          (uint8_t)index, (uint8_t)(index >> 8), (uint8_t)len, (uint8_t)(len >> 8) };
     bool in = (type & 0x80) != 0;
     if (!in && len) memcpy(data, buf, len);
-    qh_reset(e->xfer, addr, 0, QH_HS, 64, 1);
+    qh_reset(e->xfer, addr, 0, sp, mp, 1);
+    if (sp != QH_HS) { e->xfer->info1 |= 1u << 27; e->xfer->info2 |= tt_info2(e, addr, false); }   /* control endpoint, split */
 
     int n = 0;
     qtd_fill(&e->qtds[n], PID_SETUP, 0, setup, 8); n++;
@@ -238,7 +277,8 @@ static int ehci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
     int off = 0;
     while (off < len && n < e->nqtd - 1) {
         int chunk = len - off; if (chunk > 64) chunk = 64;
-        qtd_fill(&e->qtds[n], in ? PID_IN : PID_OUT, 1 ^ ((off / 64) & 1), data + off, chunk);
+        /* each qTD starts with the toggle of the packet it begins with */
+        qtd_fill(&e->qtds[n], in ? PID_IN : PID_OUT, 1 ^ ((off / mp) & 1), data + off, chunk);
         e->qlen[n] = (uint16_t)chunk;
         off += chunk; n++; ndata++;
     }
@@ -255,6 +295,10 @@ static int ehci_control(usb_hcd_t *h, int addr, bool low, uint8_t type, uint8_t 
         if (got > len) got = len;
         memcpy(buf, data, got);
     }
+    /* learn endpoint 0's packet size from the device descriptor, and carry the
+     * route over when the device takes its address */
+    if (type == 0x80 && req == 6 && value == 0x0100 && in && got >= 8 && data[7] >= 8 && data[7] <= 64) e->rt[addr].mp0 = data[7];
+    if (type == 0x00 && req == 5 && addr == 0 && value > 0 && value < 128) e->rt[value] = e->rt[0];
     return in ? got : len;
 }
 
@@ -262,13 +306,15 @@ static int ehci_transfer(usb_hcd_t *h, int addr, bool low, int ep, bool in,
                          uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms)
 {
     ehci_t *e = h->priv;
-    if (low || ep < 1 || ep > 15) return -1;
+    (void)low;
+    if (ep < 1 || ep > 15 || addr < 0 || addr > 127) return -1;
+    uint32_t sp = e->rt[addr].speed;
     if (!len) return 0;
     if (maxpkt > 1024) maxpkt = 1024;
     bool poll = timeout_ms <= 100;
     if (poll) {
-        qh_reset(e->intr, addr, ep, QH_HS, maxpkt, 0);
-        e->intr->info2 = (1u << 30) | (1u << (ep & 7));
+        qh_reset(e->intr, addr, ep, sp, maxpkt, 0);
+        e->intr->info2 = sp == QH_HS ? (1u << 30) | (1u << (ep & 7)) : (1u << 30) | tt_info2(e, addr, true);
         e->iqlen = (uint16_t)(len > maxpkt ? maxpkt : len);
         qtd_fill(&e->iqtd[0], in ? PID_IN : PID_OUT, *toggle, buf, e->iqlen);
         e->iqtd[0].next = 1;
@@ -309,7 +355,8 @@ static int ehci_transfer(usb_hcd_t *h, int addr, bool low, int ep, bool in,
     int cap = e->nqtd;
     if (len > maxpkt * (cap - 1)) len = maxpkt * (cap - 1);
     if (len > 16384) len = 16384;
-    qh_reset(e->xfer, addr, ep, QH_HS, maxpkt, 0);
+    qh_reset(e->xfer, addr, ep, sp, maxpkt, 0);
+    if (sp != QH_HS) e->xfer->info2 |= tt_info2(e, addr, false);
     int n = 0, off = 0, pkts = 0;
     while (off < len && n < cap) {
         int chunk = len - off; if (chunk > maxpkt) chunk = maxpkt;
@@ -370,11 +417,30 @@ static int ehci_init(ehci_t *e, const pci_dev_t *pd)
     bool is_io = false;
     uintptr_t bar = pci_bar(pd, 0, &is_io);
     if (!bar || is_io) return -1;
+#ifdef __x86_64__
     if (bar >= 0x100000000ull) { klog("ehci: MMIO above the identity map"); return -1; }
+#endif
     pci_enable(pd, false, true);
     paging_set_uncached(bar);
     e->mmio = (volatile uint32_t *)bar;
     e->op = (uint16_t)(*(volatile uint8_t *)bar);
+    /* The BIOS may own the controller (USB keyboard emulation through SMIs):
+     * ask for it through the legacy support capability before the reset */
+    for (uint32_t eecp = (er32(e, HCCPARAMS) >> 8) & 0xFF, guard = 0; eecp >= 0x40 && guard < 16; guard++) {
+        uint32_t v = pci_cfg_read(pd->bus, pd->dev, pd->fn, (uint8_t)eecp);
+        if ((v & 0xFF) == 1) {                                     /* USBLEGSUP */
+            if (v & (1u << 16)) {
+                pci_cfg_write(pd->bus, pd->dev, pd->fn, (uint8_t)eecp, v | (1u << 24));
+                uint32_t t0 = timer_ticks();
+                while ((pci_cfg_read(pd->bus, pd->dev, pd->fn, (uint8_t)eecp) & (1u << 16)) && (int32_t)(timer_ticks() - t0) < 1000) task_yield();
+                v = pci_cfg_read(pd->bus, pd->dev, pd->fn, (uint8_t)eecp);
+                if (v & (1u << 16)) { klog("ehci: the BIOS kept the controller; taking it"); pci_cfg_write(pd->bus, pd->dev, pd->fn, (uint8_t)eecp, (v & ~(1u << 16)) | (1u << 24)); }
+            }
+            pci_cfg_write(pd->bus, pd->dev, pd->fn, (uint8_t)(eecp + 4), 0xE0000000u);   /* SMIs off, clear their status */
+            break;
+        }
+        eecp = (v >> 8) & 0xFF;
+    }
     uint32_t hcs = er32(e, HCSPARAMS);
     e->ports = (int)(hcs & 0xF);
     if (e->ports > 15) e->ports = 15;
@@ -434,6 +500,9 @@ static int ehci_init(ehci_t *e, const pci_dev_t *pd)
     e->hcd.transfer = ehci_transfer;
     e->hcd.port_reset = ehci_port_reset;
     e->hcd.port_up = ehci_port_up;
+    e->hcd.new_device = ehci_new_device;
+    e->hcd.del_device = ehci_del_device;
+    for (int a = 0; a < 128; a++) route_set(e, a, QH_HS, 0, 0);
     e->hcd.ports = e->ports;
     e->hcd.priv = e;
     return 0;

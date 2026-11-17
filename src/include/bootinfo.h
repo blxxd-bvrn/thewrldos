@@ -43,6 +43,8 @@ typedef struct {
     uint64_t fb_addr;
     uint32_t fb_pitch, fb_width, fb_height;
     uint8_t fb_bpp, fb_type;
+    uint8_t fb_red_pos, fb_red_bits, fb_green_pos, fb_green_bits, fb_blue_pos, fb_blue_bits;
+    bool fb_rgb_valid;
 
     uint64_t acpi_rsdp;                 /* address of the RSDP, 0 if absent */
     uint8_t acpi_rsdp_data[36];         /* a copy, so later heap use cannot overwrite it */

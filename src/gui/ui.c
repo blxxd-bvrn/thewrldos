@@ -254,7 +254,7 @@ bool ui_dropdown(window_t *w, rect_t r, const char **items, int n, int *sel) {
     else { fill_round_rect(c, b.x, b.y, b.w, b.h, 2, hot ? HEX(0xB8D0F8) : HEX(0xC4D6F8)); gradient_round_rect(c, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 2, HEX(0xE6EEFC), HEX(0xB9CDF5)); }
     draw_arrow(c, b.x + 8, b.y + b.h / 2 - 1, 1, T.classic || dark_mode ? T.text : HEX(0x4D6185));
     if (clicked) {
-        menu_item_t mi[20]; int k = MIN(n, 20);
+        menu_item_t mi[32]; int k = MIN(n, 32);
         for (int i = 0; i < k; i++) { mi[i].label = items[i]; mi[i].id = i; mi[i].flags = i == *sel ? MI_CHECKED | MI_RADIO : 0; }
         rect_t cr = wm_client_rect(w);
         dd_win = w; dd_sel = sel;

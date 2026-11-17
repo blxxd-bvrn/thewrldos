@@ -1,11 +1,12 @@
 # Roadmap: from Linux programs to a browser engine
 
 The 64-bit edition runs unmodified x86-64 Linux programs in ring 3. This file lists what is
-still missing between that and running WPE WebKit as a browser on THE WRLD OS, in the order the
-pieces have to be built.
+still missing between that and running WebKit as THE WRLD OS's browser, in the order the pieces
+have to be built.
 
-**Where it stands (November 2026):** WebKit is *not* running yet. What runs today, verified by
-the test programs below inside the OS:
+**Where it stands (November 2026):** **WebKit runs.** WebKitGTK 6 (2.52) renders pages inside a
+desktop window, with its web and network processes, JavaScript, canvas, images, and pages
+real websites over HTTPS (`wrldweb`, below). Verified inside the OS by these test programs:
 
 - the C++ runtime (glibc's `libstdc++`): exceptions, RTTI, threads, `thread_local`, iostreams,
   `std::filesystem` (`samples/linux-cxx/cxxtest.cpp`, 14 checks);
@@ -24,7 +25,18 @@ the test programs below inside the OS:
   program maps and draws (32-bit ARGB, what Cairo, pixman and Skia's CPU backend write), presents
   with an `ioctl`, and reads mouse, keyboard, resize and close events from with `read`, `poll`
   or `epoll` (`src/linux/wrldwin.c`, interface in `samples/linux-gnome/wrldwin.h`; the
-  `wrldpaint` demo draws with Cairo and takes clicks and typing).
+  `wrldpaint` demo draws with Cairo and takes clicks and typing);
+- **a Wayland compositor**, `wrldcomp` (`samples/linux-wayland`), on Ubuntu's libwayland-server:
+  `wl_compositor`, subsurfaces, `wl_shm`, `xdg_wm_base` (toplevels and popups), `wl_seat` with an
+  XKB keymap, `wl_output`. Each toplevel becomes a `/dev/wrld/window` window, frameless when the
+  client draws its own decorations; `wlhello` is a bare test client;
+- **GTK 4** with its Cairo renderer on `wrldcomp`: header bar, popovers, entries, buttons,
+  sliders (`samples/linux-gtk/gtkhello.c`, `make ARCH=x86_64 LX_GTK=1`, about 35 MB);
+- **WebKitGTK 6**: `wrldweb` (`samples/linux-webkitgtk`, `make ARCH=x86_64 LX_WEBKITGTK=1`, about
+  210 MB, so give the VM 3 GB) is a small browser with back, forward, reload and an address bar.
+  WebKit renders on the CPU; a stand-in `libEGL.so.1` gives it the EGL display it insists on
+  without shipping Mesa and LLVM. Run it with
+  `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
 
 ## Where the port stands
 
@@ -150,17 +162,70 @@ Already working, and not on the list below:
 - The GUI also has its own **software rasteriser** (`src/gui/raster.c`): path fills and strokes,
   anti-aliasing, round joins, linear and radial gradients and clipping, used by The WRLD Browser for
   `border-radius` and gradient backgrounds. Skia and Cairo are still not used.
-- 3D is a software engine (`src/gui/r3d.c`) behind OpenGL 1.1 and fixed-function Direct3D 9 for
-  Win32 programs, and Direct3D 10 runs Shader Model 4 bytecode in an interpreter (`dxbc.c`). Next
-  steps there: a JIT for shaders (the interpreter costs most of the frame time), geometry shaders,
-  Direct3D 11 (Shader Model 5 adds few instructions the interpreter lacks) and a run-time HLSL
-  compiler. Vulkan would need a SPIR-V compiler as well and is not planned. Linux programs could get OpenGL through Mesa's software renderer on
-  `/dev/wrld/window`. There is no GPU driver, so a real Skia would have to use its software backend. Missing from the raster
-  stack: filters and blurs, box shadows, canvas, arbitrary CSS transforms and a full CSS layout
-  engine.
+- The fixed-function engine remains native CPU rendering: `src/gui/r3d.c` serves OpenGL 1.1 and D3D9;
+  D3D10's shared interpreter now accepts SM4, a staged **SM5.0 DXBC** subset and a staged
+  **SM6.0 / DXIL 1.0** vertex/pixel subset (`dxbc.c`, `dxil.c`, `shader_priv.h`). Prepared
+  per-draw register/operand bindings remove shader-invocation allocations; masked execution,
+  native float32 rounding and live-component scanline planes/spans reduce CPU work. Packed
+  cross-model signatures, flat/noperspective interpolation, late shader depth and unsigned
+  render targets have host framebuffer tests. A fixed 120-frame x64 QEMU cube improved from
+  7.97–8.12 to 12.14–13.18 FPS across two paired runs; genuine SM5/SM6 cubes and a 16-check in-OS upload /
+  rejection probe also pass. There is no LLVM runtime or new external graphics dependency.
+- **First native GPU backend:** eligible D3D10 vertex/pixel draws now lower that shared IR
+  directly to legacy SM3 programs and run through VMware SVGA3D (`gpu3d.c`, `shader_gpu.c`).
+  Contexts/surfaces, GMR DMA, indexed draws, shader constants and fences are real device
+  commands, not a renamed CPU renderer. Stage-legal pixel comparisons and SM3 constant/input
+  read-port restrictions are tested. Unsupported hardware operations, control flow,
+  linkage, formats, states and large temporary banks retain per-draw native CPU fallback.
+  OpenGL, fixed-function D3D9, Flip 3D and desktop animations are not GPU-offloaded.
+  - Verified on Workstation 15.0.0 build-10134415 with 3D enabled, virtual hardware **7**,
+    `svga.vgpu10 = "FALSE"`, and its DX11 renderer on an RTX 3050. The modern guest-backed
+    interface (tested hardware 16) is **not implemented** and falls back. This is not a
+    physical NVIDIA driver or a D3D11/12 feature-level claim.
+  - Upload/readback and rendered-triangle/depth probes gate enablement. CPU buffers remain
+    authoritative, with fenced per-draw readback and safe CPU retry on failure; a 16 MiB
+    staging GMR is retained after loss to prevent late-DMA use-after-free. Legacy depth uses
+    D24S8; unsupported D32F stays on the CPU.
+  - Native SM4/SM5 cubes complete on the GPU; the larger SM6 cube stays on the CPU.
+    `gpuverify.exe` passes 36 fixed-pose CPU/GPU readback/counter checks, with zero pixels
+    exceeding its RGB-error threshold. Host reference/legality and mock fallback/transport
+    tests also cover the boundary. `d3d10cube --cpu --bench` supplies a forced-CPU comparison;
+    small-cube measurements show workload-specific speedups, but synchronous upload/readback
+    overhead still limits performance and is not a universal speedup.
+  - **Still needed:** guest-backed SVGA3D objects, more native shader/state lowering,
+    asynchronous/resident GPU resources that avoid per-draw transfers, broader real-device
+    validation, and native physical GPU drivers. Do not equate passing shader upload or
+    completed fences alone with correct pixels or faster frames.
+- **Still needed, not implied by shader acceptance:** D3D11/12 devices/resources/feature
+  levels and additional shader stages; geometry, tessellation, compute, waves, atomics/UAVs,
+  derivatives, double precision, broader textures/mips, signed render targets, newer profiles,
+  stencil, MSAA and stream output. DXIL currently rejects helper functions, backward branches,
+  nonzero resource spaces and unsupported intrinsics/properties at upload. D3D10 profile
+  queries remain SM4, and there is no run-time HLSL compiler. Extend the tested native subsets
+  before claiming more compatibility; JIT/native code generation is not part of this stage.
+  Vulkan still needs a SPIR-V frontend and API/driver work and is not planned. Linux programs
+  could get OpenGL through Mesa on `/dev/wrld/window`, but that is not implemented. Missing
+  from the native 2D raster stack: filters/blurs, box shadows, canvas, arbitrary CSS transforms
+  and a full CSS layout engine.
 - The display path starts with the GRUB/UEFI linear framebuffer and a write-combining mapping.
+  **WRLD Basic Display** now preserves firmware masks/stride, supports direct RGB 15/16/24/32-bit
+  layouts and x64 framebuffer apertures above 4 GiB, and correctly pairs PAT PA1 with its page
+  selector (including a no-PAT uncached fallback). The shared presenter uses exact RAM damage
+  history, contiguous changed-region writes, x64 SSE2 streaming/native packing and small
+  cursor-only uploads. x86 remains no-SIMD. History allocation is optional; firmware scanout
+  remains usable without it. `video=basic` is an explicit recovery path and PCI ownership is
+  conservatively associated without BAR sizing writes or vendor GPU initialization.
+  A separate bounded UC MMIO window and opt-in 64-bit BAR decoding also support high
+  xHCI register apertures on UEFI systems. The old BAR accessor keeps its low-address
+  contract for other drivers; further ports remain explicit work, not an all-driver claim.
+  This is a **CPU-rendered basic display driver**, not physical GPU 3D acceleration or
+  compatibility with arbitrary Windows `.sys` / Linux `.ko` drivers. BIOS/UEFI QEMU and
+  synthetic high-framebuffer mapping are test coverage, not proof for all physical machines;
+  live-USB hardware validation remains necessary. Native GPU engines, runtime GOP-independent
+  mode setting, monitor hotplug/multi-monitor, power management and broad vendor coverage remain.
   QEMU/Bochs, VirtualBox and VMware adapters also support runtime mode changes via native drivers.
-  There is no NVIDIA/AMD/Intel GPU driver, hardware acceleration, vsync or display-engine audio.
+  There is no physical NVIDIA/AMD/Intel GPU driver, vsync or display-engine audio; the
+  limited VMware D3D10 offload above is separate from the firmware framebuffer path.
 - PNG/JPEG/GIF/BMP, the native SVG subset and MP3/WAV audio are present. WebP, video decoding
   and a complete SVG implementation are still missing.
 - Display audio (HDMI/DP) is prepared on the HDA codec side (digital converter,
@@ -209,22 +274,21 @@ Already working, and not on the list below:
 
 ## The next steps to WebKit
 
-1. **WebKit on the window device.** No Ubuntu release packages WPE WebKit (checked up to 25.10),
-   and Debian's archive is not reachable from the build environment, so there are two routes:
-   - *WebKitGTK*, which Ubuntu packages: write a small Wayland compositor (with Ubuntu's
-     `libwayland-server`) that runs as a Linux program and shows each `wl_shm` surface in a
-     `/dev/wrld/window` window, then run GTK 4 with its Cairo renderer and WebKitGTK's
-     MiniBrowser on it. Needs `wl_compositor`, `wl_shm`, `xdg_wm_base`, `wl_seat` (with an XKB
-     keymap in a memfd) and `wl_output`, plus EGL/GBM avoided or provided by Mesa's llvmpipe.
-   - *WPE WebKit* built from source on a bigger build machine with the CPU Skia renderer and a
-     WRLD platform backend that writes frames straight into `/dev/wrld/window`.
-   The compositor route reuses packaged binaries, so it is the one to try first.
-2. **Networking for libsoup.** HTTP through libsoup 3 and TLS through glib-networking/GnuTLS,
-   on the existing socket layer; then IPv6 and loopback, which WebKit probes for.
-3. **Memory.** WebKit wants 1-2 GB per web process; the 3.75 GB ceiling and the in-RAM root file
-   system make a single web process the realistic target at first.
-4. **Input and lifecycle.** Keyboard and mouse events from the desktop window into WPE, resizing,
-   and tearing the processes down with the window.
+1. **WebKit is The WRLD Browser** in the 64-bit edition (done): the desktop icon, the Start
+   menu and links from other programs open WebKit (`src/apps/webkit.c`) with tabs, a bookmarks
+   bar, find, zoom and downloads; one browser runs and later addresses open as tabs in it. The
+   built-in engine stays for the 32-bit edition, machines under about 2 GB, and as a choice
+   (Control Panel, Network: "Use WebKit"; or `start classicbrowser`). Next: history, saved
+   bookmarks, and loading the WebKit libraries from disk to need less memory.
+2. **Input under load.** Typing very fast into a WebKit page can drop a key after Shift; typing at
+   normal speed, the address bar and all GTK widgets are fine. Not reproducible on the build
+   machine or with `lxtrace on`, so it is a timing issue in the Linux layer still to be found.
+3. **More real sites.** Real HTTPS sites load (pypi.org directly, docs.python.org through an HTTP
+   proxy with `--proxy`); the build environment only reaches a few hosts, so heavier sites
+   (video, big JavaScript apps) are still untested. `resolve` checks name lookups the way GLib
+   makes them.
+4. **Memory.** The root file system lives in RAM, so the WebKit build needs a 3 GB VM; loading
+   the WebKit libraries from disk instead would bring that down.
 
 ## Milestones
 
@@ -256,8 +320,9 @@ Already working, and not on the list below:
 14. [x] **Shared memory between processes** - `memfd_create`, `/dev/shm`, real `MAP_SHARED`
    (`src/linux/shm.c`, `samples/linux/shm.c`).
 15. [x] **Desktop windows for Linux programs** - `/dev/wrld/window` (`src/linux/wrldwin.c`).
-16. [ ] **A Wayland compositor on `/dev/wrld/window`**, then GTK 4 and WebKitGTK's MiniBrowser.
-17. [ ] **WebKit as a browser** on THE WRLD OS.
+16. [x] **A Wayland compositor on `/dev/wrld/window`**, GTK 4 and WebKitGTK (`wrldcomp`, `gtkhello`,
+    `wrldweb`).
+17. [x] **WebKit as a browser** on THE WRLD OS: The WRLD Browser in the 64-bit edition.
 
 Milestones 1-8 and 10 are implemented in `src/linux/proc.c`, `ipc.c`, `syscall.c`, `signal.c`,
 `fs.c`, `src/gui/ttf.c`/`text.c`/`raster.c` and `src/usb`.

@@ -60,7 +60,7 @@ void wm_defer(wm_deferred_fn fn, void *arg) { if (defn < 64) { defq[defn].fn = f
 
 /* ---------------- geometry ---------------- */
 static int menubar_h(window_t *w) { return w->nmenus ? T.menubar_h : 0; }
-static bool framed(window_t *w) { return !(w->flags & WF_POPUP); }
+static bool framed(window_t *w) { return !(w->flags & (WF_POPUP | WF_SKINNED)); }
 rect_t wm_client_rect(window_t *w) {
     if (!framed(w)) return R(w->x, w->y, w->w, w->h);
     int b = T.border, th = T.title_h;
@@ -78,7 +78,7 @@ static void sync_surface(window_t *w) {
     w->dirty = true;
 }
 static void frame_size_for_client(int cw, int ch, int flags, int nmenus, int *ow, int *oh) {
-    if (flags & WF_POPUP) { *ow = cw; *oh = ch; return; }
+    if (flags & (WF_POPUP | WF_SKINNED)) { *ow = cw; *oh = ch; return; }
     *ow = cw + 2 * T.border;
     *oh = ch + T.title_h + T.border + (nmenus ? T.menubar_h : 0);
 }
@@ -266,14 +266,14 @@ void wm_theme_changed(void) {
 
 /* ---------------- popup menus ---------------- */
 static struct {
-    bool open; int x, y, w, h; menu_item_t items[24]; int n; int hot;
+    bool open; int x, y, w, h; menu_item_t items[32]; int n; int hot;
     popup_cb cb; void *ctx; window_t *menubar_win; int menubar_idx;
 } pm;
 #define PM_ITEM_H 22
 #define PM_SEP_H 8
 static int pm_item_y(int i) { int y = 3; for (int k = 0; k < i; k++) y += pm.items[k].label[0] == '-' ? PM_SEP_H : PM_ITEM_H; return y; }
 void popup_menu(int x, int y, const menu_item_t *items, int n, popup_cb cb, void *ctx) {
-    pm.n = MIN(n, 24);
+    pm.n = MIN(n, 32);
     memcpy(pm.items, items, pm.n * sizeof(menu_item_t));
     int w = 120, h = 6;
     for (int i = 0; i < pm.n; i++) {
@@ -284,7 +284,7 @@ void popup_menu(int x, int y, const menu_item_t *items, int n, popup_cb cb, void
         h += PM_ITEM_H;
     }
     if (x + w > SCREEN_W) x = SCREEN_W - w - 2;
-    if (y + h > SCREEN_H) y = MAX(0, y - h);
+    if (y + h > SCREEN_H) y = y - h >= 0 ? y - h : MAX(0, SCREEN_H - h);   /* above, or as high as it fits */
     pm.x = x; pm.y = y; pm.w = w; pm.h = h; pm.hot = -1; pm.cb = cb; pm.ctx = ctx; pm.open = true;
     pm.menubar_win = NULL;
     wm_need_redraw = true;
@@ -403,14 +403,41 @@ static window_t *window_at(int sx, int sy) {
 bool wm_window_at_point(int x, int y) { return window_at(x, y) != NULL || effect_covers(x, y); }
 
 /* ---------------- painting ---------------- */
+/* "guiprof on" in the Command Prompt: every 2 seconds, how long each window spent
+ * painting and how long composing the screen took (serial port and boot log) */
+bool gui_profile;
+static uint64_t prof_tsc_ms;                      /* TSC ticks per millisecond, measured */
+static struct { window_t *w; uint64_t t; int n; } prof_win[16];
+static uint64_t prof_compose_t; static int prof_compose_n; static uint32_t prof_start;
+static void prof_paint(window_t *w, uint64_t t) {
+    for (int i = 0; i < 16; i++) if (prof_win[i].w == w || !prof_win[i].w) { prof_win[i].w = w; prof_win[i].t += t; prof_win[i].n++; return; }
+}
+static void prof_report(void) {
+    uint32_t now = timer_ticks();
+    static uint64_t tsc0; static uint32_t tick0;
+    if (!tick0) { tick0 = now; tsc0 = rdtsc(); }
+    else if (!prof_tsc_ms && now - tick0 >= 500) prof_tsc_ms = (rdtsc() - tsc0) / (now - tick0);
+    if (!gui_profile || !prof_tsc_ms) { prof_start = now; return; }
+    if (now - prof_start < 2000) return;
+    char line[512]; int o = snprintf(line, sizeof line, "guiprof %u ms: compose %u ms (%d)", now - prof_start,
+                                     (unsigned)(prof_compose_t / prof_tsc_ms), prof_compose_n);
+    for (int i = 0; i < 16 && prof_win[i].w; i++)
+        if (wm_alive(prof_win[i].w) && o < (int)sizeof line - 60)
+            o += snprintf(line + o, sizeof line - o, ", '%.20s' %u ms (%d)", prof_win[i].w->title,
+                          (unsigned)(prof_win[i].t / prof_tsc_ms), prof_win[i].n);
+    klog("%s", line);
+    memset(prof_win, 0, sizeof prof_win); prof_compose_t = 0; prof_compose_n = 0; prof_start = now;
+}
 static void run_paint(window_t *w) {
     if (!w->paint) { w->dirty = false; return; }
     sync_surface(w);              /* e.g. a menu bar was attached after the window was created */
     w->dirty = false;             /* preserve invalidations made during this paint */
     canvas_reset_clip(w->surf);
+    uint64_t t0 = gui_profile ? rdtsc() : 0;
     ui_begin(w);
     w->paint(w);
     ui_end(w);
+    if (gui_profile) prof_paint(w, rdtsc() - t0);
     wm_need_redraw = true;
 }
 static void paint_menubar(canvas_t *c, window_t *w, int dx, int dy) {
@@ -437,7 +464,31 @@ static void paint_window_at(canvas_t *c, window_t *w, int x, int y) {
     }
     rect_t cr = wm_client_rect(w);
     cr.x += x - w->x; cr.y += y - w->y;
-    blit(c, cr.x, cr.y, w->surf, 0, 0, cr.w, cr.h);
+    if (!(w->flags & WF_SKINNED)) { blit(c, cr.x, cr.y, w->surf, 0, 0, cr.w, cr.h); return; }
+    /* skinned: the app's pixels with alpha 0 (rounded corners, cut-outs) show what is behind */
+    rect_t r = rect_intersect(R(cr.x, cr.y, cr.w, cr.h), c->clip);
+    for (int yy = r.y; yy < r.y + r.h; yy++) {
+        const uint32_t *s = w->surf->px + (size_t)(yy - cr.y) * w->surf->stride + (r.x - cr.x);
+        uint32_t *d = c->px + (size_t)yy * c->stride + r.x;
+        for (int xx = 0; xx < r.w; xx++) if (s[xx] >> 24) d[xx] = s[xx] | 0xFF000000u;
+    }
+}
+void wm_begin_move(window_t *w) {
+    if (!wm_alive(w) || w->state == WS_MAXIMIZED) return;
+    capture = NULL; w->ui.down = false;
+    drag.mode = DRAG_MOVE; drag.w = w; drag.mx = wm_mouse_x; drag.my = wm_mouse_y; drag.start = R(w->x, w->y, w->w, w->h);
+}
+void wm_begin_resize(window_t *w, int edges) {
+    if (!wm_alive(w) || w->state == WS_MAXIMIZED || !(w->flags & WF_RESIZABLE)) return;
+    capture = NULL; w->ui.down = false;
+    drag.mode = DRAG_RESIZE; drag.w = w; drag.edges = edges; drag.mx = wm_mouse_x; drag.my = wm_mouse_y; drag.start = R(w->x, w->y, w->w, w->h);
+}
+void wm_set_skinned(window_t *w, bool on) {
+    if (!wm_alive(w) || !!(w->flags & WF_SKINNED) == on) return;
+    if (on) w->flags |= WF_SKINNED; else w->flags &= ~WF_SKINNED;
+    effect_cancel_window(w);
+    sync_surface(w);                             /* same outer size, the client area follows */
+    wm_need_redraw = true;
 }
 
 static void effect_drop(window_effect_t *e) {
@@ -615,6 +666,12 @@ static void compose(void) {
     }
     effects_before(&screen, 0);
     taskbar_paint(&screen);
+    /* a full-screen topmost popup (a video or visualisation shown full screen) covers the taskbar too */
+    for (int i = 0; i < nwin; i++) {
+        window_t *w = wins[i];
+        if ((w->flags & (WF_POPUP | WF_TOPMOST)) == (WF_POPUP | WF_TOPMOST) && !(w->flags & WF_HIDDEN) &&
+            w->x <= 0 && w->y <= 0 && w->w >= SCREEN_W && w->h >= SCREEN_H) paint_window_at(&screen, w, w->x, w->y);
+    }
     shell_paint_overlays(&screen);
     popup_paint(&screen);
     gfx_present(current_cursor(), wm_mouse_x, wm_mouse_y);
@@ -723,7 +780,10 @@ static void handle_mouse(mouse_state_t *ms) {
         return;
     }
 
-    if (shell_mouse(moved && !pressed && !released ? ME_MOVE : pressed ? ME_DOWN : released ? ME_UP : ME_MOVE, mx, my, pressed ? pressed : released)) {
+    bool full_up = false;                      /* a full-screen popup takes the taskbar's place too */
+    for (int i = 0; i < nwin; i++) if ((wins[i]->flags & (WF_POPUP | WF_TOPMOST)) == (WF_POPUP | WF_TOPMOST) && !(wins[i]->flags & WF_HIDDEN) &&
+                                       wins[i]->w >= SCREEN_W && wins[i]->h >= SCREEN_H) full_up = true;
+    if (!full_up && shell_mouse(moved && !pressed && !released ? ME_MOVE : pressed ? ME_DOWN : released ? ME_UP : ME_MOVE, mx, my, pressed ? pressed : released)) {
         if (hover_win && wm_alive(hover_win)) { deliver_mouse(hover_win, ME_LEAVE, mx, my, 0); hover_win = NULL; }
         return;
     }
@@ -878,13 +938,13 @@ extern void shell_restart_trampoline(void);
 #endif
 void video_update(int x, int y, int w, int h);
 static void wd_banner(const char *a, const char *b) {
-    canvas_t c; c.px = (uint32_t *)(uintptr_t)fb_info.addr; c.w = fb_info.width; c.h = fb_info.height;
-    c.stride = fb_info.pitch / 4; c.clip = R(0, 0, c.w, c.h);
-    int bw = MIN(c.w, 760), bx = (c.w - bw) / 2;
-    fill_rect(&c, bx, 0, bw, 50, HEX(0x9C1C1C));
-    draw_text(&c, FONT_UI_BOLD, bx + 10, 6, a, WHITE);
-    draw_text(&c, FONT_UI, bx + 10, 27, b, WHITE);
-    video_update(bx, 0, bw, 50);
+    static uint32_t pixels[760 * 50];
+    canvas_t c; int bw = MIN((int)fb_info.width, 760), bx = ((int)fb_info.width - bw) / 2;
+    canvas_init(&c, pixels, bw, 50);
+    fill_rect(&c, 0, 0, bw, 50, HEX(0x9C1C1C));
+    draw_text(&c, FONT_UI_BOLD, 10, 6, a, WHITE);
+    draw_text(&c, FONT_UI, 10, 27, b, WHITE);
+    gfx_emergency_present(&c, bx, 0);
 }
 static void watchdog(regs_t *r, uint32_t now) {
     /* Text-mode Setup runs on the GUI task and deliberately blocks it while it
@@ -1021,7 +1081,12 @@ void wm_run(void) {
             run_paint(w);
         }
         if (ndying) reap_windows();
-        if (wm_need_redraw) compose();
+        if (wm_need_redraw) {
+            uint64_t t0 = gui_profile ? rdtsc() : 0;
+            compose();
+            if (gui_profile) { prof_compose_t += rdtsc() - t0; prof_compose_n++; }
+        }
+        prof_report();
         if ((int32_t)(timer_ticks() - loop_t0) >= 150)
             usb_diag("gui: %u ms in one frame", timer_ticks() - loop_t0);
         task_yield();

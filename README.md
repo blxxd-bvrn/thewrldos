@@ -1,7 +1,7 @@
 # THE WRLD OS
 
 An original x86 operating system written from scratch in C and assembly (about 20,000
-lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the Lexbor HTML parser and the minimp3 decoder), in a **32-bit**
+lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the Lexbor HTML parser and the minimp3, stb_vorbis, dr_flac and PL_MPEG decoders), in a **32-bit**
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
 category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` shell scripts** and opens
 **Apple `.dmg` disk images**. It connects to the network and has its own web browser,
@@ -9,7 +9,7 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 
 - Boots from a GRUB CD image (BIOS or UEFI) into a spinning-globe boot screen, a log-on
   screen and the desktop.
-- **Two editions from the same sources:** `wrldos.iso` (32-bit, i686) runs 32-bit Win32
+- **Two editions from the same sources:** `wrldos.iso` (32-bit, any Pentium-class CPU or later) runs 32-bit Win32
   programs; `wrldos64.iso` (64-bit, x86-64 long mode) runs 64-bit (x64) Win32 programs.
   Everything else is the same.
 - Runs **live from the CD** or **installs to a hard disk** with a graphical Setup (a detailed
@@ -147,8 +147,10 @@ You can also choose the emulated hardware:
 Boot `wrldos.iso` (or `wrldos64.iso`, in a VM set up for a 64-bit guest, for example
 VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** or **UEFI** boot and at least
 **64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). The ISO
-is a hybrid image: a PC-BIOS core and an x86-64 EFI System Partition (`EFI/BOOT/BOOTX64.EFI`).
-UEFI firmware must be 64-bit (the usual kind); a 32-bit-only EFI machine cannot boot it. To install,
+is a hybrid image: a PC-BIOS core and an EFI System Partition with both `EFI/BOOT/BOOTX64.EFI` and
+`EFI/BOOT/BOOTIA32.EFI`, so 64-bit UEFI and 32-bit UEFI firmware (Bay Trail tablets and 2-in-1s,
+early Intel Macs) both boot it; Setup installs both loaders. See [real hardware](docs/HARDWARE.md)
+for what works on which generation of PC. To install,
 attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **NVMe**, or **SCSI**
 (VMware/VirtualBox **LSI Logic** and **LSI Logic SAS**, **VMware Paravirtual**, **virtio-scsi**), a
 **virtio-blk** disk in QEMU/KVM/Proxmox, or a **USB** disk behind a UHCI, OHCI, EHCI or xHCI
@@ -268,6 +270,9 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 ### 32-bit and 64-bit (`src/arch/i686`, `src/arch/x86_64`)
 - One set of C sources builds both editions; only the boot stub, the interrupt and
   context-switch assembly and the linker script are per architecture.
+- **32-bit:** compiled for the Pentium (i586, tuned for i686) without MMX or SSE, so it also runs
+  on Pentium MMX, AMD K6 and the VIA C3 of many thin clients; PAT, the local APIC, write-combining
+  and the TSC are used only when CPUID reports them.
 - **x86-64:** GRUB loads the 64-bit ELF kernel through Multiboot 2 (or Multiboot 1 on an older
   GRUB). A 32-bit stub checks for long mode, identity-maps the first 4 GiB with 2 MiB pages,
   enables PAE, long mode, the FPU and SSE, and calls the same `kmain`. Interrupt stubs save the
@@ -296,15 +301,45 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Devices:**
   - PIT timer (1 kHz), CMOS RTC, PS/2 keyboard and wheel mouse.
   - **Display (`video.c`):**
+    - **WRLD Basic Display Driver** (`wrldbasic`, `src/gui/basicfb.c`): a native,
+      vendor-neutral fallback for the direct-color framebuffer set up by BIOS/VESA or
+      UEFI GOP. This is the basic-display-driver approach, **not universal GPU-accelerated
+      3D** and not a way to load Windows/Linux graphics drivers. It retains firmware scanout
+      without resetting or programming an unsupported Intel/AMD/NVIDIA GPU.
+      - Firmware RGB masks and padded pitch are preserved: RGB/BGR 32/24-bit, RGB565/555
+        and supported 32-bit bitmask layouts such as 10:10:10. Invalid/overlapping masks,
+        indexed/text modes and invalid apertures are rejected before framebuffer writes.
+        The x64 edition can map framebuffer apertures above 4 GiB; x86 still requires
+        them below 4 GiB. This does not enable high-RAM heap allocation.
+      - PAT entry **PA1** is programmed and selected consistently by the large-page PWT
+        bit. PAT/MSR capability is checked; an uncached path works when unavailable.
+        x64 has aligned SSE2 streaming stores for large native-format writes; x86 stays
+        SSE/MMX-free. RGB conversion uses native packing/lookups, not external libraries.
+      - Exact 32x16-pixel RAM history skips unchanged regions and merges adjacent changed
+        tiles, with no device-memory reads. Cursor composition is done in RAM and restored
+        afterwards; movement uploads only old/new cursor regions. History is optional
+        (at most 64 MiB with a RAM headroom check); allocation failure retains full-copy
+        presentation. A failed back-buffer allocation does not change the display mode.
+      - `video=basic` / `basicdisplay` forces firmware-only recovery; the GRUB menu has a
+        Basic Display live entry. PCI association uses read-only BAR bases and is conservative
+        on multi-GPU machines, rather than claiming or resetting an arbitrary adapter.
+        `display` reports the driver, masks, physical/mapped address, cache/copy path and
+        transfer counters. See [Basic Display and live-USB testing](docs/BASIC_DISPLAY.md).
+      - A bounded uncached high-MMIO window and read-only 64-bit PCI BAR decoder let
+        xHCI use UEFI-assigned USB-controller registers above 4 GiB. Other native
+        drivers retain their existing limits until ported; this is not universal
+        Windows/Linux driver compatibility.
     - Bochs/BGA "DISPI" driver for QEMU's standard VGA, Bochs and VirtualBox VBoxVGA.
     - VMware SVGA II driver (command FIFO) for VMware and VirtualBox VMSVGA.
+      A native **legacy VMware SVGA3D** backend offloads eligible D3D10 draws; see
+      the 3D section below for the tested VM configuration and CPU fallbacks.
     - Resolution changes at runtime from Control Panel > Display, with an XP-style "keep these
       settings?" countdown, and are saved in `wrld.ini`.
     - On real hardware the bootloader asks for the display's preferred 32-bit mode (a
       1920x1080x32-through-1024x768x32 list, then `auto`) and the kernel marks the framebuffer
       write-combining, so a real GPU gets a native-resolution, faster surface; a 24-bit boot mode
-      is converted too. A native GPU driver (NVIDIA/AMD/Intel) is not included - those are Linux
-      kernel modules - so the GRUB/UEFI framebuffer remains the device, and the display-engine
+      is converted too. A physical NVIDIA/AMD/Intel **GPU-engine** driver is not included;
+      WRLD Basic Display uses the GRUB/UEFI framebuffer instead, and the display-engine
       half of HDMI audio still needs such a driver.
   - **Sound (`audio.c`):**
     - **Intel HD Audio:** CORB/RIRB codec commands, and a search for the output path from the
@@ -467,11 +502,38 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Shared memory:** `memfd_create` (with seals), `shm_open`/`shm_unlink` under `/dev/shm`,
   and `MAP_SHARED` of those or of anonymous memory share real pages between processes, across
   `fork` and through descriptors passed with `SCM_RIGHTS` (`shm` tests all of it).
+- **The WRLD Browser on WebKit.** The 64-bit edition's browser is WebKitGTK 6 (the engine of
+  Safari and GNOME Web), built in whenever the build machine has `libwebkitgtk-6.0-dev`
+  (`make ARCH=x86_64 LX_WEBKITGTK=0` leaves it out; the image is about 290 MB and needs about
+  2 GB of memory). Tabs, a bookmarks bar, find (Ctrl+F), zoom, downloads into My
+  Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
+  edition, on smaller machines, or when "Use WebKit" is turned off under Control Panel, Network.
+  Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, AV1, H.264, Opus and AAC
+  (YouTube's formats among them; FFmpeg is left out for size). There is no GPU driver for Linux
+  programs, so pages are drawn on the CPU, and composited ones (videos, some animations) reach the
+  window through shared memory. Linux programs have no sound device yet, so videos play silently.
+- **Wayland, GTK 4 and WebKit.** `wrldcomp` is a Wayland compositor that shows each Linux
+  program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
+  `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser
+  (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
+  `lxtrace on` in the Command Prompt logs every Linux system call to the serial port, and
+  `guiprof on` logs how long each window takes to paint, every 2 seconds.
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
   loopback interface, `MAP_SHARED` write-back to ordinary files, and a real `vfork` (the child
-  gets a copy of the parent). See `ROADMAP.md` for the rest of the way to WPE WebKit.
+  gets a copy of the parent). See `ROADMAP.md` for what is left before WebKit becomes the browser.
 
 ### USB (`src/usb`)
+- In **both editions** (`-DWRLD_NO_USB` builds a kernel without it).
+- **Taking over from the BIOS:** every controller is handed over properly before it is reset, so
+  the firmware's USB keyboard emulation (SMIs) stops cleanly: the xHCI and EHCI legacy support
+  capabilities (BIOS/OS semaphores, SMI enables cleared, up to a second for the BIOS to let go),
+  OHCI's ownership change request, and UHCI's LEGSUP register. On Intel 7- and 8-series chipsets
+  (Panther Point, Lynx Point, Wildcat Point) the ports shared between EHCI and xHCI are switched to
+  xHCI before anything is probed.
+- **Split transactions on EHCI:** full- and low-speed devices behind a high-speed hub, including
+  the hub built into Intel chipsets from about 2010 (which have no companion controllers, so every
+  keyboard and mouse sits behind it), are reached through the hub's transaction translator. Each
+  device address keeps its speed, translator hub and port, and endpoint 0's packet size.
 - **Host controllers:** all four kinds a PC uses. **xHCI** (`xhci.c`, USB 3.x, what every
   machine has had for the last decade), **EHCI** (`ehci.c`, USB 2.0 high speed),
   **UHCI** (`uhci.c`, USB 1.1 on PIIX/ICH chipsets) and **OHCI** (`ohci.c`, USB 1.1 on
@@ -706,12 +768,15 @@ device manager's job is to say what the computer has and which driver runs it.
   the log-on screen, using the normal widgets.
 
 ### Desktop (`src/gui`)
-- **3D acceleration (WRLD 3D, `src/gui/r3d.c`):** a software 3D engine with an on/off toggle in
-  Control Panel > Visual Effects (saved as `accel3d`). It is a fixed-function pipeline like
-  early OpenGL: 4x4 matrices, per-vertex lighting, near-plane clipping, a depth buffer,
+- **3D rendering:** an on/off toggle in
+  Control Panel > Visual Effects (saved as `accel3d`) enables both the native CPU engines
+  and supported VMware GPU offload. **WRLD 3D** (`src/gui/r3d.c`) is a software engine:
+  a fixed-function pipeline like early OpenGL: 4x4 matrices, per-vertex lighting,
+  near-plane clipping, a depth buffer,
   perspective-correct texture mapping with bilinear filtering, and alpha blending. Rows are
-  filled as exact spans with one perspective division per 16 pixels. It runs on the processor:
-  THE WRLD OS has no graphics card driver, so this is 3D rendering rather than GPU acceleration.
+  filled as exact spans with one perspective division per 16 pixels. Flip 3D, WRLD 3D,
+  OpenGL 1.1 and fixed-function Direct3D 9 still use the processor; the separate D3D10
+  shader pipeline can use the GPU backend described below. Desktop animations are unchanged.
   - **Flip 3D** (`flip3d.c`): with 3D on, Alt+Tab shows the open windows as a tilted stack of
     cards. Tab, Shift+Tab, the arrow keys or the wheel move through it; releasing Alt, Enter or a
     click picks a window; Esc goes back. Ctrl+Alt+Tab keeps the stack open. With 3D off, Alt+Tab
@@ -720,7 +785,8 @@ device manager's job is to say what the computer has and which driver runs it.
     scene with a frame counter and toggles for lighting, textures and filtering. Under QEMU's
     emulation it draws about 170,000 pixels a frame at about 24 frames/s on the 64-bit edition
     and about 7 on the 32-bit one, which uses x87 floating point.
-  - **3D for Windows programs** (`src/win32/gl.c`, `d3d9.c`, `vulkan.c`), on the same engine:
+  - **3D for Windows programs** (`src/win32`): OpenGL and fixed-function D3D9 share WRLD 3D;
+    D3D10 has a separate shader pipeline.
     - **OpenGL 1.1** (`opengl32.dll`, `glu32.dll`): WGL contexts (`ChoosePixelFormat`,
       `wglCreateContext`, `SwapBuffers`), `glBegin`/`glEnd` with every primitive type, vertex
       arrays, display lists, the matrix stacks, textures (RGB, RGBA, BGR(A), luminance), one
@@ -733,23 +799,94 @@ device manager's job is to say what the computer has and which driver runs it.
       (`tools/gen_d3d9.py`), so methods that are not implemented return `D3DERR_INVALIDCALL`
       with the stack intact. A few `d3dx9` matrix helpers are exported too. Shaders are not
       supported: `SetVertexShader`/`SetPixelShader` accept only NULL.
-    - **Direct3D 10** (`d3d10.dll`, `dxgi.dll`, `src/win32/d3d10.c` and `dxbc.c`): the shader
-      pipeline. Vertex and pixel shaders are Shader Model 4 bytecode (compiled HLSL); `dxbc.c`
-      decodes them once and interprets them for every vertex and every pixel: the arithmetic,
-      integer, conversion and comparison instructions, if/else/loop, discard, constant buffers
-      (also relatively indexed), immediate constant buffers, indexable temporaries and texture
-      `sample`/`sample_l`/`ld`/`resinfo`. `d3d10.c` rasterises with perspective-correct
-      interpolation of every shader output, depth testing, culling and blending. Swap chains
-      present into a window; buffers, 2D textures, views, input layouts, sampler, rasterizer,
-      depth and blend states, `Draw`, `DrawIndexed` and `DrawInstanced` (triangle lists and
-      strips) are implemented. Not implemented: geometry shaders, stencil, multisampling, lines
-      and points, stream output, mip levels, and compiling HLSL at run time
-      (`D3D10CompileShader`/`D3DCompile` fail), so programs must ship compiled shaders, as most
-      do. The COM tables are generated from mingw-w64's headers (`tools/gen_d3d10.py`).
-      `d3d10cube.exe` in `C:\Samples` runs about 6 frames/s on the 64-bit edition under QEMU and
-      2 on the 32-bit one: every pixel runs the pixel shader in the interpreter.
-      Its shaders come from `samples/d3d10cube.sm4`, assembled by `tools/dxbc_asm.py` (a small
-      Shader Model 4 assembler; there is no HLSL compiler outside Windows).
+    - **Direct3D 10 and staged shader extensions** (`d3d10.dll`, `dxgi.dll`,
+      `src/win32/d3d10.c`, `dxbc.c`, `dxil.c`): vertex/pixel shaders use a native CPU
+      interpreter or eligible **VMware SVGA3D GPU** offload. SM4.0/4.1 DXBC is joined by
+      tested **SM5.0 DXBC** and **SM6.0 / DXIL 1.0**
+      subsets. These are WRLD shader-upload extensions, **not D3D11/12 compatibility or a
+      higher feature level**; D3D10's vertex/pixel profile queries still return `vs_4_0` /
+      `ps_4_0`. Both formats lower to the same native IR. DXIL's LLVM bitstream is parsed
+      directly: there is no LLVM runtime, JIT or native-code execution, and no new graphics
+      library dependency.
+      - SM4 arithmetic, integers, conversions/comparisons, structured if/else/loop, discard,
+        relatively indexed constant buffers, immediate constant buffers and indexable
+        temporaries remain. SM5 adds reciprocal, half conversions, bit count/reversal/scan,
+        bitfields, carry/borrow and conditional swap. The DXIL subset covers scalar f32/i32,
+        signature I/O (including packed columns), legacy constant buffers, float Texture2D
+        sampling, common math/dot intrinsics, discard and bounded forward branches/two-input
+        phi nodes. Modern `SampleLevel`/bias operands must be constant zero; only the base
+        mip is rendered. Unsupported instructions, resource kinds/spaces and stages fail
+        upload with a diagnostic rather than becoming silent no-ops.
+      - A prepared execution context binds operands and allocates registers **once per draw**;
+        shader invocations allocate nothing, including large temporary banks. Only destination
+        lanes are calculated, float rounding avoids per-component x87 rounding-mode changes,
+        and fully written pixel outputs need no clearing. The rasterizer clips the frustum,
+        solves top-left-covered scanline spans and steps only live varying components. It
+        supports perspective, noperspective and flat interpolation, component-remapped linkage,
+        shader-written depth, depth testing, culling, blending and color write masks. Uint
+        pixel outputs work with `R8G8B8A8_UINT` / `R32_UINT` targets (no blending); signed
+        render targets are not implemented.
+      - Swap chains present into windows; buffers, 2D textures, views, input layouts, sampler,
+        rasterizer, depth/blend states, `Draw`, `DrawIndexed` and `DrawInstanced` triangle lists
+        and strips remain. Missing: geometry/tessellation/compute, waves, UAVs/atomics, doubles,
+        DXIL helper functions/backward branches, derivatives, comparison/array/cube/MSAA
+        textures, newer shader profiles, stencil, multisampling, line/point primitives, stream
+        output, lower mip storage and run-time HLSL compilation (`D3D10CompileShader` /
+        `D3DCompile` fail). This is a bounded implementation, not a complete DXIL validator.
+      - **Native VMware GPU backend** (`src/kernel/gpu3d.c`, `src/win32/shader_gpu.c`):
+        real SVGA3D contexts, surfaces, shader programs, indexed draws, guest-memory DMA and
+        completion fences. The shared IR lowers directly to legal legacy SM3 programs,
+        including stage-specific comparison lowering and register-read-port limits; no
+        Mesa, LLVM, FreeType, Skia or ICU runtime is introduced.
+        - Tested with **VMware Workstation 15.0.0 build-10134415**, accelerated 3D enabled,
+          **virtual hardware version 7** (`virtualHW.version = "7"`, `mks.enable3d = "TRUE"`,
+          `svga.vgpu10 = "FALSE"`). Its DX11 host renderer used an NVIDIA RTX 3050; this is
+          **not** a native guest NVIDIA driver. Modern guest-backed-object SVGA3D (including
+          the tested hardware-version-16 VM), QEMU's 2D SVGA and unsupported devices keep
+          the CPU renderer. A guest-backed-object backend is not implemented.
+        - Offload is narrower than shader upload: float vertex/pixel math, bounded if/else,
+          perspective-linked varyings, up to 28 original temporaries / 512 emitted instruction
+          slots and eight 2D texture/sampler pairs. RGBA8/BGRA8 targets, point/linear sampling,
+          common depth/cull/blend states and color masks are supported. Integer/bit operations,
+          relative/indexable addressing, loops/discard, larger programs, unsupported linkage,
+          formats and states fall back **per draw**, without rejecting CPU-supported shaders.
+          The supplied SM4/SM5 cubes offload; the larger SM6 cube correctly falls back.
+        - Upload/readback and a rendered triangle/depth self-test must pass before enabling
+          offload. CPU color/depth buffers stay authoritative between draws; readback commits
+          only after a fence. The legacy target uses D24S8 depth; D32F requests stay on the CPU
+          when float depth is unavailable. A bounded 16 MiB staging GMR is retained after a
+          timeout so outstanding host DMA cannot access freed memory.
+        - `C:\Samples\gpuverify.exe` compares actual GPU and forced-CPU readbacks at four
+          fixed poses for both SM4 and SM5, checks completed GPU draw counts, and reports
+          **36 checks** through `OutputDebugString`. `--show` displays both images. The tested
+          poses have zero pixels exceeding the 24-level RGB error threshold. A missing GPU
+          fails this hardware verifier rather than passing a CPU-versus-CPU comparison.
+          Synchronous per-draw transfers/readbacks are still costly: **GPU execution is not
+          a guaranteed FPS improvement**, especially for small windows/simple shaders.
+          In two GPU-stage trials at `a326397` (before Basic Display presentation changes),
+          one-vCPU, 512 MiB x64 VMware, the 120-frame 480x360 SM4 cube
+          took **1,148–1,158 ms CPU vs 795–901 ms GPU** (paired 1.28–1.44x speedups);
+          SM5 took **1,224–1,252 vs 908–1,167 ms** (1.05–1.38x). These include synchronous
+          transfers and window presentation, not just shader time, and are not comparable
+          to QEMU TCG figures or a general physical-GPU performance claim.
+      - `C:\Samples\d3d10cube.exe` defaults to the original SM4 assembly; `--sm5` / `--sm6`
+        select genuine FXC/DXC equivalents from `samples/d3d10cube.hlsl`. `--bench` draws four
+        warm-up frames followed by 120 deterministic 480x360 frames, logging the elapsed
+        milliseconds, the last-draw backend and GPU/CPU draw counts with `OutputDebugString`.
+        `--cpu` selects the native CPU renderer even on a supported GPU; combine it with
+        `--sm5` / `--sm6` for like-for-like comparisons. In the earlier same-host,
+        512 MB, one-vCPU QEMU TCG x64
+        comparison (two runs), SM4 improved from **7.97–8.12 to 12.14–13.18 FPS**
+        (**1.52–1.62x** paired speedups). SM5 measured **10.72–12.02 FPS** and SM6
+        **7.80–8.73 FPS**. These are software-renderer benchmark
+        results, not real-hardware/GPU numbers; x86 is compile/host-tested, not re-timed here.
+      - `C:\Samples\shaderprobe.exe` checks successful uploads, rejected features and unchanged
+        profile queries (16 checks). `make check-shaders` runs native host execution and
+        framebuffer, GPU-lowering/reference and FIFO-transport tests using checked-in real
+        compiler fixtures; `make bench-shaders` adds
+        an interpreter microbenchmark, **not OS frame rate**. Regeneration uses host FXC/DXC
+        only; see [`tools/shaders/README.md`](tools/shaders/README.md) for the exact subset,
+        limits and commands. The COM tables still come from `tools/gen_d3d10.py`.
     - **Vulkan** is not feasible: it draws only with SPIR-V shader programs. `vulkan-1.dll`
       exists so that programs can ask, and `vkCreateInstance` answers
       `VK_ERROR_INCOMPATIBLE_DRIVER` so that they fall back to Direct3D 9 or OpenGL.
@@ -900,20 +1037,50 @@ device manager's job is to say what the computer has and which driver runs it.
     Fonts, Ease of Access.
 - **Task Manager:** applications, processes, CPU/memory graphs.
 - **The WRLD Browser** (see above).
-- **THE WRLD Media Player** (`mediaplayer.c`): an all-in-one player in the style of the XP era,
-  with its own dark glossy skin.
-  - Now Playing shows the track's info and a visualisation drawn from the samples being heard
-    (a spectrum from a 512-point FFT, a scope, or an ambience); Library lists every `.mp3` and
-    `.wav` on the drives, with ID3 titles, artists and albums, and a search box; the Now Playing
-    list sits on the right.
-  - Transport bar: play/pause, stop, previous, next, a seek bar, shuffle, repeat, mute and volume.
-    Keys: Ctrl+P play/pause, Ctrl+S stop, Ctrl+F/Ctrl+B next/previous, Ctrl+H shuffle,
-    Ctrl+T repeat, Ctrl+O open, F8 mute, F9/F10 volume, Space and the arrow keys on Now Playing.
-  - MP3s (MPEG-1/2 layer III) are decoded by [minimp3](https://github.com/lieff/minimp3)
-    (`third_party/minimp3`, public domain; glue in `src/media/mp3.c`) on their own task, straight
-    into a sound of the full length: playback starts once half a second is ready.
-  - Opening an `.mp3` or `.wav` file opens it in the player. My Music has three original sample
-    tracks, synthesised by `tools/gen_music.py`.
+- **THE WRLD Media Player** (`mediaplayer.c`, `mpviz.c`): after the player that came with
+  Windows XP.
+  - A skinned window with its own rounded frame (`WF_SKINNED` windows draw their whole frame;
+    pixels with alpha 0 are see-through, and the app can ask the window manager to move or resize
+    it). The title band has the playlist selector and the caption buttons; the feature taskbar
+    down the left has Now Playing, Media Guide, Copy from CD, Media Library, Radio Tuner, Copy to
+    CD or Device, Premium Services and Skin Chooser, and can be hidden with its grip.
+  - Now Playing shows the video or the visualisation, its toolbar (visualisation menu, previous
+    and next, the name of the current look, full screen) and the playlist pane with the album
+    picture. Along the bottom: rewind, the seek bar and fast forward, then glassy round play/pause,
+    stop, previous, next and mute buttons, the volume slider, shuffle, repeat and a status box.
+  - **Visualisations** (`mpviz.c`), 29 looks in 7 collections. Ambience and Charge are feedback
+    effects: every frame the previous picture is warped (zoom, rotation, swirl, ripple, tunnel,
+    kaleidoscope, rising flames, mirror, waves), softened and faded, shapes driven by the music
+    (waveform lines and rings, spectrum rays, orbiting dots, beat bursts, lightning, stars) are
+    drawn on top, and the result is coloured through a drifting palette that flashes on the beat.
+    Charge's Randomization invents a new combination every 12 seconds or on a big beat. Bars and
+    Waves (bars, mirrored bars, scope, fire scope, spectrum circle), Plasma, Particles (starfield,
+    fountain, fireworks on the beat), Album Art, and Spectrum 3D (a landscape and towers drawn by
+    the WRLD 3D engine). Double-click the picture, click the full-screen button or press Alt+Enter
+    for full screen. The audio is analysed with a 512-point FFT into 32 bands, levels and beats.
+  - **Formats** (`src/media`, one decoder interface in `src/include/mediadec.h`; formats are
+    recognised by their contents): MP3, MP2 and MP1 ([minimp3](https://github.com/lieff/minimp3)),
+    Ogg Vorbis ([stb_vorbis](https://github.com/nothings/stb)), FLAC and Ogg FLAC
+    ([dr_flac](https://github.com/mackron/dr_libs)), WAV (PCM 8/16/24/32-bit, 32/64-bit float,
+    A-law, mu-law, IMA ADPCM, Microsoft ADPCM, WAVE_FORMAT_EXTENSIBLE, up to 8 channels folded to
+    stereo), AIFF and AIFC, Sun .au, and **MPEG-1 video** with MP2 sound (.mpg, .mpeg;
+    [PL_MPEG](https://github.com/phoboslab/pl_mpeg)), whose pictures are decoded in step with the
+    sound. Tags come from ID3v1/v2 and Vorbis comments. Decoding runs on its own task, straight
+    into a sound of the full length; playback starts once half a second is ready. Each decoder was
+    checked against ffmpeg's own decoding of the same files (signal-to-noise ratio 45 to 129 dB).
+    Not supported: AAC/M4A, WMA/WMV, Opus, MP4/H.264, AVI, MIDI and audio CDs.
+  - **Skins:** WRLD Blue (the default), Silver, Olive Green, Midnight, Tangerine, Lavender,
+    and **Classic**, which uses the system window frame and grey 3D controls. The Skin Chooser
+    previews each one; the choice and the visualisation are remembered.
+  - Media Library: a tree (All Media, All Music, each artist and album, All Video) and a table
+    with search. Media Guide lists what is on the computer; Copy to CD or Device copies checked
+    items to My Music\Copied or another drive. Copy from CD, Radio Tuner and Premium Services
+    explain what is not available (audio CD reading, internet radio streams, online services).
+  - Keys: Ctrl+P play/pause, Ctrl+S stop, Ctrl+F/Ctrl+B next/previous, Ctrl+H shuffle, Ctrl+T
+    repeat, Ctrl+O open, Ctrl+1..8 the features, Alt+Enter full screen, F8 mute, F9/F10 volume;
+    on Now Playing, Space, Left/Right to seek and Up/Down to change the visualisation.
+  - Opening any of these files opens it in the player. My Music has three original sample
+    tracks (synthesised by `tools/gen_music.py`) and My Videos a short MPEG-1 clip.
 - **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
   Minesweeper, Pong, WRLD Security Center, Administrative Tools, Properties, Run, About, Setup.
 
@@ -1058,7 +1225,10 @@ third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this 
 third_party/quickjs  QuickJS-ng 0.18 (JavaScript), MIT licence
 third_party/quickjs-shim  the small C and math library QuickJS is built against
 third_party/minimp3  minimp3 (MP3 decoding for the media player), public domain (CC0)
-src/media          MP3 glue for minimp3 (mp3.c)
+third_party/stb_vorbis  stb_vorbis (Ogg Vorbis), public domain or MIT
+third_party/dr_flac  dr_flac (FLAC), public domain or MIT-0
+third_party/pl_mpeg  PL_MPEG (MPEG-1 video, MP2), MIT
+src/media          decoder glue: one interface (mdec.c), WAV/AIFF/AU (pcm.c), MP3, Vorbis, FLAC, MPEG-1
 samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c, d3d10cube.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)

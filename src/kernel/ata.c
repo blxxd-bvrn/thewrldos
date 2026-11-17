@@ -37,30 +37,59 @@ static int wait_ready_ms(uint16_t ctl, bool need_drq, uint32_t ms) {
 }
 static int wait_ready(uint16_t io, uint16_t ctl, bool need_drq) { (void)io; return wait_ready_ms(ctl, need_drq, 5000); }
 
-/* ---- bus-master IDE DMA (PIIX/ICH IDE in QEMU, VirtualBox, VMware) ---- */
-static uint16_t bmide;                    /* bus master base (primary; secondary is +8) */
-static uint32_t *prdt[2];
+/* ---- channels and bus-master DMA ----
+ * Every PCI IDE controller is used: a channel in compatibility mode sits at the
+ * legacy ports (0x1F0/0x3F6, 0x170/0x376), one in PCI native mode (most SATA
+ * controllers set to "IDE" in the BIOS, and many later PATA chipsets) at the
+ * addresses in BARs 0-3. BAR 4 is the bus-master DMA block, 8 ports per channel. */
+#define MAXCH 8
+typedef struct { uint16_t io, ctl, bm; } channel_t;
+static channel_t chans[MAXCH];
+static int nchan;
+static bool bmide;                        /* some channel has bus-master DMA */
+static uint32_t *prdt[MAXCH];
 static uint8_t *bounce;                   /* 64 KiB, never crosses a 64 KiB boundary */
 static bool ide_match(const pci_dev_t *p) { return p->cls == 0x01 && p->sub == 0x01; }
 DRIVER_PCI(drv_ide, "atapi", "IDE/ATA controllers (bus-master DMA or PIO)", DC_STORAGE, ide_match);
+static void add_channel(uint16_t io, uint16_t ctl, uint16_t bm) {
+    if (!io || nchan >= MAXCH) return;
+    for (int i = 0; i < nchan; i++) if (chans[i].io == io) return;
+    chans[nchan] = (channel_t){ io, ctl, bm };
+    if (bm) { bmide = true; prdt[nchan] = kmalloc_aligned(16, 16); if (!prdt[nchan]) chans[nchan].bm = 0; }
+    nchan++;
+}
 static void dma_setup(void) {
     pci_dev_t *devs; int n = pci_list(&devs);
     for (int i = 0; i < n; i++) {
-        if (!ide_match(&devs[i])) continue;
-        uint32_t bar4 = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x20);
-        if (!(bar4 & 1) || !(bar4 & ~3u)) { dev_claim(&devs[i], &drv_ide, "Standard IDE controller (PIO)"); continue; }
-        uint32_t cmd = pci_cfg_read(devs[i].bus, devs[i].dev, devs[i].fn, 0x04);
-        pci_cfg_write(devs[i].bus, devs[i].dev, devs[i].fn, 0x04, (cmd & 0xFFFF) | 0x05);    /* I/O + bus master */
-        bmide = bar4 & ~3u;
-        for (int c = 0; c < 2; c++) prdt[c] = kmalloc_aligned(16, 16);
-        bounce = kmalloc_aligned(65536, 65536);
-        klog("ata: bus-master DMA at %x (%04x:%04x)", bmide, devs[i].vendor, devs[i].device);
-        dev_claim(&devs[i], &drv_ide, "Standard dual-channel PCI IDE controller (bus-master DMA)");
-        return;
+        const pci_dev_t *pd = &devs[i];
+        if (!ide_match(pd)) continue;
+        uint32_t cmd = pci_cfg_read(pd->bus, pd->dev, pd->fn, 0x04);
+        pci_cfg_write(pd->bus, pd->dev, pd->fn, 0x04, (cmd & 0xFFFF) | 0x05);    /* I/O + bus master */
+        uint32_t bar4 = pci_cfg_read(pd->bus, pd->dev, pd->fn, 0x20);
+        uint16_t bm = (bar4 & 1) ? (uint16_t)(bar4 & ~3u) : 0;
+        for (int c = 0; c < 2; c++) {
+            bool native = pd->prog & (c ? 0x04 : 0x01);
+            uint16_t io = c ? 0x170 : 0x1F0, ctl = c ? 0x376 : 0x3F6;
+            if (native) {
+                uint32_t b0 = pci_cfg_read(pd->bus, pd->dev, pd->fn, (uint8_t)(0x10 + c * 8)), b1 = pci_cfg_read(pd->bus, pd->dev, pd->fn, (uint8_t)(0x14 + c * 8));
+                if (!(b0 & 1) || !(b1 & 1)) continue;
+                io = (uint16_t)(b0 & ~3u); ctl = (uint16_t)((b1 & ~3u) + 2);
+            }
+            add_channel(io, ctl, bm ? (uint16_t)(bm + c * 8) : 0);
+        }
+        char nm[96];
+        snprintf(nm, sizeof nm, "%s IDE controller (%s%s)", (pd->prog & 0x05) == 0x05 ? "PCI native" : (pd->prog & 0x05) ? "Mixed-mode" : "Standard dual-channel",
+                 bm ? "bus-master DMA" : "PIO", "");
+        dev_claim(pd, &drv_ide, nm);
+        klog("ata: %04x:%04x prog-if %02x, bus master %x", pd->vendor, pd->device, pd->prog, bm);
     }
+    /* no PCI IDE controller: try the legacy ports anyway (PIO) */
+    if (!nchan) { add_channel(0x1F0, 0x3F6, 0); add_channel(0x170, 0x376, 0); }
+    if (bmide) bounce = kmalloc_aligned(65536, 65536);
+    if (!bounce) { bmide = false; for (int i = 0; i < nchan; i++) chans[i].bm = 0; }
 }
 static bool dma_xfer(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
-    uint16_t bm = bmide + (d->bus ? 8 : 0), io = d->io;
+    uint16_t bm = chans[d->bus].bm, io = d->io;
     uint32_t *prd = prdt[d->bus];
     prd[0] = (uint32_t)(uintptr_t)bounce; prd[1] = 0x80000000u | ((n * 512) & 0xFFFF);   /* 0 means 64 KiB */
     outb(bm, 0);                                       /* stop */
@@ -98,7 +127,7 @@ static bool ata_write(blkdev_t *d, uint64_t blk, uint32_t count, const void *buf
 static const blkops_t ata_ops = { ata_read, ata_write, NULL };
 
 static void identify(int bus, int slave) {
-    uint16_t io = bus ? 0x170 : 0x1F0, ctl = bus ? 0x376 : 0x3F6;
+    uint16_t io = chans[bus].io, ctl = chans[bus].ctl;
     if (inb(io + 7) == 0xFF) return;                  /* floating bus */
     outb(ctl, 0x02);                                   /* nIEN: we poll */
     outb(io + ATA_DRIVE, 0xA0 | (slave << 4));
@@ -131,8 +160,9 @@ static void identify(int bus, int slave) {
     blk_commit(d);
 }
 void ata_probe(void) {
-    if (!bmide) dma_setup();
-    for (int b = 0; b < 2; b++) for (int s = 0; s < 2; s++) identify(b, s);
+    static bool setup;
+    if (!setup) { dma_setup(); setup = true; }
+    for (int b = 0; b < nchan; b++) for (int s = 0; s < 2; s++) identify(b, s);
 }
 
 static bool setup_cmd(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
@@ -158,7 +188,7 @@ static bool setup_cmd(blkdev_t *d, uint32_t lba, uint32_t n, bool write) {
 static bool ata_read(blkdev_t *d, uint64_t blk, uint32_t count, void *buf) {
     uint32_t lba = (uint32_t)blk;
     uint8_t *p = buf;
-    if (bmide && d->dma) {
+    if (chans[d->bus].bm && d->dma) {
         while (count) {
             uint32_t n = MIN(count, 128u);
             if (!dma_xfer(d, lba, n, false)) { d->dma = false; klog("ata: disk %d: falling back to PIO", d->index); break; }
@@ -182,7 +212,7 @@ static bool ata_read(blkdev_t *d, uint64_t blk, uint32_t count, void *buf) {
 static bool ata_write(blkdev_t *d, uint64_t blk, uint32_t count, const void *buf) {
     uint32_t lba = (uint32_t)blk;
     const uint8_t *p = buf;
-    if (bmide && d->dma) {
+    if (chans[d->bus].bm && d->dma) {
         while (count) {
             uint32_t n = MIN(count, 128u);
             memcpy(bounce, p, n * 512);

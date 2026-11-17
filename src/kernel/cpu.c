@@ -296,14 +296,6 @@ int pci_scan(pci_dev_t *out, int max) {
     return n;
 }
 void pci_rescan(void) { pci_ncache = -1; }
-/* a BAR's address (memory or I/O); 64-bit memory BARs above 4 GiB are refused */
-uintptr_t pci_bar(const pci_dev_t *p, int i, bool *is_io) {
-    uint32_t v = pci_cfg_read(p->bus, p->dev, p->fn, 0x10 + i * 4);
-    if (is_io) *is_io = v & 1;
-    if (v & 1) return v & ~3u;
-    if (((v >> 1) & 3) == 2 && i < 5 && pci_cfg_read(p->bus, p->dev, p->fn, 0x14 + i * 4)) return 0;
-    return v & ~0xFu;
-}
 void pci_enable(const pci_dev_t *p, bool io, bool mem) {
     uint32_t cmd = pci_cfg_read(p->bus, p->dev, p->fn, 0x04) & 0xFFFF;
     cmd |= 0x04 | (io ? 1 : 0) | (mem ? 2 : 0);          /* bus master */

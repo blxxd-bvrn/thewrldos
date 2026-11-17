@@ -13,6 +13,7 @@
 #include "usb.h"
 #include "bootinfo.h"
 #include "wm.h"
+extern const driver_t drv_basic_display;
 
 /* ---------------- the driver list ---------------- */
 extern const driver_t *const drivers_start[], *const drivers_end[];   /* collected by the linker script */
@@ -150,7 +151,8 @@ static void scan_pci(void) {
         if (ven) snprintf(name, sizeof name, "%s %s", ven, kind); else snprintf(name, sizeof name, "%s", kind);
         int c = claim_find(p);
         if (c >= 0) {
-            add(claims[c].drv->cls, DS_WORKING, claims[c].drv, hwid, claims[c].name, loc, "This device is working properly.");
+            add(claims[c].drv->cls, DS_WORKING, claims[c].drv, hwid, claims[c].name, loc,
+                claims[c].drv == &drv_basic_display ? "Firmware framebuffer is working. CPU rendering; vendor GPU acceleration and mode changes are unavailable." : "This device is working properly.");
             continue;
         }
         const driver_t *m = NULL;
@@ -160,6 +162,7 @@ static void scan_pci(void) {
             char why[128];
             int st = DS_FAILED;
             if (m->cls == DC_NETWORK && class_claimed(DC_NETWORK)) { st = DS_NOT_STARTED; snprintf(why, sizeof why, "The %s driver supports this adapter, but only one network adapter is used at a time.", m->name); }
+            else if (m->cls == DC_DISPLAY && (class_claimed(DC_DISPLAY) || !video_can_set_mode())) { st = DS_NOT_STARTED; snprintf(why, sizeof why, "This adapter was not selected for the firmware output. It has not been reset or initialized."); }
             else if (m->cls == DC_SOUND && (class_claimed(DC_SOUND) || audio_present())) { st = DS_NOT_STARTED; snprintf(why, sizeof why, "The %s driver supports this device, but another sound device is in use.", m->name); }
             else snprintf(why, sizeof why, "The %s driver could not start this device. The kernel log (dmesg) has the details.", m->name);
             add(m->cls, st, m, hwid, name, loc, why);
@@ -184,6 +187,9 @@ static void scan_fixed(void) {
     char vendor[16], brand[52]; cpu_get_info(vendor, brand);
     add(DC_COMPUTER, DS_BUILTIN, NULL, ARCH_BITS == 64 ? "ROOT\\ACPI_X64_PC" : "ROOT\\ACPI_X86_PC",
         ARCH_BITS == 64 ? "ACPI x64-based PC" : "ACPI x86-based PC", "", bootinfo.is_efi ? "Started by UEFI firmware." : "Started by BIOS (legacy) firmware.");
+    if (!video_can_set_mode() && !class_claimed(DC_DISPLAY))
+        add(DC_DISPLAY, DS_WORKING, &drv_basic_display, "ROOT\\WRLDBASICDISPLAY", "WRLD Basic Display Driver", "Firmware framebuffer",
+            "Firmware output is usable. PCI ownership is unknown; no vendor GPU acceleration is claimed.");
     char hw[48]; snprintf(hw, sizeof hw, "CPU\\%s", vendor);
     add(DC_PROCESSOR, DS_BUILTIN, NULL, hw, brand, "", "The kernel runs on one processor.");
     int ps2 = ps2_detected();

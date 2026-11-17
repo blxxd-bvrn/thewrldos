@@ -9,7 +9,7 @@
  * for one interrupt poll: its ED is placed in the 32-entry frame table for the
  * duration of the transfer. Full- and low-speed devices are both native here,
  * so a USB 1.1 keyboard and mouse work without a companion controller. */
-#ifdef __x86_64__
+#ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "devmgr.h"
 
@@ -335,11 +335,22 @@ static int ohci_init(ohci_t *o, const pci_dev_t *pd)
     bool is_io = false;
     uintptr_t bar = pci_bar(pd, 0, &is_io);
     if (!bar || is_io) return -1;
+#ifdef __x86_64__
     if (bar >= 0x100000000ull) { klog("ohci: MMIO above the identity map"); return -1; }
+#endif
     pci_enable(pd, false, true);
     paging_set_uncached(bar);
     o->mmio = (volatile uint32_t *)bar;
 
+    /* InterruptRouting set: the BIOS (SMM) drives the controller for legacy
+     * keyboard emulation. Request ownership and wait for it to let go. */
+    if (or32(o, HC_CONTROL) & (1u << 8)) {
+        ow32(o, HC_INTR_ENABLE, 1u << 30);                   /* OwnershipChange */
+        ow32(o, HC_COMMAND, 1u << 3);                        /* OwnershipChangeRequest */
+        uint32_t t1 = timer_ticks();
+        while ((or32(o, HC_CONTROL) & (1u << 8)) && (int32_t)(timer_ticks() - t1) < 1000) task_yield();
+        if (or32(o, HC_CONTROL) & (1u << 8)) { klog("ohci: the BIOS kept the controller; taking it"); ow32(o, HC_CONTROL, or32(o, HC_CONTROL) & ~(1u << 8)); }
+    }
     ow32(o, HC_INTR_DISABLE, 0xFFFFFFFFu);
     ow32(o, HC_COMMAND, CMD_HCR);
     uint32_t t0 = timer_ticks();

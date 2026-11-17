@@ -239,6 +239,33 @@ fail:
     return -1;
 }
 
+/* a program started from the desktop has no console window: what it writes goes to
+ * the boot log a line at a time, and it reads end-of-file */
+static char logcon_buf[256]; static int logcon_len;
+static void logcon_write(console_t *c, const char *s, int n) {
+    (void)c;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == '\n' || logcon_len == (int)sizeof logcon_buf - 1) {
+            logcon_buf[logcon_len] = 0;
+            if (logcon_len) klog("linux: %s", logcon_buf);
+            logcon_len = 0;
+            if (s[i] == '\n') continue;
+        }
+        if (s[i] != '\r') logcon_buf[logcon_len++] = s[i];
+    }
+}
+static int logcon_readline(console_t *c, char *buf, int cap) { (void)c; if (cap) buf[0] = 0; return 0; }
+static int logcon_getkey(console_t *c) { (void)c; return -1; }
+static void logcon_none(console_t *c) { (void)c; }
+static void logcon_title(console_t *c, const char *t) { (void)c; (void)t; }
+static void logcon_color(console_t *c, int fg, int bg) { (void)c; (void)fg; (void)bg; }
+static bool logcon_alive(console_t *c) { (void)c; return true; }
+static console_t log_console = { logcon_write, logcon_readline, logcon_getkey, logcon_none, logcon_title, logcon_color, logcon_alive };
+/* start a Linux program in the background (for the desktop: no console) */
+int lx_launch(const char *wrld_path, int argc, char **argv, char **envp, char *err, int ecap) {
+    return lx_spawn(wrld_path, argc, argv, envp, &log_console, &log_console, err, ecap);
+}
+
 /* fork(): a second process with a copy of this address space, the same open
  * files and the same thread state. The child returns 0 from the same call. */
 int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid);
@@ -491,10 +518,15 @@ void lx_return_check(regs_t *r) {
     if (now - th->slice_start >= 10) { task_yield(); th->slice_start = timer_ticks(); }
 }
 
+bool lx_strace;                          /* "lxtrace on" in the Command Prompt: every system call to the log */
 void lx_syscall_c(regs_t *r) {
     lxthread_t *th = lx_current();
     uint64_t nr = r->eax;
+    uint64_t a0 = r->edi, a1 = r->esi, a2 = r->edx;
     int64_t v = lx_syscall(r);
+    if (lx_strace && th && nr != 24 && nr != 228)          /* not sched_yield / clock_gettime: too many */
+        klog("lx %d: %llu(%llx, %llx, %llx) = %lld", th->proc ? th->proc->pid : -1, (unsigned long long)nr,
+             (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (long long)v);
     if (th) { th->sys_nr = (uint32_t)nr; th->sys_eintr = nr != 15 && v == -EINTR; }
     r->eax = (uint64_t)v;
 }
@@ -522,6 +554,16 @@ bool lx_exception(regs_t *r, uintptr_t cr2) {
     else if (sig == 4 || sig == 8) addr = r->eip;
     if (lx_signal_fault(r, sig, code, addr)) return true;   /* the program installed a handler */
     klog("linux: pid %d: %s at %llx (address %llx, error %llx)", p->pid, what, (unsigned long long)r->eip, (unsigned long long)cr2, (unsigned long long)r->err_code);
+    {   /* where: the file mapped there and the offset in it, and the instruction's bytes */
+        vma_t *v = uvm_find(p->vm, r->eip);
+        if (v && v->fnode) klog("linux: pid %d:   in %s + %llx", p->pid, v->fnode->name, (unsigned long long)(r->eip - v->start + v->foff));
+        uint8_t code[12];
+        if (uvm_check(p->vm, r->eip, sizeof code, false)) {
+            memcpy(code, (void *)(uintptr_t)r->eip, sizeof code);
+            klog("linux: pid %d:   code %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x", p->pid,
+                 code[0], code[1], code[2], code[3], code[4], code[5], code[6], code[7], code[8], code[9], code[10], code[11]);
+        }
+    }
     if (p->con) { char m[128]; snprintf(m, sizeof m, "%s\n", what); p->con->write(p->con, m, strlen(m)); }
     p->term_sig = sig;
     lx_exit_group(p, 128 + sig);
