@@ -23,6 +23,20 @@ VISUAL STYLES
   From the Command Prompt:  theme list   /   theme aero   /   theme olive 40
                             theme saturation -40   /   theme lightness 20
 
+WELCOME SCREEN (LOGON SKINS)
+  The welcome screen's look is a logon skin (C:\WRLD\Resources\Logon Skins,
+  *.wrldlogon). "Sign In" is the default; "XP Classic" is the older XP-style
+  screen. Midnight, Sunrise and Olive Classic are also included.
+  - Logon Skin Themer (All Programs, or Personalization > "Welcome screen
+    (logon skins)...") applies a skin, previews it full screen, or opens it
+    in the Maker. Double-click a thumbnail to apply it.
+  - Logon Skin Maker (All Programs) edits the layout, text, background
+    picture, shown items and colours with a live preview. "Save and use"
+    saves the skin and makes it the welcome screen.
+  - On the welcome screen, Help and Settings > Next skin cycles the skins.
+  - Double-click a .wrldlogon file to install it and open it in the Maker.
+  Sign in as Guest works only when the account has no password.
+
 THE INTERNET
   The WRLD Browser (Start menu > Internet, or the globe on the Quick Launch
   bar) opens web pages over HTTP and HTTPS (TLS 1.3 or 1.2, through Mbed TLS).

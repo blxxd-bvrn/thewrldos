@@ -1,0 +1,38 @@
+; THE WRLD OS logon skin, made with Logon Skin Maker. You can also edit it here.
+; Layout is signin or classic. Colours are #RRGGBB. Image is a PNG, JPEG, GIF or BMP
+; path (leave it empty for the drawn background).
+
+[Skin]
+Name=Midnight
+Description=The sign-in screen at night: near-black blue with violet and teal glows.
+Layout=signin
+
+[Text]
+Title=welcome to
+Subtitle=Click on your name to sign in
+Brand=THE WRLD OS
+
+[Background]
+Image=
+
+[Options]
+ShowClock=1
+ShowGuest=1
+ShowHelp=1
+ShowGlobe=1
+
+[Colors]
+bg_top=#05060F
+bg_bottom=#12142A
+glow1=#2A2F6E
+glow2=#5A2A6E
+glow3=#1E5A78
+accent=#D8442A
+text=#FFFFFF
+subtext=#B8BEE8
+panel_top=#E8E8F4
+panel_bottom=#9AA0C8
+panel_text=#0A0A1E
+button_top=#FFFFFF
+button_bottom=#C8CCE0
+button_text=#1A1A40

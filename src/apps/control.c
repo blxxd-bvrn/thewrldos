@@ -299,6 +299,9 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     /* pick up new or edited .wrldstyle files */
     if (c->style_gen != vfs_generation) { c->style_gen = vfs_generation; styles_load(); theme_compute(theme_id, theme_hue, &T); wm_theme_changed(); }
     if (ui_link(w, ox + 20, oy + 56, FONT_UI, "Advanced appearance: colours and cursors...", W7_LINK)) cp_go(c, "advanced", true);
+    {   extern void logonthemer_open(void);
+        int lx = ox + 40 + text_width(FONT_UI, "Advanced appearance: colours and cursors...");
+        if (ui_link(w, lx, oy + 56, FONT_UI, "Welcome screen (logon skins)...", W7_LINK)) logonthemer_open(); }
     int y = oy + 78;
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Visual styles", T.text);
     {

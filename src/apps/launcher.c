@@ -5,6 +5,7 @@
 #include "mediadec.h"
 #include "theme.h"
 #include "audio.h"
+#include "logon.h"
 
 const app_info_t app_table[] = {
     { "xplorer", "The WRLD Browser", "Browse the web", ICON_BROWSER },
@@ -20,6 +21,8 @@ const app_info_t app_table[] = {
     { "pong", "Pong", "Two-paddle arcade game", ICON_GAME },
     { "wmplayer", "THE WRLD Media Player", "Play music and sounds", ICON_MEDIA_PLAYER },
     { "wrld3d", "WRLD 3D", "Test the 3D engine", ICON_CP_DISPLAY },
+    { "logonthemer", "Logon Skin Themer", "Choose the look of the welcome screen", ICON_CP_APPEARANCE },
+    { "logonmaker", "Logon Skin Maker", "Make your own welcome screen skin", ICON_CP_APPEARANCE },
     { "security", "WRLD Security Center", "Firewall, password, web protection and system health", ICON_CP_SYSTEM },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
@@ -45,6 +48,8 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "pong")) pong_open();
     else if (!strcasecmp(name, "wmplayer") || !strcasecmp(name, "mediaplayer") || !strcasecmp(name, "wmplayer.exe")) mediaplayer_open(arg);
     else if (!strcasecmp(name, "wrld3d") || !strcasecmp(name, "3d")) demo3d_open();
+    else if (!strcasecmp(name, "logonthemer") || !strcasecmp(name, "logonskins")) logonthemer_open();
+    else if (!strcasecmp(name, "logonmaker")) logonmaker_open(arg);
     else if (!strcasecmp(name, "security") || !strcasecmp(name, "firewall")) security_open();
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
     else if (!strcasecmp(name, "help")) notepad_open("C:\\WRLD\\Help.txt");
@@ -66,9 +71,8 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) return ICON_EXE;
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
-    if (!strcasecmp(e, "wrldstyle")) return ICON_CP_APPEARANCE;
-    if (!strcasecmp(e, "mpg") || !strcasecmp(e, "mpeg") || !strcasecmp(e, "m1v") || !strcasecmp(e, "mpe")) return ICON_MEDIA_PLAYER;
-    if (mdec_known_ext(e) || !strcasecmp(e, "wma") || !strcasecmp(e, "m3u")) return ICON_MUSIC_FILE;
+    if (!strcasecmp(e, "wrldstyle") || !strcasecmp(e, "wrldlogon")) return ICON_CP_APPEARANCE;
+    if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3") || !strcasecmp(e, "wma") || !strcasecmp(e, "m3u")) return ICON_MUSIC_FILE;
     if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) return ICON_IMAGE_FILE;
     if (!strcasecmp(e, "html") || !strcasecmp(e, "htm") || !strcasecmp(e, "url")) return ICON_BROWSER;
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
@@ -92,6 +96,7 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "html") || !strcasecmp(e, "htm")) return "HTML Document";
     if (!strcasecmp(e, "url")) return "Internet Shortcut";
     if (!strcasecmp(e, "wrldstyle")) return "Visual Style";
+    if (!strcasecmp(e, "wrldlogon")) return "Logon Skin";
     if (!strcasecmp(e, "wav")) return "Wave Sound";
     if (!strcasecmp(e, "mp3")) return "MP3 Audio File";
     if (!strcasecmp(e, "mp2") || !strcasecmp(e, "mp1") || !strcasecmp(e, "mpa")) return "MPEG Audio File";
@@ -134,6 +139,12 @@ bool shell_open(const char *path, const char *cwd) {
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
     } else if (mdec_known_ext(e)) {
         mediaplayer_open(full);
+    } else if (!strcasecmp(e, "wrldlogon")) {
+        /* install it into the skin folder if it is elsewhere, then edit it */
+        char dir[512]; path_dirname(full, dir, sizeof dir);
+        if (strcasecmp(dir, LOGON_SKIN_DIR)) { vnode_t *d = vfs_mkdir_p(LOGON_SKIN_DIR); if (d) vfs_copy(n, d, NULL); }
+        logon_skins_load();
+        logonmaker_open(n->name);
     } else if (!strcasecmp(e, "wrldstyle")) {
         /* apply the visual style, then show it in Personalization */
         char dir[512]; path_dirname(full, dir, sizeof dir);
