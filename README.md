@@ -502,10 +502,14 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   `fork` and through descriptors passed with `SCM_RIGHTS` (`shm` tests all of it).
 - **The WRLD Browser on WebKit.** The 64-bit edition's browser is WebKitGTK 6 (the engine of
   Safari and GNOME Web), built in whenever the build machine has `libwebkitgtk-6.0-dev`
-  (`make ARCH=x86_64 LX_WEBKITGTK=0` leaves it out; the image is about 270 MB and needs about
+  (`make ARCH=x86_64 LX_WEBKITGTK=0` leaves it out; the image is about 290 MB and needs about
   2 GB of memory). Tabs, a bookmarks bar, find (Ctrl+F), zoom, downloads into My
   Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
   edition, on smaller machines, or when "Use WebKit" is turned off under Control Panel, Network.
+  Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, AV1, H.264, Opus and AAC
+  (YouTube's formats among them; FFmpeg is left out for size). There is no GPU driver for Linux
+  programs, so pages are drawn on the CPU, and composited ones (videos, some animations) reach the
+  window through shared memory. Linux programs have no sound device yet, so videos play silently.
 - **Wayland, GTK 4 and WebKit.** `wrldcomp` is a Wayland compositor that shows each Linux
   program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
   `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser

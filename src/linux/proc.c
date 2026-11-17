@@ -554,6 +554,16 @@ bool lx_exception(regs_t *r, uintptr_t cr2) {
     else if (sig == 4 || sig == 8) addr = r->eip;
     if (lx_signal_fault(r, sig, code, addr)) return true;   /* the program installed a handler */
     klog("linux: pid %d: %s at %llx (address %llx, error %llx)", p->pid, what, (unsigned long long)r->eip, (unsigned long long)cr2, (unsigned long long)r->err_code);
+    {   /* where: the file mapped there and the offset in it, and the instruction's bytes */
+        vma_t *v = uvm_find(p->vm, r->eip);
+        if (v && v->fnode) klog("linux: pid %d:   in %s + %llx", p->pid, v->fnode->name, (unsigned long long)(r->eip - v->start + v->foff));
+        uint8_t code[12];
+        if (uvm_check(p->vm, r->eip, sizeof code, false)) {
+            memcpy(code, (void *)(uintptr_t)r->eip, sizeof code);
+            klog("linux: pid %d:   code %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x", p->pid,
+                 code[0], code[1], code[2], code[3], code[4], code[5], code[6], code[7], code[8], code[9], code[10], code[11]);
+        }
+    }
     if (p->con) { char m[128]; snprintf(m, sizeof m, "%s\n", what); p->con->write(p->con, m, strlen(m)); }
     p->term_sig = sig;
     lx_exit_group(p, 128 + sig);

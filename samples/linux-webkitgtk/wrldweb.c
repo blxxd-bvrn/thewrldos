@@ -58,6 +58,13 @@ static const char *css =
     "notebook > header tab { min-height: 24px; padding: 2px 6px; }"
     "notebook > header tab label { font-size: 9pt; }";
 
+/* WebKit only accepts composited frames when GTK says it could use GL, although the
+ * shared-memory frames it then receives never touch GL (GTK itself draws with Cairo
+ * here, GSK_RENDERER=cairo). Without this, a page that must be composited, such as one
+ * playing a video, crashes the browser. This definition in the program takes the place
+ * of GTK's for WebKit's question. */
+__attribute__((visibility("default"))) gboolean gdk_display_prepare_gl(GdkDisplay *d, GError **e) { (void)d; (void)e; return TRUE; }
+
 /* ---------------- tabs ---------------- */
 static WebKitWebView *view_at(int i) {
     GtkWidget *p = gtk_notebook_get_nth_page(GTK_NOTEBOOK(notebook), i);
@@ -137,9 +144,12 @@ static gboolean on_policy(WebKitWebView *v, WebKitPolicyDecision *dec, WebKitPol
             return TRUE;
         }
     }
-    if (t == WEBKIT_POLICY_DECISION_TYPE_RESPONSE && !webkit_response_policy_decision_is_mime_type_supported(WEBKIT_RESPONSE_POLICY_DECISION(dec))) {
-        webkit_policy_decision_download(dec);       /* files the browser cannot show are saved */
-        return TRUE;
+    if (t == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {      /* a page's own file it cannot show is saved; never a frame's */
+        WebKitResponsePolicyDecision *rd = WEBKIT_RESPONSE_POLICY_DECISION(dec);
+        if (webkit_response_policy_decision_is_main_frame_main_resource(rd) && !webkit_response_policy_decision_is_mime_type_supported(rd)) {
+            webkit_policy_decision_download(dec);
+            return TRUE;
+        }
     }
     return FALSE;
 }
@@ -157,9 +167,12 @@ static void load(WebKitWebView *v, const char *uri) {
     else webkit_web_view_load_uri(v, uri);
 }
 static WebKitWebView *new_tab(const char *uri, WebKitWebView *related, gboolean show) {
+    /* videos may start by themselves, with sound, as on a desktop browser (YouTube expects it) */
+    WebKitWebsitePolicies *pol = webkit_website_policies_new_with_policies("autoplay", WEBKIT_AUTOPLAY_ALLOW, NULL);
     WebKitWebView *v = related
-        ? WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, "settings", wsettings, NULL))
-        : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "network-session", session, "settings", wsettings, NULL));
+        ? WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, "settings", wsettings, "website-policies", pol, NULL))
+        : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "network-session", session, "settings", wsettings, "website-policies", pol, NULL));
+    g_object_unref(pol);
     gtk_widget_set_vexpand(GTK_WIDGET(v), TRUE);
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
     GtkWidget *label = gtk_label_new("New Tab");
@@ -504,8 +517,8 @@ static void activate(GtkApplication *app, gpointer d) {
 int main(int argc, char **argv) {
     /* THE WRLD OS has no GPU drivers for Linux programs and no bubblewrap sandbox */
     g_setenv("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1", FALSE);
-    g_setenv("WEBKIT_DISABLE_DMABUF_RENDERER", "1", FALSE);
-    g_setenv("WEBKIT_DISABLE_COMPOSITING_MODE", "1", FALSE);
+    /* composited pages (a video, some animations) travel in shared memory, drawn on the CPU */
+    g_setenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1", FALSE);
     g_setenv("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1", FALSE);
     const char *proxy = g_getenv("WRLD_PROXY"), *start = NULL;
     for (int i = 1; i < argc; i++) {

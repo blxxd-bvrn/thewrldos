@@ -353,7 +353,7 @@ LX_WEBKITGTK_ON := $(filter-out 0,$(LX_WEBKITGTK))
 LXWEBKITGTK := $(if $(LX_WEBKITGTK_ON),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/ssl/certs
-	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0)
+	gcc -O2 -Wall -rdynamic -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0)
 	cp -L $(WKGTK_DIR)/WebKitWebProcess $(WKGTK_DIR)/WebKitNetworkProcess $(LXROOT)/Linux$(WKGTK_DIR)/
 	cp -L $(WKGTK_DIR)/injected-bundle/*.so $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle/
 	cp -L /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules/
@@ -367,6 +367,18 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	elif [ -f /etc/ssl/certs/ca-certificates.crt ]; then cp -L /etc/ssl/certs/ca-certificates.crt $(LXROOT)/Linux/etc/ssl/certs/; fi
 	@# testing only: LX_CA_BUNDLE=file adds certificates (say, a TLS-inspecting proxy's) to that list
 	@if [ -n "$(LX_CA_BUNDLE)" ]; then cat "$(LX_CA_BUNDLE)" >> $(LXROOT)/Linux/etc/ssl/certs/ca-certificates.crt; echo "added $(LX_CA_BUNDLE) to the CA list"; fi
+	@# video and audio: GStreamer plugins for WebM/MP4 with VP8, VP9, AV1, H.264, Opus and AAC
+	@# (YouTube's formats among them), about 15 MB; FFmpeg (gst-libav) is left out, at 200 MB.
+	@# There is no Linux sound device on THE WRLD OS: playback runs without an audio sink.
+	@mkdir -p $(LXROOT)/Linux$(GST_DIR) $(LXROOT)/Linux$(GST_SCANNER_DIR)
+	@for p in $(GST_PLUGINS); do [ -f $(GST_DIR)/libgst$$p.so ] && cp -L $(GST_DIR)/libgst$$p.so $(LXROOT)/Linux$(GST_DIR)/ || echo "GStreamer plugin $$p not on this machine (gstreamer1.0-plugins-base/good/bad)"; done
+	@if [ -x $(GST_SCANNER_DIR)/gst-plugin-scanner ]; then cp -L $(GST_SCANNER_DIR)/gst-plugin-scanner $(LXROOT)/Linux$(GST_SCANNER_DIR)/; fi
+	@for lib in $$(ldd $(LXROOT)/Linux$(GST_DIR)/*.so $(GST_SCANNER_DIR)/gst-plugin-scanner 2>/dev/null | awk '/=> \// { print $$3 }' | sort -u); do \
+	  cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+GST_DIR := /usr/lib/x86_64-linux-gnu/gstreamer-1.0
+GST_SCANNER_DIR := /usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0
+GST_PLUGINS := coreelements typefindfunctions playback app audioconvert audioresample videoconvertscale volume autodetect \
+               audiofx isomp4 matroska vpx opus aom openh264 faad videoparsersbad audioparsers codecalpha
 # the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
 # replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
 LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)

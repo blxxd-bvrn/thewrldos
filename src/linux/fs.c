@@ -362,6 +362,7 @@ static vnode_t *etc_seed(const char *abs, const char *wrld) {
     return vfs_resolve(wrld, NULL);
 }
 
+#define LX_FILE_GROW (64u << 20)      /* the most a regular file grows in one write or truncate */
 /* resolve a Linux path to a node (NULL: not found) */
 static vnode_t *resolve(lxproc_t *p, int dirfd, const char *upath, int *kind, char *labs, int lcap) {
     char w[512];
@@ -514,6 +515,9 @@ static int64_t file_write(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, in
         vnode_t *v = f->node;
         uint64_t pos = at >= 0 ? (uint64_t)at : ((f->oflags & O_APPEND) ? v->size : f->pos);
         if (pos + n > 0x7FFFFFFF || pos + n > p->rlim[1][0]) return -EFBIG;   /* RLIMIT_FSIZE */
+        /* files live in memory, whole: a write far past the end would allocate and zero the gap
+         * in one go and stall the desktop, so a file grows at most LX_FILE_GROW at a time */
+        if (pos > v->size && pos - v->size > LX_FILE_GROW) return -EFBIG;
         uint64_t ns = MAX((uint64_t)v->size, pos + n);
         if (pos == v->size && at < 0) { if (!vfs_append_node(v, src, n)) return -ENOSPC; }
         else {
@@ -788,8 +792,11 @@ int64_t lx_sys_file(lxthread_t *t, int nr, regs_t *r, bool *handled) {
         if (n->dir) return -EISDIR;
         uint64_t ns = a1;
         if (ns > 0x7FFFFFFF) return -EFBIG;
-        uint8_t *b = kzalloc(ns ? ns : 1);
+        if (ns > n->size && ns - n->size > LX_FILE_GROW) return -EFBIG;   /* see file_write */
+        uint8_t *b = kmalloc(ns ? ns : 1);
+        if (!b) return -ENOMEM;
         memcpy(b, n->data, MIN(ns, (uint64_t)n->size));
+        if (ns > n->size) memset(b + n->size, 0, ns - n->size);
         bool ok = vfs_write_node(n, b, ns); kfree(b);
         return ok ? 0 : -ENOSPC;
     }

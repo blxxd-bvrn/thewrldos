@@ -381,6 +381,7 @@ static const struct xdg_toplevel_interface toplevel_impl = {
 };
 static void toplevel_gone(struct wl_resource *r) {
     struct xdg *x = wl_resource_get_user_data(r);
+    if (!x) return;                                  /* its xdg_surface went first and cleaned up */
     x->toplevel = NULL;
     window_gone(x->win); x->win = NULL;
 }
@@ -441,6 +442,7 @@ static void pp_reposition(struct wl_client *c, struct wl_resource *r, struct wl_
 static const struct xdg_popup_interface popup_impl = { pp_destroy, pp_grab, pp_reposition };
 static void popup_gone(struct wl_resource *r) {
     struct xdg *x = wl_resource_get_user_data(r);
+    if (!x) return;
     x->popup = NULL;
     struct window *w = x->win;
     wl_list_remove(&x->link); wl_list_init(&x->link);
@@ -480,10 +482,14 @@ static void xs_geometry(struct wl_client *c, struct wl_resource *r, int32_t x, i
 }
 static void xs_ack(struct wl_client *c, struct wl_resource *r, uint32_t serial) { (void)c; struct xdg *d = wl_resource_get_user_data(r); if (serial == d->serial) d->acked = 1; }
 static const struct xdg_surface_interface xdg_surface_impl = { xs_destroy, xs_toplevel, xs_popup, xs_geometry, xs_ack };
+/* a client that disconnects has its resources destroyed in any order: whichever of the
+ * xdg_surface and its role object goes first tidies up for both */
 static void xdg_surface_gone(struct wl_resource *r) {
     struct xdg *x = wl_resource_get_user_data(r);
     if (x->s) x->s->xdg = NULL;
-    if (x->toplevel) { wl_resource_set_user_data(x->toplevel, NULL); }
+    struct wl_resource *t = x->toplevel, *p = x->popup;    /* the _gone calls clear these */
+    if (t) { toplevel_gone(t); wl_resource_set_user_data(t, NULL); }
+    if (p) { popup_gone(p); wl_resource_set_user_data(p, NULL); }
     free(x);
 }
 /* positioner */
