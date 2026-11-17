@@ -4,6 +4,44 @@
 bits 64
 section .text
 
+; FPU, SSE and AVX state around kernel code: XSAVE (x87, SSE and AVX, 832 bytes) when the
+; kernel turned AVX on at boot (cpu_enable_avx), FXSAVE (512 bytes) otherwise. The XSAVE
+; header is cleared first: XRSTOR faults on stale bytes there. rax and rdx are already saved.
+extern fpu_xsave
+%macro FPU_SAVE 0
+    sub rsp, 1088
+    and rsp, -64
+    cmp byte [rel fpu_xsave], 0
+    je %%fx
+    xor eax, eax
+    mov [rsp + 512], rax
+    mov [rsp + 520], rax
+    mov [rsp + 528], rax
+    mov [rsp + 536], rax
+    mov [rsp + 544], rax
+    mov [rsp + 552], rax
+    mov [rsp + 560], rax
+    mov [rsp + 568], rax
+    mov eax, 7
+    xor edx, edx
+    xsave [rsp]
+    jmp %%done
+%%fx:
+    fxsave [rsp]
+%%done:
+%endmacro
+%macro FPU_RESTORE 0
+    cmp byte [rel fpu_xsave], 0
+    je %%fx
+    mov eax, 7
+    xor edx, edx
+    xrstor [rsp]
+    jmp %%done
+%%fx:
+    fxrstor [rsp]
+%%done:
+%endmacro
+
 extern lx_syscall_c
 extern lx_return_check
 extern lx_kstack_top
@@ -38,16 +76,14 @@ syscall_entry:
     push r15
     cld
     mov rbp, rsp                        ; regs_t *
-    sub rsp, 512
-    and rsp, -16
-    fxsave [rsp]
+    FPU_SAVE
     sti
     mov rdi, rbp
     call lx_syscall_c
     mov rdi, rbp
     call lx_return_check
     cli
-    fxrstor [rsp]
+    FPU_RESTORE
     mov rsp, rbp
     pop r15
     pop r14

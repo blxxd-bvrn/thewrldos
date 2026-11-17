@@ -511,7 +511,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, AV1, H.264, Opus and AAC
   (YouTube's formats among them; FFmpeg is left out for size). There is no GPU driver for Linux
   programs, so pages are drawn on the CPU, and composited ones (videos, some animations) reach the
-  window through shared memory. Linux programs have no sound device yet, so videos play silently.
+  window through shared memory. Sound plays through `/dev/dsp` (the Open Sound System interface),
+  which feeds the OS mixer alongside the desktop's own sounds; `dsptone` in /usr/local/bin is a
+  short test tone. On processors with AVX, the OS saves the full AVX state (XSAVE) for programs.
 - **Wayland, GTK 4 and WebKit.** `wrldcomp` is a Wayland compositor that shows each Linux
   program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
   `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser

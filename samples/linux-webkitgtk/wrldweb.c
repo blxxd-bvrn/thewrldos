@@ -530,6 +530,9 @@ int main(int argc, char **argv) {
     /* composited pages (a video, some animations) travel in shared memory, drawn on the CPU */
     g_setenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1", FALSE);
     g_setenv("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1", FALSE);
+    /* GStreamer's ORC writes machine code to a file it maps twice (writable and executable);
+     * on THE WRLD OS a shared mapping of a file is a private copy, so use ORC's C versions */
+    g_setenv("ORC_CODE", "backup", FALSE);
     const char *proxy = g_getenv("WRLD_PROXY"), *start = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--proxy") && i + 1 < argc) proxy = argv[++i];

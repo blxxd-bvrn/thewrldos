@@ -49,6 +49,7 @@ static int classify(const char *a) {
     if (!strcmp(a, "/dev/null")) return LP_DEV_NULL;
     if (!strcmp(a, "/dev/shm")) return LP_DEV_SHM_DIR;
     if (!strcmp(a, "/dev/wrld/window")) return LP_DEV_WRLDWIN;
+    if (!strcmp(a, "/dev/dsp") || !strcmp(a, "/dev/dsp0")) return LP_DEV_DSP;
     if (!strncmp(a, "/dev/shm/", 9) && a[9] && !strchr(a + 9, '/')) return LP_DEV_SHM;
     if (!strcmp(a, "/dev/zero")) return LP_DEV_ZERO;
     if (!strcmp(a, "/dev/urandom") || !strcmp(a, "/dev/random")) return LP_DEV_RANDOM;
@@ -141,6 +142,7 @@ void lx_file_put(lxfile_t *f) {
     if (!f || --f->refs > 0) return;
     if (f->type == FD_SHM) { shm_unref(f->obj); f->obj = NULL; }
     else if (f->type == FD_WINDOW) { lxwin_release(f->obj); f->obj = NULL; }
+    else if (f->type == FD_DSP) { dsp_release(f->obj); f->obj = NULL; }
     else lx_ipc_release(f);
     kfree(f->pdata); kfree(f);
 }
@@ -398,6 +400,11 @@ static int64_t do_open(lxproc_t *p, int dirfd, uint64_t upath, int flags, int mo
         if ((flags & O_TRUNC) && (flags & O_ACCMODE)) shm_resize(o, 0);
         f = file_new(FD_SHM); f->obj = o;
     }
+    else if (kind == LP_DEV_DSP) {
+        int err = 0; void *o = dsp_open(&err);
+        if (!o) return err;
+        f = file_new(FD_DSP); f->obj = o;
+    }
     else if (kind == LP_DEV_WRLDWIN) {
         f = file_new(FD_WINDOW); f->obj = lxwin_new();
         if (!f->obj) { kfree(f); return -ENOMEM; }
@@ -475,6 +482,7 @@ static int64_t file_read(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, int
     }
     case FD_DIR: return -EISDIR;
     case FD_WINDOW: return lxwin_read(f->obj, dst, n, (f->oflags & O_NONBLOCK) != 0);
+    case FD_DSP: return -EINVAL;                               /* no recording */
     case FD_SHM: {
         uint64_t pos = at >= 0 ? (uint64_t)at : f->pos;
         int64_t k = shm_rw(f->obj, dst, n, pos, false);
@@ -501,6 +509,7 @@ static int64_t file_write(lxproc_t *p, lxfile_t *f, uint64_t buf, uint64_t n, in
     case FD_PIPE: case FD_SOCKET: case FD_EVENTFD: case FD_TIMERFD:
         return lx_ipc_write(f, src, n, (f->oflags & O_NONBLOCK) != 0);
     case FD_CONSOLE: if (f->con && n) f->con->write(f->con, (const char *)src, n); return n;
+    case FD_DSP: return dsp_write(f->obj, src, n, (f->oflags & O_NONBLOCK) != 0);
     case FD_DIR: return -EISDIR;
     case FD_SHM: {
         if (!(f->oflags & O_ACCMODE)) return -EBADF;

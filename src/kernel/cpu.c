@@ -262,6 +262,24 @@ void pci_cfg_write(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t off, uint32_t v
     outl(0xCF8, 0x80000000u | (bus << 16) | (dev << 11) | (fn << 8) | (off & 0xFC));
     outl(0xCFC, v);
 }
+/* AVX for programs (64-bit edition): a processor that has it reports it, and libraries use it
+ * without always checking that the system turned it on, which faults. So turn it on: CR4.OSXSAVE
+ * and x87, SSE and AVX state in XCR0 (not AVX-512, whose state would not fit the save area), and
+ * have interrupts and system calls save it with XSAVE (src/arch/x86_64/isr.asm, lx.asm). */
+uint8_t fpu_xsave;
+void cpu_enable_avx(void) {
+#ifdef __x86_64__
+    uint32_t a, b, c, d;
+    cpuid(1, &a, &b, &c, &d);
+    if (!((c >> 26) & 1) || !((c >> 28) & 1)) return;             /* XSAVE and AVX */
+    uint64_t cr4; __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4 | (1ull << 18)));
+    __asm__ volatile("xsetbv" :: "c"(0), "a"(7), "d"(0));
+    cpuid(0xD, &a, &b, &c, &d);                                    /* the save area for that state */
+    if (b > 1024) { __asm__ volatile("xsetbv" :: "c"(0), "a"(3), "d"(0)); __asm__ volatile("mov %0, %%cr4" :: "r"(cr4)); return; }
+    fpu_xsave = 1;
+#endif
+}
 bool cpu_has_rdrand(void) { uint32_t a, b, c, d; cpuid(1, &a, &b, &c, &d); return (c >> 30) & 1; }
 /* every bus is scanned: VMware puts NVMe, SAS and network adapters behind
  * PCIe root ports on buses 2..0x40 */

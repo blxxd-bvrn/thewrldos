@@ -120,11 +120,11 @@ int64_t lx_clone(regs_t *r, uint64_t flags, uint64_t stack, uint64_t ptid, uint6
     lxthread_t *th = LX(self);
     lxproc_t *p = th->proc;
     if (!(flags & CLONE_THREAD)) {
-        /* A new process. fork() is clone(SIGCHLD); posix_spawn() is clone(CLONE_VM |
-         * CLONE_VFORK) on a stack of its own, where the child only prepares and calls execve.
-         * Processes here cannot share one address space, so the child gets a copy either way,
-         * starting on the stack it was given. The parent of a failed posix_spawn exec then
-         * learns of it from the child's exit status (127) rather than from the call. */
+        /* A new process. fork() is clone(SIGCHLD) and gets a copy of the memory;
+         * posix_spawn() and vfork() are clone(CLONE_VM | CLONE_VFORK), where the child
+         * runs in its parent's memory (on a stack of its own) and only prepares and calls
+         * execve, while the parent waits. Nothing is copied, which matters for a big
+         * program: copying a web browser's memory stopped the desktop for seconds. */
         extern int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid);
         return lx_fork_ex(r, stack, (flags & CLONE_SETTLS) != 0, tls, flags, ptid, ctid);
     }
@@ -271,13 +271,21 @@ int lx_launch(const char *wrld_path, int argc, char **argv, char **envp, char *e
  * files and the same thread state. The child returns 0 from the same call. */
 int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid);
 int64_t lx_fork(regs_t *r) { return lx_fork_ex(r, 0, false, 0, 0, 0, 0); }
+#define CLONE_VFORK 0x4000
+static bool vfork_child_running(int cpid) {
+    for (task_t *o = task_list(); o; o = o->next)
+        if (o->lx && LX(o)->proc->pid == cpid) return LX(o)->proc->vm_borrowed;
+    return false;
+}
 int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64_t flags, uint64_t ptid, uint64_t ctid) {
     task_t *self = task_current();
     lxthread_t *th = LX(self);
     lxproc_t *p = th->proc;
     lxproc_t *c = kzalloc(sizeof *c);
     if (!c) return -ENOMEM;
-    c->vm = uvm_clone(p->vm);
+    bool vfork = (flags & (CLONE_VM | CLONE_VFORK)) == (CLONE_VM | CLONE_VFORK);
+    if (vfork) { c->vm = p->vm; c->vm_borrowed = true; }
+    else c->vm = uvm_clone(p->vm);
     if (!c->vm) { kfree(c); return -ENOMEM; }
     c->con = p->con; c->umask = p->umask; c->ppid = p->pid;
     memcpy(c->acts, p->acts, sizeof c->acts);        /* fork inherits the dispositions */
@@ -302,8 +310,11 @@ int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64
     if ((flags & CLONE_PARENT_SETTID) && uvm_check(p->vm, ptid, 4, true)) *(volatile int32_t *)(uintptr_t)ptid = ct->tid;
     if (flags & CLONE_CHILD_CLEARTID) ct->clear_child_tid = ctid;
     if ((flags & CLONE_CHILD_SETTID) && ctid) uvm_poke32(c->vm, ctid, (uint32_t)ct->tid);
-    klog("linux: pid %d forked pid %d", p->pid, c->pid);
-    return c->pid;
+    int cpid = c->pid;
+    klog("linux: pid %d %s pid %d", p->pid, vfork ? "vforked" : "forked", cpid);
+    /* vfork: the parent goes on once the child has its own memory (execve) or has ended */
+    while (vfork && vfork_child_running(cpid)) task_sleep(1);
+    return cpid;
 }
 
 static int user_str(lxproc_t *p, char *dst, uint64_t src, int cap) {
@@ -382,7 +393,8 @@ int64_t lx_execve(regs_t *r, uint64_t upath, uint64_t uargv, uint64_t uenvp) {
     p->vm = nv;
     self->cr3 = uvm_cr3(nv);
     __asm__ volatile("mov %0, %%cr3" :: "r"(p->vm->pml4) : "memory");
-    uvm_free(old);
+    if (p->vm_borrowed) p->vm_borrowed = false;                 /* a vfork child gives its parent's memory back */
+    else uvm_free(old);
     /* thread state that belonged to the old image */
     th->clear_child_tid = 0; th->robust_list = 0; th->sigmask = 0; th->fsbase = 0;
     { extern void arch_set_user_fs(uint64_t); arch_set_user_fs(0); }
@@ -452,13 +464,15 @@ static void proc_free(lxproc_t *p) {
             lxproc_t *c = LX(o)->proc;
             c->ppid = 1;
             if (c->pdeathsig) { int sig = (int)c->pdeathsig; c->pdeathsig = 0; lx_signal_kill(c, c->pid, sig); }
+            if (c->vm_borrowed && c->vm == p->vm) { LX(o)->exited = true; task_kill(o->pid); }   /* a vfork child cannot outlive the memory it runs in */
         }
         o = nx;
     }
     for (int i = 0; i < LX_MAXFD; i++) if (p->fds[i]) { lx_file_put(p->fds[i]); p->fds[i] = NULL; }
     record_zombie(p);
     lx_signal_child_exit(p, p->pid, status);
-    uvm_free(p->vm);
+    if (!p->vm_borrowed) uvm_free(p->vm);
+    p->vm_borrowed = false;
     klog("linux: pid %d ended (%d)", p->pid, p->exit_code);
     kfree(p);
 }

@@ -16,6 +16,12 @@ int audio_device_active(void);
 void audio_device_select(int i);            /* makes endpoint i the default */
 void audio_diag(char *buf, int cap);        /* device, codec route, whether playback advances */
 int audio_play(const sound_t *s);           /* voice number, or -1 */
+/* a stream of 16-bit stereo frames at audio_rate(), written as it is produced (/dev/dsp) */
+int audio_stream_open(void);                 /* -1: no sound device */
+int audio_stream_write(int id, const int16_t *pcm, int frames);   /* frames taken (what fits) */
+int audio_stream_room(int id);               /* frames that would fit now */
+int audio_stream_queued(int id);             /* frames written and not yet heard */
+void audio_stream_close(int id);
 void audio_stop_all(void);
 int audio_rate(void);                        /* frames per second of a sound_t */
 bool audio_voice_active(int v, const sound_t *s);

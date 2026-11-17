@@ -64,8 +64,9 @@ uvm_t *uvm_clone(uvm_t *src) {
     dst->brk = src->brk;
     for (vma_t *v = dst->vmas; v; v = v->next) {
         for (uint64_t va = v->start; va < v->end; va += PAGE) {
-            uint64_t *sp = lx_pte_lookup(src, va);
-            if (!sp) continue;
+            uint64_t *sp = pte_of(src, va, false);
+            if (!sp) { va |= 0x1FFFFF; continue; }                      /* no page table: skip its 2 MiB */
+            if (!(*sp & PTE_P)) continue;
             if (*sp & PTE_SHARED) {                                     /* MAP_SHARED: the same page */
                 uint64_t *dp = pte_of(dst, va, true);
                 if (!dp) { uvm_free(dst); return NULL; }
@@ -79,6 +80,9 @@ uvm_t *uvm_clone(uvm_t *src) {
             memcpy(pg, (const void *)(uintptr_t)ADDR(*sp), PAGE);
             *dp = (uint64_t)(uintptr_t)pg | (*sp & ~0x000FFFFFFFFFF000ull);
             dst->pages++;
+            /* the kernel is not preempted: a big process (a web browser holds hundreds of
+             * megabytes) would otherwise stop the desktop for the whole copy */
+            if (!(dst->pages & 255)) task_yield();
         }
     }
     return dst;

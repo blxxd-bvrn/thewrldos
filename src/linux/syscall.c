@@ -265,6 +265,7 @@ int64_t lx_syscall(regs_t *r) {
     case 16: {                                                        /* ioctl */
         lxfile_t *f = lx_fd_get(p, a0); if (!f) return -EBADF;
         if (f->type == FD_WINDOW) return lxwin_ioctl(f->obj, a1, a2, p->vm);
+        if (f->type == FD_DSP) return dsp_ioctl(f->obj, (uint32_t)a1, a2, p->vm);   /* the request is an unsigned int; C libraries pass it sign-extended */
         if (f->type != FD_CONSOLE) return -ENOTTY;
         if (a1 == 0x5401) {                                                                  /* TCGETS: struct termios (kernel layout, 36 bytes) */
             uint8_t tio[36]; memset(tio, 0, sizeof tio);

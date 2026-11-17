@@ -87,6 +87,11 @@ static void boot_load_progress(uint64_t done, uint64_t total) {
 
 void kmain(uint32_t magic, uint32_t mbaddr) {
     serial_init();
+#ifdef __x86_64__
+    { extern void cpu_enable_avx(void); extern uint8_t fpu_xsave;
+      cpu_enable_avx();                                /* before any interrupt saves FPU state */
+      klog("cpu: %s", fpu_xsave ? "AVX on for programs (XSAVE)" : "no AVX: SSE state saved with FXSAVE"); }
+#endif
     gdt_init();
     idt_init();
     panic_hook = text_panic;

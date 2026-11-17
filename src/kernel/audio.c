@@ -962,11 +962,52 @@ static void vsnd_refill(void) {
     if (sent) { __asm__ volatile("mfence" ::: "memory"); virtio_notify(&vsnd, &vs_tx); }
 }
 
+/* ======================= streams ======================= */
+/* Sound that arrives a piece at a time (a Linux program writing to /dev/dsp): a ring of
+ * 16-bit stereo frames at the mixer's rate that the mixer drains as it plays. */
+static char off_reason[96];                    /* defined with the device code below */
+#define NSTREAM 4
+#define SRING 16384                            /* frames: a third of a second at 48 kHz */
+typedef struct { bool open; uint32_t rd, wr; int16_t buf[SRING * 2]; } stream_t;
+static stream_t streams[NSTREAM];
+int audio_stream_open(void) {
+    if (!dev || off_reason[0]) return -1;
+    uint32_t f = irq_save();
+    int id = -1;
+    for (int i = 0; i < NSTREAM; i++) if (!streams[i].open) { streams[i].open = true; streams[i].rd = streams[i].wr = 0; id = i; break; }
+    irq_restore(f);
+    return id;
+}
+void audio_stream_close(int id) { if (id >= 0 && id < NSTREAM) streams[id].open = false; }
+int audio_stream_write(int id, const int16_t *pcm, int frames) {
+    if (id < 0 || id >= NSTREAM || !streams[id].open) return -1;
+    stream_t *s = &streams[id];
+    uint32_t f = irq_save();
+    int room = SRING - (int)(s->wr - s->rd), n = MIN(frames, room);
+    for (int i = 0; i < n; i++) { uint32_t at = (s->wr + i) % SRING; s->buf[at * 2] = pcm[i * 2]; s->buf[at * 2 + 1] = pcm[i * 2 + 1]; }
+    s->wr += n;
+    irq_restore(f);
+    return n;
+}
+/* frames written and not yet heard: those in the ring and those already queued for the card */
+int audio_stream_queued(int id) {
+    if (id < 0 || id >= NSTREAM || !streams[id].open) return 0;
+    return (int)(streams[id].wr - streams[id].rd) + LEAD * BUFFRAMES;
+}
+int audio_stream_room(int id) { return id >= 0 && id < NSTREAM && streams[id].open ? SRING - (int)(streams[id].wr - streams[id].rd) : 0; }
+
 /* ======================= mixer + task ======================= */
 static void mix_into(int16_t *out, int frames) {
     static int32_t acc[BUFFRAMES * 2];
     memset(acc, 0, sizeof(int32_t) * frames * 2);
     int vol = audio_muted ? 0 : audio_volume;
+    for (int id = 0; id < NSTREAM; id++) {
+        stream_t *s = &streams[id];
+        if (!s->open) continue;
+        int n = MIN(frames, (int)(s->wr - s->rd));
+        for (int i = 0; i < n; i++) { uint32_t at = (s->rd + i) % SRING; acc[i * 2] += s->buf[at * 2]; acc[i * 2 + 1] += s->buf[at * 2 + 1]; }
+        s->rd += n;
+    }
     for (int v = 0; v < NVOICE; v++) {
         voice_t *vc = &voices[v];
         if (!vc->active || vc->paused) continue;
