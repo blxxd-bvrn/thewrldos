@@ -95,6 +95,7 @@ static void lx_thread_start(void *arg) {
 static task_t *thread_new(lxproc_t *p, const char *name, const regs_t *regs, uint64_t fsbase) {
     lxthread_t *th = kzalloc(sizeof *th);
     th->proc = p;
+    if (th) th->in_sys = -1;
     strlcpy(th->comm, name, sizeof th->comm);
     th->start_regs = *regs;
     th->fsbase = fsbase;
@@ -518,12 +519,23 @@ void lx_return_check(regs_t *r) {
     if (now - th->slice_start >= 10) { task_yield(); th->slice_start = timer_ticks(); }
 }
 
+/* for the watchdog: the Linux system call a task is stuck in, if any */
+bool lx_task_syscall(task_t *t, char *out, int cap) {
+    if (!t || !t->lx) return false;
+    lxthread_t *th = LX(t);
+    if (th->in_sys < 0) return false;
+    snprintf(out, cap, "Linux system call %lld(%llx, %llx, %llx)", (long long)th->in_sys,
+             (unsigned long long)th->in_args[0], (unsigned long long)th->in_args[1], (unsigned long long)th->in_args[2]);
+    return true;
+}
 bool lx_strace;                          /* "lxtrace on" in the Command Prompt: every system call to the log */
 void lx_syscall_c(regs_t *r) {
     lxthread_t *th = lx_current();
     uint64_t nr = r->eax;
     uint64_t a0 = r->edi, a1 = r->esi, a2 = r->edx;
+    if (th) { th->in_sys = (int64_t)nr; th->in_args[0] = a0; th->in_args[1] = a1; th->in_args[2] = a2; }
     int64_t v = lx_syscall(r);
+    if (th) th->in_sys = -1;
     if (lx_strace && th && nr != 24 && nr != 228)          /* not sched_yield / clock_gettime: too many */
         klog("lx %d: %llu(%llx, %llx, %llx) = %lld", th->proc ? th->proc->pid : -1, (unsigned long long)nr,
              (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (long long)v);

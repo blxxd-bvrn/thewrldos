@@ -5,6 +5,8 @@
  *   C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [--proxy URL] [address]
  * The OS starts it from the desktop (src/apps/webkit.c) and passes later addresses
  * through the file named by WRLD_REQUEST, one per line ("" = a new tab). */
+#define _GNU_SOURCE
+#include <dlfcn.h>
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 #include <string.h>
@@ -63,7 +65,15 @@ static const char *css =
  * here, GSK_RENDERER=cairo). Without this, a page that must be composited, such as one
  * playing a video, crashes the browser. This definition in the program takes the place
  * of GTK's for WebKit's question. */
-__attribute__((visibility("default"))) gboolean gdk_display_prepare_gl(GdkDisplay *d, GError **e) { (void)d; (void)e; return TRUE; }
+__attribute__((visibility("default"), noinline)) gboolean gdk_display_prepare_gl(GdkDisplay *d, GError **e) {
+    /* only WebKit gets the yes: GTK asks too, and believing it has GL changes how it sets
+     * itself up (its fonts come out wrong); everyone else gets GTK's own answer */
+    Dl_info caller;
+    if (dladdr(__builtin_return_address(0), &caller) && caller.dli_fname && strstr(caller.dli_fname, "libwebkitgtk")) return TRUE;
+    static gboolean (*real)(GdkDisplay *, GError **);
+    if (!real) real = (gboolean (*)(GdkDisplay *, GError **))dlsym(RTLD_NEXT, "gdk_display_prepare_gl");
+    return real ? real(d, e) : FALSE;
+}
 
 /* ---------------- tabs ---------------- */
 static WebKitWebView *view_at(int i) {

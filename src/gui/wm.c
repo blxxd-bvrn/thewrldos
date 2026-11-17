@@ -979,6 +979,9 @@ static void watchdog(regs_t *r, uint32_t now) {
     snprintf(b, sizeof b, "Busy task: %s (pid %d), code at %08x %08x %08x %08x. Please report this line.",
              t ? t->name : "?", t ? t->pid : 0, wd_eips[0], wd_eips[1], wd_eips[2], wd_eips[3]);
     klog("watchdog: %s %s", a, b);
+#ifdef __x86_64__
+    { extern bool lx_task_syscall(task_t *t, char *out, int cap); char c[120]; if (lx_task_syscall(t, c, sizeof c)) klog("watchdog: in %s", c); }
+#endif
     if (gfx_ready_for_watchdog) wd_banner(a, b);
 }
 static volatile bool shell_restart_req;

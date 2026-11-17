@@ -58,8 +58,15 @@ static bool webkit_open(const char *url) {
     snprintf(docs, sizeof docs, "WRLD_DOCS=/mnt/c/Documents and Settings/User/My Documents");
     snprintf(prof, sizeof prof, "WRLD_PROFILE=/mnt/c/Documents and Settings/User/Application Data/WRLD Browser");
     snprintf(who, sizeof who, "WRLD_USER=%s", user_name[0] ? user_name : "User");
+    /* WebKit's JavaScript JIT writes SSE4.1 instructions (2008 and later processors); on an older
+     * processor, or a virtual one without them, scripts run in its interpreter instead */
+    uint32_t a = 1, b, c, d;
+    __asm__ volatile("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+    bool sse41 = (c >> 19) & 1;
+    if (!sse41) klog("browser: the processor has no SSE4.1: WebKit runs JavaScript without its JIT");
     char *env[] = { "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/user", "USER=user", "LOGNAME=user", "SHELL=/bin/sh",
-                    "LANG=C.UTF-8", "PWD=/", docs, prof, who, "WRLD_REQUEST=/mnt/c/WRLD/Temp/wrldweb-open.txt", NULL };
+                    "LANG=C.UTF-8", "PWD=/", docs, prof, who, "WRLD_REQUEST=/mnt/c/WRLD/Temp/wrldweb-open.txt",
+                    sse41 ? NULL : "JSC_useJIT=false", NULL };
     char *argv[4] = { "wrldcomp", "/usr/local/bin/wrldweb", NULL, NULL };
     int argc = 2;
     if (url && *url) argv[argc++] = (char *)url;

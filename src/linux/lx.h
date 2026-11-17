@@ -157,6 +157,8 @@ typedef struct lxthread {
     uint64_t sig_pending;                      /* thread-directed signals (tkill/tgkill) */
     uint64_t alt_sp; uint32_t alt_size; int alt_flags;   /* sigaltstack */
     uint32_t sys_nr;                           /* number of the system call in progress */
+    int64_t in_sys;                            /* the call being run right now (-1: none), and its arguments */
+    uint64_t in_args[3];
     bool sys_eintr;                            /* ... and it returned -EINTR (SA_RESTART) */
     bool sig_frame;                            /* a frame was just pushed on this return */
     bool sig_suspend;                          /* sigsuspend: restore an older mask after the handler */
