@@ -240,6 +240,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - **Samples** in `C:\Samples`:
   - `hello.exe`, a Win32 console program;
   - `winhello.exe`, a Win32 GUI program;
+  - `wsget.exe`, a Windows sockets program that fetches a web page (`wsget example.com`);
   - `glcube.exe`, `d3dcube.exe` and `d3d10cube.exe`, spinning cubes drawn through OpenGL,
     Direct3D 9 and Direct3D 10 (3D acceleration must be on);
   - `demo.sh`, a shell script;
@@ -1131,9 +1132,16 @@ device manager's job is to say what the computer has and which driver runs it.
     security stubs, BSTR/VARIANT (oleaut32) and the wide-string C runtime.
   - Tested with real programs: **7-Zip** (`7zr.exe`, 32-bit) creates, lists and extracts
     archives; **SQLite** (`sqlite3.exe`, 64-bit) creates and queries database files, also
-    interactively; **plink** (PuTTY's command-line tool) starts in both editions. **PuTTY**
-    starts and stops with its own message, "Unable to load any WinSock library": Windows
-    sockets (`ws2_32`) are not implemented yet, so no program can use the network.
+    interactively; **plink** (PuTTY's command-line tool) connects and talks in both editions.
+    **PuTTY** itself starts but needs dialog resources for its configuration window.
+  - **Windows sockets** (`ws2_32.dll`, `wsock32.dll`, `src/win32/ws2_32.c`) on the kernel's
+    TCP/IP stack: IPv4 TCP (connect, listen/accept) and UDP, blocking and non-blocking sockets,
+    `select`, `WSAEventSelect`/`WSAEnumNetworkEvents` and `WSAAsyncSelect` (a kernel task polls
+    the sockets that use them), `getaddrinfo`/`gethostbyname` through the stack's DNS, and the
+    usual ordinals. Not done: IPv6, overlapped I/O, raw sockets. `C:\Samples\wsget.exe`
+    fetches a web page in each of the three styles (`wsget [-s|-e] HOST [PORT] [PATH]`).
+    `WaitForMultipleObjects` now waits for any (or all) of its objects, events can be
+    auto-reset, and mutexes and semaphores are signalled.
   - Console programs use the terminal for stdin/stdout.
   - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX
     controls, menus, MessageBox and GDI drawing.
@@ -1177,7 +1185,7 @@ used to test every screen above, including a full install from a blank disk.
   64-bit edition runs x64 programs; each recognises the other kind and says which edition to
   use. .NET assemblies and 16-bit DOS programs are refused with an explanation. C++ exceptions
   in x64 programs (which need SEH unwinding) are not supported. Win32 coverage is a subset. Programs that use
-  unimplemented APIs (COM, dialog resources, Windows sockets, …) stop with a message naming
+  unimplemented APIs (COM, dialog resources, …) stop with a message naming
   the missing function. Only the built-in DLLs exist: a program that ships its own `.dll`
   files (curl's `libcurl-x64.dll`) does not load them yet.
 - **macOS cannot be emulated.** Native Mach-O programs inside a `.dmg` are identified but not

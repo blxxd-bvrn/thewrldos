@@ -230,6 +230,9 @@ rootfs64/Samples/shaderprobe.exe: samples/shaderprobe.c samples/d3d10cube_shader
 rootfs64/Samples/gpuverify.exe: samples/gpuverify.c samples/d3d10cube.c samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
+rootfs64/Samples/wsget.exe: samples/wsget.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -o $@ $< -lws2_32
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<
@@ -247,6 +250,8 @@ rootfs/Samples/gpuverify.exe: samples/gpuverify.c samples/d3d10cube.c samples/d3
 	$(MINGW) $(MINGW32_SHADER_FLAGS) -O2 -s -mwindows -o $@ $< -ld3d10 -ldxguid
 samples/d3d10cube_shaders.h: samples/d3d10cube.sm4 tools/dxbc_asm.py
 	python3 tools/dxbc_asm.py $< $@
+rootfs/Samples/wsget.exe: samples/wsget.c
+	$(MINGW) -O2 -s -o $@ $< -lws2_32
 rootfs/Samples/%.exe: samples/%.c
 	$(MINGW) -O2 -s -o $@ $<
 

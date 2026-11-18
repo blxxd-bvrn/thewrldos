@@ -72,6 +72,7 @@ void *w32_realloc(w32_proc_t *p, void *ptr, uint32_t n) {
 }
 
 /* ---------------- import resolution ---------------- */
+extern const w32_export_t ws2_exports[]; extern const int ws2_count;   /* ws2_32.c */
 typedef struct { const char *dll; const w32_export_t *tab; const int *count; } dll_t;
 static const dll_t dlls[] = {
     { "kernel32.dll", kernel32_exports, &kernel32_count }, { "msvcrt.dll", msvcrt_exports, &msvcrt_count },
@@ -85,6 +86,7 @@ static const dll_t dlls[] = {
     { "vulkan-1.dll", vulkan_exports, &vulkan_count },
     { "d3d10.dll", d3d10_exports, &d3d10_count }, { "dxgi.dll", dxgi_exports, &dxgi_count },
     { "d3dcompiler_47.dll", d3dcompiler_exports, &d3dcompiler_count },
+    { "ws2_32.dll", ws2_exports, &ws2_count }, { "wsock32.dll", ws2_exports, &ws2_count },
 };
 static const dll_t *find_dll(const char *name) {
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) if (!strcasecmp(dlls[i].dll, name)) return &dlls[i];

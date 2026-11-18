@@ -32,16 +32,20 @@ typedef int BOOL, LONG, INT;
 typedef uint16_t WORD, WCHAR;
 typedef uint8_t BYTE;
 
+typedef struct w32_proc w32_proc_t;
 #define MAX_HANDLES 128
 enum { H_NONE, H_FILE, H_THREAD, H_FIND, H_EVENT, H_PROCESS };
-typedef struct { int kind; vnode_t *node; uint32_t pos; bool write; int tid; vnode_t *find_dir, *find_cur; char find_pat[96]; bool signaled; } w32_handle_t;
+typedef struct { int kind; vnode_t *node; uint32_t pos; bool write; int tid; vnode_t *find_dir, *find_cur; char find_pat[96]; bool signaled, manual; } w32_handle_t;
+/* waiting (kernel32.c): is the object signalled? an auto-reset event is reset by a successful wait */
+bool w32_handle_signaled(w32_proc_t *p, uintptr_t h, bool consume);
+void w32_event_signal(w32_proc_t *p, uintptr_t h);              /* SetEvent for another task (Winsock's poller) */
 
 typedef struct { HWND hwnd; UINT message; WPARAM wParam; LPARAM lParam; DWORD time; int32_t ptx, pty; } MSG32;
 #define MSGQ 256
 
 typedef struct alloc_hdr { struct alloc_hdr *next, *prev; uint32_t size, magic; } alloc_hdr_t;
 
-typedef struct w32_proc {
+struct w32_proc {
     int pid;
     task_t *task;
     char path[256], cmdline[512], cwd[256];
@@ -72,7 +76,7 @@ typedef struct w32_proc {
     bool exiting;
     char title[96];
     uint32_t fmode, commode;
-} w32_proc_t;
+};
 
 w32_proc_t *w32_cur(void);
 void *w32_alloc(w32_proc_t *p, uint32_t n);

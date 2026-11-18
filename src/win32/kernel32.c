@@ -288,27 +288,45 @@ static HANDLE WINAPI CreateThread(void *sa, DWORD stack, void *fn, void *arg, DW
     uint32_t h = halloc(H_THREAD); hget(h)->tid = t->pid;
     return h;
 }
-static DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) {
-    w32_handle_t *e = hget(h);
+/* the object behind a handle of process p, or NULL (callable from any task) */
+static w32_handle_t *hget_p(w32_proc_t *p, uint32_t h) {
+    if (!p || h < HFILE_BASE || ((h - HFILE_BASE) & 3)) return NULL;
+    uint32_t i = (h - HFILE_BASE) / 4;
+    return i < MAX_HANDLES && p->handles[i].kind != H_NONE ? &p->handles[i] : NULL;
+}
+bool w32_handle_signaled(w32_proc_t *p, uintptr_t h, bool consume) {
+    if (h == (uintptr_t)0xFFFFFFFFu || h == (uintptr_t)0xFFFFFFFEu) return false;   /* this process / thread: never, while running */
+    w32_handle_t *e = hget_p(p, (uint32_t)h);
+    if (!e) return true;                                            /* not a waitable object: nothing to wait for */
+    if (e->kind == H_THREAD) return !task_find(e->tid);
+    if (e->kind == H_EVENT) { if (!e->signaled) return false; if (consume && !e->manual) e->signaled = 0; return true; }
+    return true;
+}
+void w32_event_signal(w32_proc_t *p, uintptr_t h) { w32_handle_t *e = hget_p(p, (uint32_t)h); if (e && e->kind == H_EVENT) e->signaled = 1; }
+/* WAIT_OBJECT_0 + i, or WAIT_TIMEOUT (0x102); "all" waits until every object is signalled at once */
+static DWORD WINAPI WaitForMultipleObjects(DWORD n, HANDLE *hs, BOOL all, DWORD ms) {
+    w32_proc_t *p = P;
     uint32_t end = timer_ticks() + ms;
-    if (!e) { if (ms != 0xFFFFFFFF) task_sleep(ms); return 0; }
     for (;;) {
-        if (e->kind == H_THREAD && !task_find(e->tid)) return 0;
-        if (e->kind == H_EVENT && e->signaled) return 0;
-        if (e->kind != H_THREAD && e->kind != H_EVENT) return 0;
+        if (all) {
+            DWORD k = 0; for (; k < n; k++) if (!w32_handle_signaled(p, hs[k], false)) break;
+            if (k == n) { for (k = 0; k < n; k++) w32_handle_signaled(p, hs[k], true); return 0; }
+        } else for (DWORD i = 0; i < n; i++) if (w32_handle_signaled(p, hs[i], true)) return i;
         if (ms != 0xFFFFFFFF && (int32_t)(timer_ticks() - end) >= 0) return 0x102;
-        task_sleep(5);
+        task_sleep(ms == 0 ? 0 : 5);
+        if (ms == 0) return 0x102;
     }
 }
-static DWORD WINAPI WaitForMultipleObjects(DWORD n, HANDLE *hs, BOOL all, DWORD ms) { for (DWORD i = 0; i < n; i++) WaitForSingleObject(hs[i], ms); return 0; }
+static DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) { return WaitForMultipleObjects(1, &h, 0, ms); }
 static BOOL WINAPI GetExitCodeThread(HANDLE h, DWORD *c) { w32_handle_t *e = hget(h); if (!e) return 0; *c = task_find(e->tid) ? 259 : (DWORD)task_exit_code(e->tid); return 1; }
-static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL init, const char *n) { uint32_t h = halloc(H_EVENT); hget(h)->signaled = init; return h; }
+static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL init, const char *n) { uint32_t h = halloc(H_EVENT); if (h == INVALID_HANDLE) return 0; hget(h)->signaled = init; hget(h)->manual = manual; return h; }
 static BOOL WINAPI SetEvent(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 1; return 1; }
 static BOOL WINAPI ResetEvent(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 0; return 1; }
-static HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *n) { return halloc(H_EVENT); }
-static BOOL WINAPI ReleaseMutex(HANDLE h) { return 1; }
-static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG i, LONG m, const char *n) { return halloc(H_EVENT); }
-static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG c, LONG *p) { return 1; }
+static HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *n) { uint32_t h = halloc(H_EVENT); if (h != INVALID_HANDLE) { hget(h)->signaled = !own; } return h; }
+static BOOL WINAPI ReleaseMutex(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 1; return 1; }
+/* semaphores as auto-reset events: enough for the usual "count up, wait" pairs */
+static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG i, LONG m, const char *n) { uint32_t h = halloc(H_EVENT); if (h != INVALID_HANDLE) hget(h)->signaled = i > 0; return h; }
+static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG c, LONG *p) { w32_handle_t *e = hget(h); if (p) *p = 0; if (e) e->signaled = 1; return 1; }
 static BOOL WINAPI DuplicateHandle(HANDLE a, HANDLE b, HANDLE c, HANDLE *d, DWORD e, BOOL f, DWORD g) { if (d) *d = b; return 1; }
 static BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *c) { *c = 259; return 1; }
 typedef struct { HANDLE proc, thread; DWORD pid, tid; } PROCESS_INFORMATION;
@@ -502,7 +520,7 @@ static BOOL WINAPI GetDiskFreeSpaceExA(const char *d, uint64_t *a, uint64_t *t, 
 #define KMOD(i) (0x7C000000u + (i) * 0x10000)
 static const char *modnames[] = {
     "kernel32.dll", "msvcrt.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "ntdll.dll", "kernelbase.dll", "ucrtbase.dll",
-    "d3d10.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d9.dll", "opengl32.dll", "glu32.dll"
+    "d3d10.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d9.dll", "opengl32.dll", "glu32.dll", "ws2_32.dll", "wsock32.dll", "oleaut32.dll"
 };
 static HMODULE mod_handle(const char *n) {
     if (!n) return P->base;
