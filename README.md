@@ -1133,8 +1133,28 @@ device manager's job is to say what the computer has and which driver runs it.
     security stubs, BSTR/VARIANT (oleaut32) and the wide-string C runtime.
   - Tested with real programs: **7-Zip** (`7zr.exe`, 32-bit) creates, lists and extracts
     archives; **SQLite** (`sqlite3.exe`, 64-bit) creates and queries database files, also
-    interactively; **plink** (PuTTY's command-line tool) connects and talks in both editions.
-    **PuTTY** itself starts but needs dialog resources for its configuration window.
+    interactively; **plink** (PuTTY's command-line tool) connects and talks in both editions;
+    **PuTTY** works in both editions: its configuration window (tree view, group boxes, radio
+    buttons, combo and list boxes, page switching), then a terminal window with a live
+    connection, local echo and PuTTY's own key translation.
+  - **Dialog boxes and resources** (`src/win32/user32_dlg.inc`, `src/win32/pe.c`):
+    `FindResource`/`LoadResource`/`SizeofResource` on the program's resource directory;
+    `DialogBox*`/`CreateDialog*` from `DLGTEMPLATE`/`DLGTEMPLATEEX` resources (dialog units,
+    the dialog font, the template's own class or the system's `#32770`); `DefDlgProc` with
+    `DWLP_MSGRESULT`/`DWLP_DLGPROC`/`DWLP_USER` and class extra bytes (`cbWndExtra`,
+    `Get/SetWindowLongPtr` at positive offsets); `IsDialogMessage` (Tab, Enter for the default
+    button, Esc); `MapDialogRect`, `CheckRadioButton`, `SendDlgItemMessage`, `LoadString`,
+    `LoadMenu`. Controls: list boxes (sorted, multi-select, item data, scrolling), combo boxes
+    (drop-down lists, editable), tree views (`SysTreeView32`: insert, expand, select,
+    `TVN_SELCHANGED` through `WM_NOTIFY`), auto radio groups, read-only edits, Unicode window
+    text and messages (`SendMessageW` converts strings for the built-in controls), caret,
+    clipboard, `TrackPopupMenu`, `ToAscii`/`ToUnicode`. Also imm32, ole32 (`CoInitialize`,
+    `CoCreateInstance` says "not registered"), comdlg32 (file/colour/font pickers answer
+    "cancelled"), comctl32 and winspool.drv (no printers) for programs that expect them.
+  - As on Windows, `WM_CHAR` comes from `TranslateMessage` (a key `IsDialogMessage` took makes
+    no character), `WM_KEYUP` carries the transition bits, punctuation has `VK_OEM_*` codes, a
+    hidden window gets its first `WM_SIZE` when it is first shown, and `MessageBox` keeps the
+    program's timers and socket messages running behind the box.
   - **Windows sockets** (`ws2_32.dll`, `wsock32.dll`, `src/win32/ws2_32.c`) on the kernel's
     TCP/IP stack: IPv4 TCP (connect, listen/accept) and UDP, blocking and non-blocking sockets,
     `select`, `WSAEventSelect`/`WSAEnumNetworkEvents` and `WSAAsyncSelect` (a kernel task polls
@@ -1144,8 +1164,8 @@ device manager's job is to say what the computer has and which driver runs it.
     `WaitForMultipleObjects` now waits for any (or all) of its objects, events can be
     auto-reset, and mutexes and semaphores are signalled.
   - Console programs use the terminal for stdin/stdout.
-  - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX
-    controls, menus, MessageBox and GDI drawing.
+  - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX/
+    COMBOBOX/tree view controls, dialog boxes, menus, MessageBox and GDI drawing.
   - The samples are ordinary programs compiled with `i686-w64-mingw32-gcc` (32-bit edition,
     `rootfs/Samples`) and `x86_64-w64-mingw32-gcc` (64-bit edition, `rootfs64/Samples`) and run
     unmodified.
@@ -1186,7 +1206,7 @@ used to test every screen above, including a full install from a blank disk.
   64-bit edition runs x64 programs; each recognises the other kind and says which edition to
   use. .NET assemblies and 16-bit DOS programs are refused with an explanation. C++ exceptions
   in x64 programs (which need SEH unwinding) are not supported. Win32 coverage is a subset. Programs that use
-  unimplemented APIs (COM, dialog resources, …) stop with a message naming
+  unimplemented APIs (COM objects, …) stop with a message naming
   the missing function. Only the built-in DLLs exist: a program that ships its own `.dll`
   files (curl's `libcurl-x64.dll`) does not load them yet.
 - **macOS cannot be emulated.** Native Mach-O programs inside a `.dmg` are identified but not

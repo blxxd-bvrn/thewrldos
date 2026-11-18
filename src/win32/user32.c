@@ -24,8 +24,9 @@ enum { WM_CREATE = 1, WM_DESTROY = 2, WM_MOVE = 3, WM_SIZE = 5, WM_ACTIVATE = 6,
 #define DCMAGIC 0x48444321
 #define OBJMAGIC 0x4F424A21
 
-enum { CTL_NONE, CTL_BUTTON, CTL_STATIC, CTL_EDIT, CTL_LISTBOX };
-typedef struct w32cls { char name[64]; void *proc; uintptr_t brush; uint32_t style; w32_proc_t *owner; struct w32cls *next; } w32cls_t;
+enum { CTL_NONE, CTL_BUTTON, CTL_STATIC, CTL_EDIT, CTL_LISTBOX, CTL_COMBO, CTL_TREE, CTL_SCROLLBAR };
+typedef struct w32cls { char name[64]; void *proc; uintptr_t brush; uint32_t style; w32_proc_t *owner; struct w32cls *next; int wnd_extra; bool unicode; } w32cls_t;
+struct tvitem;
 typedef struct w32win {
     uint32_t magic;
     w32_proc_t *proc;
@@ -34,7 +35,7 @@ typedef struct w32win {
     window_t *top;
     struct w32win *parent, *child, *next, *all_next;
     int x, y, w, h;                /* child: rect in parent client; top: client size */
-    char text[512];
+    char text[4096];
     uint32_t style, exstyle; uintptr_t id, userdata;
     void *wndproc;
     bool need_paint, erase, visible, enabled, destroyed;
@@ -43,12 +44,21 @@ typedef struct w32win {
     uintptr_t font;
     uintptr_t menu;
     char **lb_items; int lb_n, lb_sel;
+    /* added for real programs (dialog.c-style parts below) */
+    uint8_t *extra; int nextra;          /* cbWndExtra: GetWindowLong(Ptr) with an index >= 0 */
+    bool unicode;                        /* a Unicode window procedure (RegisterClassW) */
+    bool is_dialog, dlg_modal, dlg_ended; intptr_t dlg_ret;
+    uintptr_t *lb_data; uint8_t *lb_selbits; int lb_top;    /* listbox / combo box */
+    int cb_droph; menu_item_t *cb_menu;  /* combo box: dropped-down list height, its popup */
+    bool sent_size; struct tvitem *tv_root, *tv_sel; int tv_scroll; bool tv_unicode; void *tv_nm;   /* tree view */
+    int limit;                           /* edit: EM_LIMITTEXT */
 } w32win_t;
 static w32win_t *all_wins;
 static w32cls_t *classes;
 typedef struct { uintptr_t hwnd, id; uint32_t ms, next; w32_proc_t *proc; void *fn; bool used; } w32timer_t;
 static w32timer_t timers[64];
 static uint8_t keystate[256];
+static uint8_t key_char[256];                /* vk -> the character of its last key press */
 static w32win_t *focus_win;
 
 static w32win_t *W(uintptr_t h) { w32win_t *w = (w32win_t *)h; if (!h || h < 0x100000 || h & 3) return NULL; for (w32win_t *x = all_wins; x; x = x->all_next) if (x == w) return w->destroyed ? NULL : w; return NULL; }
@@ -330,6 +340,8 @@ static int WINAPI DrawTextA(HDC h, const char *s, int n, RECT32 *r, UINT fmt) {
 }
 
 /* ---------------- controls ---------------- */
+static void draw_list_ext(w32win_t *c, canvas_t *s, rect_t r, int f);
+static void draw_ext(w32win_t *c, canvas_t *s, rect_t r, int f);
 static void draw_control(w32win_t *c) {
     w32win_t *t = top_of(c);
     if (!t || !t->top || !c->visible) return;
@@ -346,9 +358,14 @@ static void draw_control(w32win_t *c) {
         else if (bs == 2 || bs == 3 || bs == 5 || bs == 6) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_check(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? T.text : T.gray_text); }
         else if (bs == 4 || bs == 9) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_radio(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? T.text : T.gray_text); }
         else draw_button(s, r, label, c->hot, c->pressed && c->hot, focus_win == c || bs == 1, c->enabled);
+    } else if (c->ctl == CTL_COMBO || c->ctl == CTL_TREE || c->ctl == CTL_SCROLLBAR) {
+        draw_ext(c, s, r, f);
     } else if (c->ctl == CTL_STATIC) {
         int ss = c->style & 0x1F;
         if (ss == 0x0E || ss == 0x0F) {}
+        else if (ss == 0x10) hline(s, r.x, r.y, r.w, T.face_dark), hline(s, r.x, r.y + 1, r.w, T.face_light);      /* SS_ETCHEDHORZ */
+        else if (ss == 0x11) vline(s, r.x, r.y, r.h, T.face_dark), vline(s, r.x + 1, r.y, r.h, T.face_light);      /* SS_ETCHEDVERT */
+        else if (ss == 0x12 || ss == 0x07 || ss == 0x08 || ss == 0x09) bevel_deep(s, r.x, r.y, r.w, r.h, true);   /* frames */
         else {
             int x = r.x, tw = text_width(f, label);
             if (ss == 1) x = r.x + (r.w - tw) / 2; else if (ss == 2) x = r.x + r.w - tw;
@@ -369,10 +386,7 @@ static void draw_control(w32win_t *c) {
     } else if (c->ctl == CTL_LISTBOX) {
         draw_sunken_box(s, r, T.window_bg);
         int ih = font_height(FONT_UI) + 2;
-        for (int i = 0; i < c->lb_n && 2 + i * ih < r.h; i++) {
-            if (i == c->lb_sel) fill_rect(s, r.x + 2, r.y + 2 + i * ih, r.w - 4, ih, T.select);
-            draw_text(s, FONT_UI, r.x + 4, r.y + 3 + i * ih, c->lb_items[i], i == c->lb_sel ? T.select_text : T.text);
-        }
+        (void)ih; draw_list_ext(c, s, r, f);
     }
     s->clip = old;
     wm_need_redraw = true;
@@ -391,6 +405,10 @@ void w32_theme_changed(void) {
         if (!w->destroyed && !w->parent) { w->need_paint = true; w->erase = true; }
 }
 static LRESULT WINAPI ctl_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp);
+static bool ctl_mouse_ext(w32win_t *c, window_t *win, int type, int lx, int ly, int btn);
+static bool ctl_key_ext(w32win_t *c, key_event_t *e);
+static bool ctl_msg_ext(w32win_t *c, UINT msg, WPARAM wp, LPARAM lp, LRESULT *res);
+static void radio_group_select(w32win_t *b);
 
 /* ---------------- classes ---------------- */
 typedef struct { UINT style; void *proc; int cls_extra, wnd_extra; HINSTANCE inst; HANDLE icon, cursor; HGDIOBJ bg; const char *menu, *name; } WNDCLASSA;
@@ -400,15 +418,17 @@ static w32cls_t *find_class(const char *n) {
     for (w32cls_t *c = classes; c; c = c->next) if (!strcasecmp(c->name, n) && (!c->owner || c->owner == P)) return c;
     return NULL;
 }
-static ATOM reg_class(const char *name, void *proc, uintptr_t bg, uint32_t style) {
+static ATOM reg_class_ex(const char *name, void *proc, uintptr_t bg, uint32_t style, int wnd_extra, bool unicode) {
     if (find_class(name)) { P->last_error = 1410; return 0; }
     w32cls_t *c = kzalloc(sizeof *c);
     strlcpy(c->name, name, sizeof c->name); c->proc = proc; c->brush = bg; c->style = style; c->owner = P;
+    c->wnd_extra = CLAMP(wnd_extra, 0, 1024); c->unicode = unicode;
     c->next = classes; classes = c;
     return 0xC000 + ((uintptr_t)c & 0x3FFF);
 }
-static ATOM WINAPI RegisterClassA(const WNDCLASSA *wc) { return reg_class(wc->name, wc->proc, wc->bg, wc->style); }
-static ATOM WINAPI RegisterClassExA(const WNDCLASSEXA *wc) { return reg_class(wc->name, wc->proc, wc->bg, wc->style); }
+static ATOM reg_class(const char *name, void *proc, uintptr_t bg, uint32_t style) { return reg_class_ex(name, proc, bg, style, 0, false); }
+static ATOM WINAPI RegisterClassA(const WNDCLASSA *wc) { return reg_class_ex(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra, false); }
+static ATOM WINAPI RegisterClassExA(const WNDCLASSEXA *wc) { return reg_class_ex(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra, false); }
 static BOOL WINAPI UnregisterClassA(const char *n, HINSTANCE h) { return 1; }
 static BOOL WINAPI GetClassInfoA(HINSTANCE h, const char *n, WNDCLASSA *wc) { w32cls_t *c = find_class(n); if (!c) return 0; memset(wc, 0, sizeof *wc); wc->proc = c->proc; wc->name = c->name; wc->bg = c->brush; return 1; }
 
@@ -417,6 +437,7 @@ static int vk_of(key_event_t *e) {
     int k = e->key;
     if (k >= 'a' && k <= 'z') return k - 32;
     if ((k >= 'A' && k <= 'Z') || (k >= '0' && k <= '9') || k == ' ') return k;
+    if (k > ' ' && k < 127 && !e->ch) { key_event_t t = *e; t.ch = (char)k; t.key = 0; return vk_of(&t); }
     switch (k) {
     case KEY_ENTER: return 0x0D; case KEY_ESC: return 0x1B; case KEY_BACKSPACE: return 8; case KEY_TAB: return 9;
     case KEY_LEFT: return 0x25; case KEY_UP: return 0x26; case KEY_RIGHT: return 0x27; case KEY_DOWN: return 0x28;
@@ -424,7 +445,15 @@ static int vk_of(key_event_t *e) {
     case KEY_DELETE: return 0x2E; case KEY_HOME: return 0x24; case KEY_END: return 0x23; case KEY_PGUP: return 0x21; case KEY_PGDN: return 0x22; case KEY_INSERT: return 0x2D;
     }
     if (k >= KEY_F1 && k <= KEY_F12) return 0x70 + (k - KEY_F1);
-    if (e->ch) return (uint8_t)toupper(e->ch);
+    if (e->ch) {
+        /* punctuation: the US layout's VK_OEM_* keys (their ASCII values are other keys' codes,
+         * '.' would be VK_DELETE); shifted characters map to their unshifted key */
+        static const char oem[] = ";=,-./`[\\]'", oem_sh[] = ":+<_>?~{|}\"", dig_sh[] = ")!@#$%^&*(";
+        static const uint8_t oem_vk[] = { 0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xDB, 0xDC, 0xDD, 0xDE };
+        for (int i = 0; oem[i]; i++) if (e->ch == oem[i] || e->ch == oem_sh[i]) return oem_vk[i];
+        for (int i = 0; dig_sh[i]; i++) if (e->ch == dig_sh[i]) return '0' + i;
+        return (uint8_t)toupper(e->ch);
+    }
     return 0;
 }
 static w32win_t *child_at(w32win_t *w, int x, int y) {
@@ -457,7 +486,8 @@ static void wm_mouse_cb(window_t *win, int type, int x, int y, int btn) {
             target->pressed = false;
             int bs = target->style & 0xF;
             if (bs == 3) target->checked = !target->checked;
-            if (bs == 9) { for (w32win_t *s = target->parent->child; s; s = s->next) if (s->ctl == CTL_BUTTON && (s->style & 0xF) == 9) { s->checked = s == target; draw_control(s); } }
+            if (bs == 9) radio_group_select(target);
+            if (bs == 6) target->checked = (target->checked + 1) % 3;                              /* BS_AUTO3STATE */
             draw_control(target);
             if (target->parent) w32_post(target->proc, (uintptr_t)target->parent, WM_COMMAND, target->id & 0xFFFF, (uintptr_t)target);
         }
@@ -465,11 +495,7 @@ static void wm_mouse_cb(window_t *win, int type, int x, int y, int btn) {
     } else if (hot_ctl && type == ME_UP) { hot_ctl->pressed = false; draw_control(hot_ctl); }
     if (type == ME_LEAVE && hot_ctl) { hot_ctl->hot = false; hot_ctl->pressed = false; draw_control(hot_ctl); hot_ctl = NULL; return; }
     if (target->ctl == CTL_EDIT && type == ME_DOWN) { w32win_t *old = focus_win; focus_win = target; if (old && old->ctl) draw_control(old); draw_control(target); return; }
-    if (target->ctl == CTL_LISTBOX && type == ME_DOWN) {
-        int i = ly / (font_height(FONT_UI) + 2);
-        if (i < target->lb_n) { target->lb_sel = i; draw_control(target); w32_post(target->proc, (uintptr_t)target->parent, WM_COMMAND, (target->id & 0xFFFF) | (1 << 16), (uintptr_t)target); }
-        return;
-    }
+    if ((target->ctl == CTL_LISTBOX || target->ctl == CTL_COMBO || target->ctl == CTL_TREE) && ctl_mouse_ext(target, win, type, lx, ly, btn)) return;
     if (target->ctl) return;
     uint32_t msg = 0, wp = mk;
     switch (type) {
@@ -485,14 +511,23 @@ static void wm_key_cb(window_t *win, key_event_t *e) {
     w32win_t *t = win->w32; if (!t) return;
     int vk = vk_of(e);
     if (vk) keystate[vk & 0xFF] = e->pressed;
+    if (vk != 0x10 && vk != 0x11 && vk != 0x12) {          /* modifiers held during this key, even if their own events did not reach us */
+        keystate[0x10] = keystate[0xA0] = (e->mods & MOD_SHIFT) != 0;
+        keystate[0x11] = keystate[0xA2] = (e->mods & MOD_CTRL) != 0;
+        keystate[0x12] = keystate[0xA4] = (e->mods & MOD_ALT) != 0;
+    }
+    /* the character this key makes, for TranslateMessage to turn into WM_CHAR */
+    if (vk && e->pressed) key_char[vk & 0xFF] = e->ch == '\n' ? 13 : e->ch ? (uint8_t)e->ch : vk == 0x0D ? 13 : vk == 8 ? 8 : vk == 9 ? 9 : vk == 0x1B ? 27 : 0;
     w32win_t *f = focus_win && top_of(focus_win) == t && W((uintptr_t)focus_win) ? focus_win : t;
+    if ((f->ctl == CTL_LISTBOX || f->ctl == CTL_COMBO || f->ctl == CTL_TREE) && ctl_key_ext(f, e)) return;
     if (f->ctl == CTL_EDIT) {
         if (!e->pressed) return;
         int l = strlen(f->text);
         if (e->key == KEY_BACKSPACE) { if (l) f->text[l - 1] = 0; }
-        else if (e->key == KEY_ENTER && (f->style & 4)) { if (l < 510) { f->text[l] = '\n'; f->text[l + 1] = 0; } }
+        else if (f->style & 0x800) return;                                                     /* ES_READONLY */
+        else if (e->key == KEY_ENTER && (f->style & 4)) { if (l < (int)sizeof f->text - 2) { f->text[l] = '\n'; f->text[l + 1] = 0; } }
         else if (e->key == KEY_ENTER || e->key == KEY_TAB) { if (f->parent) w32_post(f->proc, (uintptr_t)top_of(f), WM_KEYDOWN, vk, 0); return; }
-        else if (e->ch >= 32 && e->ch < 127 && l < 510) { f->text[l] = e->ch; f->text[l + 1] = 0; }
+        else if (e->ch >= 32 && e->ch < 127 && l < (int)sizeof f->text - 2 && (!f->limit || l < f->limit)) { f->text[l] = e->ch; f->text[l + 1] = 0; }
         else return;
         draw_control(f);
         w32_post(f->proc, (uintptr_t)f->parent, WM_COMMAND, (f->id & 0xFFFF) | (0x300 << 16), (uintptr_t)f);
@@ -500,8 +535,9 @@ static void wm_key_cb(window_t *win, key_event_t *e) {
     }
     if (f->ctl == CTL_BUTTON && e->pressed && (e->key == ' ' || e->key == KEY_ENTER)) { w32_post(f->proc, (uintptr_t)f->parent, WM_COMMAND, f->id & 0xFFFF, (uintptr_t)f); return; }
     if (f->ctl) f = t;
-    if (vk) w32_post(f->proc, (uintptr_t)f, e->pressed ? WM_KEYDOWN : WM_KEYUP, vk, 1);
-    if (e->pressed && e->ch) w32_post(f->proc, (uintptr_t)f, WM_CHAR, e->ch == '\n' ? 13 : (uint8_t)e->ch, 1);
+    /* lParam: repeat count 1, and on key-up the previous-state and transition bits (30, 31),
+     * which programs that translate keys themselves (terminals) look at */
+    if (vk) w32_post(f->proc, (uintptr_t)f, e->pressed ? WM_KEYDOWN : WM_KEYUP, vk, e->pressed ? 1 : 0xC0000001u);
 }
 static bool wm_close_cb(window_t *win) { w32win_t *t = win->w32; if (!t) return true; w32_post(t->proc, (uintptr_t)t, WM_CLOSE, 0, 0); return false; }
 static void wm_resized_cb(window_t *win) {
@@ -550,8 +586,6 @@ static HANDLE WINAPI GetMenu(HWND h) { w32win_t *w = W(h); return w ? w->menu : 
 static HANDLE WINAPI GetSubMenu(HANDLE hm, int i) { w32menu_t *m = MENU(hm); return m && i < m->n ? m->items[i].id : 0; }
 static DWORD WINAPI CheckMenuItem(HANDLE hm, UINT id, UINT f) { return 0; }
 static BOOL WINAPI EnableMenuItem(HANDLE hm, UINT id, UINT f) { return 1; }
-static HANDLE WINAPI LoadMenuA(HINSTANCE h, const char *n) { return 0; }
-static HANDLE WINAPI GetSystemMenu(HWND h, BOOL r) { return 0; }
 
 /* ---------------- window creation ---------------- */
 typedef struct { void *params; HINSTANCE inst; HANDLE menu; HWND parent; int cy, cx, y, x; LONG style; const char *name, *cls; DWORD exstyle; } CREATESTRUCTA;
@@ -561,7 +595,11 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
     int ctl = CTL_NONE;
     if (!cls && (uintptr_t)clsname > 0x10000) {
         if (!strcasecmp(clsname, "BUTTON")) ctl = CTL_BUTTON; else if (!strcasecmp(clsname, "STATIC")) ctl = CTL_STATIC;
-        else if (!strcasecmp(clsname, "EDIT")) ctl = CTL_EDIT; else if (!strcasecmp(clsname, "LISTBOX")) ctl = CTL_LISTBOX;
+        else if (!strcasecmp(clsname, "EDIT") || !strcasecmp(clsname, "RichEdit20A") || !strcasecmp(clsname, "RichEdit20W")) ctl = CTL_EDIT;
+        else if (!strcasecmp(clsname, "LISTBOX")) ctl = CTL_LISTBOX;
+        else if (!strcasecmp(clsname, "COMBOBOX") || !strcasecmp(clsname, "ComboBoxEx32")) ctl = CTL_COMBO;
+        else if (!strcasecmp(clsname, "SysTreeView32")) ctl = CTL_TREE;
+        else if (!strcasecmp(clsname, "SCROLLBAR") || !strncasecmp(clsname, "msctls_", 7)) ctl = CTL_SCROLLBAR;
         else { p->last_error = 1407; klog("w32: CreateWindow: unknown class %s", clsname); return 0; }
     } else if (!cls) { p->last_error = 1407; return 0; }
     w32win_t *pw = W(parent);
@@ -571,12 +609,18 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
     win->style = style; win->exstyle = ex;
     win->wndproc = cls ? cls->proc : (void *)ctl_proc;
     win->enabled = !(style & WS_DISABLED);
+    win->unicode = cls && cls->unicode;
+    win->nextra = cls ? cls->wnd_extra : 0;
+    if (cls && !strcmp(cls->name, "#32770") && win->nextra < 64) win->nextra = 64;   /* the system dialog class: DLGWINDOWEXTRA */
+    if (win->nextra) win->extra = kzalloc(win->nextra);
+    win->lb_sel = -1;
     if (title) strlcpy(win->text, (uintptr_t)title > 0x10000 ? title : "", sizeof win->text);
     win->all_next = all_wins; all_wins = win;
     if ((style & WS_CHILD) && pw) {
         win->parent = pw; win->id = (uint32_t)menu;
         win->x = x == (int)CW_USEDEFAULT ? 0 : x; win->y = y == (int)CW_USEDEFAULT ? 0 : y;
         win->w = w == (int)CW_USEDEFAULT ? 100 : w; win->h = h == (int)CW_USEDEFAULT ? 24 : h;
+        if (ctl == CTL_COMBO && (style & 3) != 1) { win->cb_droph = win->h; win->h = MIN(win->h, font_height(FONT_UI) + 8); }
         w32win_t **pp = &pw->child; while (*pp) pp = &(*pp)->next; *pp = win;
         win->visible = (style & WS_VISIBLE) != 0;
     } else {
@@ -603,17 +647,12 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
     if (!send(win, WM_NCCREATE, 0, (uintptr_t)&cs)) { /* DefWindowProc returns TRUE; app may refuse */ }
     if ((int32_t)send(win, WM_CREATE, 0, (uintptr_t)&cs) == -1) { extern BOOL WINAPI DestroyWindow(HWND); DestroyWindow((HWND)win); return 0; }
     if (win->destroyed) return 0;
-    send(win, WM_SIZE, 0, (win->w & 0xFFFF) | (win->h << 16));
+    /* a hidden top-level window gets its first WM_SIZE when it is first shown (programs set
+     * their window data between CreateWindow and ShowWindow and expect nothing before) */
+    if (win->parent || (style & WS_VISIBLE)) { win->sent_size = true; send(win, WM_SIZE, 0, (win->w & 0xFFFF) | (win->h << 16)); }
     if (win->parent && win->ctl) draw_control(win);
     else if (win->parent) win->need_paint = true;
     return (HWND)win;
-}
-static HWND WINAPI CreateWindowExW(DWORD ex, const WCHAR *c, const WCHAR *t, DWORD s, int x, int y, int w, int h, HWND p, HANDLE m, HINSTANCE i, void *pa) {
-    char cn[64], tn[256]; int k;
-    if ((uintptr_t)c < 0x10000) return 0;
-    for (k = 0; c[k] && k < 63; k++) cn[k] = c[k]; cn[k] = 0;
-    for (k = 0; t && t[k] && k < 255; k++) tn[k] = t[k]; tn[k] = 0;
-    return CreateWindowExA(ex, cn, tn, s, x, y, w, h, p, m, i, pa);
 }
 static void destroy_rec(w32win_t *w) {
     if (w->destroyed) return;
@@ -640,6 +679,7 @@ static BOOL WINAPI ShowWindow(HWND h, int cmd) {
     w32win_t *w = W(h); if (!w) return 0;
     bool was = w->visible;
     w->visible = cmd != 0;
+    if (cmd && !w->sent_size) { w->sent_size = true; send(w, WM_SIZE, 0, (w->w & 0xFFFF) | (w->h << 16)); if (!W(h)) return 0; }
     if (w->top) {
         if (cmd == 0) { w->top->flags |= WF_HIDDEN; wm_need_redraw = true; }
         else { wm_show(w->top); if (cmd == 3) wm_maximize(w->top, true); else if (cmd == 2 || cmd == 6 || cmd == 7) wm_minimize(w->top); else if (cmd == 9 && w->top->state == WS_MAXIMIZED) wm_maximize(w->top, false); }
@@ -732,22 +772,32 @@ static HWND WINAPI GetWindow(HWND h, UINT c) { w32win_t *w = W(h); if (!w) retur
 /* the ...LongPtr forms are separate exports on x64 (macros for the 32-bit ones on x86) */
 static LONG_PTR WINAPI GetWindowLongPtrA(HWND h, int i) {
     w32win_t *w = W(h); if (!w) return 0;
+    if (i >= 0) { LONG_PTR v = 0; if (w->extra && i + (int)sizeof(LONG_PTR) <= w->nextra) memcpy(&v, w->extra + i, sizeof v); else w->proc->last_error = 1413; return v; }
     switch (i) { case -4: return (LONG_PTR)w->wndproc; case -21: return w->userdata; case -16: return w->style; case -20: return w->exstyle; case -12: return w->id; case -6: return (LONG_PTR)w->proc->base; case -8: return (LONG_PTR)w->parent; }
     return 0;
 }
 static LONG_PTR WINAPI SetWindowLongPtrA(HWND h, int i, LONG_PTR v) {
     w32win_t *w = W(h); if (!w) return 0;
+    if (i >= 0) { LONG_PTR o = 0; if (w->extra && i + (int)sizeof(LONG_PTR) <= w->nextra) { memcpy(&o, w->extra + i, sizeof o); memcpy(w->extra + i, &v, sizeof v); } else w->proc->last_error = 1413; return o; }
     LONG_PTR o = GetWindowLongPtrA(h, i);
     switch (i) { case -4: w->wndproc = (void *)v; break; case -21: w->userdata = v; break; case -16: w->style = v; break; case -20: w->exstyle = v; break; case -12: w->id = v; break; }
     return o;
 }
-static LONG WINAPI GetWindowLongA(HWND h, int i) { return (LONG)GetWindowLongPtrA(h, i); }
-static LONG WINAPI SetWindowLongA(HWND h, int i, LONG v) { return (LONG)SetWindowLongPtrA(h, i, i == -4 || i == -21 ? (LONG_PTR)(uint32_t)v : v); }
+static LONG WINAPI GetWindowLongA(HWND h, int i) {
+    w32win_t *w = W(h);
+    if (w && i >= 0) { LONG v = 0; if (w->extra && i + 4 <= w->nextra) memcpy(&v, w->extra + i, 4); return v; }
+    return (LONG)GetWindowLongPtrA(h, i);
+}
+static LONG WINAPI SetWindowLongA(HWND h, int i, LONG v) {
+    w32win_t *w = W(h);
+    if (w && i >= 0) { LONG o = 0; if (w->extra && i + 4 <= w->nextra) { memcpy(&o, w->extra + i, 4); memcpy(w->extra + i, &v, 4); } return o; }
+    return (LONG)SetWindowLongPtrA(h, i, i == -4 || i == -21 ? (LONG_PTR)(uint32_t)v : v);
+}
 static uintptr_t WINAPI GetClassLongPtrA(HWND h, int i) { w32win_t *w = W(h); if (!w || !w->cls) return 0; if (i == -10) return w->cls->brush; if (i == -24) return (uintptr_t)w->cls->proc; return 0; }
 static uintptr_t WINAPI SetClassLongPtrA(HWND h, int i, LONG_PTR v) { w32win_t *w = W(h); if (!w || !w->cls) return 0; uintptr_t o = GetClassLongPtrA(h, i); if (i == -10) w->cls->brush = v; if (i == -24) w->cls->proc = (void *)v; return o; }
 static DWORD WINAPI GetClassLongA(HWND h, int i) { return (DWORD)GetClassLongPtrA(h, i); }
 static DWORD WINAPI SetClassLongA(HWND h, int i, LONG v) { return (DWORD)SetClassLongPtrA(h, i, v); }
-static int WINAPI GetClassNameA(HWND h, char *b, int n) { w32win_t *w = W(h); if (!w) return 0; strlcpy(b, w->cls ? w->cls->name : w->ctl == CTL_BUTTON ? "Button" : w->ctl == CTL_EDIT ? "Edit" : w->ctl == CTL_LISTBOX ? "ListBox" : "Static", n); return strlen(b); }
+static int WINAPI GetClassNameA(HWND h, char *b, int n) { w32win_t *w = W(h); if (!w) return 0; strlcpy(b, w->cls ? w->cls->name : w->ctl == CTL_BUTTON ? "Button" : w->ctl == CTL_EDIT ? "Edit" : w->ctl == CTL_LISTBOX ? "ListBox" : w->ctl == CTL_COMBO ? "ComboBox" : w->ctl == CTL_TREE ? "SysTreeView32" : w->ctl == CTL_SCROLLBAR ? "ScrollBar" : "Static", n); return strlen(b); }
 static BOOL WINAPI EnumWindows(void *fn, LPARAM lp) { return 1; }
 static BOOL WINAPI FlashWindow(HWND h, BOOL b) { return 1; }
 
@@ -815,13 +865,21 @@ static BOOL WINAPI PeekMessageA(MSG32 *m, HWND h, UINT lo, UINT hi, UINT rm) {
     return 0;
 }
 static BOOL WINAPI WaitMessage(void) { w32_proc_t *p = P; MSG32 m; while (!get_msg(p, &m, false)) task_sleep(8); return 1; }
-static BOOL WINAPI TranslateMessage(const MSG32 *m) { return 0; }
+/* WM_CHAR comes from TranslateMessage, as on Windows: a key press that IsDialogMessage or an
+ * accelerator consumed makes no character */
+static BOOL WINAPI TranslateMessage(const MSG32 *m) {
+    if (!m || m->message != WM_KEYDOWN) return 0;
+    uint8_t c = key_char[m->wParam & 0xFF];
+    w32win_t *w = W(m->hwnd);
+    if (!c || !w) return 0;
+    w32_post(w->proc, m->hwnd, WM_CHAR, c, m->lParam);
+    return 1;
+}
 static LRESULT WINAPI DispatchMessageA(const MSG32 *m) {
     if (m->message == WM_TIMER && m->lParam) { void (WINAPI *cb)(HWND, UINT, uintptr_t, DWORD) = (void *)m->lParam; cb(m->hwnd, WM_TIMER, m->wParam, timer_ticks()); return 0; }
     w32win_t *w = W(m->hwnd); if (!w) return 0;
     return send(w, m->message, m->wParam, m->lParam);
 }
-static BOOL WINAPI IsDialogMessageA(HWND h, MSG32 *m) { return 0; }
 static BOOL WINAPI TranslateAcceleratorA(HWND h, HANDLE a, MSG32 *m) { return 0; }
 static HANDLE WINAPI LoadAcceleratorsA(HINSTANCE h, const char *n) { return 0; }
 static LRESULT WINAPI CallWindowProcA(void *fn, HWND h, UINT msg, WPARAM wp, LPARAM lp) { return call_wndproc(fn, h, msg, wp, lp); }
@@ -879,16 +937,12 @@ static LRESULT WINAPI DefWindowProcA(HWND h, UINT msg, WPARAM wp, LPARAM lp) { w
 #define LB_GETTEXT 0x189
 static LRESULT WINAPI ctl_proc(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     w32win_t *w = W(h); if (!w) return 0;
+    LRESULT xr;
+    if (ctl_msg_ext(w, msg, wp, lp, &xr)) return xr;
     switch (msg) {
     case BM_GETCHECK: return w->checked;
     case BM_SETCHECK: w->checked = wp == 1; draw_control(w); return 0;
     case WM_PAINT: draw_control(w); w->need_paint = false; return 0;
-    case LB_ADDSTRING: w->lb_items = krealloc(w->lb_items, (w->lb_n + 1) * sizeof(char *)); w->lb_items[w->lb_n] = strdup((const char *)lp); draw_control(w); return w->lb_n++;
-    case LB_GETCURSEL: return w->lb_sel < w->lb_n ? w->lb_sel : (uint32_t)-1;
-    case LB_SETCURSEL: w->lb_sel = wp; draw_control(w); return wp;
-    case LB_GETCOUNT: return w->lb_n;
-    case LB_RESETCONTENT: for (int i = 0; i < w->lb_n; i++) kfree(w->lb_items[i]); w->lb_n = 0; draw_control(w); return 0;
-    case LB_GETTEXT: if ((int)wp < w->lb_n) { strcpy((char *)lp, w->lb_items[wp]); return strlen(w->lb_items[wp]); } return (uint32_t)-1;
     }
     return default_proc(w, msg, wp, lp);
 }
@@ -910,6 +964,16 @@ typedef struct { volatile int result; } mbwait_t;
 static void mb_done(void *ctx, int r) { ((mbwait_t *)ctx)->result = r; }
 static int WINAPI MessageBoxA(HWND h, const char *text, const char *cap, UINT type) {
     int btn = type & 0xF, icon = type & 0xF0;
+    if (cap && strstr(cap, "Runtime Library")) {                 /* a C runtime error (assertion): log where in the program it came from */
+        uintptr_t *sp = __builtin_frame_address(0), base = P->base;
+        char line[200] = ""; int k = 0, n = 0;
+        for (int i = 0; i < 4096 && n < 16; i++) {
+            
+            uintptr_t v = sp[i];
+            if (v >= base + 0x1000 && v < base + 0x200000 && (((uint8_t *)v)[-5] == 0xE8 || (((uint8_t *)v)[-6] == 0xFF && ((uint8_t *)v)[-5] == 0x15) || ((uint8_t *)v)[-2] == 0xFF || ((uint8_t *)v)[-3] == 0xFF)) { k += snprintf(line + k, sizeof line - k, " %lx", (unsigned long)sp[i]); n++; }
+        }
+        klog("w32: runtime error box; program addresses on the stack:%s", line);
+    }
     int bt = btn == 1 ? MBX_OKCANCEL : btn == 3 ? MBX_YESNOCANCEL : btn == 4 ? MBX_YESNO : MBX_OK;
     int ic = icon == 0x10 ? MBI_ERROR : icon == 0x20 ? MBI_QUESTION : icon == 0x30 ? MBI_WARNING : icon == 0x40 ? MBI_INFO : MBI_NONE;
     mbwait_t *wt = kzalloc(sizeof *wt);
@@ -919,8 +983,16 @@ static int WINAPI MessageBoxA(HWND h, const char *text, const char *cap, UINT ty
     if (mw) { mw->pid = P->pid; if (ow && top_of(ow)->top) { mw->owner = top_of(ow)->top; mw->flags |= WF_MODAL; } else { mw->owner = NULL; mw->flags &= ~WF_MODAL; } }
     w32_proc_t *p = P;
     while (!wt->result) {
-        /* keep our windows painted while the modal box is up */
-        MSG32 m; if (find_paint(p, &m)) send(W(m.hwnd), WM_PAINT, 0, 0);
+        /* a modal loop, as on Windows: the program's timers, socket notifications and painting
+         * go on behind the box; keyboard and mouse input for its windows is dropped */
+        MSG32 m; bool any = false;
+        while (!wt->result && get_msg(p, &m, true)) {
+            any = true;
+            if (m.message == WM_QUIT) { p->quit_posted = true; p->quit_code = m.wParam; continue; }
+            if ((m.message >= 0x100 && m.message <= 0x109) || (m.message >= 0x200 && m.message <= 0x20E)) continue;
+            DispatchMessageA(&m);
+        }
+        if (!any && find_paint(p, &m)) send(W(m.hwnd), WM_PAINT, 0, 0);
         task_sleep(15);
     }
     int r = wt->result; kfree(wt);
@@ -934,9 +1006,6 @@ static int WINAPI MessageBoxW(HWND h, const WCHAR *t, const WCHAR *c, UINT type)
 }
 static int WINAPI MessageBoxExA(HWND h, const char *t, const char *c, UINT ty, WORD l) { return MessageBoxA(h, t, c, ty); }
 static BOOL WINAPI MessageBeep(UINT t) { speaker_beep(t == 0x10 ? 440 : 880, 80); return 1; }
-static INT WINAPI DialogBoxParamA(HINSTANCE i, const char *t, HWND p, void *fn, LPARAM lp) { MessageBoxA(p, "Dialog resources are not supported by the WRLD Win32 subsystem yet.", "DialogBox", 0x30); return -1; }
-static HWND WINAPI CreateDialogParamA(HINSTANCE i, const char *t, HWND p, void *fn, LPARAM lp) { return 0; }
-static BOOL WINAPI EndDialog(HWND h, INT r) { return DestroyWindow(h); }
 
 /* ---------------- misc user32 ---------------- */
 static int WINAPI GetSystemMetrics(int i) {
@@ -970,7 +1039,6 @@ static char *WINAPI CharNextA(const char *s) { return (char *)(*s ? s + 1 : s); 
 static char *WINAPI CharPrevA(const char *a, const char *s) { return (char *)(s > a ? s - 1 : a); }
 static BOOL WINAPI IsCharAlphaA(char c) { return isalpha(c); }
 static BOOL WINAPI IsCharAlphaNumericA(char c) { return isalnum(c); }
-static BOOL WINAPI OpenClipboard(HWND h) { return 0; }
 static BOOL WINAPI CloseClipboard(void) { return 1; }
 static HANDLE WINAPI SetWindowsHookExA(int a, void *b, HINSTANCE c, DWORD d) { return 0; }
 static UINT WINAPI RegisterWindowMessageA(const char *s) { return 0xC100 + (strlen(s) & 0xFF); }
@@ -983,6 +1051,7 @@ static int WINAPI SetScrollPos(HWND h, int b, int p, BOOL r) { return 0; }
 static int WINAPI GetScrollPos(HWND h, int b) { return 0; }
 static BOOL WINAPI ShowScrollBar(HWND h, int b, BOOL s) { return 1; }
 static HANDLE WINAPI BeginDeferWindowPos(int n) { return 1; }
+#include "user32_dlg.inc"
 
 /* for opengl32/d3d9 (gl.c, d3d9.c): the window behind a DC, and a window's client pixels */
 uintptr_t w32_dc_hwnd(uintptr_t hdc) { dc_t *d = DC(hdc); return d && d->win ? (uintptr_t)d->win : 0; }
@@ -1005,7 +1074,8 @@ void w32_user_cleanup(w32_proc_t *p) {
             if (focus_win == w) focus_win = NULL;
             if (hot_ctl == w) hot_ctl = NULL;
             for (int i = 0; i < w->lb_n; i++) kfree(w->lb_items[i]);
-            kfree(w->lb_items);
+            kfree(w->lb_items); kfree(w->lb_data); kfree(w->lb_selbits); kfree(w->extra); kfree(w->cb_menu);
+            extern void w32_tv_free_all(w32win_t *w); w32_tv_free_all(w);
             *pp = w->all_next; w->magic = 0; kfree(w);
         } else pp = &w->all_next;
     }
@@ -1021,7 +1091,7 @@ void w32_init(void) {
 
 #define E(n) { #n, (void *)n }
 const w32_export_t user32_exports[] = {
-    E(RegisterClassA), E(RegisterClassExA), E(UnregisterClassA), E(GetClassInfoA), E(CreateWindowExA), E(CreateWindowExW), E(DestroyWindow), E(ShowWindow), E(UpdateWindow),
+    E(RegisterClassA), E(RegisterClassExA), E(UnregisterClassA), E(GetClassInfoA), E(CreateWindowExA), { "CreateWindowExW", (void *)CreateWindowExW2 }, E(DestroyWindow), E(ShowWindow), E(UpdateWindow),
     E(InvalidateRect), E(ValidateRect), E(RedrawWindow), E(GetClientRect), E(GetWindowRect), E(ClientToScreen), E(ScreenToClient), E(AdjustWindowRect), E(AdjustWindowRectEx),
     E(MoveWindow), E(SetWindowPos), E(SetWindowTextA), E(GetWindowTextA), E(GetWindowTextLengthA), E(EnableWindow), E(IsWindowEnabled), E(IsWindow), E(IsWindowVisible),
     E(IsIconic), E(IsZoomed), E(GetParent), E(GetDlgItem), E(GetDlgCtrlID), E(SetDlgItemTextA), E(GetDlgItemTextA), E(SetDlgItemInt), E(GetDlgItemInt), E(SetFocus), E(GetFocus),
@@ -1029,18 +1099,40 @@ const w32_export_t user32_exports[] = {
     E(FindWindowA), E(GetWindow), E(GetWindowLongA), E(SetWindowLongA), E(GetWindowLongPtrA), E(SetWindowLongPtrA), E(GetClassLongPtrA), E(SetClassLongPtrA),
     E(GetClassLongA), E(SetClassLongA), E(GetClassNameA), E(EnumWindows), E(FlashWindow),
     E(SendMessageA), E(PostMessageA), E(PostThreadMessageA), E(PostQuitMessage), E(GetMessageA), E(PeekMessageA), E(WaitMessage), E(TranslateMessage), E(DispatchMessageA),
-    { "GetMessageW", (void *)GetMessageA }, { "PeekMessageW", (void *)PeekMessageA }, { "DispatchMessageW", (void *)DispatchMessageA }, { "DefWindowProcW", (void *)DefWindowProcA },
-    { "SendMessageW", (void *)SendMessageA }, { "PostMessageW", (void *)PostMessageA },
+    { "GetMessageW", (void *)GetMessageA }, { "PeekMessageW", (void *)PeekMessageA }, { "DispatchMessageW", (void *)DispatchMessageA }, E(DefWindowProcW),
+    { "SendMessageW", (void *)SendMessageW_ }, { "PostMessageW", (void *)PostMessageA },
     E(IsDialogMessageA), E(TranslateAcceleratorA), E(LoadAcceleratorsA), E(CallWindowProcA), E(GetMessageTime), E(GetMessagePos), E(InSendMessage), E(MsgWaitForMultipleObjects),
     E(BeginPaint), E(EndPaint), E(DefWindowProcA), E(GetDC), E(GetWindowDC), E(WindowFromDC), E(ReleaseDC), E(FillRect), E(FrameRect), E(InvertRect), E(DrawFocusRect), E(DrawEdge), E(DrawTextA),
     E(SetRect), E(SetRectEmpty), E(CopyRect), E(OffsetRect), E(InflateRect), E(IsRectEmpty), E(PtInRect), E(EqualRect), E(IntersectRect), E(UnionRect),
-    E(SetTimer), E(KillTimer), E(MessageBoxA), E(MessageBoxW), E(MessageBoxExA), E(MessageBeep), E(DialogBoxParamA), E(CreateDialogParamA), E(EndDialog),
-    E(CreateMenu), E(CreatePopupMenu), E(AppendMenuA), E(DestroyMenu), E(DrawMenuBar), E(SetMenu), E(GetMenu), E(GetSubMenu), E(CheckMenuItem), E(EnableMenuItem), E(LoadMenuA), E(GetSystemMenu),
+    E(SetTimer), E(KillTimer), E(MessageBoxA), E(MessageBoxW), E(MessageBoxExA), { "MessageBeep", (void *)MessageBeep }, E(DialogBoxParamA), E(CreateDialogParamA), E(EndDialog),
+    E(CreateMenu), E(CreatePopupMenu), E(AppendMenuA), E(DestroyMenu), E(DrawMenuBar), E(SetMenu), E(GetMenu), E(GetSubMenu), E(CheckMenuItem), E(EnableMenuItem), { "LoadMenuA", (void *)LoadMenuA2 }, { "GetSystemMenu", (void *)GetSystemMenu2 },
     E(GetSystemMetrics), E(LoadCursorA), E(LoadIconA), { "LoadCursorW", (void *)LoadCursorA }, { "LoadIconW", (void *)LoadIconA }, E(LoadImageA), E(SetCursor), E(ShowCursor), E(GetCursorPos),
     E(SetCursorPos), E(DestroyIcon), E(DrawIcon), E(GetKeyState), E(GetAsyncKeyState), E(GetKeyboardState), E(MapVirtualKeyA), E(GetSysColor), E(GetSysColorBrush),
-    E(wsprintfA), E(wvsprintfA), E(CharUpperA), E(CharLowerA), E(CharNextA), E(CharPrevA), E(IsCharAlphaA), E(IsCharAlphaNumericA), E(OpenClipboard), E(CloseClipboard),
+    E(wsprintfA), E(wvsprintfA), E(CharUpperA), E(CharLowerA), E(CharNextA), E(CharPrevA), E(IsCharAlphaA), E(IsCharAlphaNumericA), { "OpenClipboard", (void *)OpenClipboard2 }, E(CloseClipboard),
     E(SetWindowsHookExA), E(RegisterWindowMessageA), E(SystemParametersInfoA), E(MonitorFromWindow), E(GetDoubleClickTime), E(ScrollWindow), E(SetScrollRange), E(SetScrollPos),
     E(GetScrollPos), E(ShowScrollBar), E(BeginDeferWindowPos),
+    /* dialogs, controls, Unicode and the rest (user32_dlg.inc) */
+    E(DefDlgProcA), E(DefDlgProcW), E(CreateDialogParamW), E(CreateDialogIndirectParamA), E(CreateDialogIndirectParamW), E(DialogBoxParamW),
+    E(DialogBoxIndirectParamA), E(DialogBoxIndirectParamW), E(IsDialogMessageW), E(GetNextDlgTabItem), E(GetNextDlgGroupItem),
+    E(MapDialogRect), E(GetDialogBaseUnits), E(CheckDlgButton), E(IsDlgButtonChecked), E(CheckRadioButton), E(SendDlgItemMessageA), E(SendDlgItemMessageW),
+    E(SetWindowTextW), E(GetWindowTextW), E(GetWindowTextLengthW), E(SetDlgItemTextW), E(GetDlgItemTextW), E(GetClassNameW), E(RegisterClassW), E(RegisterClassExW),
+    E(UnregisterClassW), E(GetClassInfoW), E(LoadStringA), E(LoadStringW), E(LoadMenuW), E(LoadImageW), E(DrawIconEx), E(InsertMenuA), E(InsertMenuW), E(AppendMenuW),
+    E(DeleteMenu), E(RemoveMenu), E(GetMenuItemCount), E(GetMenuItemID), E(ModifyMenuA), E(TrackPopupMenu), E(TrackPopupMenuEx),
+    E(CreateCaret), E(DestroyCaret), E(SetCaretPos), E(GetCaretPos), E(ShowCaret), E(HideCaret), E(GetCaretBlinkTime), E(SetCaretBlinkTime),
+    E(EmptyClipboard), E(SetClipboardData), E(GetClipboardData), E(IsClipboardFormatAvailable), E(RegisterClipboardFormatA), E(RegisterClipboardFormatW), E(EnumClipboardFormats),
+    E(GetKeyboardLayout), E(GetKeyboardLayoutList), E(SetKeyboardState), E(ToAsciiEx), E(ToAscii), E(ToUnicode), E(ToUnicodeEx), E(MapVirtualKeyExA), E(VkKeyScanA),
+    E(SetScrollInfo), E(GetScrollInfo), E(GetWindowPlacement), E(SetWindowPlacement), E(MessageBoxIndirectW), E(MessageBoxIndirectA), E(EnumChildWindows),
+    E(ChildWindowFromPoint), E(WindowFromPoint), E(IsChild), E(GetAncestor), E(LockWindowUpdate), E(SetParent), E(MapWindowPoints), E(EnableScrollBar), E(IsWindowUnicode),
+    E(CallWindowProcW), E(SendMessageTimeoutA), E(SendNotifyMessageA), E(RegisterWindowMessageW), E(SystemParametersInfoW), E(FindWindowW), E(GetWindowThreadProcessId),
+    E(GetMonitorInfoA), { "GetMonitorInfoW", (void *)GetMonitorInfoA }, E(MonitorFromPoint), E(MonitorFromRect), E(GetUpdateRect), E(GetUpdateRgn), E(InvalidateRgn), E(ValidateRgn),
+    E(EndDeferWindowPos), E(DeferWindowPos), E(OpenIcon), E(CloseWindow), E(ShowWindowAsync), E(DestroyCursor), E(CopyIcon), E(CreateIconIndirect), E(GetIconInfo), E(CopyImage),
+    E(ClipCursor), E(GetClipCursor), E(GetSystemMetricsForDpi), E(GetDpiForWindow), E(GetDpiForSystem), E(SetProcessDPIAware), E(SetProcessDpiAwarenessContext), E(IsProcessDPIAware),
+    E(AdjustWindowRectExForDpi), E(UnhookWindowsHookEx), E(CallNextHookEx), E(TranslateMDISysAccel), E(DestroyAcceleratorTable), E(CreateAcceleratorTableA), E(DragDetect),
+    E(GetLastInputInfo), E(AllowSetForegroundWindow), E(FlashWindowEx), E(DrawTextW), E(DrawTextExW), E(DrawTextExA), E(wsprintfW), E(EnumThreadWindows), E(SetWindowContextHelpId),
+    E(WinHelpA), E(LoadCursorFromFileA), E(CopyAcceleratorTableA),
+    { "SetWindowLongPtrW", (void *)SetWindowLongPtrA }, { "GetWindowLongPtrW", (void *)GetWindowLongPtrA }, { "SetWindowLongW", (void *)SetWindowLongA }, { "GetWindowLongW", (void *)GetWindowLongA },
+    { "LoadAcceleratorsW", (void *)LoadAcceleratorsA }, { "TranslateAcceleratorW", (void *)TranslateAcceleratorA },
+    { "SetWindowsHookExW", (void *)SetWindowsHookExA }, { "PostThreadMessageW", (void *)PostThreadMessageA }, { "CallMsgFilterW", (void *)TranslateMDISysAccel },
 };
 const int user32_count = ARRAY_LEN(user32_exports);
 int WINAPI w32_ChoosePixelFormat(HDC dc, const void *p);
@@ -1056,5 +1148,10 @@ const w32_export_t gdi32_exports[] = {
     /* pixel formats for OpenGL (gl.c) */
     { "ChoosePixelFormat", (void *)w32_ChoosePixelFormat }, { "SetPixelFormat", (void *)w32_SetPixelFormat }, { "GetPixelFormat", (void *)w32_GetPixelFormat },
     { "DescribePixelFormat", (void *)w32_DescribePixelFormat }, { "SwapBuffers", (void *)w32_SwapBuffers },
+    E(ExtTextOutW), E(TextOutW), E(GetTextExtentPoint32W), { "GetTextExtentPointW", (void *)GetTextExtentPoint32W }, E(GetBkMode), E(GetBkColor), E(GetTextColor),
+    E(GetCharWidth32A), E(GetCharWidth32W), { "GetCharWidthA", (void *)GetCharWidth32A }, { "GetCharWidthW", (void *)GetCharWidth32W }, E(GetCharABCWidthsFloatA),
+    E(GetCharABCWidthsA), E(GetCharABCWidthsW), E(GetCharacterPlacementW), E(GetTextExtentExPointA), E(GetTextExtentExPointW), E(GetOutlineTextMetricsA),
+    E(TranslateCharsetInfo), E(GetCurrentObject), E(IntersectClipRect), E(ExcludeClipRect), E(SelectClipRgn), E(GetDIBits), E(CreatePalette), E(SelectPalette),
+    E(RealizePalette), E(SetPaletteEntries), E(UnrealizeObject), E(UpdateColors), E(GetNearestPaletteIndex),
 };
 const int gdi32_count = ARRAY_LEN(gdi32_exports);

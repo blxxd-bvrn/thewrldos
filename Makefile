@@ -150,7 +150,7 @@ both:
 	$(MAKE) ARCH=i686
 	$(MAKE) ARCH=x86_64
 
-$(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
+$(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/win32/*.inc src/apps/*.h)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

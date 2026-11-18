@@ -411,11 +411,16 @@ static UINT WINAPI GetTempFileNameA(const char *d, const char *p, UINT u, char *
     snprintf(out, 260, "%s%s%.3s%04X.tmp", d, d[0] && d[strlen(d) - 1] != '\\' ? "\\" : "", p, u);
     return u;
 }
-static HANDLE WINAPI FindResourceW(HMODULE m, const WCHAR *n, const WCHAR *t) { return 0; }
-static HANDLE WINAPI FindResourceExW(HMODULE m, const WCHAR *t, const WCHAR *n, WORD l) { return 0; }
-static HANDLE WINAPI LoadResource(HMODULE m, HANDLE r) { return 0; }
-static void *WINAPI LockResource(HANDLE r) { return NULL; }
-static DWORD WINAPI SizeofResource(HMODULE m, HANDLE r) { return 0; }
+/* resources of the program's own image (other modules have none: they are built in) */
+static bool own_module(HMODULE m) { return !m || m == P->base; }
+static HANDLE WINAPI FindResourceW(HMODULE m, const WCHAR *n, const WCHAR *t) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, true, 0) : 0; if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceExW(HMODULE m, const WCHAR *t, const WCHAR *n, WORD l) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, true, l) : 0; if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceA2(HMODULE m, const char *n, const char *t) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, false, 0) : 0; if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceExA(HMODULE m, const char *t, const char *n, WORD l) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, false, l) : 0; if (!r) set_err(1814); return r; }
+static HANDLE WINAPI LoadResource(HMODULE m, HANDLE r) { return (HANDLE)w32_resource_data(P, r, NULL); }
+static void *WINAPI LockResource(HANDLE r) { return (void *)r; }
+static BOOL WINAPI FreeResource(HANDLE r) { return 0; }
+static DWORD WINAPI SizeofResource(HMODULE m, HANDLE r) { uint32_t n = 0; w32_resource_data(P, r, &n); return n; }
 static SIZE_T WINAPI HeapCompact(HANDLE h, DWORD f) { return 1 << 20; }
 static BOOL WINAPI HeapSetInformation(HANDLE h, int c, void *i, SIZE_T n) { return 1; }
 static BOOL WINAPI GetCommState(HANDLE h, void *d) { set_err(1); return 0; }
@@ -598,7 +603,7 @@ static const compat_t compat[] = {
     C("kernel32", LCIDToLocaleName), C("kernel32", LocaleNameToLCID), C("kernel32", LCMapStringEx), C("kernel32", LCMapStringA), C("kernel32", GetStringTypeA),
     C("kernel32", GetStringTypeExW), C("kernel32", FormatMessageW), C("kernel32", GetVersionExW), C("kernel32", GetComputerNameW), C("kernel32", GetComputerNameExW),
     C("kernel32", GetWindowsDirectoryW), C("kernel32", GetSystemDirectoryW), C("kernel32", GetSystemWindowsDirectoryW), C("kernel32", GetTempFileNameW),
-    C("kernel32", GetTempFileNameA), C("kernel32", FindResourceW), C("kernel32", FindResourceExW), C("kernel32", LoadResource), C("kernel32", LockResource),
+    C("kernel32", GetTempFileNameA), C("kernel32", FindResourceW), C("kernel32", FindResourceExW), CA("kernel32", "FindResourceA", FindResourceA2), C("kernel32", FindResourceExA), C("kernel32", FreeResource), C("kernel32", LoadResource), C("kernel32", LockResource),
     C("kernel32", SizeofResource), C("kernel32", HeapCompact), C("kernel32", HeapSetInformation), C("kernel32", GetCommState), C("kernel32", SetCommState),
     C("kernel32", SetCommTimeouts), C("kernel32", SetCommBreak), C("kernel32", ClearCommBreak), C("kernel32", QueryFullProcessImageNameW),
     CA("kernel32", "K32GetModuleFileNameExW", GetModuleFileNameExW), C("kernel32", IsWow64Process), C("kernel32", SetDllDirectoryW), C("kernel32", SetDefaultDllDirectories),

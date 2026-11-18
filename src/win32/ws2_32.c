@@ -413,8 +413,8 @@ static int WINAPI WSAEnumNetworkEvents(uintptr_t s, uintptr_t ev, void *out) {
     wsock_t *k = sget(s);
     if (!k) { wsa_err(WSAENOTSOCK); return SOCKET_ERROR; }
     poll_socket(k, P);
-    struct { long events; int errs[10]; } *ne = out;
-    ne->events = k->ev_pending;
+    struct { int32_t events; int errs[10]; } *ne = out;   /* WSANETWORKEVENTS: a 32-bit long on Windows */
+    ne->events = (int32_t)k->ev_pending;
     memcpy(ne->errs, k->ev_err, sizeof ne->errs);
     k->ev_pending = 0; memset(k->ev_err, 0, sizeof k->ev_err);
     if (ev) { void *fn = NULL; w32_lookup("kernel32.dll", "ResetEvent", &fn); ((BOOL (WINAPI *)(uintptr_t))fn)(ev); }

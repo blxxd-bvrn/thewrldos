@@ -520,7 +520,7 @@ static BOOL WINAPI GetDiskFreeSpaceExA(const char *d, uint64_t *a, uint64_t *t, 
 #define KMOD(i) (0x7C000000u + (i) * 0x10000)
 static const char *modnames[] = {
     "kernel32.dll", "msvcrt.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "ntdll.dll", "kernelbase.dll", "ucrtbase.dll",
-    "d3d10.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d9.dll", "opengl32.dll", "glu32.dll", "ws2_32.dll", "wsock32.dll", "oleaut32.dll"
+    "d3d10.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d9.dll", "opengl32.dll", "glu32.dll", "ws2_32.dll", "wsock32.dll", "oleaut32.dll", "imm32.dll", "ole32.dll", "comdlg32.dll", "comctl32.dll", "winspool.drv"
 };
 static HMODULE mod_handle(const char *n) {
     if (!n) return P->base;
@@ -549,7 +549,6 @@ static void *WINAPI GetProcAddress(HMODULE h, const char *name) {
     return fn;
 }
 static BOOL WINAPI DisableThreadLibraryCalls(HMODULE h) { return 1; }
-static HANDLE WINAPI FindResourceA(HMODULE m, const char *n, const char *t) { return 0; }
 static int WINAPI MulDiv(int a, int b, int c) { return c ? (int)((int64_t)a * b / c) : -1; }
 static DWORD WINAPI FormatMessageA(DWORD f, const void *src, DWORD id, DWORD lang, char *buf, DWORD n, void *args) { if (f & 0x100) { char **pb = (char **)buf; *pb = w32_alloc(P, 64); buf = *pb; n = 64; } snprintf(buf, n, "Error %u", id); return strlen(buf); }
 static int WINAPI CompareStringA(DWORD lc, DWORD f, const char *a, int na, const char *b, int nb) { int r = (f & 1) ? strcasecmp(a, b) : strcmp(a, b); return r < 0 ? 1 : r > 0 ? 3 : 2; }
@@ -608,7 +607,7 @@ const w32_export_t kernel32_exports[] = {
     E(GetEnvironmentVariableA), E(SetEnvironmentVariableA), E(GetEnvironmentStringsA), E(GetEnvironmentStringsW), E(FreeEnvironmentStringsA), E(FreeEnvironmentStringsW),
     E(lstrlenA), E(lstrcpyA), E(lstrcpynA), E(lstrcatA), E(lstrcmpA), E(lstrcmpiA), E(GetLogicalDrives), E(GetDriveTypeA), E(GetWindowsDirectoryA), E(GetSystemDirectoryA), E(GetDiskFreeSpaceExA),
     E(GetModuleHandleA), E(GetModuleHandleW), E(GetModuleHandleExW), E(LoadLibraryA), E(LoadLibraryW), E(LoadLibraryExA), E(FreeLibrary), E(GetProcAddress), E(DisableThreadLibraryCalls),
-    E(FindResourceA), E(MulDiv), E(FormatMessageA), E(CompareStringA), E(GetUserDefaultLCID), E(GetLocaleInfoA), E(GetStringTypeW), E(LCMapStringW), E(EncodePointer), E(DecodePointer),
+    E(MulDiv), E(FormatMessageA), E(CompareStringA), E(GetUserDefaultLCID), E(GetLocaleInfoA), E(GetStringTypeW), E(LCMapStringW), E(EncodePointer), E(DecodePointer),
     { "RtlCaptureContext", (void *)RtlUnwind },
 };
 const int kernel32_count = ARRAY_LEN(kernel32_exports);

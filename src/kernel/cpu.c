@@ -179,6 +179,32 @@ void isr_handler(regs_t *r) {
              (unsigned)r->err_code, ARCH_BITS / 4, (unsigned long long)cr2);
     klog("EXCEPTION in task %d (%s): %s", t ? t->pid : -1, t ? t->name : "?", msg);
     if (t && t->pid != 0) {
+        /* for debugging programs: the registers, and the return addresses on the stack */
+#ifdef __x86_64__
+        uintptr_t *sp = (uintptr_t *)r->esp;
+#else
+        uintptr_t *sp = (uintptr_t *)((uint8_t *)r + sizeof *r);   /* same privilege level: no ESP/SS pushed */
+#endif
+        klog("  AX=%llx BX=%llx CX=%llx DX=%llx SI=%llx DI=%llx BP=%llx SP=%llx", (unsigned long long)r->eax, (unsigned long long)r->ebx,
+             (unsigned long long)r->ecx, (unsigned long long)r->edx, (unsigned long long)r->esi, (unsigned long long)r->edi,
+             (unsigned long long)r->ebp, (unsigned long long)(uintptr_t)sp);
+        extern char kernel_end[];
+        char line[200] = ""; int k = 0, shown = 0;
+        for (int i = 0; i < 96 && shown < 12; i++) {
+            if (((uintptr_t)(sp + i) & 0xFFF) == 0 && i) break;              /* do not walk off the stack page by page into unmapped memory */
+            uintptr_t v = sp[i];
+            if ((v >= 0x100000 && v < (uintptr_t)kernel_end) || (v >= 0x400000 && v < 0x4000000)
+#ifdef __x86_64__
+                || (v >= 0x140000000ull && v < 0x200000000ull)
+#endif
+               ) {
+                k += snprintf(line + k, sizeof line - k, " %llx", (unsigned long long)v); shown++;
+            }
+        }
+        klog("  stack:%s", line);
+        (void)k;
+    }
+    if (t && t->pid != 0) {
         /* A process faulted: terminate it, keep the system running. */
         if (fault_hook) fault_hook(t, msg);
         t->exit_code = -1;

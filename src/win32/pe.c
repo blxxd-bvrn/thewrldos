@@ -73,6 +73,9 @@ void *w32_realloc(w32_proc_t *p, void *ptr, uint32_t n) {
 
 /* ---------------- import resolution ---------------- */
 extern const w32_export_t ws2_exports[]; extern const int ws2_count;   /* ws2_32.c */
+extern const w32_export_t imm32_exports[], ole32_exports[], comdlg32_exports[], comctl32_exports[];   /* user32_dlg.inc */
+extern const int imm32_count, ole32_count, comdlg32_count, comctl32_count;
+extern const w32_export_t winspool_exports[]; extern const int winspool_count;
 typedef struct { const char *dll; const w32_export_t *tab; const int *count; } dll_t;
 static const dll_t dlls[] = {
     { "kernel32.dll", kernel32_exports, &kernel32_count }, { "msvcrt.dll", msvcrt_exports, &msvcrt_count },
@@ -87,6 +90,9 @@ static const dll_t dlls[] = {
     { "d3d10.dll", d3d10_exports, &d3d10_count }, { "dxgi.dll", dxgi_exports, &dxgi_count },
     { "d3dcompiler_47.dll", d3dcompiler_exports, &d3dcompiler_count },
     { "ws2_32.dll", ws2_exports, &ws2_count }, { "wsock32.dll", ws2_exports, &ws2_count },
+    { "imm32.dll", imm32_exports, &imm32_count }, { "ole32.dll", ole32_exports, &ole32_count },
+    { "comdlg32.dll", comdlg32_exports, &comdlg32_count }, { "comctl32.dll", comctl32_exports, &comctl32_count },
+    { "winspool.drv", winspool_exports, &winspool_count },
 };
 static const dll_t *find_dll(const char *name) {
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) if (!strcasecmp(dlls[i].dll, name)) return &dlls[i];
@@ -113,6 +119,59 @@ const char *w32_api_list(int dll, int idx) {
     if (idx < 0 || idx >= *dlls[dll].count) return NULL;
     return dlls[dll].tab[idx].name;
 }
+/* ---------------- resources ----------------
+ * The resource directory is a three-level tree (type, name, language) of
+ * IMAGE_RESOURCE_DIRECTORY tables; entries are named (a counted UTF-16 string,
+ * high bit set) or numbered. A leaf is an IMAGE_RESOURCE_DATA_ENTRY. */
+typedef struct PACKED { uint32_t chars, stamp; uint16_t major, minor, named, ids; } resdir_t;
+typedef struct PACKED { uint32_t name, off; } resent_t;
+typedef struct PACKED { uint32_t rva, size, cp, res; } resdata_t;
+static bool res_name_eq(const uint8_t *root, uint32_t nameoff, uintptr_t want, bool wide) {
+    const uint16_t *s = (const uint16_t *)(root + (nameoff & 0x7FFFFFFF));
+    uint16_t len = s[0];
+    for (uint16_t i = 0; i < len; i++) {
+        uint16_t c = s[1 + i], w = wide ? ((const uint16_t *)want)[i] : ((const uint8_t *)want)[i];
+        if (!w) return false;
+        if (toupper(c < 128 ? c : 0) != toupper(w < 128 ? w : 0) && c != w) return false;
+    }
+    return wide ? ((const uint16_t *)want)[len] == 0 : ((const uint8_t *)want)[len] == 0;
+}
+static uintptr_t res_id(uintptr_t v, bool wide) {          /* "#123" -> 123 */
+    if (v < 0x10000) return v;
+    if (wide) { const uint16_t *w = (const uint16_t *)v; if (w[0] != '#') return v; uintptr_t n = 0; for (int i = 1; w[i] >= '0' && w[i] <= '9'; i++) n = n * 10 + (w[i] - '0'); return n; }
+    const char *a = (const char *)v; return a[0] == '#' ? (uintptr_t)atoi(a + 1) : v;
+}
+/* the entry of one directory level matching id (or the first entry when id is ~0) */
+static const resent_t *res_level(const uint8_t *root, uint32_t diroff, uintptr_t id, bool wide) {
+    const resdir_t *d = (const resdir_t *)(root + diroff);
+    const resent_t *e = (const resent_t *)(d + 1);
+    int n = d->named + d->ids;
+    for (int i = 0; i < n; i++) {
+        if (id == ~(uintptr_t)0) return &e[i];
+        if (id < 0x10000) { if (!(e[i].name & 0x80000000) && e[i].name == id) return &e[i]; }
+        else if ((e[i].name & 0x80000000) && res_name_eq(root, e[i].name, id, wide)) return &e[i];
+    }
+    return NULL;
+}
+uintptr_t w32_find_resource(w32_proc_t *p, uintptr_t type, uintptr_t name, bool wide, int lang) {
+    if (!p || !p->res_rva) return 0;
+    const uint8_t *root = (const uint8_t *)(p->base + p->res_rva);
+    const resent_t *t = res_level(root, 0, res_id(type, wide), wide);
+    if (!t || !(t->off & 0x80000000)) return 0;
+    const resent_t *n = res_level(root, t->off & 0x7FFFFFFF, res_id(name, wide), wide);
+    if (!n || !(n->off & 0x80000000)) return 0;
+    const resent_t *l = lang ? res_level(root, n->off & 0x7FFFFFFF, (uintptr_t)lang, false) : NULL;
+    if (!l) l = res_level(root, n->off & 0x7FFFFFFF, ~(uintptr_t)0, false);      /* any language */
+    if (!l || (l->off & 0x80000000)) return 0;
+    return (uintptr_t)(root + l->off);
+}
+void *w32_resource_data(w32_proc_t *p, uintptr_t hrsrc, uint32_t *size) {
+    if (!p || !hrsrc) return NULL;
+    const resdata_t *d = (const resdata_t *)hrsrc;
+    if (size) *size = d->size;
+    return (void *)(p->base + d->rva);
+}
+
 typedef struct { char dll[32]; char name[64]; } unimpl_t;
 static void __attribute__((used)) w32_unimplemented(unimpl_t *u) {
     w32_proc_t *p = w32_cur();
@@ -353,6 +412,7 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
     img = p->frames;
 #endif
     p->base = base; p->size = size; p->entry = pi.entry;
+    if (pi.nrva > 2 && pi.dir[2].Size) { p->res_rva = pi.dir[2].VirtualAddress; p->res_size = pi.dir[2].Size; }
     /* headers + sections */
     memcpy(img, d, MIN(pi.size_headers, n->size));
     for (int i = 0; i < fh->NumberOfSections; i++) {

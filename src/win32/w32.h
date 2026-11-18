@@ -76,6 +76,7 @@ struct w32_proc {
     bool exiting;
     char title[96];
     uint32_t fmode, commode;
+    uint32_t res_rva, res_size;   /* the image's resource directory */
 };
 
 w32_proc_t *w32_cur(void);
@@ -92,6 +93,10 @@ int w32_stdin_read(w32_proc_t *p, char *buf, int n);
 int w32_vformat(char *out, int cap, const char *fmt, w32_va_list ap);
 int w32_vsscanf(const char *str, const char *fmt, w32_va_list ap);
 bool w32_lookup(const char *dll, const char *name, void **out);
+/* resources (pe.c): type and name are MAKEINTRESOURCE ids (< 0x10000) or strings, ANSI or wide;
+ * the result is the image's IMAGE_RESOURCE_DATA_ENTRY (the HRSRC), or 0 */
+uintptr_t w32_find_resource(w32_proc_t *p, uintptr_t type, uintptr_t name, bool wide, int lang);
+void *w32_resource_data(w32_proc_t *p, uintptr_t hrsrc, uint32_t *size);
 void w32_user_cleanup(w32_proc_t *p);
 bool w32_pump_timers(w32_proc_t *p);
 
