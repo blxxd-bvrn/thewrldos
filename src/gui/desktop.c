@@ -3,6 +3,7 @@
 #include "gfx.h"
 #include "theme.h"
 #include "raster.h"
+#include "pkg.h"
 #include "wm.h"
 #include "apps.h"
 #include "fs.h"
@@ -1089,7 +1090,7 @@ static const sm_item_t sm_right[] = {
     { "Help and Support", NULL, ICON_HELP, "help", false },
     { "Run...", NULL, ICON_RUN, "run", false },
 };
-static const sm_item_t all_programs[] = {
+static const sm_item_t all_programs_base[] = {
     { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "The WRLD Browser", NULL, ICON_BROWSER, "xplorer" },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
     { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
@@ -1108,7 +1109,29 @@ static const sm_item_t all_programs[] = {
 };
 #define SM_LEFT_N ((int)ARRAY_LEN(sm_left))
 #define SM_RIGHT_N ((int)ARRAY_LEN(sm_right))
-#define AP_N ((int)ARRAY_LEN(all_programs))
+/* All Programs: the list above, then the programs Linux packages added (pkg.c) */
+#define AP_BASE ((int)ARRAY_LEN(all_programs_base))
+#define AP_LINUX_MAX 40
+static sm_item_t all_programs[AP_BASE + 2 + AP_LINUX_MAX];
+static char ap_actions[AP_LINUX_MAX][16];
+static int ap_n, ap_gen;
+static int ap_refresh(void) {
+    if (ap_n && ap_gen == pkg_db_generation) return ap_n;
+    ap_gen = pkg_db_generation;
+    memcpy(all_programs, all_programs_base, sizeof all_programs_base);
+    ap_n = AP_BASE;
+    int m = MIN(pkg_menu_count(), AP_LINUX_MAX);
+    if (m) {
+        all_programs[ap_n++] = (sm_item_t){ NULL };
+        for (int i = 0; i < m; i++) {
+            const pkg_menu_t *e = pkg_menu_get(i);
+            snprintf(ap_actions[i], sizeof ap_actions[i], "lxmenu:%d", i);
+            all_programs[ap_n++] = (sm_item_t){ e->name, NULL, e->terminal ? ICON_TERMINAL : ICON_PACKAGE, ap_actions[i], false };
+        }
+    }
+    return ap_n;
+}
+#define AP_N (ap_refresh())
 #define SM_W 380
 #define SM_H 480
 #define SM_HEAD 64
@@ -1358,6 +1381,7 @@ static void run_action(const char *a) {
     else if (!strncmp(a, "explorer:", 9)) explorer_open(a + 9);
     else if (!strncmp(a, "control:", 8)) control_open(a + 8);
     else if (!strncmp(a, "open:", 5)) shell_open(a + 5, NULL);
+    else if (!strncmp(a, "lxmenu:", 7)) { char err[200]; if (!pkg_menu_launch(atoi(a + 7), err, sizeof err)) msgbox("Linux program", err, MBI_ERROR, MBX_OK, NULL, NULL); }
     else app_launch(a, NULL);
 }
 

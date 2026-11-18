@@ -271,11 +271,15 @@ void con_printf(console_t *c, const char *fmt, ...) {
     if (c) c->write(c, buf, MIN(n, (int)sizeof buf - 1));
 }
 
-typedef struct { console_t *con; char path[256]; char cwd[256]; } term_job_t;
+typedef struct { console_t *con; char path[256]; char cwd[256]; char cmd[600]; } term_job_t;
 static void term_task(void *arg) {
     term_job_t *j = arg;
     console_t *con = j->con;
-    if (j->path[0]) {
+    if (j->cmd[0]) {                                   /* a command line (terminal_run) */
+        sh_run_string(con, j->cmd, j->cwd);
+        con_puts(con, "\n\x1b[93m[Process finished] Press any key to close this window...\x1b[0m");
+        con->getkey(con);
+    } else if (j->path[0]) {
         const char *e = vfs_ext(j->path);
         if (!strcasecmp(e, "exe")) {
             char cmd[300]; snprintf(cmd, sizeof cmd, "\"%s\"", j->path);
@@ -302,6 +306,20 @@ void terminal_open(const char *path, const char *cwd) {
     if (path) strlcpy(j->path, path, sizeof j->path);
     strlcpy(j->cwd, cwd ? cwd : USER_HOME, sizeof j->cwd);
     task_t *t = task_create(path ? title : "cmd.exe", term_task, j, 128 * 1024);
+    t->kind = 1;
+    t->console = con;
+    console_set_pid(con, t->pid);
+}
+
+/* a Command Prompt window that runs one command line, then waits for a key */
+void terminal_run(const char *cmdline, const char *cwd, const char *title) {
+    window_t *w;
+    console_t *con = terminal_new_console(title && *title ? title : "Command Prompt", &w);
+    term_job_t *j = kzalloc(sizeof *j);
+    j->con = con;
+    strlcpy(j->cmd, cmdline, sizeof j->cmd);
+    strlcpy(j->cwd, cwd ? cwd : USER_HOME, sizeof j->cwd);
+    task_t *t = task_create(title && *title ? title : "cmd.exe", term_task, j, 128 * 1024);
     t->kind = 1;
     t->console = con;
     console_set_pid(con, t->pid);

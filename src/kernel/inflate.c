@@ -55,6 +55,7 @@ static int block(inf_t *s, huff_t *lt, huff_t *dt) {
         }
     }
 }
+uint32_t inflate_used;                    /* input bytes the last inflate_raw() consumed (gzip members) */
 int inflate_raw(const uint8_t *src, uint32_t srclen, uint8_t *dst, uint32_t cap, uint32_t *outlen) {
     inf_t s = { src, src + srclen, 0, 0, dst, 0, cap, false };
     static huff_t lt, dt;
@@ -102,6 +103,7 @@ int inflate_raw(const uint8_t *src, uint32_t srclen, uint8_t *dst, uint32_t cap,
         if (s.err) return -1;
     } while (!final);
     *outlen = s.pos;
+    inflate_used = (uint32_t)(s.src - src);
     return 0;
 }
 int inflate_zlib(const uint8_t *src, uint32_t srclen, uint8_t *dst, uint32_t cap, uint32_t *outlen) {

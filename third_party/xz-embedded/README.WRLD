@@ -1,0 +1,9 @@
+XZ Embedded (https://github.com/tukaani-project/xz-embedded, commit ae63ae3),
+the xz/LZMA2 decoder used to unpack Linux software packages (.deb, .rpm).
+0BSD licence, see COPYING.
+
+Vendored unmodified: xz.h, xz_config.h (the userspace configuration),
+xz_private.h, xz_stream.h, xz_lzma2.h and the xz_*.c decoder sources. Built
+against the C library shim in third_party/quickjs-shim with XZ_USE_CRC64,
+XZ_DEC_X86 and XZ_DEC_CONCATENATED (Makefile, PKG_CFLAGS); src/pkg/unpack.c is
+the glue.

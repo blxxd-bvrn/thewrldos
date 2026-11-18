@@ -520,9 +520,23 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
   `lxtrace on` in the Command Prompt logs every Linux system call to the serial port, and
   `guiprof on` logs how long each window takes to paint, every 2 seconds.
+- **Software packages (.deb and .rpm).** Double-clicking a `.deb` (Debian, Ubuntu, Mint) or an
+  `.rpm` (Fedora, openSUSE, Red Hat) opens the Linux Package Installer (`src/apps/pkg.c`,
+  `pkgui.c`): it shows what the package is and checks what it needs before installing:
+  the packages it depends on (those installed and those the image carries, listed at build time
+  in `C:\Linux\var\lib\wrld\base-packages`), the shared libraries its programs load, the
+  library versions they were built against (`GLIBC_2.39`...) and their script interpreters.
+  Files go under `C:\Linux`, are recorded in `C:\Linux\var\lib\wrld\packages`, and come out
+  again under Control Panel, Programs and Features. Programs with a menu entry (a `.desktop`
+  file) appear under All Programs and start through `wrldcomp`; commands go on the Command
+  Prompt's PATH. In the Command Prompt: `dpkg -i/-r/-l/-L/-I/-c`, `rpm -i/-e/-qa/-ql/-qip`,
+  `apt install ./FILE.deb`. Packages may be gzip, xz or Zstandard compressed (XZ Embedded and
+  the zstd reference decoder, in `third_party`). Not done: setup scripts (`postinst`, `%post`)
+  are not run, apart from their `update-alternatives --install` lines; there is no Linux
+  `/bin/sh` (installing `busybox-static` gives `busybox sh`); symbolic links are installed as
+  copies; and nothing is downloaded: dependencies are installed from their own package files.
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
-  loopback interface, `MAP_SHARED` write-back to ordinary files, and a real `vfork` (the child
-  gets a copy of the parent). See `ROADMAP.md` for what is left before WebKit becomes the browser.
+  loopback interface, and `MAP_SHARED` write-back to ordinary files. See `ROADMAP.md` for what is left before WebKit becomes the browser.
 
 ### USB (`src/usb`)
 - In **both editions** (`-DWRLD_NO_USB` builds a kernel without it).
@@ -1180,8 +1194,11 @@ used to test every screen above, including a full install from a blank disk.
     hinting and web fonts are not implemented.
   - Text-heavy sites work best.
 - **Linux programs:**
-  - `fork` copies the whole address space (there is no copy-on-write), and `MAP_SHARED` mappings
-    are copied too, so two processes stop sharing them. `vfork` behaves like `fork`.
+  - `fork` copies the whole address space (there is no copy-on-write); `MAP_SHARED` mappings of
+    shared memory stay shared, those of ordinary files are copied. `vfork` and `posix_spawn`
+    run the child in the parent's memory until it calls `execve`, as on Linux.
+  - The file system is case-insensitive, so a package with two files whose names differ only in
+    case installs one of them.
   - Pipes hold at most 64 KiB; network sockets are IPv4 only, with no loopback interface and no
     IP fragmentation (a UDP datagram tops out at 1472 bytes).
 - **Hardware and design:**

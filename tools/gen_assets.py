@@ -500,6 +500,17 @@ def ic_setup():
     i.alpha_composite(g, (int(SS * .40), int(SS * .02)))
     poly(i, [(14, 18), (34, 18), (34, 8), (50, 26), (34, 44), (34, 34), (14, 34)], hexc("#7CE07C"), hexc("#1E8E1E"), ol=hexc("#106010"), ow=1.4)
     return i
+def ic_package():
+    """a software package: a cardboard box, open at the top, with a green arrow going in"""
+    i = new()
+    poly(i, [(10, 38), (50, 54), (50, 96), (10, 80)], hexc("#E2B676"), hexc("#B07A36"), ol=hexc("#6E4A1C"), ow=1.6)
+    poly(i, [(50, 54), (90, 38), (90, 80), (50, 96)], hexc("#D09A52"), hexc("#94622A"), ol=hexc("#6E4A1C"), ow=1.6)
+    poly(i, [(10, 38), (50, 22), (90, 38), (50, 54)], hexc("#5A3A14"), hexc("#7A5222"), ol=hexc("#6E4A1C"), ow=1.4)
+    poly(i, [(10, 38), (50, 54), (40, 64), (0, 48)], hexc("#F0CC94"), hexc("#D2A262"), ol=hexc("#6E4A1C"), ow=1.2)
+    poly(i, [(90, 38), (50, 54), (60, 64), (100, 48)], hexc("#E8BE80"), hexc("#C08E4A"), ol=hexc("#6E4A1C"), ow=1.2)
+    line(i, [(22, 66), (38, 72)], hexc("#FFF2D8"), 3)
+    poly(i, [(42, 2), (58, 2), (58, 22), (68, 22), (50, 42), (32, 22), (42, 22)], hexc("#7CE07C"), hexc("#1E8E1E"), ol=hexc("#106010"), ow=1.4)
+    return i
 def ic_browser():
     """The WRLD Browser: the globe with a cyan orbit ring"""
     i = new(); logo_globe(i, 10, 10, 90, 90)
@@ -618,7 +629,7 @@ ICONS = [
     ("user_flower", user_pic("flower")), ("user_planet", user_pic("planet")), ("user_fish", user_pic("fish")), ("user_mountain", user_pic("mountain")),
     ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder), ("setup", ic_setup),
     ("browser", ic_browser), ("stop", ic_stop), ("refresh", ic_refresh), ("home", ic_home), ("lock", ic_lock),
-    ("media_player", ic_media_player), ("music_file", ic_music_file),
+    ("media_player", ic_media_player), ("music_file", ic_music_file), ("package", ic_package),
 ]
 SIZES = [48, 32, 16]
 

@@ -3,6 +3,7 @@
 #include "devmgr.h"
 #include "gfx.h"
 #include "theme.h"
+#include "pkg.h"
 #include "wm.h"
 #include "apps.h"
 #include "disk.h"
@@ -1081,13 +1082,19 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
 }
 static void page_programs(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
-    heading(s, ox + 20, oy + 16, "Uninstall or change a program", "Built-in programs are part of the system. Programs installed under C:\\Program Files can be removed.");
+    heading(s, ox + 20, oy + 16, "Uninstall or change a program", "Built-in programs are part of the system. Programs under C:\\Program Files and Linux packages can be removed.");
     const char *names[64]; int icons[64]; const char *pub[64]; vnode_t *nodes[64]; int n = 0;
     for (int i = 0; i < app_count && n < 64; i++) { names[n] = app_table[i].title; icons[n] = app_table[i].icon; pub[n] = "THE WRLD OS (built-in)"; nodes[n] = NULL; n++; }
     vnode_t *pf = vfs_resolve("C:\\Program Files", NULL);
     for (vnode_t *k = pf ? pf->child : NULL; k && n < 64; k = k->next) { names[n] = k->name; icons[n] = file_icon(k); pub[n] = "Installed by user"; nodes[n] = k; n++; }
     vnode_t *sm = vfs_resolve("C:\\Samples", NULL);
     for (vnode_t *k = sm ? sm->child : NULL; k && n < 64; k = k->next) { names[n] = k->name; icons[n] = file_icon(k); pub[n] = "Sample program"; nodes[n] = k; n++; }
+    /* Linux packages (pkg.c) */
+    static char lx_names[32][64], lx_vers[32][96]; char lx_fmt[32]; int lx_first = n, lx_n = 0;
+    for (int i = 0; i < pkg_installed_count() && lx_n < 32 && n < 64; i++, lx_n++) {
+        pkg_installed_get(i, lx_names[lx_n], 64, lx_vers[lx_n], 96, NULL, 0, &lx_fmt[lx_n]);
+        names[n] = lx_names[lx_n]; icons[n] = ICON_PACKAGE; pub[n] = lx_fmt[lx_n] == 'r' ? "Linux package (.rpm)" : "Linux package (.deb)"; nodes[n] = NULL; n++;
+    }
     int y = oy + 76;
     gradient_v(s, ox + 20, y, s->w - ox - 40, 22, T.window_bg, T.face); draw_rect(s, ox + 20, y, s->w - ox - 40, 22, T.face_dark);
     draw_text(s, FONT_UI, ox + 30, y + 4, "Name", T.text); draw_text(s, FONT_UI, ox + 320, y + 4, "Publisher", T.text); draw_text(s, FONT_UI, ox + 480, y + 4, "Size", T.text);
@@ -1101,12 +1108,19 @@ static void page_programs(window_t *w, cp_t *c, int ox, int oy) {
         draw_text_ellipsis(s, FONT_UI, ox + 48, y + 4, 260, names[i], T.text);
         draw_text(s, FONT_UI, ox + 320, y + 4, pub[i], W7_TEXT);
         if (nodes[i]) { char b[32]; format_size(b, sizeof b, vfs_tree_size(nodes[i])); draw_text(s, FONT_UI, ox + 480, y + 4, b, W7_TEXT); }
+        else if (i >= lx_first && i < lx_first + lx_n) draw_text_ellipsis(s, FONT_UI, ox + 480, y + 4, s->w - ox - 520, lx_vers[i - lx_first], W7_TEXT);
         y += 22;
     }
     int sel = c->prog_sel;
     bool can = sel >= 0 && sel < n && nodes[sel] && !strcmp(pub[sel], "Installed by user");
-    if (ui_button_ex(w, R(ox + 20, s->h - 44, 100, 26), "Uninstall", can, false) && can) { vfs_delete(nodes[sel]); c->prog_sel = -1; notify_balloon("Programs and Features", "The program was uninstalled."); }
+
     if (sel >= 0 && sel < n && nodes[sel] && ui_button(w, R(ox + 130, s->h - 44, 100, 26), "Run")) { char p[256]; vfs_path(nodes[sel], p, sizeof p); shell_open(p, NULL); }
+    bool lx = sel >= lx_first && sel < lx_first + lx_n;
+    if (ui_button_ex(w, R(ox + 20, s->h - 44, 100, 26), "Uninstall", can || lx, false)) {
+        if (lx) pkg_remove_confirm(lx_names[sel - lx_first]);
+        else if (can) { vfs_delete(nodes[sel]); notify_balloon("Programs and Features", "The program was uninstalled."); }
+        c->prog_sel = -1;
+    }
 }
 static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
@@ -1120,7 +1134,9 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
         { ".bmp", "Bitmap image", "Image Viewer / Paint", ICON_IMAGE_FILE },
         { ".mp3 / .wav", "MP3 audio / Wave sound", "THE WRLD Media Player", ICON_MUSIC_FILE },
         { ".lnk", "Shortcut", "Shell", ICON_EXE },
-        { "Mach-O / ELF", "Native macOS / Linux binaries", "Identified, not executed", ICON_SYS_FILE },
+        { ".deb / .rpm", "Linux software package", ARCH_BITS == 64 ? "Linux Package Installer" : "Linux Package Installer (64-bit edition)", ICON_PACKAGE },
+        { "ELF", "Linux program (x86-64)", ARCH_BITS == 64 ? "Command Prompt (Linux layer)" : "64-bit edition only", ICON_TERMINAL },
+        { "Mach-O", "Native macOS binary", "Identified, not executed", ICON_SYS_FILE },
     };
     int y = oy + 64;
     for (unsigned i = 0; i < ARRAY_LEN(assoc); i++) {

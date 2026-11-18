@@ -17,6 +17,7 @@ const char *file_type_name(vnode_t *n);
 void explorer_open(const char *path);
 void notepad_open(const char *path);
 void terminal_open(const char *script, const char *cwd);
+void terminal_run(const char *cmdline, const char *cwd, const char *title);   /* a Command Prompt running one command */
 void calc_open(void);
 void paint_open(const char *path);
 void taskmgr_open(void);

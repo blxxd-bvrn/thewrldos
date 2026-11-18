@@ -1,0 +1,9 @@
+The Zstandard reference ("educational") decoder from facebook/zstd
+(doc/educational_decoder, commit c0523aa), used to unpack Linux software
+packages: Ubuntu's .deb files and most current .rpm files are Zstandard.
+BSD licence (the project is dual BSD/GPLv2; the BSD terms are taken), see LICENSE.
+
+One change: a ZSTD_BLOCK_HOOK() call at the start of each block, which the
+build points at unpack_yield() so a long decode lets the desktop run (the
+kernel is not preempted). The decoder calls exit(1) on errors; the build
+renames exit to zstd_dec_fail, which jumps back into src/pkg/unpack.c.

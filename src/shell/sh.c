@@ -6,6 +6,7 @@
 #include "jsapi.h"
 #include "wm.h"
 #include "apps.h"
+#include "pkg.h"
 #include "theme.h"
 #include "disk.h"
 #include "net.h"
@@ -1382,6 +1383,9 @@ static int b_open(sh_t *s, int argc, char **argv, io_t *io) {
     return 0;
 }
 #ifdef __x86_64__
+/* dpkg, rpm, apt, apt-get: Linux software packages (src/apps/pkg.c) */
+static void pkg_out(void *ctx, const char *line) { io_t *io = ctx; out_s(io, line); out_s(io, "\n"); }
+static int b_pkg(sh_t *s, int argc, char **argv, io_t *io) { return pkg_cli(argc, argv, s->cwd, pkg_out, io); }
 static int b_lxtrace(sh_t *s, int argc, char **argv, io_t *io) {
     (void)s;
     extern bool lx_strace;
@@ -1559,6 +1563,8 @@ static const builtin_t builtins[] = {
     { "mount", b_mount, "mount a .dmg / list drives" }, { "hdiutil", b_hdiutil, "disk image utility" }, { "open", b_open, "open with default app" }, { "start", b_open, NULL },
 #ifdef __x86_64__
     { "lxtrace", b_lxtrace, "log Linux system calls (on/off)" },
+    { "dpkg", b_pkg, "install/remove .deb packages (-i -r -l -L -I)" }, { "rpm", b_pkg, "install/remove .rpm packages (-i -e -qa)" },
+    { "apt", b_pkg, "apt install ./FILE.deb, remove, list" }, { "apt-get", b_pkg, NULL },
 #endif
     { "guiprof", b_guiprof, "log window painting times (on/off)" },
     { "theme", b_theme, "change the visual style" }, { "pause", b_pause, NULL }, { "shutdown", b_shutdown, "power off (-r reboot)" },
@@ -1870,7 +1876,8 @@ static sh_t *sh_new(console_t *con, const char *cwd) {
     var_set(s, "USER", user_name);
     var_set(s, "SHELL", "C:\\WRLD\\System32\\sh.exe");
     var_set(s, "OS", OS_NAME);
-    var_set(s, "PATH", ".;C:\\WRLD\\System32;C:\\WRLD;C:\\Samples;C:\\Program Files");
+    var_set(s, "PATH", ARCH_BITS == 64 ? ".;C:\\WRLD\\System32;C:\\WRLD;C:\\Linux\\usr\\local\\bin;C:\\Linux\\usr\\bin;C:\\Linux\\usr\\games;C:\\Samples;C:\\Program Files"
+                                       : ".;C:\\WRLD\\System32;C:\\WRLD;C:\\Samples;C:\\Program Files");
     var_set(s, "PS1", "");
     var_set(s, "PWD", s->cwd);
     return s;

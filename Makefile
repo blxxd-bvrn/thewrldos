@@ -68,8 +68,15 @@ LXB_CFLAGS = $(ARCHFLAGS) -ffreestanding -fno-pic -fno-pie -fno-stack-protector 
            -I$(QSHIM)/include -I$(LXB)/source -DLEXBOR_STATIC -DNDEBUG
 # minimp3 (MP3 decoding for THE WRLD Media Player); src/media/mp3.c is the glue
 MP3_OBJ := $(patsubst src/media/%.c,$(BUILD)/media/%.o,$(wildcard src/media/*.c))
+# Decompression for Linux software packages (.deb, .rpm): XZ Embedded (xz) and the zstd
+# reference decoder, built against the same C library shim; src/pkg/*.c is the glue
+XZE     := third_party/xz-embedded
+ZSTDD   := third_party/zstd-dec
+PKG_OBJ := $(patsubst src/pkg/%.c,$(BUILD)/pkg/%.o,$(wildcard src/pkg/*.c)) \
+           $(patsubst $(XZE)/%.c,$(BUILD)/xz/%.o,$(wildcard $(XZE)/xz_*.c)) $(BUILD)/zstd/zstd_decompress.o
+PKG_CFLAGS = $(filter-out -DLEXBOR_STATIC,$(LXB_CFLAGS)) -I$(XZE) -I$(ZSTDD) -DXZ_USE_CRC64 -DXZ_DEC_X86 -DXZ_DEC_CONCATENATED
 ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
-OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ) $(MP3_OBJ)
+OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ) $(MP3_OBJ) $(PKG_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
 MINGW   := i686-w64-mingw32-gcc
 # The 32-bit kernel enables x87, not SSE. Use an x87-compatible MinGW CRT too;
@@ -150,6 +157,15 @@ $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/apps/*.h)
 $(BUILD)/media/%.o: src/media/%.c src/include/mp3glue.h src/include/mediadec.h third_party/minimp3/minimp3.h
 	@mkdir -p $(dir $@)
 	$(CC) $(filter-out -DLEXBOR_STATIC,$(LXB_CFLAGS)) -iquote src/include -Wall -Wno-unused-function -c $< -o $@
+$(BUILD)/pkg/%.o: src/pkg/%.c src/include/unpack.h $(wildcard $(XZE)/*.h $(ZSTDD)/*.h)
+	@mkdir -p $(dir $@)
+	$(CC) $(PKG_CFLAGS) -iquote src/include -Wall -Wextra -Wno-unused-parameter -c $< -o $@
+$(BUILD)/xz/%.o: $(XZE)/%.c $(wildcard $(XZE)/*.h)
+	@mkdir -p $(dir $@)
+	@$(CC) $(PKG_CFLAGS) -w -c $< -o $@
+$(BUILD)/zstd/%.o: $(ZSTDD)/%.c $(ZSTDD)/zstd_decompress.h src/include/unpack.h
+	@mkdir -p $(dir $@)
+	@$(CC) $(PKG_CFLAGS) -Dexit=zstd_dec_fail -DZSTD_BLOCK_HOOK=unpack_yield -include src/include/unpack.h -w -c $< -o $@
 $(BUILD)/lexbor/%.o: $(LXB)/source/%.c $(QSHIM)/include/qjs_libc.h
 	@mkdir -p $(dir $@)
 	@$(CC) $(LXB_CFLAGS) -w -c $< -o $@
@@ -397,6 +413,8 @@ endif
 	printf 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n' > $(LXROOT)/Linux/etc/passwd
 	printf 'root:x:0:\nuser:x:1000:\n' > $(LXROOT)/Linux/etc/group
 	printf 'wrld\n' > $(LXROOT)/Linux/etc/hostname
+	@# the Debian packages those files come from, for the package installer's dependency checks
+	python3 tools/gen_lx_packages.py $(LXROOT)/Linux
 	@touch $@
 
 # initrd = rootfs/ plus the boot files Setup copies to the disk
