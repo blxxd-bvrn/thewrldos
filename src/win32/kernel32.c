@@ -104,22 +104,31 @@ static BOOL file_write(w32_handle_t *e, const void *buf, DWORD n) {
     rtc_now(&v->mtime); vfs_generation++;
     return 1;
 }
+/* OVERLAPPED { ULONG_PTR Internal, InternalHigh; DWORD Offset, OffsetHigh; HANDLE hEvent }: a read or
+ * write at that offset (SQLite does all its I/O this way); the result goes back into it */
+static void ov_seek(w32_handle_t *e, void *ov) { if (ov) e->pos = *(DWORD *)((uint8_t *)ov + 2 * sizeof(uintptr_t)); }
+static void ov_done(void *ov, DWORD n) { if (ov) { ((uintptr_t *)ov)[0] = 0; ((uintptr_t *)ov)[1] = n; } }
 static BOOL WINAPI WriteFile(HANDLE h, const void *buf, DWORD n, DWORD *written, void *ov) {
     if (written) *written = n;
     if (h == STD_OUT_H || h == STD_ERR_H) { w32_console_write(P, h == STD_ERR_H ? 2 : 1, buf, n); return 1; }
     w32_handle_t *e = hget(h);
     if (!e || e->kind != H_FILE) { set_err(6); if (written) *written = 0; return 0; }
+    ov_seek(e, ov);
     if (!file_write(e, buf, n)) { set_err(5); if (written) *written = 0; return 0; }
+    ov_done(ov, n);
     return 1;
 }
 static BOOL WINAPI ReadFile(HANDLE h, void *buf, DWORD n, DWORD *rd, void *ov) {
     if (h == STD_IN_H) { int k = w32_stdin_read(P, buf, n); if (rd) *rd = k; return 1; }
     w32_handle_t *e = hget(h);
     if (!e || e->kind != H_FILE) { set_err(6); if (rd) *rd = 0; return 0; }
+    ov_seek(e, ov);
     uint32_t avail = e->pos < e->node->size ? e->node->size - e->pos : 0;
     uint32_t k = MIN(n, avail);
     memcpy(buf, e->node->data + e->pos, k); e->pos += k;
     if (rd) *rd = k;
+    ov_done(ov, k);
+    if (ov && !k && n) { set_err(38); return 0; }                 /* ERROR_HANDLE_EOF, as Windows reports it for an offset read */
     return 1;
 }
 static BOOL WINAPI CloseHandle(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->kind = H_NONE; return 1; }
@@ -133,7 +142,16 @@ static DWORD WINAPI SetFilePointer(HANDLE h, LONG dist, LONG *hi, DWORD method) 
     return e->pos;
 }
 static BOOL WINAPI SetFilePointerEx(HANDLE h, int64_t dist, int64_t *np, DWORD method) { DWORD r = SetFilePointer(h, (LONG)dist, NULL, method); if (np) *np = r; return r != 0xFFFFFFFF; }
-static BOOL WINAPI SetEndOfFile(HANDLE h) { w32_handle_t *e = hget(h); if (!e || !e->node) return 0; e->node->size = MIN(e->pos, e->node->size); return 1; }
+static BOOL WINAPI SetEndOfFile(HANDLE h) {
+    w32_handle_t *e = hget(h); if (!e || !e->node) return 0;
+    vnode_t *v = e->node;
+    if (e->pos > v->size) {                                          /* longer: zeros up to the position */
+        if (e->pos > v->cap) { v->cap = e->pos + 64; v->data = krealloc(v->data, v->cap); }
+        memset(v->data + v->size, 0, e->pos - v->size);
+    }
+    v->size = e->pos; vfs_generation++;
+    return 1;
+}
 static BOOL WINAPI FlushFileBuffers(HANDLE h) { return 1; }
 static DWORD WINAPI GetFileType(HANDLE h) { return (h == STD_IN_H || h == STD_OUT_H || h == STD_ERR_H) ? 2 : hget(h) ? 1 : 0; }
 static BOOL WINAPI DeleteFileA(const char *n) { char p[512]; vnode_t *v = vfs_resolve(fixpath(n, p, sizeof p), NULL); if (!v || v->dir) { set_err(2); return 0; } return vfs_delete(v); }
@@ -197,7 +215,25 @@ static HANDLE WINAPI FindFirstFileA(const char *pat, WIN32_FIND_DATAA *f) {
 static BOOL WINAPI FindClose(HANDLE h) { return CloseHandle(h); }
 
 static BOOL WINAPI WriteConsoleA(HANDLE h, const char *buf, DWORD n, DWORD *w, void *r) { w32_console_write(P, 1, buf, n); if (w) *w = n; return 1; }
-static BOOL WINAPI WriteConsoleW(HANDLE h, const WCHAR *buf, DWORD n, DWORD *w, void *r) { char tmp[512]; DWORD k = 0; for (DWORD i = 0; i < n; i++) { tmp[k++] = buf[i] < 128 ? (char)buf[i] : '?'; if (k == sizeof tmp) { w32_console_write(P, 1, tmp, k); k = 0; } } if (k) w32_console_write(P, 1, tmp, k); if (w) *w = n; return 1; }
+/* a character for the console's one-byte cells: box drawing (SQLite's tables, progress bars)
+ * becomes - | + =, anything else outside ASCII a '?' */
+static char con_char(WCHAR c) {
+    if (c < 128) return (char)c;
+    if (c >= 0x2500 && c <= 0x257F) {
+        if (c <= 0x2501 || c == 0x2504 || c == 0x2505 || c == 0x2508 || c == 0x2509 || c == 0x254C || c == 0x254D || c == 0x2574 || c == 0x2576) return '-';
+        if (c <= 0x2503 || c == 0x2506 || c == 0x2507 || c == 0x250A || c == 0x250B || c == 0x254E || c == 0x254F || c == 0x2575 || c == 0x2577) return '|';
+        if (c == 0x2550) return '=';
+        if (c == 0x2551) return '|';
+        return '+';
+    }
+    if (c == 0x2588 || c == 0x2593 || c == 0x2592 || c == 0x2591) return '#';
+    if (c == 0x2026) return '.';
+    if (c == 0x2018 || c == 0x2019) return '\'';
+    if (c == 0x201C || c == 0x201D) return '"';
+    if (c == 0x2013 || c == 0x2014) return '-';
+    return '?';
+}
+static BOOL WINAPI WriteConsoleW(HANDLE h, const WCHAR *buf, DWORD n, DWORD *w, void *r) { char tmp[512]; DWORD k = 0; for (DWORD i = 0; i < n; i++) { tmp[k++] = con_char(buf[i]); if (k == sizeof tmp) { w32_console_write(P, 1, tmp, k); k = 0; } } if (k) w32_console_write(P, 1, tmp, k); if (w) *w = n; return 1; }
 static BOOL WINAPI ReadConsoleA(HANDLE h, char *buf, DWORD n, DWORD *rd, void *c) { int k = w32_stdin_read(P, buf, n); if (rd) *rd = k; return 1; }
 static BOOL WINAPI SetConsoleTitleA(const char *t) { w32_proc_t *p = P; if (p->con) p->con->set_title(p->con, t); return 1; }
 static DWORD WINAPI GetConsoleTitleA(char *b, DWORD n) { strlcpy(b, path_basename(P->path), n); return strlen(b); }

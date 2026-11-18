@@ -1125,6 +1125,15 @@ device manager's job is to say what the computer has and which driver runs it.
     `WPARAM`/`LPARAM` and `*LongPtr` values are pointer-sized while `long` stays 32-bit (LLP64).
   - About 190 kernel32, 190 msvcrt, 160 user32 and 45 gdi32 functions, plus advapi32/shell32
     basics, and opengl32, glu32, d3d9, d3d10, dxgi and vulkan-1 (see 3D for Windows programs).
+    `src/win32/compat.c` adds about 230 more for real programs: the Unicode (`W`) file, process,
+    environment and locale functions, `ReadFile`/`WriteFile` at an `OVERLAPPED` offset, SRW
+    locks, condition variables, init-once, interlocked lists, time conversions, registry and
+    security stubs, BSTR/VARIANT (oleaut32) and the wide-string C runtime.
+  - Tested with real programs: **7-Zip** (`7zr.exe`, 32-bit) creates, lists and extracts
+    archives; **SQLite** (`sqlite3.exe`, 64-bit) creates and queries database files, also
+    interactively; **plink** (PuTTY's command-line tool) starts in both editions. **PuTTY**
+    starts and stops with its own message, "Unable to load any WinSock library": Windows
+    sockets (`ws2_32`) are not implemented yet, so no program can use the network.
   - Console programs use the terminal for stdin/stdout.
   - GUI programs get real windows, message queues, timers, BUTTON/STATIC/EDIT/LISTBOX
     controls, menus, MessageBox and GDI drawing.
@@ -1168,8 +1177,9 @@ used to test every screen above, including a full install from a blank disk.
   64-bit edition runs x64 programs; each recognises the other kind and says which edition to
   use. .NET assemblies and 16-bit DOS programs are refused with an explanation. C++ exceptions
   in x64 programs (which need SEH unwinding) are not supported. Win32 coverage is a subset. Programs that use
-  unimplemented APIs (COM, DirectX, dialog resources, networking, …) stop with a message naming
-  the missing function.
+  unimplemented APIs (COM, dialog resources, Windows sockets, …) stop with a message naming
+  the missing function. Only the built-in DLLs exist: a program that ships its own `.dll`
+  files (curl's `libcurl-x64.dll`) does not load them yet.
 - **macOS cannot be emulated.** Native Mach-O programs inside a `.dmg` are identified but not
   run; only script-based bundles work. HFS+/APFS volumes and bzip2/LZFSE/LZMA-compressed images
   are reported as unsupported. FAT volumes with raw or zlib chunks work.

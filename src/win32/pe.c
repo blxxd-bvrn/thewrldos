@@ -94,6 +94,7 @@ static const dll_t *find_dll(const char *name) {
     if (!strncasecmp(name, "api-ms-win-core-", 16)) return &dlls[0];
     return NULL;
 }
+void *w32_compat_find(const char *dll, const char *name);   /* compat.c */
 bool w32_lookup(const char *dll, const char *name, void **out) {
     const dll_t *d = dll ? find_dll(dll) : NULL;
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) {
@@ -101,6 +102,8 @@ bool w32_lookup(const char *dll, const char *name, void **out) {
         for (int k = 0; k < *x->count; k++) if (!strcmp(x->tab[k].name, name)) { *out = x->tab[k].fn; return true; }
         if (d) break;
     }
+    void *fn = w32_compat_find(dll, name);
+    if (fn) { *out = fn; return true; }
     return false;
 }
 const char *w32_api_list(int dll, int idx) {
@@ -398,6 +401,7 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
                     else if (!strcmp(name, "__argv")) fn = &p->argv;
                     else if (!strcmp(name, "_environ") || !strcmp(name, "__initenv")) fn = &p->envp;
                 }
+                if (!fn) fn = w32_compat_find(dll, name);
                 if (!fn) { fn = make_thunk(dll, name); unresolved++; klog("w32: %s: unresolved import %s!%s", path_basename(p->path), dll, name); }
                 iat[k] = (uintptr_t)fn;
             }
