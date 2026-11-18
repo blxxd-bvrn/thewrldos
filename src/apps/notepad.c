@@ -73,7 +73,7 @@ static void fdlg_paint(window_t *w) {
         fdlg_finish(w, p);
     } else if (cancel) wm_destroy(w);
 }
-void file_dialog(const char *title, const char *initial, bool save, const char *ext, fdlg_cb cb, void *ctx) {
+window_t *file_dialog_win(const char *title, const char *initial, bool save, const char *ext, fdlg_cb cb, void *ctx) {
     window_t *w = wm_create(title, -1, -1, 520, 330, WF_NO_MAX | WF_NO_MIN);
     fdlg_t *f = kzalloc(sizeof *f);
     f->save = save; f->cb = cb; f->ctx = ctx; f->sel = -1; f->ext = ext;
@@ -85,7 +85,9 @@ void file_dialog(const char *title, const char *initial, bool save, const char *
     w->data = f; w->paint = fdlg_paint; w->icon = save ? ICON_FOLDER : ICON_FOLDER_OPEN;
     if (wm_active && wm_active != w) { w->owner = wm_active; w->flags |= WF_MODAL; }
     wm_center(w);
+    return w;
 }
+void file_dialog(const char *title, const char *initial, bool save, const char *ext, fdlg_cb cb, void *ctx) { file_dialog_win(title, initial, save, ext, cb, ctx); }
 
 /* ======================= notepad ======================= */
 typedef struct {

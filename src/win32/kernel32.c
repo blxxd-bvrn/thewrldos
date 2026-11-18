@@ -342,6 +342,14 @@ static BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *c) {
     w32_handle_t *e = hget(h); if (!e) { set_err(6); return 0; }
     *c = task_find(e->tid) ? 259 : (DWORD)task_exit_code(e->tid); return 1;
 }
+static BOOL WINAPI TerminateThread(HANDLE h, DWORD code) {
+    w32_handle_t *e = hget(h);
+    if ((uint32_t)h == 0xFFFFFFFEu) w32_exit_process(code);   /* the current thread */
+    if (!e || e->kind != H_THREAD) { set_err(6); return 0; }
+    task_t *t = task_find(e->tid);
+    if (t && t != task_current()) task_kill(e->tid);
+    return 1;
+}
 /* the file behind a kernel32 handle (for the C runtime's fstat) */
 vnode_t *w32_handle_node(w32_proc_t *p, uintptr_t h) { w32_handle_t *e = hget_p(p, (uint32_t)h); return e && e->kind == H_FILE ? e->node : NULL; }
 uint32_t w32_handle_pos(w32_proc_t *p, uintptr_t h) { w32_handle_t *e = hget_p(p, (uint32_t)h); return e ? e->pos : 0; }
@@ -649,7 +657,7 @@ const w32_export_t kernel32_exports[] = {
     E(GetConsoleCP), E(GetConsoleOutputCP), E(SetConsoleCP), E(SetConsoleOutputCP), E(AllocConsole), E(FreeConsole), E(SetConsoleCtrlHandler),
     E(GetConsoleScreenBufferInfo), E(SetConsoleCursorPosition), E(FillConsoleOutputCharacterA), E(FillConsoleOutputAttribute),
     E(ExitProcess), E(TerminateProcess), E(GetCurrentProcess), E(GetCurrentThread), E(GetCurrentProcessId), E(GetCurrentThreadId), E(GetCommandLineA), E(GetCommandLineW),
-    E(GetStartupInfoA), E(GetStartupInfoW), E(Sleep), E(SleepEx), E(SwitchToThread), E(CreateThread), E(WaitForSingleObject), E(WaitForMultipleObjects), E(GetExitCodeThread),
+    E(GetStartupInfoA), E(GetStartupInfoW), E(Sleep), E(SleepEx), E(SwitchToThread), E(CreateThread), E(WaitForSingleObject), E(WaitForMultipleObjects), E(GetExitCodeThread), E(TerminateThread),
     E(CreateEventA), E(SetEvent), E(ResetEvent), E(CreateMutexA), E(ReleaseMutex), E(CreateSemaphoreA), E(ReleaseSemaphore), E(DuplicateHandle), E(GetExitCodeProcess), E(CreateProcessA),
     E(GetProcessHeap), E(HeapCreate), E(HeapDestroy), E(HeapAlloc), E(HeapReAlloc), E(HeapFree), E(HeapSize), E(HeapValidate), E(GlobalAlloc), E(GlobalFree), E(GlobalLock), E(GlobalUnlock),
     E(LocalAlloc), E(LocalFree), E(VirtualAlloc), E(VirtualFree), E(VirtualQuery), E(VirtualProtect), E(FlushInstructionCache), E(GlobalMemoryStatus), E(GlobalMemoryStatusEx),

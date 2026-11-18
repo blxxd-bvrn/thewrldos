@@ -75,4 +75,7 @@ const char *w32_api_list(int dll, int idx);  /* for documentation */
 
 /* Mach-O identification */
 bool macho_probe(const uint8_t *d, uint32_t n, char *desc, int cap);
+/* the Open/Save dialog (notepad.c); the window is returned so a caller waiting for the
+ * answer can tell Cancel (the window is gone and cb was not called) */
+window_t *file_dialog_win(const char *title, const char *initial, bool save, const char *ext, void (*cb)(void *ctx, const char *path), void *ctx);
 #endif

@@ -129,9 +129,16 @@ void w32_user_cleanup(w32_proc_t *p);
 vnode_t *w32_handle_node(w32_proc_t *p, uintptr_t h);         /* kernel32.c: a file handle's node, or NULL */
 uint32_t w32_handle_pos(w32_proc_t *p, uintptr_t h);
 w32_proc_t *pe_find(int pid);
+int pe_proc_list(int *pids, int max);
 bool w32_pump_timers(w32_proc_t *p);
 
 typedef struct { const char *name; void *fn; } w32_export_t;
+/* entries of the newer API files (registry.c, k32more.c, shlwapi.c...): a DLL group
+ * ("kernel32", "shlwapi", ...), a name and the function. They are looked up before the
+ * older tables, so a fuller implementation there replaces a stub elsewhere. */
+typedef struct { const char *group, *name; void *fn; } w32_api_t;
+void *w32_extra_find(const char *dll, const char *name);
+void w32_dll_group(const char *dll, char *g, int cap);
 
 /* calling into the program */
 #ifdef __x86_64__

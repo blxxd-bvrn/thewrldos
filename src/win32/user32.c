@@ -24,7 +24,8 @@ enum { WM_CREATE = 1, WM_DESTROY = 2, WM_MOVE = 3, WM_SIZE = 5, WM_ACTIVATE = 6,
 #define DCMAGIC 0x48444321
 #define OBJMAGIC 0x4F424A21
 
-enum { CTL_NONE, CTL_BUTTON, CTL_STATIC, CTL_EDIT, CTL_LISTBOX, CTL_COMBO, CTL_TREE, CTL_SCROLLBAR };
+enum { CTL_NONE, CTL_BUTTON, CTL_STATIC, CTL_EDIT, CTL_LISTBOX, CTL_COMBO, CTL_TREE, CTL_SCROLLBAR,
+       CTL_TOOLBAR = 20, CTL_STATUS, CTL_REBAR, CTL_PROGRESS, CTL_TRACKBAR, CTL_UPDOWN, CTL_TAB, CTL_LISTVIEW, CTL_HEADER, CTL_QUIET, CTL_TOOLTIP };   /* comctl.inc */
 typedef struct w32cls { char name[64]; void *proc; uintptr_t brush; uint32_t style; w32_proc_t *owner; struct w32cls *next; int wnd_extra; bool unicode; } w32cls_t;
 struct tvitem;
 typedef struct w32win {
@@ -52,7 +53,12 @@ typedef struct w32win {
     int cb_droph; menu_item_t *cb_menu;  /* combo box: dropped-down list height, its popup */
     bool sent_size; struct tvitem *tv_root, *tv_sel; int tv_scroll; bool tv_unicode; void *tv_nm;   /* tree view */
     int limit;                           /* edit: EM_LIMITTEXT */
+    void *cc;                            /* a common control's state (comctl.inc) */
 } w32win_t;
+/* comctl.inc */
+static int cc_class(const char *n); static const char *cc_class_name(int ctl); static void cc_created(w32win_t *w);
+static void cc_draw(w32win_t *c, canvas_t *s, rect_t r, int f); static bool cc_msg(w32win_t *w, UINT m, WPARAM wp, LPARAM lp, LRESULT *res);
+static bool cc_mouse(w32win_t *w, int type, int lx, int ly, int btn); static bool cc_key(w32win_t *w, key_event_t *e);
 static w32win_t *all_wins;
 static w32cls_t *classes;
 typedef struct { uintptr_t hwnd, id; uint32_t ms, next; w32_proc_t *proc; void *fn; bool used; } w32timer_t;
@@ -68,14 +74,19 @@ static uint32_t cref(COLORREF c) { return RGB(c & 0xFF, (c >> 8) & 0xFF, (c >> 1
 static LRESULT send(w32win_t *w, UINT msg, WPARAM wp, LPARAM lp);
 
 /* ---------------- GDI objects ---------------- */
-enum { OBJ_PEN = 1, OBJ_BRUSH, OBJ_FONT, OBJ_BITMAP };
-typedef struct { uint32_t magic; int type; uint32_t color; int width, style; bool stock; int font; canvas_t *bmp; bool null; } gdiobj_t;
+enum { OBJ_PEN = 1, OBJ_BRUSH, OBJ_FONT, OBJ_BITMAP, OBJ_REGION, OBJ_PALETTE };
+struct dib; struct rgn;
+typedef struct { uint32_t magic; int type; uint32_t color; int width, style; bool stock; int font; canvas_t *bmp; bool null;
+                 struct dib *dib;          /* a DIB section: the program's own pixel buffer (user32_more.inc) */
+                 struct rgn *rgn;          /* a region */
+                 int font_h, font_weight; bool font_italic, font_underline; char face[32]; } gdiobj_t;
 static gdiobj_t stock[20];
 typedef struct {
     uint32_t magic; w32win_t *win; canvas_t *surf; int ox, oy; rect_t clip;
     gdiobj_t *pen, *brush, *font, *bitmap;
     uint32_t text, bk; int bkmode; int cx, cy; bool memdc; uint32_t align;
 } dc_t;
+static gdiobj_t default_bitmap;
 static gdiobj_t *OBJ(uintptr_t h) {
     if (h >= 1 && h <= 31) { /* system colour brush (COLOR_x + 1) */
         static gdiobj_t sys[32];
@@ -90,6 +101,7 @@ static gdiobj_t *OBJ(uintptr_t h) {
     gdiobj_t *o = (gdiobj_t *)h;
     if (h < 0x100000 || (h & 3)) return NULL;
     for (int i = 0; i < 20; i++) if (o == &stock[i]) return o;
+    if (o == &default_bitmap) return o;
     return o->magic == OBJMAGIC ? o : NULL;
 }
 static dc_t *DC(uintptr_t h) { dc_t *d = (dc_t *)h; if (h < 0x100000 || (h & 3)) return NULL; return d->magic == DCMAGIC ? d : NULL; }
@@ -166,8 +178,11 @@ static HGDIOBJ WINAPI CreateBitmap(int w, int h, UINT planes, UINT bpp, const vo
     if (bits && bpp == 32) memcpy(o->bmp->px, bits, w * h * 4);
     return (HGDIOBJ)o;
 }
-static void dc_begin(dc_t *d, rect_t *save) { *save = d->surf->clip; d->surf->clip = rect_intersect(R(0, 0, d->surf->w, d->surf->h), d->clip); }
-static void dc_end(dc_t *d, rect_t save) { d->surf->clip = save; if (!d->memdc) wm_need_redraw = true; }
+static void dib_in(gdiobj_t *o);   /* user32_more.inc: a DIB section's bits to its canvas, and back */
+static void dib_out(gdiobj_t *o);
+static void dc_begin(dc_t *d, rect_t *save) { if (d->bitmap && d->bitmap->dib && d->memdc) dib_in(d->bitmap); *save = d->surf->clip; d->surf->clip = rect_intersect(R(0, 0, d->surf->w, d->surf->h), d->clip); }
+static void dc_end(dc_t *d, rect_t save) { d->surf->clip = save; if (d->bitmap && d->bitmap->dib && d->memdc) dib_out(d->bitmap); if (!d->memdc) wm_need_redraw = true; }
+static void dc_src(dc_t *s) { if (s && s->memdc && s->bitmap && s->bitmap->dib) dib_in(s->bitmap); }
 static int WINAPI SetBkMode(HDC h, int m) { dc_t *d = DC(h); if (!d) return 0; int o = d->bkmode; d->bkmode = m; return o; }
 static COLORREF WINAPI SetBkColor(HDC h, COLORREF c) { dc_t *d = DC(h); if (!d) return 0; d->bk = cref(c); return 0; }
 static COLORREF WINAPI SetTextColor(HDC h, COLORREF c) { dc_t *d = DC(h); if (!d) return 0; d->text = cref(c); return 0; }
@@ -268,6 +283,7 @@ static BOOL WINAPI SetPixelV(HDC h, int x, int y, COLORREF c) { SetPixel(h, x, y
 static COLORREF WINAPI GetPixel(HDC h, int x, int y) { dc_t *d = DC(h); if (!d) return 0xFFFFFFFF; uint32_t p = get_pixel(d->surf, d->ox + x, d->oy + y); return C_R(p) | (C_G(p) << 8) | (C_B(p) << 16); }
 static BOOL WINAPI BitBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, int sy, DWORD rop) {
     dc_t *d = DC(dst), *s = DC(src); if (!d) return 0;
+    if (s != d) dc_src(s);
     rect_t sv; dc_begin(d, &sv);
     if (rop == 0x00F00021 || !s) fill_brush(d, x, y, w, h, d->brush);       /* PATCOPY */
     else if (rop == 0x00000042) fill_rect(d->surf, d->ox + x, d->oy + y, w, h, BLACK);
@@ -278,6 +294,7 @@ static BOOL WINAPI BitBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, 
 }
 static BOOL WINAPI StretchBlt(HDC dst, int x, int y, int w, int h, HDC src, int sx, int sy, int sw, int sh, DWORD rop) {
     dc_t *d = DC(dst), *s = DC(src); if (!d || !s || !w || !h) return 0;
+    if (s != d) dc_src(s);
     rect_t sv; dc_begin(d, &sv);
     for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) put_pixel(d->surf, d->ox + x + i, d->oy + y + j, get_pixel(s->surf, s->ox + sx + i * sw / w, s->oy + sy + j * sh / h));
     dc_end(d, sv);
@@ -358,6 +375,8 @@ static void draw_control(w32win_t *c) {
         else if (bs == 2 || bs == 3 || bs == 5 || bs == 6) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_check(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? T.text : T.gray_text); }
         else if (bs == 4 || bs == 9) { fill_rect(s, r.x, r.y, r.w, r.h, T.face); draw_radio(s, r.x, r.y + (r.h - 13) / 2, c->checked, c->hot); draw_text(s, f, r.x + 18, r.y + (r.h - font_height(f)) / 2, label, c->enabled ? T.text : T.gray_text); }
         else draw_button(s, r, label, c->hot, c->pressed && c->hot, focus_win == c || bs == 1, c->enabled);
+    } else if (c->ctl >= CTL_TOOLBAR) {
+        cc_draw(c, s, r, f);
     } else if (c->ctl == CTL_COMBO || c->ctl == CTL_TREE || c->ctl == CTL_SCROLLBAR) {
         draw_ext(c, s, r, f);
     } else if (c->ctl == CTL_STATIC) {
@@ -495,6 +514,7 @@ static void wm_mouse_cb(window_t *win, int type, int x, int y, int btn) {
     } else if (hot_ctl && type == ME_UP) { hot_ctl->pressed = false; draw_control(hot_ctl); }
     if (type == ME_LEAVE && hot_ctl) { hot_ctl->hot = false; hot_ctl->pressed = false; draw_control(hot_ctl); hot_ctl = NULL; return; }
     if (target->ctl == CTL_EDIT && type == ME_DOWN) { w32win_t *old = focus_win; focus_win = target; if (old && old->ctl) draw_control(old); draw_control(target); return; }
+    if (target->ctl >= CTL_TOOLBAR && cc_mouse(target, type, lx, ly, btn)) return;
     if ((target->ctl == CTL_LISTBOX || target->ctl == CTL_COMBO || target->ctl == CTL_TREE) && ctl_mouse_ext(target, win, type, lx, ly, btn)) return;
     if (target->ctl) return;
     uint32_t msg = 0, wp = mk;
@@ -519,6 +539,7 @@ static void wm_key_cb(window_t *win, key_event_t *e) {
     /* the character this key makes, for TranslateMessage to turn into WM_CHAR */
     if (vk && e->pressed) key_char[vk & 0xFF] = e->ch == '\n' ? 13 : e->ch ? (uint8_t)e->ch : vk == 0x0D ? 13 : vk == 8 ? 8 : vk == 9 ? 9 : vk == 0x1B ? 27 : 0;
     w32win_t *f = focus_win && top_of(focus_win) == t && W((uintptr_t)focus_win) ? focus_win : t;
+    if (f->ctl >= CTL_TOOLBAR && cc_key(f, e)) return;
     if ((f->ctl == CTL_LISTBOX || f->ctl == CTL_COMBO || f->ctl == CTL_TREE) && ctl_key_ext(f, e)) return;
     if (f->ctl == CTL_EDIT) {
         if (!e->pressed) return;
@@ -594,7 +615,9 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
     w32cls_t *cls = find_class(clsname);
     int ctl = CTL_NONE;
     if (!cls && (uintptr_t)clsname > 0x10000) {
-        if (!strcasecmp(clsname, "BUTTON")) ctl = CTL_BUTTON; else if (!strcasecmp(clsname, "STATIC")) ctl = CTL_STATIC;
+        int ccl = cc_class(clsname);
+        if (ccl >= 0) ctl = ccl;
+        else if (!strcasecmp(clsname, "BUTTON")) ctl = CTL_BUTTON; else if (!strcasecmp(clsname, "STATIC")) ctl = CTL_STATIC;
         else if (!strcasecmp(clsname, "EDIT") || !strcasecmp(clsname, "RichEdit20A") || !strcasecmp(clsname, "RichEdit20W")) ctl = CTL_EDIT;
         else if (!strcasecmp(clsname, "LISTBOX")) ctl = CTL_LISTBOX;
         else if (!strcasecmp(clsname, "COMBOBOX") || !strcasecmp(clsname, "ComboBoxEx32")) ctl = CTL_COMBO;
@@ -623,6 +646,8 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
         if (ctl == CTL_COMBO && (style & 3) != 1) { win->cb_droph = win->h; win->h = MIN(win->h, font_height(FONT_UI) + 8); }
         w32win_t **pp = &pw->child; while (*pp) pp = &(*pp)->next; *pp = win;
         win->visible = (style & WS_VISIBLE) != 0;
+    } else if (ctl == CTL_TOOLTIP || ctl == CTL_QUIET) {          /* tooltips and the like: a window that is never shown */
+        win->w = 1; win->h = 1; win->visible = false;
     } else {
         int cw = w == (int)CW_USEDEFAULT ? 480 : w - 2 * T.border, ch = h == (int)CW_USEDEFAULT ? 340 : h - T.title_h - T.border;
         if (!(style & WS_CAPTION) && (style & 0x80000000u)) { cw = w; ch = h; }
@@ -650,6 +675,7 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
     /* a hidden top-level window gets its first WM_SIZE when it is first shown (programs set
      * their window data between CreateWindow and ShowWindow and expect nothing before) */
     if (win->parent || (style & WS_VISIBLE)) { win->sent_size = true; send(win, WM_SIZE, 0, (win->w & 0xFFFF) | (win->h << 16)); }
+    if (ctl >= CTL_TOOLBAR) cc_created(win);
     if (win->parent && win->ctl) draw_control(win);
     else if (win->parent) win->need_paint = true;
     return (HWND)win;
@@ -797,7 +823,7 @@ static uintptr_t WINAPI GetClassLongPtrA(HWND h, int i) { w32win_t *w = W(h); if
 static uintptr_t WINAPI SetClassLongPtrA(HWND h, int i, LONG_PTR v) { w32win_t *w = W(h); if (!w || !w->cls) return 0; uintptr_t o = GetClassLongPtrA(h, i); if (i == -10) w->cls->brush = v; if (i == -24) w->cls->proc = (void *)v; return o; }
 static DWORD WINAPI GetClassLongA(HWND h, int i) { return (DWORD)GetClassLongPtrA(h, i); }
 static DWORD WINAPI SetClassLongA(HWND h, int i, LONG v) { return (DWORD)SetClassLongPtrA(h, i, v); }
-static int WINAPI GetClassNameA(HWND h, char *b, int n) { w32win_t *w = W(h); if (!w) return 0; strlcpy(b, w->cls ? w->cls->name : w->ctl == CTL_BUTTON ? "Button" : w->ctl == CTL_EDIT ? "Edit" : w->ctl == CTL_LISTBOX ? "ListBox" : w->ctl == CTL_COMBO ? "ComboBox" : w->ctl == CTL_TREE ? "SysTreeView32" : w->ctl == CTL_SCROLLBAR ? "ScrollBar" : "Static", n); return strlen(b); }
+static int WINAPI GetClassNameA(HWND h, char *b, int n) { w32win_t *w = W(h); if (!w) return 0; strlcpy(b, w->cls ? w->cls->name : w->ctl >= CTL_TOOLBAR ? cc_class_name(w->ctl) : w->ctl == CTL_BUTTON ? "Button" : w->ctl == CTL_EDIT ? "Edit" : w->ctl == CTL_LISTBOX ? "ListBox" : w->ctl == CTL_COMBO ? "ComboBox" : w->ctl == CTL_TREE ? "SysTreeView32" : w->ctl == CTL_SCROLLBAR ? "ScrollBar" : "Static", n); return strlen(b); }
 static BOOL WINAPI EnumWindows(void *fn, LPARAM lp) { return 1; }
 static BOOL WINAPI FlashWindow(HWND h, BOOL b) { return 1; }
 
@@ -1052,6 +1078,8 @@ static int WINAPI GetScrollPos(HWND h, int b) { return 0; }
 static BOOL WINAPI ShowScrollBar(HWND h, int b, BOOL s) { return 1; }
 static HANDLE WINAPI BeginDeferWindowPos(int n) { return 1; }
 #include "user32_dlg.inc"
+#include "user32_more.inc"
+#include "comctl.inc"
 
 /* for opengl32/d3d9 (gl.c, d3d9.c): the window behind a DC, and a window's client pixels */
 uintptr_t w32_dc_hwnd(uintptr_t hdc) { dc_t *d = DC(hdc); return d && d->win ? (uintptr_t)d->win : 0; }

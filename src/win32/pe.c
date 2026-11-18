@@ -104,6 +104,8 @@ static const dll_t *find_dll(const char *name) {
 }
 void *w32_compat_find(const char *dll, const char *name);   /* compat.c */
 bool w32_lookup(const char *dll, const char *name, void **out) {
+    void *xf = w32_extra_find(dll, name);
+    if (xf) { *out = xf; return true; }
     const dll_t *d = dll ? find_dll(dll) : NULL;
     for (unsigned i = 0; i < ARRAY_LEN(dlls); i++) {
         const dll_t *x = d ? d : &dlls[i];
@@ -328,9 +330,28 @@ static void build_args(w32_proc_t *p) {
         p->argv[p->argc++] = strdup(buf);
         p->argv[p->argc] = NULL;
     }
-    p->envp = kzalloc(4 * sizeof(char *));
-    static char env0[] = "OS=THE_WRLD_OS", env1[] = "USERPROFILE=" USER_HOME, env2[] = "PATH=C:\\WRLD\\System32;C:\\WRLD";
-    p->envp[0] = env0; p->envp[1] = env1; p->envp[2] = env2;
+    /* the environment: what Windows programs expect to find (each its own string, so
+     * SetEnvironmentVariable and _putenv can replace entries) */
+    static const char *const fixed[] = {
+        "OS=Windows_NT", "WRLD_OS=THE_WRLD_OS", "SystemDrive=C:", "SystemRoot=C:\\WRLD", "windir=C:\\WRLD", "ComSpec=C:\\WRLD\\System32\\cmd.exe",
+        "PATH=C:\\WRLD\\System32;C:\\WRLD", "PATHEXT=.COM;.EXE;.BAT;.CMD", "TEMP=C:\\tmp", "TMP=C:\\tmp", "USERPROFILE=" USER_HOME,
+        "HOMEDRIVE=C:", "APPDATA=" USER_HOME "\\Application Data", "LOCALAPPDATA=" USER_HOME "\\Local Settings\\Application Data",
+        "ProgramFiles=C:\\Program Files", "CommonProgramFiles=C:\\Program Files\\Common Files", "ALLUSERSPROFILE=C:\\Documents and Settings\\All Users",
+        "NUMBER_OF_PROCESSORS=1",
+#ifdef __x86_64__
+        "PROCESSOR_ARCHITECTURE=AMD64",
+#else
+        "PROCESSOR_ARCHITECTURE=x86",
+#endif
+    };
+    int nf = ARRAY_LEN(fixed);
+    p->envp = kzalloc((nf + 6) * sizeof(char *));
+    for (int i = 0; i < nf; i++) p->envp[i] = (char *)fixed[i];
+    char e[300];
+    snprintf(e, sizeof e, "HOMEPATH=%s", USER_HOME + 2); p->envp[nf] = strdup(e);
+    snprintf(e, sizeof e, "USERNAME=%s", user_name); p->envp[nf + 1] = strdup(e);
+    snprintf(e, sizeof e, "COMPUTERNAME=%s", computer_name); p->envp[nf + 2] = strdup(e);
+    snprintf(e, sizeof e, "USERDOMAIN=%s", computer_name); p->envp[nf + 3] = strdup(e);
     p->acmdln = strdup(p->cmdline);
 }
 
@@ -380,7 +401,7 @@ bool w32_is_system_dll(const char *name) {
         "dwmapi.dll", "psapi.dll", "secur32.dll", "iphlpapi.dll", "bcrypt.dll", "userenv.dll", "netapi32.dll", "wtsapi32.dll", "oleacc.dll",
         "msimg32.dll", "powrprof.dll", "dbghelp.dll", "shcore.dll", "wldap32.dll", "normaliz.dll", "rpcrt4.dll", "mpr.dll", "dnsapi.dll",
         "winhttp.dll", "wininet.dll", "urlmon.dll", "msacm32.dll", "avrt.dll", "hid.dll", "dinput8.dll", "dinput.dll", "xinput1_3.dll",
-        "xinput1_4.dll", "xinput9_1_0.dll", "dsound.dll", "ddraw.dll", "usp10.dll", "gdiplus.dll", "comctl32.dll", "msvcp60.dll", "imagehlp.dll" };
+        "xinput1_4.dll", "xinput9_1_0.dll", "dsound.dll", "ddraw.dll", "usp10.dll", "gdiplus.dll", "comctl32.dll", "msvcp60.dll", "imagehlp.dll", "cfgmgr32.dll", "bcryptprimitives.dll", "propsys.dll", "sechost.dll", "credui.dll", "dwrite.dll", "d2d1.dll", "winmm.dll" };
     for (unsigned i = 0; i < ARRAY_LEN(sys); i++) if (!strcasecmp(b, sys[i])) return true;
     return false;
 }
@@ -566,7 +587,8 @@ void *w32_mod_export(w32_proc_t *p, w32_mod_t *m, const char *name, uint32_t ord
     return (void *)(m->base + rva);
 }
 static void *builtin_import(w32_proc_t *p, const char *dll, const char *name) {
-    void *fn = NULL;
+    void *fn = w32_extra_find(dll, name);
+    if (fn) return fn;
     const dll_t *dl = find_dll(dll);
     if (dl) { for (int e = 0; e < *dl->count; e++) if (!strcmp(dl->tab[e].name, name)) { fn = dl->tab[e].fn; break; } }
     if (!fn && dl && dl->tab == msvcrt_exports) {   /* C runtime variables imported as data (x64 CRT) */

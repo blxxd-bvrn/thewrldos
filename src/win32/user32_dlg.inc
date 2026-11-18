@@ -506,6 +506,7 @@ static bool tree_msg(w32win_t *w, UINT msg, WPARAM wp, LPARAM lp, LRESULT *res) 
     return false;
 }
 static bool ctl_msg_ext(w32win_t *w, UINT msg, WPARAM wp, LPARAM lp, LRESULT *res) {
+    if (w->ctl >= CTL_TOOLBAR && cc_msg(w, msg, wp, lp, res)) return true;
     if (w->ctl == CTL_LISTBOX || w->ctl == CTL_COMBO) {
         if (list_msg(w, msg, wp, lp, res, false)) return true;
         if (w->ctl == CTL_COMBO && msg == WM_SETTEXT) { strlcpy(w->text, lp ? (const char *)lp : "", sizeof w->text); draw_control(w); *res = 1; return true; }
@@ -1273,17 +1274,108 @@ static void WINAPI CoTaskMemFree(void *p) { if (p) w32_free(P, p); }
 static LONG WINAPI OleInitialize(void *r) { return 0; }
 static void WINAPI OleUninitialize(void) {}
 static LONG WINAPI CoGetMalloc(DWORD c, void **out) { if (out) *out = NULL; return (LONG)0x80004001; }
-/* the common dialogs: "cancelled" until they have their own windows */
-static BOOL WINAPI GetOpenFileNameA(void *ofn) { return 0; }
-static BOOL WINAPI GetOpenFileNameW(void *ofn) { return 0; }
-static BOOL WINAPI GetSaveFileNameA(void *ofn) { return 0; }
-static BOOL WINAPI GetSaveFileNameW(void *ofn) { return 0; }
+/* the common dialogs. Open and Save As use the system's file dialog, run modally: the
+ * program's timers and painting go on behind it, as in MessageBox. The filter's selected
+ * pattern ("*.txt") narrows the list; one file is returned (no multiple selection). */
+typedef struct {
+    DWORD size; HWND owner; HINSTANCE inst; const void *filter; void *cust; DWORD ncust, findex; void *file; DWORD nfile;
+    void *title_out; DWORD ntitle; const void *initdir, *title; DWORD flags; WORD fileoff, extoff; const void *defext; LPARAM cust_data; void *hook; const void *tpl;
+} OFN;
+static DWORD cdlg_err;
+typedef struct { char path[400]; bool done; } ofn_wait_t;
+static void ofn_cb(void *ctx, const char *path) { ofn_wait_t *w = ctx; if (path) strlcpy(w->path, path, sizeof w->path); w->done = true; }
+static void ofn_str(const void *s, bool wide, char *out, int cap) {
+    out[0] = 0; if (!s) return;
+    if (wide) { const WCHAR *w = s; int i = 0; for (; w[i] && i < cap - 1; i++) out[i] = w[i] < 256 ? (char)w[i] : '?'; out[i] = 0; }
+    else strlcpy(out, s, cap);
+}
+/* the n-th (1-based) filter's first pattern, as ".ext", or "" for all files */
+static void ofn_filter_ext(const void *filter, bool wide, DWORD index, char *ext, int cap) {
+    ext[0] = 0; if (!filter) return;
+    char buf[1024]; int k = 0;
+    if (wide) { const WCHAR *w = filter; for (int i = 0; k < (int)sizeof buf - 2 && (w[i] || w[i + 1]); i++) buf[k++] = w[i] < 256 ? (char)w[i] : '?'; }
+    else { const char *a = filter; for (int i = 0; k < (int)sizeof buf - 2 && (a[i] || a[i + 1]); i++) buf[k++] = a[i]; }
+    buf[k] = 0; buf[k + 1] = 0;
+    const char *p = buf; DWORD n = 1; if (!index) index = 1;
+    while (*p) {
+        const char *pat = p + strlen(p) + 1;
+        if (n == index) {
+            const char *dot = strstr(pat, "*.");
+            if (dot && dot[2] && dot[2] != '*' && dot[2] != ';') { int l = 0; ext[l++] = '.'; for (const char *c = dot + 2; *c && *c != ';' && l < cap - 1; c++) ext[l++] = *c; ext[l] = 0; }
+            return;
+        }
+        if (!*pat) return;
+        p = pat + strlen(pat) + 1; n++;
+    }
+}
+static BOOL file_name_dialog(OFN *o, bool wide, bool save) {
+    cdlg_err = 0;
+    if (!o || !o->file || !o->nfile) { cdlg_err = 0xFFFF; return 0; }
+    char init[400], dir[300], cur[300], title[128], ext[32], defext[32];
+    ofn_str(o->file, wide, cur, sizeof cur); ofn_str(o->initdir, wide, dir, sizeof dir); ofn_str(o->title, wide, title, sizeof title);
+    ofn_str(o->defext, wide, defext, sizeof defext);
+    ofn_filter_ext(o->filter, wide, o->findex, ext, sizeof ext);
+    if (cur[0] && (cur[1] == ':' || cur[0] == '\\')) strlcpy(init, cur, sizeof init);
+    else if (dir[0]) { if (cur[0]) path_join(init, sizeof init, dir, cur); else strlcpy(init, dir, sizeof init); }
+    else if (cur[0]) path_join(init, sizeof init, P->cwd, cur);
+    else strlcpy(init, P->cwd, sizeof init);
+    w32_proc_t *p = P;
+    ofn_wait_t *wt = kzalloc(sizeof *wt);
+    w32win_t *ow = W(o->owner);
+    window_t *fw = file_dialog_win(title[0] ? title : save ? "Save As" : "Open", init, save, ext[0] ? ext : NULL, ofn_cb, wt);
+    if (fw) { fw->pid = p->pid; if (ow && top_of(ow)->top) { fw->owner = top_of(ow)->top; fw->flags |= WF_MODAL; } }
+    while (!wt->done && fw && wm_alive(fw)) {
+        MSG32 m; bool any = false;
+        while (!wt->done && get_msg(p, &m, true)) {
+            any = true;
+            if (m.message == WM_QUIT) { p->quit_posted = true; p->quit_code = m.wParam; continue; }
+            if ((m.message >= 0x100 && m.message <= 0x109) || (m.message >= 0x200 && m.message <= 0x20E)) continue;
+            DispatchMessageA(&m);
+        }
+        if (!any && find_paint(p, &m)) send(W(m.hwnd), WM_PAINT, 0, 0);
+        task_sleep(15);
+    }
+    char path[420]; strlcpy(path, wt->path, sizeof path);
+    bool ok = wt->done && path[0];
+    kfree(wt);
+    if (ow && top_of(ow)->top) wm_focus(top_of(ow)->top);
+    if (!ok) return 0;                                     /* cancelled: CommDlgExtendedError() is 0 */
+    if (save && defext[0] && !strchr(path_basename(path), '.')) { strlcat(path, ".", sizeof path); strlcat(path, defext, sizeof path); }
+    if (save && (o->flags & 0x2) && vfs_resolve(path, NULL)) {          /* OFN_OVERWRITEPROMPT */
+        char q[500]; snprintf(q, sizeof q, "%s already exists.\nDo you want to replace it?", path_basename(path));
+        if (MessageBoxA(o->owner, q, "Confirm Save As", 0x34) != 6) return 0;
+    }
+    if (!save && (o->flags & 0x1000) && !vfs_resolve(path, NULL)) return 0;   /* OFN_FILEMUSTEXIST */
+    size_t len = strlen(path);
+    if (len + 1 > o->nfile) { cdlg_err = 0x3003; if (o->nfile >= 2) { if (wide) ((WCHAR *)o->file)[0] = (WCHAR)(len + 1); else *(WORD *)o->file = (WORD)(len + 1); } return 0; }
+    if (wide) { WCHAR *w = o->file; for (size_t i = 0; i <= len; i++) w[i] = (uint8_t)path[i]; } else memcpy(o->file, path, len + 1);
+    const char *base = path_basename(path), *dot = strrchr(base, '.');
+    o->fileoff = (WORD)(base - path); o->extoff = dot ? (WORD)(dot + 1 - path) : (WORD)len;
+    if (o->title_out && o->ntitle) {
+        if (wide) { WCHAR *w = o->title_out; DWORD i = 0; for (; base[i] && i < o->ntitle - 1; i++) w[i] = (uint8_t)base[i]; w[i] = 0; }
+        else strlcpy(o->title_out, base, o->ntitle);
+    }
+    return 1;
+}
+static BOOL WINAPI GetOpenFileNameA(void *ofn) { return file_name_dialog(ofn, false, false); }
+static BOOL WINAPI GetOpenFileNameW(void *ofn) { return file_name_dialog(ofn, true, false); }
+static BOOL WINAPI GetSaveFileNameA(void *ofn) { return file_name_dialog(ofn, false, true); }
+static BOOL WINAPI GetSaveFileNameW(void *ofn) { return file_name_dialog(ofn, true, true); }
+static short WINAPI GetFileTitleA(const char *f, char *b, WORD n) { const char *s = path_basename(f); size_t l = strlen(s); if (!b || n <= l) return (short)(l + 1); memcpy(b, s, l + 1); return 0; }
+static short WINAPI GetFileTitleW(const WCHAR *f, WCHAR *b, WORD n) { int i = 0, s = 0; for (; f[i]; i++) if (f[i] == '\\' || f[i] == '/' || f[i] == ':') s = i + 1; int l = i - s; if (!b || n <= l) return (short)(l + 1); for (int k = 0; k <= l; k++) b[k] = f[s + k]; return 0; }
+static HWND WINAPI FindTextA(void *fr) { return 0; }
+static HWND WINAPI FindTextW(void *fr) { return 0; }
+static HWND WINAPI ReplaceTextA(void *fr) { return 0; }
+static HWND WINAPI ReplaceTextW(void *fr) { return 0; }
+static BOOL WINAPI PrintDlgW(void *pd) { return 0; }
+static BOOL WINAPI PageSetupDlgA(void *pd) { return 0; }
+static BOOL WINAPI PageSetupDlgW(void *pd) { return 0; }
 static BOOL WINAPI ChooseColorA(void *cc) { return 0; }
 static BOOL WINAPI ChooseColorW(void *cc) { return 0; }
 static BOOL WINAPI ChooseFontA(void *cf) { return 0; }
 static BOOL WINAPI ChooseFontW(void *cf) { return 0; }
 static BOOL WINAPI PrintDlgA(void *pd) { return 0; }
-static DWORD WINAPI CommDlgExtendedError(void) { return 0; }
+static DWORD WINAPI CommDlgExtendedError(void) { return cdlg_err; }
 static void WINAPI InitCommonControls(void) {}
 static BOOL WINAPI InitCommonControlsEx(const void *icc) { return 1; }
 
@@ -1297,7 +1389,7 @@ const w32_export_t ole32_exports[] = {
 };
 const int ole32_count = ARRAY_LEN(ole32_exports);
 const w32_export_t comdlg32_exports[] = {
-    E(GetOpenFileNameA), E(GetOpenFileNameW), E(GetSaveFileNameA), E(GetSaveFileNameW), E(ChooseColorA), E(ChooseColorW), E(ChooseFontA), E(ChooseFontW), E(PrintDlgA),
+    E(GetOpenFileNameA), E(GetOpenFileNameW), E(GetSaveFileNameA), E(GetSaveFileNameW), E(GetFileTitleA), E(GetFileTitleW), E(FindTextA), E(FindTextW), E(ReplaceTextA), E(ReplaceTextW), E(PrintDlgW), E(PageSetupDlgA), E(PageSetupDlgW), E(ChooseColorA), E(ChooseColorW), E(ChooseFontA), E(ChooseFontW), E(PrintDlgA),
     E(CommDlgExtendedError),
 };
 const int comdlg32_count = ARRAY_LEN(comdlg32_exports);
