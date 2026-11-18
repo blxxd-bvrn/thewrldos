@@ -15,7 +15,8 @@ PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-efi-
 # Without them the build still works, but The WRLD Browser falls back to its classic engine.
 LXPKGS="pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev
         libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev
-        libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad"
+        libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+        xkb-data gsettings-desktop-schemas"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -75,21 +76,23 @@ build64_noble_chroot() {
     local CH="${WRLD_NOBLE_DIR:-$HOME/.cache/wrldos-noble}"
     SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
     export DEBIAN_FRONTEND=noninteractive
-    if [ ! -x "$CH/usr/bin/make" ] || ! $SUDO chroot "$CH" pkg-config --exists webkitgtk-6.0 2>/dev/null; then
+    if [ ! -x "$CH/usr/bin/apt-get" ]; then
         say "Setting up Ubuntu 24.04 in $CH (once; about 2 GB)"
         command -v debootstrap >/dev/null 2>&1 || $SUDO apt-get install -y -qq debootstrap
-        [ -x "$CH/usr/bin/apt-get" ] || $SUDO debootstrap --variant=minbase --components=main,universe noble "$CH" http://archive.ubuntu.com/ubuntu
+        $SUDO debootstrap --variant=minbase --components=main,universe noble "$CH" http://archive.ubuntu.com/ubuntu
         printf 'deb http://archive.ubuntu.com/ubuntu noble main universe\ndeb http://archive.ubuntu.com/ubuntu noble-updates main universe\n' | $SUDO tee "$CH/etc/apt/sources.list" >/dev/null
-        $SUDO mount --bind /proc "$CH/proc"; $SUDO mount --bind /dev "$CH/dev"
-        $SUDO chroot "$CH" apt-get update -qq
-        $SUDO chroot "$CH" apt-get install -y -qq $PKGS $LXPKGS >/dev/null || { $SUDO umount "$CH/dev" "$CH/proc"; fail "could not install the build packages in $CH"; }
-        $SUDO umount "$CH/dev" "$CH/proc"
     fi
     $SUDO mkdir -p "$CH/build"
-    $SUDO mount --bind "$BUILD_DIR" "$CH/build"; $SUDO mount --bind /proc "$CH/proc"; $SUDO mount --bind /dev "$CH/dev"
+    $SUDO mount --bind "$BUILD_DIR" "$CH/build"; $SUDO mount --bind /proc "$CH/proc"; $SUDO mount --bind /dev "$CH/dev"; $SUDO mount --bind /dev/pts "$CH/dev/pts"
     local rc=0
-    $SUDO chroot "$CH" make -C /build -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64 || rc=$?
-    $SUDO umount "$CH/build" "$CH/dev" "$CH/proc"
+    # the build packages: installed the first time, and whenever the list grows
+    local missing; missing=$($SUDO chroot "$CH" sh -c "for p in $PKGS $(echo $LXPKGS); do dpkg -s \$p >/dev/null 2>&1 || echo \$p; done")
+    if [ -n "$missing" ]; then
+        say "Installing in Ubuntu 24.04: $(echo $missing)"
+        $SUDO chroot "$CH" apt-get update -qq && $SUDO chroot "$CH" apt-get install -y -qq $missing >/dev/null || rc=$?
+    fi
+    [ $rc -eq 0 ] && { $SUDO chroot "$CH" make -C /build -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64 || rc=$?; }
+    $SUDO umount "$CH/build" "$CH/dev/pts" "$CH/dev" "$CH/proc"
     [ "$SUDO" ] && $SUDO chown -R "$(id -u):$(id -g)" "$BUILD_DIR/build64" "$BUILD_DIR/wrldos64.iso" 2>/dev/null
     return $rc
 }

@@ -107,10 +107,11 @@ sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bi
 The 64-bit edition's Linux userland (The WRLD Browser's WebKit engine, GTK 4, video and sound,
 `/bin/sh`) comes from these packages on the build machine (Ubuntu 24.04 or newer). Without them
 the image still builds, but The WRLD Browser uses its classic engine. `Build to ISO.bat`
-installs them by itself.
+installs them by itself, and on an older distribution builds the 64-bit edition in an
+Ubuntu 24.04 of its own (a Docker container, or a chroot it makes with debootstrap).
 
 ```bash
-sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad xkb-data gsettings-desktop-schemas
 ```
 
 ```bash
