@@ -57,12 +57,21 @@ fi
 # The WRLD Browser's engine (WebKitGTK 6.0) needs Ubuntu 24.04 or newer. On an older distribution
 # the 64-bit edition is built in an Ubuntu 24.04 of its own: a Docker container when Docker runs,
 # otherwise a debootstrap chroot kept in ~/.cache for the next build. WRLD_NOBLE=0 skips that
-# (the image is then built here, and the browser uses its classic engine).
+# (the image is then built here). The WebKit image is the default; WRLD_CLASSIC=1 builds the
+# 64-bit edition with the browser's classic engine instead (smaller, no WebKitGTK needed).
 NOBLE=""
-if [ "${WRLD_NOBLE:-auto}" = "1" ] || { [ "${WRLD_NOBLE:-auto}" = "auto" ] && ! pkg-config --exists webkitgtk-6.0 2>/dev/null; }; then
+MAKE64="ARCH=x86_64"
+if [ "${WRLD_CLASSIC:-0}" = "1" ]; then
+    MAKE64="ARCH=x86_64 LX_WEBKITGTK=0"
+    say "WRLD_CLASSIC=1: the 64-bit edition is built with The WRLD Browser's classic engine."
+elif [ "${WRLD_NOBLE:-auto}" = "1" ] || { [ "${WRLD_NOBLE:-auto}" = "auto" ] && ! pkg-config --exists webkitgtk-6.0 2>/dev/null; }; then
     if [ -z "${WRLD_NOBLE_CHROOT:-}" ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then NOBLE=docker
     elif command -v apt-get >/dev/null 2>&1; then NOBLE=chroot
-    else say "WebKitGTK 6.0 is not available here: the 64-bit edition's WRLD Browser will use its classic engine."; fi
+    else
+        say "WebKitGTK 6.0 is not available here, and there is no Docker or apt-get to build in Ubuntu 24.04."
+        say "Install WebKitGTK 6.0 (Ubuntu 24.04 or newer), or run with WRLD_CLASSIC=1 for the classic-engine image."
+        exit 1
+    fi
 fi
 [ -n "$NOBLE" ] && say "WebKitGTK 6.0 is not available on this system: the 64-bit edition is built in Ubuntu 24.04 ($NOBLE)."
 
@@ -70,7 +79,7 @@ build64_noble_docker() {
     docker run --rm -v "$BUILD_DIR:/build" ubuntu:24.04 bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq && apt-get install -y -qq $PKGS $(echo $LXPKGS) >/dev/null &&
-        make -C /build -j$(nproc 2>/dev/null || echo 2) ARCH=x86_64"
+        make -C /build -j$(nproc 2>/dev/null || echo 2) $MAKE64"
 }
 build64_noble_chroot() {
     local CH="${WRLD_NOBLE_DIR:-$HOME/.cache/wrldos-noble}"
@@ -91,7 +100,7 @@ build64_noble_chroot() {
         say "Installing in Ubuntu 24.04: $(echo $missing)"
         $SUDO chroot "$CH" apt-get update -qq && $SUDO chroot "$CH" apt-get install -y -qq $missing >/dev/null || rc=$?
     fi
-    [ $rc -eq 0 ] && { $SUDO chroot "$CH" make -C /build -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64 || rc=$?; }
+    [ $rc -eq 0 ] && { $SUDO chroot "$CH" make -C /build -j"$(nproc 2>/dev/null || echo 2)" $MAKE64 || rc=$?; }
     $SUDO umount "$CH/build" "$CH/dev/pts" "$CH/dev" "$CH/proc"
     [ "$SUDO" ] && $SUDO chown -R "$(id -u):$(id -g)" "$BUILD_DIR/build64" "$BUILD_DIR/wrldos64.iso" 2>/dev/null
     return $rc
@@ -110,16 +119,17 @@ find "$BUILD_DIR" \( -path "$BUILD_DIR/build" -o -path "$BUILD_DIR/build64" \) -
     -o -name '*.plist' -o -name '*.lnk' -o -name '.profile' -o -path '*/MacOS/*' \) -print0 | xargs -0 -r sed -i 's/\r$//'
 
 # ---- 3. build -------------------------------------------------------------
-say "Building THE WRLD OS (32-bit edition)"
-make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=i686
-say "Building THE WRLD OS (64-bit edition)"
+# the main image first: the 64-bit edition with The WRLD Browser on WebKit
+say "Building THE WRLD OS (64-bit edition, the main image)"
 case "$NOBLE" in
     docker) build64_noble_docker ;;
     chroot) build64_noble_chroot ;;
-    *) make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64 ;;
+    *) make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" $MAKE64 ;;
 esac
+say "Building THE WRLD OS (32-bit edition, for 32-bit machines)"
+make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=i686
 
-cp "$BUILD_DIR/wrldos.iso" "$SRC/wrldos.iso"
 cp "$BUILD_DIR/wrldos64.iso" "$SRC/wrldos64.iso"
-say "Done: $SRC/wrldos.iso ($(du -h "$SRC/wrldos.iso" | cut -f1), 32-bit)"
-say "      $SRC/wrldos64.iso ($(du -h "$SRC/wrldos64.iso" | cut -f1), 64-bit)"
+cp "$BUILD_DIR/wrldos.iso" "$SRC/wrldos.iso"
+say "Done: $SRC/wrldos64.iso ($(du -h "$SRC/wrldos64.iso" | cut -f1), 64-bit, the main image)"
+say "      $SRC/wrldos.iso ($(du -h "$SRC/wrldos.iso" | cut -f1), 32-bit)"

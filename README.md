@@ -105,29 +105,32 @@ sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bi
 ```
 
 The 64-bit edition's Linux userland (The WRLD Browser's WebKit engine, GTK 4, video and sound,
-`/bin/sh`) comes from these packages on the build machine (Ubuntu 24.04 or newer). Without them
-the image still builds, but The WRLD Browser uses its classic engine. `Build to ISO.bat`
-installs them by itself, and on an older distribution builds the 64-bit edition in an
-Ubuntu 24.04 of its own (a Docker container, or a chroot it makes with debootstrap).
+`/bin/sh`) comes from these packages on the build machine (Ubuntu 24.04 or newer). The WebKit
+image is the default build: without these packages `make` stops and says what to install, and
+`make LX_WEBKITGTK=0` builds the smaller image with the browser's classic engine instead.
+`Build to ISO.bat` installs them by itself, and on an older distribution builds the 64-bit
+edition in an Ubuntu 24.04 of its own (a Docker container, or a chroot it makes with
+debootstrap); `WRLD_CLASSIC=1 tools/build-iso.sh .` builds the classic image.
 
 ```bash
 sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad xkb-data gsettings-desktop-schemas
 ```
 
 ```bash
-make            # the 32-bit edition: build/wrld.elf and wrldos.iso
+make            # the main image: the 64-bit edition with WebKit, build64/wrld.elf and wrldos64.iso
 ```
 
 ```bash
-make ARCH=x86_64    # the 64-bit edition: build64/wrld.elf and wrldos64.iso (or "make both")
+make ARCH=i686      # the 32-bit edition: build/wrld.elf and wrldos.iso (or "make both")
 ```
 
 ```bash
 make run        # boots the CD in QEMU: live session, nothing is saved
 ```
 
-`make ARCH=x86_64 run` (and `run-install`, `run-disk`) does the same with the 64-bit edition
-in `qemu-system-x86_64`; its hard disk image is `disk64.img`.
+`make run` (and `run-install`, `run-disk`) boots the 64-bit edition in `qemu-system-x86_64`,
+with the hard disk image `disk64.img`; `make ARCH=i686 run` does the same with the 32-bit
+edition and `disk.img`.
 
 Tested with Ubuntu 22.04 (gcc 11, binutils 2.38, GRUB 2.06) and 24.04 (gcc 13, binutils
 2.42). `make check-tools` lists any missing tool. Fedora's `grub2-*` tool names are detected
@@ -141,8 +144,8 @@ automatically. On WSL, clone the repository inside the Linux file system (for ex
 | Command | What it does |
 |---|---|
 | `make run` | Live session from the CD. Nothing is saved. Networking uses QEMU's built-in NAT, and sound goes to PulseAudio/PipeWire when it's running (also under WSLg). |
-| `make run-install` | CD plus a blank 512 MB `disk.img`. Choose **Install THE WRLD OS**. |
-| `make run-disk` | Boots the installed `disk.img` on its own, with no CD. |
+| `make run-install` | CD plus a blank hard disk image (`disk64.img`; `disk.img` with `ARCH=i686`). Choose **Install THE WRLD OS**. |
+| `make run-disk` | Boots the installed disk image on its own, with no CD. |
 | `make disk` | Creates the blank `disk.img` (size: `make disk DISK_MB=1024`). |
 
 You can also choose the emulated hardware:
@@ -514,10 +517,13 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   and `MAP_SHARED` of those or of anonymous memory share real pages between processes, across
   `fork` and through descriptors passed with `SCM_RIGHTS` (`shm` tests all of it).
 - **The WRLD Browser on WebKit.** The 64-bit edition's browser is WebKitGTK 6 (the engine of
-  Safari and GNOME Web), built in whenever the build machine has `libwebkitgtk-6.0-dev`
-  (`make ARCH=x86_64 LX_WEBKITGTK=0` leaves it out; the image is about 290 MB and needs about
-  2 GB of memory). Tabs, a bookmarks bar, find (Ctrl+F), zoom, downloads into My
-  Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
+  Safari and GNOME Web), part of the default build (`make LX_WEBKITGTK=0` leaves it out; the
+  image is about 290 MB and needs about 2 GB of memory). It is dressed like a 2007 desktop
+  browser: round Back and Forward buttons, the address bar with Refresh and Stop and a search
+  box, a menu bar (File, Edit, View, Favorites, Tools, Help), tabs sharing their row with the
+  Favorites buttons and the command bar (Home, Page, Tools), and a status bar with the zone and
+  a zoom menu; icons are drawn by the browser itself. Find (Ctrl+F), zoom, Delete Browsing
+  History, downloads into My Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
   edition, on smaller machines, or when "Use WebKit" is turned off under Control Panel, Network.
   Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, AV1, H.264, Opus and AAC
   (YouTube's formats among them; FFmpeg is left out for size). There is no GPU driver for Linux
@@ -675,10 +681,13 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
 
 ### The WRLD Browser (`src/apps/browser.c`, `html.c`, `imgdec.c`)
-- **Window:** up to 12 tabs per window, each with its own page, history and loading task; a
-  toolbar with drawn back/forward/reload/home buttons, a rounded address bar (the lock shows
-  on secure pages; focusing it selects the address), an ad-blocker badge, a bookmarks bar and
-  a loading bar. Light and dark chrome follow the desktop's dark mode.
+- **Window:** up to 12 tabs per window, each with its own page, history and loading task, in
+  the same 2007 look as the WebKit browser: round blue Back and Forward buttons, the address
+  field with Refresh and Stop at its end (the lock shows on secure pages; focusing it selects
+  the address; a progress line while loading), a search box (DuckDuckGo), the Favorites star,
+  IE-style tabs with a small empty tab for a new one, Home, Page and Tools menus, and a status
+  bar with the ad blocker's count and the zone. Numeric addresses and ones with a port open
+  over plain HTTP.
 - **CSS boxes:** `margin` (including `auto` to centre a box), `padding`, `border` /
   `border-width` / `border-color`, `width` and `max-width` in px, em, pt or %, on blocks and on
   `<body>`; borders without a background are drawn as outlines.

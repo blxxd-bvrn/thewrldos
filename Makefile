@@ -4,9 +4,10 @@ ifeq ($(origin CC),default)
 CC      := gcc
 endif
 NASM    ?= nasm
-# ARCH=i686 (default): the 32-bit edition, wrldos.iso
-# ARCH=x86_64:         the 64-bit edition, wrldos64.iso (runs x64 Win32 programs)
-ARCH    ?= i686
+# ARCH=x86_64 (default): the 64-bit edition, wrldos64.iso, with The WRLD Browser on WebKit
+#                        (runs x64 Win32 programs and the Linux userland)
+# ARCH=i686:             the 32-bit edition, wrldos.iso (the browser's classic engine)
+ARCH    ?= x86_64
 ifeq ($(ARCH),x86_64)
 ARCHFLAGS := -m64 -march=x86-64 -mno-red-zone -mcmodel=small
 NASMFMT := elf64
@@ -353,8 +354,18 @@ $(LXROOT)/Linux/usr/share/wrld/keymap.xkb: tools/gen_keymap.c
 # GTK 4 programs (samples/linux-gtk) through wrldcomp: about 35 MB of libraries, so only with
 #   make ARCH=x86_64 LX_GTK=1   (needs libgtk-4-dev)
 # (LX_WEBKITGTK first: the WebKit browser needs GTK 4 and the XKB data its rule copies)
-LX_WEBKITGTK ?= $(if $(filter x86_64,$(ARCH)),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),1))
+# The WebKit image is the default build: the 64-bit edition needs WebKitGTK 6.0 on the build
+# machine, and stops with what to install if it is missing. LX_WEBKITGTK=0 builds the smaller
+# image with the browser's classic engine instead.
+LX_WEBKITGTK ?= $(if $(filter x86_64,$(ARCH)),1)
 LX_WEBKITGTK_ON := $(filter-out 0,$(LX_WEBKITGTK))
+ifneq ($(LX_WEBKITGTK_ON),)
+ifneq ($(filter-out clean check-% bench-% shader-fixtures assets,$(or $(MAKECMDGOALS),all)),)
+ifeq ($(shell pkg-config --exists webkitgtk-6.0 gtk4 2>/dev/null && echo y),)
+$(error The default 64-bit image includes The WRLD Browser's WebKit engine, but WebKitGTK 6.0 is not installed. Install the packages listed in README "Linux (or a WSL terminal)" (Ubuntu 24.04 or newer), use "Build to ISO.bat" / tools/build-iso.sh (they set up an Ubuntu 24.04 build when needed), or build the classic image with: make LX_WEBKITGTK=0)
+endif
+endif
+endif
 LXGTK := $(if $(LX_GTK)$(LX_WEBKITGTK_ON),$(if $(shell pkg-config --exists gtk4 2>/dev/null && echo y),$(patsubst samples/linux-gtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-gtk/*.c)),$(warning LX_GTK=1 needs libgtk-4-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/usr/share/glib-2.0/schemas
@@ -370,12 +381,12 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gtk/%.c
 # about 210 MB of libraries, so only with  make ARCH=x86_64 LX_WEBKITGTK=1  (needs libwebkitgtk-6.0-dev;
 # implies LX_GTK=1). HTTPS goes through GIO's GnuTLS module and the Mozilla CA list.
 WKGTK_DIR := /usr/lib/x86_64-linux-gnu/webkitgtk-6.0
-# on by default in the 64-bit edition when the build machine has WebKitGTK: it is The WRLD
-# Browser's engine there (src/apps/webkit.c). LX_WEBKITGTK=0 leaves it out (a smaller image).
+# on by default in the 64-bit edition: it is The WRLD Browser's engine there (src/apps/webkit.c).
+# LX_WEBKITGTK=0 leaves it out (a smaller image with the classic engine).
 LXWEBKITGTK := $(if $(LX_WEBKITGTK_ON),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/ssl/certs
-	gcc -O2 -Wall -rdynamic -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0)
+	gcc -O2 -Wall -rdynamic -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0) -lm
 	cp -L $(WKGTK_DIR)/WebKitWebProcess $(WKGTK_DIR)/WebKitNetworkProcess $(LXROOT)/Linux$(WKGTK_DIR)/
 	cp -L $(WKGTK_DIR)/injected-bundle/*.so $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle/
 	cp -L /usr/lib/x86_64-linux-gnu/gio/modules/libgiognutls.so $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules/

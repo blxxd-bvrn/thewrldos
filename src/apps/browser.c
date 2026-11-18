@@ -22,10 +22,9 @@ bool js_enabled = true;
 #define PAGE_MEM_STEP ((uint64_t)PAGE_MEM_STEP_MB * 1024 * 1024)   /* warn each time a page passes another 500 MB */
 
 #define HOME_URL "wrld://home"
-#define TABS_H 34                              /* the tab strip */
-#define TOOLBAR_H 42                           /* back, forward, reload, home, address */
-#define BOOK_H 28                              /* bookmarks bar */
-#define CHROME_H (TABS_H + TOOLBAR_H + BOOK_H)
+#define TOOLBAR_H 34                           /* the navigation bar: back, forward, address, search */
+#define TABS_H 30                              /* the tab row: favorites, tabs, the command bar */
+#define CHROME_H (TOOLBAR_H + TABS_H)
 #define STATUS_H 22
 #define SB_W 16
 
@@ -51,7 +50,7 @@ typedef struct {
 
 /* a window holds tabs; each tab is a browser_t with its own page, history and worker */
 #define MAXTABS 12
-typedef struct { browser_t *tab[MAXTABS]; int n, cur; window_t *w; int addr_id; bool addr_was_focused, addr_all; } brwin_t;   /* addr_all: the whole address is selected */
+typedef struct { browser_t *tab[MAXTABS]; int n, cur; window_t *w; int addr_id; bool addr_was_focused, addr_all; char search[256]; } brwin_t;   /* addr_all: the whole address is selected */
 static browser_t *active_tab(window_t *w) { brwin_t *bw = w->data; return bw->tab[bw->cur]; }
 static bool tab_shown(browser_t *b) { brwin_t *bw = b->win; return bw && !b->closed && bw->tab[bw->cur] == b; }
 static void tab_title(browser_t *b) {
@@ -1649,7 +1648,11 @@ static void normalize_address(const char *in, char *out, int cap) {
     if (strstr(in, "://") || !strncasecmp(in, "about:", 6) || !strncasecmp(in, "wrld:", 5) || !strncasecmp(in, "file:", 5)) { strlcpy(out, in, cap); return; }
     if (isalpha(in[0]) && in[1] == ':') { snprintf(out, cap, "file:///%s", in); for (char *q = out; *q; q++) if (*q == '\\') *q = '/'; return; }
     bool looks_like_host = strchr(in, '.') && !strchr(in, ' ');
-    if (looks_like_host || !strncasecmp(in, "localhost", 9)) { snprintf(out, cap, "https://%s", in); return; }
+    if (looks_like_host || !strncasecmp(in, "localhost", 9)) {   /* a numeric host, localhost or a port: plain http */
+        bool plain = isdigit((unsigned char)in[0]) || !strncasecmp(in, "localhost", 9) || strchr(in, ':');
+        snprintf(out, cap, "%s://%s", plain ? "http" : "https", in);
+        return;
+    }
     /* anything else: search */
     char q[700]; int o = 0;
     for (const char *p = in; *p && o < 690; p++) { if (isalnum(*p)) q[o++] = *p; else if (*p == ' ') q[o++] = '+'; else o += snprintf(q + o, sizeof q - o, "%%%02X", (uint8_t)*p); }
@@ -1830,9 +1833,10 @@ static void go_fwd(browser_t *b) { if (b->hpos < b->nhist - 1) { b->hpos++; brow
 static void stop_loading(browser_t *b) { b->gen++; b->loading = false; set_status(b, "Stopped"); }
 /* ---------------- the window: tabs, toolbar, bookmarks, page, status ---------------- */
 typedef struct { uint32_t strip, bar, tab_hot, text, dim, line, field, field_line, accent; } chrome_t;
+/* the 2007 browser look: light blue bands, a white address field, round blue Back and Forward */
 static chrome_t chrome_colours(void) {
-    return (chrome_t){ mix(T.face, T.select, 35), T.face, mix(T.face, T.select, 20), T.text,
-                       mix(T.text, T.face, 90), T.face_dark, T.window_bg, T.face_dark, T.link };
+    return (chrome_t){ HEX(0xE4ECF7), HEX(0xCFDCED), HEX(0xDBEAFB), HEX(0x1E1E1E),
+                       HEX(0x55606E), HEX(0xA6B9D2), WHITE, HEX(0x7F9DB9), HEX(0x2F6FC0) };
 }
 static void tri3(canvas_t *c, int x0, int y0, int x1, int y1, int x2, int y2, uint32_t col) {
     raster_path_t *p = raster_path_new(); if (!p) return;
@@ -1840,48 +1844,59 @@ static void tri3(canvas_t *c, int x0, int y0, int x1, int y1, int x2, int y2, ui
     raster_line_to(p, RASTER_FIX(x2), RASTER_FIX(y2)); raster_close(p);
     raster_fill(c, p, col, false); raster_path_free(p);
 }
-/* a round toolbar button with a drawn glyph; returns true when clicked */
-enum { GL_BACK, GL_FWD, GL_RELOAD, GL_STOP, GL_HOME, GL_PLUS, GL_CLOSE };
+/* a small drawn glyph button (the close cross on a tab); returns true when clicked */
+enum { GL_CLOSE };
 static bool glyph_btn(window_t *w, int cx, int cy, int r, int glyph, bool enabled, const chrome_t *k) {
     canvas_t *c = w->surf;
     rect_t rr = R(cx - r, cy - r, 2 * r, 2 * r);
     bool hot = enabled && ui_hover(w, rr), click = ui_click_area(w, rr) && enabled;
-    if (hot) fill_circle(c, cx, cy, r, w->ui.down ? mix(k->bar, k->text, 60) : mix(k->bar, k->text, 30));
-    uint32_t g = enabled ? k->text : mix(k->bar, k->dim, 120);
-    switch (glyph) {
-    case GL_BACK: case GL_FWD: {
-        int d = glyph == GL_BACK ? -1 : 1;
-        draw_thick_line(c, cx - 6 * d, cy, cx + 6 * d, cy, 2, g);
-        draw_thick_line(c, cx + 6 * d, cy, cx + 1 * d, cy - 5, 2, g);
-        draw_thick_line(c, cx + 6 * d, cy, cx + 1 * d, cy + 5, 2, g);
-        break;
+    if (hot) fill_round_rect(c, rr.x, rr.y, rr.w, rr.h, 2, HEX(0xE9A7A0));
+    uint32_t g = hot ? HEX(0x7A1E14) : HEX(0x6B7A90);
+    (void)glyph;
+    draw_thick_line(c, cx - 3, cy - 3, cx + 3, cy + 3, 2, g); draw_thick_line(c, cx + 3, cy - 3, cx - 3, cy + 3, 2, g);
+    return click;
+}
+static uint32_t isqrt_u(uint32_t v) { uint32_t r = 0; while ((r + 1) * (r + 1) <= v) r++; return r; }
+/* Back and Forward: glossy blue balls with a white arrow, grey when there is nowhere to go */
+static bool ball_btn(window_t *w, int cx, int cy, int r, int dir, bool enabled) {
+    canvas_t *c = w->surf;
+    rect_t rr = R(cx - r, cy - r, 2 * r, 2 * r);
+    bool hot = enabled && ui_hover(w, rr), click = ui_click_area(w, rr) && enabled;
+    uint32_t edge = enabled ? HEX(0x23446F) : HEX(0x8A929C), lo = enabled ? HEX(0x0D3F86) : HEX(0x9AA2AC), hi = enabled ? HEX(0x63AEF5) : HEX(0xD8DCE2);
+    if (hot && !w->ui.down) { lo = mix(lo, WHITE, 40); hi = mix(hi, WHITE, 40); }
+    if (hot && w->ui.down) { lo = mix(lo, BLACK, 40); hi = mix(hi, BLACK, 30); }
+    fill_circle(c, cx, cy, r, edge);
+    for (int i = r - 1; i > 0; i--) fill_circle(c, cx, cy + (r - i) / 3, i, mix(lo, hi, 255 - i * 255 / r));   /* lighter towards the centre */
+    for (int i = 0; i < r - 2; i++) {                                    /* the shine across the top half */
+        int y = cy - r + 2 + i; if (y > cy) break;
+        int dy = cy - y, half = (int)isqrt_u((uint32_t)((r - 2) * (r - 2) - dy * dy));
+        blend_rect(c, cx - half, y, 2 * half, 1, WHITE, 150 - i * 140 / r);
     }
-    case GL_RELOAD: {
-        raster_path_t *p = raster_path_new();
-        if (p) {   /* three quarters of a circle and an arrow head */
-            int32_t R0 = RASTER_FIX(6);
-            raster_move_to(p, RASTER_FIX(cx) + R0, RASTER_FIX(cy));
-            raster_cubic_to(p, RASTER_FIX(cx) + R0, RASTER_FIX(cy) + R0 * 55 / 100, RASTER_FIX(cx) + R0 * 55 / 100, RASTER_FIX(cy) + R0, RASTER_FIX(cx), RASTER_FIX(cy) + R0);
-            raster_cubic_to(p, RASTER_FIX(cx) - R0 * 55 / 100, RASTER_FIX(cy) + R0, RASTER_FIX(cx) - R0, RASTER_FIX(cy) + R0 * 55 / 100, RASTER_FIX(cx) - R0, RASTER_FIX(cy));
-            raster_cubic_to(p, RASTER_FIX(cx) - R0, RASTER_FIX(cy) - R0 * 55 / 100, RASTER_FIX(cx) - R0 * 55 / 100, RASTER_FIX(cy) - R0, RASTER_FIX(cx), RASTER_FIX(cy) - R0);
-            raster_stroke(c, p, 2, g); raster_path_free(p);
-        }
-        tri3(c, cx - 1, cy - 10, cx + 5, cy - 6, cx - 1, cy - 2, g);
-        break;
+    int s = r * 9 / 20, d = dir;
+    draw_thick_line(c, cx - d * s, cy, cx + d * s / 4, cy, MAX(2, r / 5), WHITE);
+    tri3(c, cx + d * (s + s / 4), cy, cx + d * s / 8, cy - s, cx + d * s / 8, cy + s, WHITE);
+    return click;
+}
+/* a five-pointed star, the favorites' sign */
+static void draw_star5(canvas_t *c, int cx, int cy, int r) {
+    raster_path_t *p = raster_path_new(); if (!p) return;
+    static const int8_t pts[10][2] = { { 0, -100 }, { 24, -33 }, { 95, -31 }, { 38, 12 }, { 59, 81 }, { 0, 40 }, { -59, 81 }, { -38, 12 }, { -95, -31 }, { -24, -33 } };
+    for (int i = 0; i < 10; i++) {
+        int32_t x = RASTER_FIX(cx) + RASTER_FIX(1) * pts[i][0] * r / 100, y = RASTER_FIX(cy) + RASTER_FIX(1) * pts[i][1] * r / 100;
+        if (i == 0) raster_move_to(p, x, y); else raster_line_to(p, x, y);
     }
-    case GL_STOP: case GL_CLOSE: {
-        int s = glyph == GL_CLOSE ? 4 : 5;
-        draw_thick_line(c, cx - s, cy - s, cx + s, cy + s, 2, g); draw_thick_line(c, cx + s, cy - s, cx - s, cy + s, 2, g);
-        break;
-    }
-    case GL_HOME:
-        tri3(c, cx - 8, cy - 1, cx, cy - 8, cx + 8, cy - 1, g);
-        fill_rect(c, cx - 5, cy - 1, 10, 8, g);
-        fill_rect(c, cx - 1, cy + 2, 3, 5, hot ? mix(k->bar, k->text, 30) : k->bar);
-        break;
-    case GL_PLUS:
-        fill_rect(c, cx - 6, cy - 1, 13, 2, g); fill_rect(c, cx - 1, cy - 6, 2, 13, g);
-        break;
+    raster_close(p);
+    raster_fill(c, p, HEX(0xF9C21A), false);
+    raster_stroke(c, p, 1, HEX(0xB87A00));
+    raster_path_free(p);
+}
+/* a flat command-bar button: highlighted when the mouse is over it */
+static bool flat_btn(window_t *w, rect_t r) {
+    canvas_t *c = w->surf;
+    bool hot = ui_hover(w, r), click = ui_click_area(w, r);
+    if (hot) {
+        gradient_round_rect(c, r.x, r.y, r.w, r.h, 2, w->ui.down ? HEX(0xC9DDF6) : HEX(0xFBFDFF), w->ui.down ? HEX(0xE6F0FC) : HEX(0xDBE8F8));
+        draw_round_rect(c, r.x, r.y, r.w, r.h, 2, HEX(0x93B1D8));
     }
     return click;
 }
@@ -1894,132 +1909,205 @@ static void switch_tab(window_t *w, int i) {
     tab_title(bw->tab[i]);
     w->dirty = true;
 }
+static const char *fav_names[] = { "Wikipedia", "Hacker News", "CNN Lite", "NPR", "68k.news", "FrogFind" };
+static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
+/* the command bar's drop-down menus open under their buttons; their choices go to br_menu */
+static window_t *menu_owner;
+static void cmd_menu_cb(void *ctx, int id) { window_t *w = ctx; if (w == menu_owner && id > 0) br_menu(w, id); }
+static void open_cmd_menu(window_t *w, rect_t r, const menu_item_t *items, int n) {
+    rect_t cr = wm_client_rect(w);
+    menu_owner = w;
+    popup_menu(cr.x + r.x, cr.y + r.y + r.h, items, n, cmd_menu_cb, w);
+}
+static int label_btn(window_t *w, int x, int y, int h, int icon, const char *label, bool arrow, rect_t *out) {
+    int tw = (label ? text_width(FONT_UI, label) + 4 : 0) + (arrow ? 11 : 0);
+    rect_t r = R(x, y, 6 + 16 + tw + 4, h);
+    bool click = flat_btn(w, r);
+    draw_icon(w->surf, icon, 16, r.x + 4, r.y + (h - 16) / 2);
+    if (label) draw_text(w->surf, FONT_UI, r.x + 24, r.y + (h - font_height(FONT_UI)) / 2, label, HEX(0x1E1E1E));
+    if (arrow) tri3(w->surf, r.x + r.w - 12, r.y + h / 2 - 2, r.x + r.w - 5, r.y + h / 2 - 2, r.x + r.w - 9 + 0, r.y + h / 2 + 2, HEX(0x1E1E1E));
+    if (out) *out = r;
+    return click ? 1 : 0;
+}
+/* the tab row: the Favorites buttons, the tabs, a small empty tab for a new one, the command bar */
 static void draw_tabs(window_t *w, brwin_t *bw, const chrome_t *k) {
     canvas_t *c = w->surf;
-    fill_rect(c, 0, 0, c->w, TABS_H, k->strip);
-    int x = 8, avail = c->w - 8 - 48;
-    int tw = MIN(220, MAX(70, avail / MAX(1, bw->n)));
+    int y0 = TOOLBAR_H;
+    gradient_v(c, 0, y0, c->w, TABS_H, HEX(0xFAFCFF), HEX(0xE4ECF7));
+    hline(c, 0, y0 + TABS_H - 1, c->w, k->line);
+    /* Favorites Center and Add to Favorites */
+    rect_t fr = R(4, y0 + 3, 26, TABS_H - 7);
+    if (flat_btn(w, fr)) {
+        static menu_item_t items[ARRAY_LEN(fav_names)];
+        for (unsigned i = 0; i < ARRAY_LEN(fav_names); i++) { items[i].label = fav_names[i]; items[i].id = BM_FAV0 + i; items[i].flags = 0; }
+        open_cmd_menu(w, fr, items, ARRAY_LEN(fav_names));
+    }
+    draw_star5(c, fr.x + 13, fr.y + fr.h / 2, 8);
+    rect_t ar = R(32, y0 + 3, 26, TABS_H - 7);
+    if (flat_btn(w, ar)) { browser_t *b = active_tab(w); strlcpy(b->status, "Favorites are fixed in this version: they are in the Favorites menu.", sizeof b->status); w->dirty = true; }
+    draw_star5(c, ar.x + 11, ar.y + ar.h / 2 - 1, 7);
+    fill_rect(c, ar.x + 17, ar.y + ar.h / 2 + 1, 7, 2, HEX(0x2C9A2C)); fill_rect(c, ar.x + 19, ar.y + ar.h / 2 - 1, 2, 7, HEX(0x2C9A2C));
+    vline(c, 62, y0 + 5, TABS_H - 10, k->line);
+    /* the command bar, from the right: Tools, Page, Home */
+    static const menu_item_t page_items[] = { { "New Tab    Ctrl+T", BM_NEWTAB, 0 }, { "Close Tab    Ctrl+W", BM_CLOSETAB, 0 }, { "-", 0, 0 },
+                                              { "Save Page As...", BM_SAVE, 0 }, { "Page Source", BM_SOURCE, 0 } };
+    static menu_item_t tools_items[] = { { "Block Ads", BM_ADBLOCK, 0 }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { "-", 0, 0 },
+                                         { "Enable JavaScript", BM_JS, 0 }, { "Script Messages...", BM_CONSOLE, 0 }, { "-", 0, 0 }, { "About The WRLD Browser", BM_ABOUT, 0 } };
+    tools_items[0].flags = adblock_enabled ? MI_CHECKED : 0;
+    tools_items[4].flags = js_enabled ? MI_CHECKED : 0;
+    int bh = TABS_H - 7, by = y0 + 3;
+    int tools_w = 6 + 16 + text_width(FONT_UI, "Tools") + 4 + 11 + 4, page_w = 6 + 16 + text_width(FONT_UI, "Page") + 4 + 11 + 4;
+    int cx = c->w - 6 - tools_w;
+    rect_t r;
+    if (label_btn(w, cx, by, bh, ICON_CP_SYSTEM, "Tools", true, &r)) open_cmd_menu(w, r, tools_items, ARRAY_LEN(tools_items));
+    cx -= page_w + 2;
+    if (label_btn(w, cx, by, bh, ICON_FILE, "Page", true, &r)) open_cmd_menu(w, r, page_items, ARRAY_LEN(page_items));
+    cx -= 28;
+    if (label_btn(w, cx, by, bh, ICON_HOME, NULL, false, &r)) browser_navigate_ext(active_tab(w), HOME_URL, NULL, true);
+    int right = cx - 8;
+    /* the tabs */
+    int x = 68, stub = 34, avail = right - x - stub;
+    int tw = MIN(210, MAX(70, avail / MAX(1, bw->n)));
     int close_req = -1, switch_req = -1;
     for (int i = 0; i < bw->n; i++) {
         browser_t *t = bw->tab[i];
-        rect_t r = R(x, 6, tw, TABS_H - 6);
-        bool on = i == bw->cur, hot = ui_hover(w, r);
-        if (on || hot) {
-            uint32_t col = on ? k->bar : k->tab_hot;
-            fill_round_rect(c, r.x, r.y, r.w, r.h + 8, 8, col);
-            if (on) { /* the active tab flows into the toolbar */
-                fill_rect(c, r.x - 6, TABS_H - 6, 6, 6, col); fill_rect(c, r.x + r.w, TABS_H - 6, 6, 6, col);
-                fill_circle(c, r.x - 6, TABS_H - 7, 6, k->strip); fill_circle(c, r.x + r.w + 5, TABS_H - 7, 6, k->strip);
-            }
-        } else if (i + 1 != bw->cur && i + 1 < bw->n) vline(c, r.x + r.w, r.y + 7, r.h - 14, k->line);
+        rect_t tr = R(x, y0 + 3, tw - 2, TABS_H - 3);
+        bool on = i == bw->cur, hot = ui_hover(w, tr);
+        gradient_round_rect(c, tr.x, tr.y, tr.w, tr.h + 4, 3, on ? WHITE : hot ? HEX(0xF6FBFF) : HEX(0xEEF3FA), on ? HEX(0xF2F6FB) : hot ? HEX(0xDBEAFB) : HEX(0xD7E2F1));
+        draw_round_rect(c, tr.x, tr.y, tr.w, tr.h + 4, 3, on ? HEX(0x8AA2C4) : HEX(0xA3B6D0));
+        if (on) fill_rect(c, tr.x + 1, y0 + TABS_H - 1, tr.w - 2, 1, HEX(0xF2F6FB));   /* the active tab opens into the page */
+        else fill_rect(c, tr.x, y0 + TABS_H - 1, tr.w, 1, k->line);
         /* site icon, or a spinner while loading */
-        int ix = r.x + 10, iy = r.y + (r.h - 16) / 2;
+        int ix = tr.x + 6, iy = tr.y + (tr.h - 16) / 2;
         if (t->loading) {
             int f = (timer_ticks() / 90) % 12;
             for (int d = 0; d < 12; d++) {
                 int a = d * 30; int dx = (a < 180 ? 1 : -1) * (a % 180 < 90 ? a % 90 : 90 - a % 90) / 13, dy = (a < 90 || a >= 270 ? -1 : 1) * (a % 180 < 90 ? 90 - a % 90 : a % 90) / 13;
-                fill_circle(c, ix + 8 + dx, iy + 8 + dy, 1, mix(k->accent, on ? k->bar : k->strip, ((d - f + 12) % 12) * 20));
+                fill_circle(c, ix + 8 + dx, iy + 8 + dy, 1, mix(k->accent, WHITE, ((d - f + 12) % 12) * 20));
             }
         } else draw_icon(c, t->page && t->page->secure ? ICON_LOCK : ICON_BROWSER, 16, ix, iy);
         const char *title = t->page ? (t->page->title[0] ? t->page->title : t->page->url) : "New Tab";
-        if (t->loading && (!t->page || !t->page->title[0])) title = "Loading...";
-        draw_text_ellipsis(c, FONT_UI, ix + 22, r.y + (r.h - font_height(FONT_UI)) / 2, r.w - 22 - 10 - 26, title, on ? k->text : k->dim);
-        if (ui_click_area(w, r)) switch_req = i;
-        if ((on || hot) && glyph_btn(w, r.x + r.w - 16, r.y + r.h / 2, 9, GL_CLOSE, true, k)) close_req = i;
+        if (t->loading && (!t->page || !t->page->title[0])) title = "Waiting for the page...";
+        draw_text_ellipsis(c, FONT_UI, ix + 21, tr.y + (tr.h - font_height(FONT_UI)) / 2, tr.w - 21 - 6 - (on || hot ? 18 : 0), title, k->text);
+        if (ui_click_area(w, tr)) switch_req = i;
+        if ((on || hot) && glyph_btn(w, tr.x + tr.w - 11, tr.y + tr.h / 2, 6, GL_CLOSE, true, k)) close_req = i;
         x += tw;
     }
-    if (bw->n < MAXTABS && glyph_btn(w, x + 20, 6 + (TABS_H - 6) / 2, 13, GL_PLUS, true, k)) new_tab(w, HOME_URL, true);
+    if (bw->n < MAXTABS) {                                                   /* the small empty tab: a new one */
+        rect_t sr = R(x + 1, y0 + 7, stub - 6, TABS_H - 7);
+        bool hot = ui_hover(w, sr);
+        gradient_round_rect(c, sr.x, sr.y, sr.w, sr.h + 4, 3, hot ? WHITE : HEX(0xF8FBFF), hot ? HEX(0xD9E8FA) : HEX(0xE1EAF5));
+        draw_round_rect(c, sr.x, sr.y, sr.w, sr.h + 4, 3, hot ? HEX(0x8FB0DC) : HEX(0xB8C8DE));
+        fill_rect(c, sr.x, y0 + TABS_H - 1, sr.w, 1, k->line);
+        if (ui_click_area(w, sr)) new_tab(w, HOME_URL, true);
+    }
     if (close_req >= 0) close_tab(w, close_req);
     else if (switch_req >= 0 && switch_req != bw->cur) switch_tab(w, switch_req);
 }
-static const char *fav_names[] = { "Wikipedia", "Hacker News", "CNN Lite", "NPR", "68k.news", "FrogFind" };
-static const char *favs[] = { "https://en.wikipedia.org/wiki/Main_Page", "https://news.ycombinator.com/", "https://lite.cnn.com/", "https://text.npr.org/", "http://68k.news/", "http://frogfind.com/" };
+static void search_url(const char *in, char *out, int cap) {
+    char q[700]; int o = 0;
+    for (const char *p = in; *p && o < 690; p++) { if (isalnum(*p)) q[o++] = *p; else if (*p == ' ') q[o++] = '+'; else o += snprintf(q + o, sizeof q - o, "%%%02X", (uint8_t)*p); }
+    q[o] = 0;
+    snprintf(out, cap, "https://html.duckduckgo.com/html/?q=%s", q);
+}
 static void br_paint(window_t *w) {
     brwin_t *bw = w->data;
     browser_t *b = active_tab(w);
     canvas_t *c = w->surf;
     chrome_t k = chrome_colours();
+    /* the navigation bar */
+    gradient_v3(c, 0, 0, c->w, TOOLBAR_H, HEX(0xE6EEF8), HEX(0xCFDCED), HEX(0xC3D3E8), TOOLBAR_H * 6 / 10);
+    hline(c, 0, TOOLBAR_H - 1, c->w, k.line);
     draw_tabs(w, bw, &k);
     b = active_tab(w);
-    /* toolbar */
-    int ty = TABS_H;
-    fill_rect(c, 0, ty, c->w, TOOLBAR_H + BOOK_H, k.bar);
-    int cy = ty + TOOLBAR_H / 2;
-    if (glyph_btn(w, 22, cy, 15, GL_BACK, b->hpos > 0, &k)) go_back(b);
-    if (glyph_btn(w, 56, cy, 15, GL_FWD, b->hpos < b->nhist - 1, &k)) go_fwd(b);
-    if (b->loading) { if (glyph_btn(w, 90, cy, 15, GL_STOP, true, &k)) stop_loading(b); }
-    else if (glyph_btn(w, 90, cy, 15, GL_RELOAD, true, &k)) browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
-    if (glyph_btn(w, 124, cy, 15, GL_HOME, true, &k)) browser_navigate_ext(b, HOME_URL, NULL, true);
-    /* address field */
-    int shield_w = 112;
-    rect_t ab = R(146, ty + 6, MAX(120, c->w - 146 - shield_w - 14), TOOLBAR_H - 12);
+    int cy = TOOLBAR_H / 2;
+    if (ball_btn(w, 18, cy, 14, -1, b->hpos > 0)) go_back(b);
+    if (ball_btn(w, 46, cy, 12, 1, b->hpos < b->nhist - 1)) go_fwd(b);
+    /* the address field, with Refresh and Stop at its end */
+    int search_w = 230;
+    rect_t ab = R(64, cy - 11, MAX(160, c->w - 64 - search_w - 14), 22);
+    fill_rect(c, ab.x, ab.y, ab.w, ab.h, WHITE);
+    draw_rect(c, ab.x, ab.y, ab.w, ab.h, k.field_line);
     bool focused = w->ui.focus == w->ui.next_id + 1;
-    fill_round_rect(c, ab.x, ab.y, ab.w, ab.h, ab.h / 2, focused ? k.field : mix(k.field, k.bar, 90));
-    draw_round_rect(c, ab.x, ab.y, ab.w, ab.h, ab.h / 2, focused ? k.accent : k.field_line);
-    if (focused) draw_round_rect(c, ab.x - 1, ab.y - 1, ab.w + 2, ab.h + 2, ab.h / 2 + 1, mix(k.accent, k.bar, 140));
     if (focused && !bw->addr_was_focused) bw->addr_all = true;          /* focusing selects the address */
     if (!focused) bw->addr_all = false;
     bw->addr_was_focused = focused;
-    if (bw->addr_all && b->addr[0]) fill_rect(c, ab.x + 37, ab.y + (ab.h - font_height(FONT_UI)) / 2 - 1, MIN(text_width(FONT_UI, b->addr) + 2, ab.w - 48), font_height(FONT_UI) + 2, mix(k.accent, k.field, 150));
+    int fx = ab.x + 24, fw = ab.w - 24 - 2 * 24;
+    if (bw->addr_all && b->addr[0]) fill_rect(c, fx + 3, ab.y + (ab.h - font_height(FONT_UI)) / 2 - 1, MIN(text_width(FONT_UI, b->addr) + 2, fw - 6), font_height(FONT_UI) + 2, mix(k.accent, WHITE, 150));
     bool secure = b->page && b->page->secure;
-    if (secure) draw_icon(c, ICON_LOCK, 16, ab.x + 12, ab.y + (ab.h - 16) / 2);
-    else draw_icon(c, ICON_INFO, 16, ab.x + 12, ab.y + (ab.h - 16) / 2);
+    draw_icon(c, secure ? ICON_LOCK : ICON_FILE, 16, ab.x + 4, ab.y + (ab.h - 16) / 2);
     bw->addr_id = w->ui.next_id + 1;
-    bool enter = ui_textbox_ex(w, R(ab.x + 34, ab.y + 2, ab.w - 44, ab.h - 4), b->addr, sizeof b->addr, true, k.text, NULL);
+    bool enter = ui_textbox_ex(w, R(fx, ab.y + 1, fw, ab.h - 2), b->addr, sizeof b->addr, true, k.text, NULL);
     if (enter) {
         char u[1024]; normalize_address(b->addr, u, sizeof u);
         browser_navigate_ext(b, u, NULL, true);
         w->ui.focus = 0;
     }
-    /* ad blocker shield */
-    {
-        rect_t sr = R(c->w - shield_w - 8, ty + 7, shield_w, TOOLBAR_H - 14);
-        bool hot = ui_hover(w, sr);
-        uint32_t col = !adblock_enabled ? k.dim : b->page && b->page->ads_ok ? 0xFFD08A00 : 0xFF1E9A4A;
-        fill_round_rect(c, sr.x, sr.y, sr.w, sr.h, sr.h / 2, hot ? mix(k.bar, col, 60) : mix(k.bar, col, 30));
-        char t[24];
-        if (!adblock_enabled) strcpy(t, "Ads allowed"); else if (b->page && b->page->ads_ok) strcpy(t, "Site allowed");
-        else snprintf(t, sizeof t, "%d blocked", b->page ? b->page->blocked : 0);
-        fill_round_rect(c, sr.x + 8, sr.y + 6, 12, sr.h - 12, 4, col);
-        draw_text(c, FONT_SMALL, sr.x + 11, sr.y + (sr.h - font_height(FONT_SMALL)) / 2, "A", WHITE);
-        draw_text_ellipsis(c, FONT_UI, sr.x + 26, sr.y + (sr.h - font_height(FONT_UI)) / 2, sr.w - 32, t, k.text);
-        if (ui_click_area(w, sr)) br_menu(w, BM_ADBLOCK);
-    }
-    /* loading progress along the bottom of the toolbar */
+    /* loading progress along the bottom of the address field */
     if (b->loading) {
-        int pw = b->prog_total ? (int)((uint64_t)b->prog_got * c->w / b->prog_total) : -1;
-        if (pw >= 0) fill_rect(c, 0, ty + TOOLBAR_H - 2, MAX(pw, 8), 2, k.accent);
-        else { int pos = (int)(timer_ticks() / 4 % (uint32_t)(c->w + 160)) - 160; fill_rect(c, MAX(0, pos), ty + TOOLBAR_H - 2, 160 + MIN(0, pos), 2, k.accent); }
+        int pw = b->prog_total ? (int)((uint64_t)b->prog_got * fw / b->prog_total) : -1;
+        if (pw >= 0) fill_rect(c, fx, ab.y + ab.h - 3, MAX(pw, 6), 2, HEX(0x5DBB4A));
+        else { int span = fw + 80, pos = (int)(timer_ticks() / 4 % (uint32_t)span) - 80; fill_rect(c, fx + MAX(0, pos), ab.y + ab.h - 3, MIN(80 + MIN(0, pos), fw - MAX(0, pos)), 2, HEX(0x5DBB4A)); }
     }
-    /* bookmarks bar */
-    int by = ty + TOOLBAR_H;
-    int bx = 10;
-    for (unsigned i = 0; i < ARRAY_LEN(fav_names); i++) {
-        int bwid = text_width(FONT_UI, fav_names[i]) + 34;
-        if (bx + bwid > c->w - 10) break;
-        rect_t r = R(bx, by + 3, bwid, BOOK_H - 6);
-        if (ui_hover(w, r)) fill_round_rect(c, r.x, r.y, r.w, r.h, 6, mix(k.bar, k.text, 25));
-        draw_icon(c, ICON_BROWSER, 16, r.x + 6, r.y + (r.h - 16) / 2);
-        draw_text(c, FONT_UI, r.x + 26, r.y + (r.h - font_height(FONT_UI)) / 2, fav_names[i], k.text);
-        if (ui_click_area(w, r)) browser_navigate_ext(b, favs[i], NULL, true);
-        bx += bwid + 4;
+    for (int i = 0; i < 2; i++) {
+        rect_t r = R(ab.x + ab.w - 48 + i * 24, ab.y + 1, 23, ab.h - 2);
+        bool en = i == 0 || b->loading;
+        if (en && ui_hover(w, r)) gradient_v(c, r.x, r.y, r.w, r.h, WHITE, HEX(0xCFE2F8)); else gradient_v(c, r.x, r.y, r.w, r.h, HEX(0xFDFEFF), HEX(0xE3ECF7));
+        vline(c, r.x - 1, r.y, r.h, HEX(0xC5D3E4));
+        draw_icon(c, i == 0 ? ICON_REFRESH : ICON_STOP, 16, r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2);
+        if (!en) blend_rect(c, r.x, r.y, r.w, r.h, HEX(0xEEF2F7), 170);
+        if (en && ui_click_area(w, r)) {
+            if (i == 0) browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
+            else stop_loading(b);
+        }
     }
-    hline(c, 0, CHROME_H - 1, c->w, k.line);
+    /* the search box */
+    rect_t sb = R(c->w - search_w - 6, cy - 11, search_w, 22);
+    fill_rect(c, sb.x, sb.y, sb.w, sb.h, WHITE);
+    draw_rect(c, sb.x, sb.y, sb.w, sb.h, k.field_line);
+    bool sfoc = w->ui.focus == w->ui.next_id + 1;
+    if (!bw->search[0] && !sfoc) draw_text(c, FONT_UI, sb.x + 6, sb.y + (sb.h - font_height(FONT_UI)) / 2, "DuckDuckGo", HEX(0x8A929C));
+    bool go = ui_textbox_ex(w, R(sb.x + 2, sb.y + 1, sb.w - 30, sb.h - 2), bw->search, sizeof bw->search, true, k.text, NULL);
+    rect_t gr = R(sb.x + sb.w - 25, sb.y + 1, 24, sb.h - 2);
+    if (ui_hover(w, gr)) gradient_v(c, gr.x, gr.y, gr.w, gr.h, WHITE, HEX(0xCFE2F8)); else gradient_v(c, gr.x, gr.y, gr.w, gr.h, HEX(0xFDFEFF), HEX(0xE3ECF7));
+    vline(c, gr.x - 1, gr.y, gr.h, HEX(0xC5D3E4));
+    draw_icon(c, ICON_SEARCH, 16, gr.x + 4, gr.y + (gr.h - 16) / 2);
+    if ((go || ui_click_area(w, gr)) && bw->search[0]) {
+        char u[1024]; search_url(bw->search, u, sizeof u);
+        browser_navigate_ext(b, u, NULL, true);
+        w->ui.focus = 0;
+    }
     /* page */
     rect_t v = content_rect(w);
     if (b->page && b->page->lay_width != v.w) page_layout(b->page, v.w);
     clamp_scroll(b, v);
     paint_content(b, c, v);
     draw_scrollbar(c, R(v.x + v.w, v.y, SB_W, v.h), b->page ? MAX(b->page->height, v.h) : v.h, v.h, b->scroll, true);
-    /* status bar */
+    /* status bar: the link or progress, the ad blocker, the zone */
     int sy = c->h - STATUS_H;
-    fill_rect(c, 0, sy, c->w, STATUS_H, k.bar);
+    gradient_v(c, 0, sy, c->w, STATUS_H, HEX(0xF7F9FC), HEX(0xE3E9F2));
     hline(c, 0, sy, c->w, k.line);
     const char *st = b->hover_link >= 0 && b->page && b->hover_link < b->page->nlinks ? b->page->links[b->hover_link] : b->status;
-    draw_text_ellipsis(c, FONT_UI, 10, sy + 4, c->w - 220, st, k.dim);
-    if (secure) { draw_icon(c, ICON_LOCK, 16, c->w - 200, sy + 3); draw_text_ellipsis(c, FONT_SMALL, c->w - 180, sy + 5, 80, b->page->tls, k.dim); }
-    draw_icon(c, ICON_CP_NETWORK, 16, c->w - 92, sy + 3);
-    draw_text(c, FONT_UI, c->w - 72, sy + 4, netif.configured ? "Online" : "Offline", k.dim);
+    int zone_x = c->w - 150, ad_x = zone_x - 130;
+    draw_text_ellipsis(c, FONT_UI, 6, sy + 4, ad_x - 14, st, k.text);
+    vline(c, ad_x - 6, sy + 3, STATUS_H - 6, HEX(0xB7C4D6));
+    {   /* the ad blocker: what it did on this page; a click opens its menu */
+        rect_t ar = R(ad_x - 2, sy + 2, 124, STATUS_H - 4);
+        if (ui_hover(w, ar)) fill_rect(c, ar.x, ar.y, ar.w, ar.h, HEX(0xDCE8F7));
+        uint32_t col = !adblock_enabled ? k.dim : b->page && b->page->ads_ok ? 0xFFD08A00 : 0xFF1E9A4A;
+        char t[24];
+        if (!adblock_enabled) strcpy(t, "Ads allowed"); else if (b->page && b->page->ads_ok) strcpy(t, "Site allowed");
+        else snprintf(t, sizeof t, "%d ads blocked", b->page ? b->page->blocked : 0);
+        fill_round_rect(c, ad_x + 2, sy + 5, 12, STATUS_H - 10, 3, col);
+        draw_text(c, FONT_SMALL, ad_x + 5, sy + (STATUS_H - font_height(FONT_SMALL)) / 2, "A", WHITE);
+        draw_text_ellipsis(c, FONT_UI, ad_x + 19, sy + 4, 100, t, k.text);
+        if (ui_click_area(w, ar)) br_menu(w, BM_ADBLOCK);
+    }
+    vline(c, zone_x - 6, sy + 3, STATUS_H - 6, HEX(0xB7C4D6));
+    const char *u = b->page ? b->page->url : b->addr;
+    bool local = !strncasecmp(u, "wrld:", 5) || !strncasecmp(u, "file:", 5) || !strncasecmp(u, "about:", 6) || strstr(u, "://localhost") || strstr(u, "://127.");
+    draw_icon(c, secure ? ICON_LOCK : local ? ICON_COMPUTER : ICON_BROWSER, 16, zone_x, sy + 3);
+    draw_text_ellipsis(c, FONT_UI, zone_x + 20, sy + 4, c->w - zone_x - 24, local ? "Local computer" : !netif.configured ? "Internet (offline)" : "Internet", k.text);
 }
 static int item_at(page_t *p, int x, int y, int kind_ctrl) {
     if (!p) return -1;
