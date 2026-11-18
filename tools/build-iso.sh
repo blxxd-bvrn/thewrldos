@@ -16,7 +16,7 @@ PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-efi-
 LXPKGS="pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev
         libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev
         libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
-        xkb-data gsettings-desktop-schemas"
+        xkb-data gsettings-desktop-schemas libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk4"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }

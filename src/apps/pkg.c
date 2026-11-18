@@ -1117,6 +1117,48 @@ bool pkg_menu_launch(int i, char *err, int ecap) {
 #endif
 }
 
+/* LibreOffice, when the image carries it (64-bit edition): office documents open in it */
+#define LO_CMD "C:\\Linux\\usr\\local\\bin\\libreoffice"
+bool office_available(void) {
+#ifdef __x86_64__
+    return vfs_resolve(LO_CMD, NULL) && vfs_resolve("C:\\Linux\\usr\\local\\bin\\wrldcomp", NULL);
+#else
+    return false;
+#endif
+}
+bool office_is_document(const char *name) {
+    static const char *ext[] = { "odt", "ott", "ods", "ots", "odp", "otp", "odg", "doc", "docx", "dot", "dotx", "xls", "xlsx", "xlsm",
+                                 "ppt", "pptx", "pps", "ppsx", "rtf", "wpd", "pages", "numbers", "key" };
+    const char *e = strrchr(name, '.');
+    if (!e) return false;
+    for (unsigned i = 0; i < ARRAY_LEN(ext); i++) if (!strcasecmp(e + 1, ext[i])) return true;
+    return false;
+}
+/* path: a WRLD path ("C:\\x\\letter.docx"), or NULL for an empty Writer; what: "--writer" etc. */
+bool office_open(const char *path, const char *what, char *err, int ecap) {
+#ifdef __x86_64__
+    if (!office_available()) { snprintf(err, ecap, "LibreOffice is not part of this image."); return false; }
+    char lp[600] = "";
+    if (path && isalpha((unsigned char)path[0]) && path[1] == ':') {          /* C:\x\y -> /mnt/c/x/y */
+        int o = snprintf(lp, sizeof lp, "/mnt/%c", tolower((unsigned char)path[0]));
+        for (const char *q = path + 2; *q && o < (int)sizeof lp - 1; q++) lp[o++] = *q == '\\' ? '/' : *q;
+        lp[o] = 0;
+    }
+    extern int lx_launch(const char *wrld_path, int argc, char **argv, char **envp, char *err, int ecap);
+    char *env[] = { "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/user", "USER=user", "LOGNAME=user", "SHELL=/bin/sh",
+                    "LANG=C.UTF-8", "PWD=/home/user", "XDG_DATA_DIRS=/usr/local/share:/usr/share", "GDK_BACKEND=wayland", NULL };
+    char *av[5]; int ac = 0;
+    av[ac++] = "wrldcomp"; av[ac++] = "/usr/local/bin/libreoffice";
+    if (lp[0]) av[ac++] = lp; else av[ac++] = (char *)(what ? what : "--writer");
+    av[ac] = NULL;
+    return lx_launch("C:\\Linux\\usr\\local\\bin\\wrldcomp", ac, av, env, err, ecap) >= 0;
+#else
+    (void)path; (void)what;
+    snprintf(err, ecap, "LibreOffice runs on the 64-bit edition of " OS_NAME ".");
+    return false;
+#endif
+}
+
 /* ------------------------------------------------------------------ dpkg, rpm, apt */
 typedef struct { pkg_out_fn out; void *ctx; } cli_t;
 #define P(...) say(c->out, c->ctx, __VA_ARGS__)

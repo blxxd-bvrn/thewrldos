@@ -160,6 +160,12 @@ bool shell_open(const char *path, const char *cwd) {
         return true;
     }
     recent_add(full);
+    if (office_is_document(n->name) && office_available()) {                 /* Writer, Calc or Impress */
+        char err[160];
+        if (office_open(full, NULL, err, sizeof err)) return true;
+        err_box(n->name, err);
+        return true;
+    }
     const char *e = vfs_ext(n->name);
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) {
         char err[256];

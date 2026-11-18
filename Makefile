@@ -442,6 +442,14 @@ GST_PLUGINS := coreelements typefindfunctions playback app audioconvert audiores
 # the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
 # replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
 LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)
+# LibreOffice (Writer, Calc, Impress) with its GTK 4 front end, from the build machine
+# (libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk4; about 380 MB):
+# part of the WebKit image; LX_LIBREOFFICE=0 leaves it out (tools/stage_libreoffice.sh)
+LX_LIBREOFFICE ?= $(if $(LXWEBKITGTK),1)
+LXLO := $(if $(filter-out 0,$(LX_LIBREOFFICE)),$(if $(wildcard /usr/lib/libreoffice/program/libvclplug_gtk4lo.so),$(LXROOT)/.libreoffice,$(warning LibreOffice left out: install libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk4)))
+$(LXROOT)/.libreoffice: tools/stage_libreoffice.sh $(LXROOT)/.stamp
+	sh tools/stage_libreoffice.sh $(LXROOT)/Linux
+	@touch $@
 $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub: samples/linux-webkitgtk/stub/libEGL.c $(LXGTK) $(LXWEBKITGTK)
 	gcc -shared -fPIC -O2 -Wall -fvisibility=hidden -Wl,-soname,libEGL.so.1 -o $(dir $@)libEGL.so.1 $< -ldl
 	@touch $@
@@ -474,7 +482,7 @@ endif
 	@touch $@
 
 # initrd = rootfs/ plus the boot files Setup copies to the disk
-$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(EFI_IA32) $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
+$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(EFI_IA32) $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp $(LXLO)) FORCE
 	@mkdir -p $(BUILD)
 	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .) $(if $(filter x86_64,$(ARCH)),-C $(CURDIR)/$(LXROOT) Linux)
 

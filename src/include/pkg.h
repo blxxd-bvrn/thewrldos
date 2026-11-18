@@ -78,4 +78,8 @@ int pkg_cli(int argc, char **argv, const char *cwd, pkg_out_fn out, void *ctx);
 void pkg_installer_open(const char *wrld_path);
 bool pkg_remove_confirm(const char *name);                 /* asks, then removes */
 
+/* LibreOffice, when the image carries it (64-bit edition) */
+bool office_available(void);
+bool office_is_document(const char *name);
+bool office_open(const char *path, const char *what, char *err, int ecap);
 #endif

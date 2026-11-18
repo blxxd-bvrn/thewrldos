@@ -74,6 +74,7 @@ struct xdg {
 };
 struct window {
     int fd; uint32_t *px; int w, h;         /* the desktop window and its mapped pixels */
+    size_t map_len;                         /* the length of that mapping (w and h change before it is redone) */
     int frameless, mx, my;                  /* margins around the geometry (frameless) */
     struct xdg *top;
     struct wl_event_source *src;
@@ -117,10 +118,15 @@ static void draw_tree(struct window *w, struct surface *s, int ox, int oy) {
     struct sub *c;
     wl_list_for_each(c, &s->children, link) draw_tree(w, c->s, ox + c->x, oy + c->y);
 }
+/* (re)map the window's pixels at its current size. The old mapping is released with its
+ * own length: releasing it with the new, larger size took neighbouring memory with it */
 static int map_window(struct window *w) {
-    if (w->px && w->px != MAP_FAILED) munmap(w->px, (size_t)w->w * w->h * 4);
+    if (w->px && w->px != MAP_FAILED && w->map_len) munmap(w->px, w->map_len);
+    w->map_len = 0;
     w->px = mmap(NULL, (size_t)w->w * w->h * 4, PROT_READ | PROT_WRITE, MAP_SHARED, w->fd, 0);
-    return w->px != MAP_FAILED;
+    if (w->px == MAP_FAILED) { w->px = NULL; return 0; }
+    w->map_len = (size_t)w->w * w->h * 4;
+    return 1;
 }
 static void window_events(struct window *w);
 static int on_window_fd(int fd, uint32_t mask, void *data) { (void)fd; (void)mask; window_events(data); return 0; }
@@ -163,6 +169,7 @@ static void composite(struct window *w) {
         w->w = ww; w->h = wh;
         if (!map_window(w)) return;
     }
+    if (!w->px) return;
     w->mx = mx; w->my = my;
     /* outside the geometry stays see-through (shadows), inside starts white */
     for (int y = 0; y < w->h; y++) for (int x = 0; x < w->w; x++) {
@@ -344,7 +351,7 @@ static void close_popups(struct window *w, struct xdg *from);
 static void window_gone(struct window *w) {
     if (!w) return;
     if (w->src) wl_event_source_remove(w->src);
-    if (w->px && w->px != MAP_FAILED) munmap(w->px, (size_t)w->w * w->h * 4);
+    if (w->px && w->map_len) munmap(w->px, w->map_len);
     if (w->fd >= 0) close(w->fd);
     struct xdg *p, *pt;
     wl_list_for_each_safe(p, pt, &w->popups, link) { wl_list_remove(&p->link); wl_list_init(&p->link); p->win = NULL; }

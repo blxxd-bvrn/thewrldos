@@ -606,9 +606,20 @@ void lx_syscall_c(regs_t *r) {
     if (th) { th->in_sys = (int64_t)nr; th->in_args[0] = a0; th->in_args[1] = a1; th->in_args[2] = a2; }
     int64_t v = lx_syscall(r);
     if (th) th->in_sys = -1;
-    if (lx_strace && th && nr != 24 && nr != 228)          /* not sched_yield / clock_gettime: too many */
-        klog("lx %d: %llu(%llx, %llx, %llx) = %lld", th->proc ? th->proc->pid : -1, (unsigned long long)nr,
-             (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (long long)v);
+    if (lx_strace && th && nr != 24 && nr != 228) {        /* not sched_yield / clock_gettime: too many */
+        /* calls that take a path: show it (open, stat, lstat, access, readlink, unlink, mkdir, the *at forms) */
+        uint64_t pa = 0;
+        if (nr == 2 || nr == 4 || nr == 6 || nr == 21 || nr == 89 || nr == 87 || nr == 83 || nr == 80 || nr == 59) pa = a0;
+        else if (nr == 257 || nr == 262 || nr == 269 || nr == 263 || nr == 258 || nr == 267 || nr == 332 || nr == 439) pa = a1;
+        char path[96] = "";
+        if (pa && th->proc && uvm_check(th->proc->vm, pa, 1, false)) {
+            int k = 0;
+            while (k < (int)sizeof path - 1 && uvm_check(th->proc->vm, pa + k, 1, false)) { char ch = *(const char *)(uintptr_t)(pa + k); if (!ch) break; path[k++] = ch; }
+            path[k] = 0;
+        }
+        klog("lx %d: %llu(%llx, %llx, %llx) = %lld%s%s", th->proc ? th->proc->pid : -1, (unsigned long long)nr,
+             (unsigned long long)a0, (unsigned long long)a1, (unsigned long long)a2, (long long)v, path[0] ? "  " : "", path);
+    }
     if (th) { th->sys_nr = (uint32_t)nr; th->sys_eintr = nr != 15 && v == -EINTR; }
     r->eax = (uint64_t)v;
 }

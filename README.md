@@ -116,7 +116,7 @@ edition in an Ubuntu 24.04 of its own (a Docker container, or a chroot it makes 
 debootstrap); `WRLD_CLASSIC=1 tools/build-iso.sh .` builds the classic image.
 
 ```bash
-sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad xkb-data gsettings-desktop-schemas
+sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad xkb-data gsettings-desktop-schemas libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk4
 ```
 
 ```bash
@@ -545,8 +545,21 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
   `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser
   (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
-  `lxtrace on` in the Command Prompt logs every Linux system call to the serial port, and
+  `lxtrace on` in the Command Prompt logs every Linux system call to the serial port (with
+  the path of calls that take one), and
   `guiprof on` logs how long each window takes to paint, every 2 seconds.
+- **LibreOffice** (64-bit edition): Writer, Calc and Impress 24.2 with LibreOffice's GTK 4
+  front end, on the wrldcomp compositor, copied from the build machine by
+  `tools/stage_libreoffice.sh` (about 380 MB; part of the WebKit image, `LX_LIBREOFFICE=0`
+  leaves it out). They are in Start, All Programs; double-clicking an `.odt`, `.ods`, `.odp`,
+  `.docx`, `.xlsx`, `.pptx`, `.doc`, `.xls`, `.ppt` or `.rtf` file opens it; documents on C:
+  are opened and saved as `/mnt/c/...`. `C:\Samples\Welcome to LibreOffice.odt` is a sample.
+  The image starts the user's profile with the light Colibre icons, and a GTK style sheet
+  folds GTK's own title bar away on main windows (THE WRLD OS draws the frame). With
+  LibreOffice the 64-bit CD is about 680 MB, and the live session needs 2 GB of memory
+  (4 GB to use LibreOffice and the WebKit browser comfortably).
+  Getting it to run fixed a wrldcomp bug: a window that changed size released its old pixel
+  mapping with the new, larger size, taking neighbouring memory with it.
 - **Software packages (.deb and .rpm).** Double-clicking a `.deb` (Debian, Ubuntu, Mint) or an
   `.rpm` (Fedora, openSUSE, Red Hat) opens the Linux Package Installer (`src/apps/pkg.c`,
   `pkgui.c`): it shows what the package is and checks what it needs before installing:
