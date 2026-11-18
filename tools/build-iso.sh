@@ -51,11 +51,48 @@ if command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && [ -n
     $SUDO apt-get update -qq
     # one at a time, so a package an older distribution lacks does not stop the others
     for p in $(lx_missing); do $SUDO apt-get install -y -qq "$p" >/dev/null 2>&1 || say "  (could not install $p)"; done
-    if ! pkg-config --exists webkitgtk-6.0 2>/dev/null; then
-        say "WebKitGTK 6.0 is not available here (it needs Ubuntu 24.04 or newer, or Debian 13):"
-        say "the 64-bit edition's WRLD Browser will use its classic engine."
-    fi
 fi
+
+# The WRLD Browser's engine (WebKitGTK 6.0) needs Ubuntu 24.04 or newer. On an older distribution
+# the 64-bit edition is built in an Ubuntu 24.04 of its own: a Docker container when Docker runs,
+# otherwise a debootstrap chroot kept in ~/.cache for the next build. WRLD_NOBLE=0 skips that
+# (the image is then built here, and the browser uses its classic engine).
+NOBLE=""
+if [ "${WRLD_NOBLE:-auto}" = "1" ] || { [ "${WRLD_NOBLE:-auto}" = "auto" ] && ! pkg-config --exists webkitgtk-6.0 2>/dev/null; }; then
+    if [ -z "${WRLD_NOBLE_CHROOT:-}" ] && command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then NOBLE=docker
+    elif command -v apt-get >/dev/null 2>&1; then NOBLE=chroot
+    else say "WebKitGTK 6.0 is not available here: the 64-bit edition's WRLD Browser will use its classic engine."; fi
+fi
+[ -n "$NOBLE" ] && say "WebKitGTK 6.0 is not available on this system: the 64-bit edition is built in Ubuntu 24.04 ($NOBLE)."
+
+build64_noble_docker() {
+    docker run --rm -v "$BUILD_DIR:/build" ubuntu:24.04 bash -c "
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq && apt-get install -y -qq $PKGS $(echo $LXPKGS) >/dev/null &&
+        make -C /build -j$(nproc 2>/dev/null || echo 2) ARCH=x86_64"
+}
+build64_noble_chroot() {
+    local CH="${WRLD_NOBLE_DIR:-$HOME/.cache/wrldos-noble}"
+    SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    export DEBIAN_FRONTEND=noninteractive
+    if [ ! -x "$CH/usr/bin/make" ] || ! $SUDO chroot "$CH" pkg-config --exists webkitgtk-6.0 2>/dev/null; then
+        say "Setting up Ubuntu 24.04 in $CH (once; about 2 GB)"
+        command -v debootstrap >/dev/null 2>&1 || $SUDO apt-get install -y -qq debootstrap
+        [ -x "$CH/usr/bin/apt-get" ] || $SUDO debootstrap --variant=minbase --components=main,universe noble "$CH" http://archive.ubuntu.com/ubuntu
+        printf 'deb http://archive.ubuntu.com/ubuntu noble main universe\ndeb http://archive.ubuntu.com/ubuntu noble-updates main universe\n' | $SUDO tee "$CH/etc/apt/sources.list" >/dev/null
+        $SUDO mount --bind /proc "$CH/proc"; $SUDO mount --bind /dev "$CH/dev"
+        $SUDO chroot "$CH" apt-get update -qq
+        $SUDO chroot "$CH" apt-get install -y -qq $PKGS $LXPKGS >/dev/null || { $SUDO umount "$CH/dev" "$CH/proc"; fail "could not install the build packages in $CH"; }
+        $SUDO umount "$CH/dev" "$CH/proc"
+    fi
+    $SUDO mkdir -p "$CH/build"
+    $SUDO mount --bind "$BUILD_DIR" "$CH/build"; $SUDO mount --bind /proc "$CH/proc"; $SUDO mount --bind /dev "$CH/dev"
+    local rc=0
+    $SUDO chroot "$CH" make -C /build -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64 || rc=$?
+    $SUDO umount "$CH/build" "$CH/dev" "$CH/proc"
+    [ "$SUDO" ] && $SUDO chown -R "$(id -u):$(id -g)" "$BUILD_DIR/build64" "$BUILD_DIR/wrldos64.iso" 2>/dev/null
+    return $rc
+}
 
 # ---- 2. copy the sources into the Linux build folder ----------------------
 say "Copying sources to $BUILD_DIR"
@@ -73,7 +110,11 @@ find "$BUILD_DIR" \( -path "$BUILD_DIR/build" -o -path "$BUILD_DIR/build64" \) -
 say "Building THE WRLD OS (32-bit edition)"
 make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=i686
 say "Building THE WRLD OS (64-bit edition)"
-make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64
+case "$NOBLE" in
+    docker) build64_noble_docker ;;
+    chroot) build64_noble_chroot ;;
+    *) make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=x86_64 ;;
+esac
 
 cp "$BUILD_DIR/wrldos.iso" "$SRC/wrldos.iso"
 cp "$BUILD_DIR/wrldos64.iso" "$SRC/wrldos64.iso"
