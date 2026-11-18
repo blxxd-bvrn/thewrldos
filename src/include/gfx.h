@@ -4,7 +4,7 @@
 #include "assets.h"
 
 /* TrueType-only sizes after the generated fonts (bitmap fallback in gfx.c) */
-enum { FONT_DISPLAY_BI = FONT_COUNT, FONT_ALL };   /* bold italic, 30 px */
+enum { FONT_DISPLAY_BI = FONT_COUNT, FONT_DISPLAY, FONT_ALL };   /* bold italic 30 px; regular 40 px */
 
 #define RGB(r,g,b)    (0xFF000000u | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
 #define RGBA(r,g,b,a) (((uint32_t)(a) << 24) | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))

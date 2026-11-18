@@ -584,6 +584,7 @@ static void paint_sidebar_panel(canvas_t *c) {
                         draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, side_res[i].label, side_hot == 401 + i ? T.select_text : text);
                     }
                 } else if (i == 0) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Apps, files and settings", dim);
+                else if (i == 1) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Enter: The WRLD Search", dim);
             }
             if (side_query[0] && !side_res_n) draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 27, bw - 10, "No matches", dim);
         } else if (t == ST_SHORTCUTS) {
@@ -1081,6 +1082,7 @@ static const sm_item_t sm_left[] = {
 static const sm_item_t sm_right[] = {
     { "My Documents", NULL, ICON_MY_DOCUMENTS, "explorer:" USER_DOCS, true },
     { "My Computer", NULL, ICON_COMPUTER, "explorer:::computer", true },
+    { "The WRLD Search", NULL, ICON_SEARCH, "search", true },
     { NULL },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control", false },
     { "Personalization", NULL, ICON_CP_APPEARANCE, "control:personalization", false },
@@ -1175,7 +1177,7 @@ static rect_t sm_item_rect(int id) {
 /* classic menu entries */
 static const sm_item_t classic_items[] = {
     { "Programs", NULL, ICON_FOLDER, "allprog" }, { "Documents", NULL, ICON_MY_DOCUMENTS, "explorer:" USER_DOCS },
-    { "Settings", NULL, ICON_CONTROL_PANEL, "control" }, { "Search", NULL, ICON_SEARCH, "explorer:C:\\" },
+    { "Settings", NULL, ICON_CONTROL_PANEL, "control" }, { "Search", NULL, ICON_SEARCH, "search" },
     { "Help", NULL, ICON_HELP, "help" }, { "Run...", NULL, ICON_RUN, "run" },
     { NULL }, { "Log Off " "User" "...", NULL, ICON_LOGOFF, "logoff" }, { "Shut Down...", NULL, ICON_POWER, "shutdown" },
 };
@@ -1527,9 +1529,9 @@ bool shell_key(key_event_t *e) {
     if (sidebar_open && side_search_focus) {
         if (e->key == KEY_ESC) { side_search_focus = false; wm_need_redraw = true; return true; }
         if (e->key == KEY_BACKSPACE) { int l = strlen(side_query); if (l) side_query[l - 1] = 0; wm_need_redraw = true; return true; }
-        if (e->key == KEY_ENTER) {
-            side_search_run();
-            if (side_res_n) side_run_result(0);
+        if (e->key == KEY_ENTER) {                    /* Enter: everything that matches, in The WRLD Search */
+            if (side_query[0]) wrldsearch_open(side_query);
+            side_search_focus = false;
             wm_need_redraw = true; return true;
         }
         if (e->ch >= 32 && e->ch < 127) {

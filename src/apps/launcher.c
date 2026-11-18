@@ -25,6 +25,7 @@ const app_info_t app_table[] = {
     { "logonthemer", "Logon Skin Themer", "Choose the look of the welcome screen", ICON_CP_APPEARANCE },
     { "logonmaker", "Logon Skin Maker", "Make your own welcome screen skin", ICON_CP_APPEARANCE },
     { "security", "WRLD Security Center", "Firewall, password, web protection and system health", ICON_CP_SYSTEM },
+    { "search", "The WRLD Search", "Find files, folders, programs and settings", ICON_SEARCH },
     { "about", "About " OS_NAME, "Version information", ICON_ABOUT },
     { "help", "Help and Support", "Read the manual", ICON_HELP },
     { "setup", "Install " OS_NAME, "Install to a hard disk", ICON_SETUP },
@@ -52,6 +53,7 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "logonthemer") || !strcasecmp(name, "logonskins")) logonthemer_open();
     else if (!strcasecmp(name, "logonmaker")) logonmaker_open(arg);
     else if (!strcasecmp(name, "security") || !strcasecmp(name, "firewall")) security_open();
+    else if (!strcasecmp(name, "search") || !strcasecmp(name, "wrldsearch") || !strcasecmp(name, "find")) wrldsearch_open(arg);
     else if (!strcasecmp(name, "about") || !strcasecmp(name, "winver")) about_open();
     else if (!strcasecmp(name, "help")) notepad_open("C:\\WRLD\\Help.txt");
     else if (!strcasecmp(name, "run")) shell_show_run();
@@ -116,6 +118,37 @@ const char *file_type_name(vnode_t *n) {
 
 static void err_box(const char *title, const char *msg) { msgbox(title, msg, MBI_ERROR, MBX_OK, NULL, NULL); }
 
+/* files opened lately, newest first, for The WRLD Search; kept in C:\WRLD\recent.txt */
+#define RECENT_MAX 12
+#define RECENT_FILE "C:\\WRLD\\recent.txt"
+static char recent[RECENT_MAX][192];
+static int nrecent = -1;
+static void recent_load(void) {
+    if (nrecent >= 0) return;
+    nrecent = 0;
+    vnode_t *n = vfs_resolve(RECENT_FILE, NULL);
+    if (!n || n->dir || !n->data) return;
+    const char *p = (const char *)n->data, *end = p + n->size;
+    while (p < end && nrecent < RECENT_MAX) {
+        const char *e = p; while (e < end && *e != '\n') e++;
+        if (e > p) { int l = MIN((int)(e - p), 191); memcpy(recent[nrecent], p, l); recent[nrecent][l] = 0; nrecent++; }
+        p = e + 1;
+    }
+}
+void recent_add(const char *path) {
+    recent_load();
+    int at = nrecent < RECENT_MAX ? nrecent : RECENT_MAX - 1;
+    for (int i = 0; i < nrecent; i++) if (!strcasecmp(recent[i], path)) { at = i; break; }
+    if (at == nrecent) nrecent++;
+    memmove(recent[1], recent[0], at * sizeof recent[0]);
+    strlcpy(recent[0], path, sizeof recent[0]);
+    char buf[RECENT_MAX * 194]; int o = 0;
+    for (int i = 0; i < nrecent; i++) o += snprintf(buf + o, sizeof buf - o, "%s\n", recent[i]);
+    vfs_write_file(RECENT_FILE, buf, o);
+}
+int recent_count(void) { recent_load(); return nrecent; }
+const char *recent_at(int i) { recent_load(); return i >= 0 && i < nrecent ? recent[i] : ""; }
+
 bool shell_open(const char *path, const char *cwd) {
     if (!strcmp(path, "::computer") || !strcmp(path, "::recycle")) { explorer_open(path); return true; }
     vnode_t *n = vfs_resolve(path, cwd);
@@ -126,6 +159,7 @@ bool shell_open(const char *path, const char *cwd) {
         else explorer_open(full);
         return true;
     }
+    recent_add(full);
     const char *e = vfs_ext(n->name);
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) {
         char err[256];

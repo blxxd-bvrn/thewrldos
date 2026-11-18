@@ -355,6 +355,7 @@ static const menu_t paint_menus[] = {
     { "Help", { { "About Paint", 8, 0 }, { NULL } } },
 };
 void paint_open(const char *path) {
+    if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     window_t *w = wm_create("untitled - Paint", -1, -1, 680, 520, WF_RESIZABLE);
     paint_t *p = kzalloc(sizeof *p);
     p->img = canvas_new(560, 400); p->snap = canvas_new(560, 400); p->fg = BLACK; p->bg = WHITE; p->size = 1;
@@ -385,6 +386,7 @@ static void iv_paint(window_t *w) {
 }
 static void iv_destroy(window_t *w) { iv_t *v = w->data; canvas_free(v->img); kfree(v); }
 void imageview_open(const char *path) {
+    if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     vnode_t *n = vfs_resolve(path, NULL);
     iv_t *v = kzalloc(sizeof *v);
     if (n) { char err[96]; v->img = image_decode(n->data, n->size, err, sizeof err); vfs_path(n, v->name, sizeof v->name); }

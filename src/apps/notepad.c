@@ -303,6 +303,7 @@ static const menu_t np_menus[] = {
     { "Help", { { "About Notepad", NP_ABOUT, 0 }, { NULL } } },
 };
 void notepad_open(const char *path) {
+    if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     window_t *w = wm_create("Untitled - Notepad", -1, -1, 600, 420, WF_RESIZABLE);
     np_t *n = kzalloc(sizeof *n);
     n->win = w; n->anchor = -1; n->cap = 256; n->buf = kmalloc(n->cap); n->buf[0] = 0;

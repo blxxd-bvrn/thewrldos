@@ -338,7 +338,7 @@ static void fonts_load(void) {
 }
 /* fonts past the generated set are TrueType sizes only; before the font files
  * are loaded they are drawn with the nearest bitmap */
-static const uint8_t ext_fallback[FONT_ALL - FONT_COUNT] = { [FONT_DISPLAY_BI - FONT_COUNT] = FONT_HUGE };
+static const uint8_t ext_fallback[FONT_ALL - FONT_COUNT] = { [FONT_DISPLAY_BI - FONT_COUNT] = FONT_HUGE, [FONT_DISPLAY - FONT_COUNT] = FONT_LOGO };
 static inline font_t *F(int f) {
     if (!fonts_loaded) fonts_load();
     if (f >= FONT_COUNT && f < FONT_ALL) f = ext_fallback[f - FONT_COUNT];
@@ -391,6 +391,7 @@ static const font_spec_t font_specs[FONT_ALL] = {
     [FONT_H3]         = { TF_BOLD, 17 },
     [FONT_WEB_SMALL]  = { TF_REGULAR, 12 },
     [FONT_DISPLAY_BI] = { TF_BOLD_ITALIC, 30 },
+    [FONT_DISPLAY]    = { TF_REGULAR, 40 },
 };
 
 static ttf_face_t *ttf_face[TF_COUNT];

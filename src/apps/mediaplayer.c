@@ -1448,6 +1448,7 @@ void mediaplayer_open_prompt(void) {
 }
 
 void mediaplayer_open(const char *path) {
+    if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     if (mp_win && wm_alive(mp_win)) {
         wm_focus(mp_win);
         if (path) { mp_t *m = mp_win->data; add_path(m, path, true); m->page = P_NOW; }

@@ -123,7 +123,7 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE
+.PHONY: all both classic iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
@@ -145,6 +145,10 @@ endif
 endif
 
 all: $(ISO)
+
+# the 64-bit edition with the browser's classic engine instead of WebKit (smaller; no WebKitGTK needed)
+classic:
+	$(MAKE) ARCH=x86_64 LX_WEBKITGTK=0
 
 # both editions
 both:
@@ -357,6 +361,10 @@ $(LXROOT)/Linux/usr/share/wrld/keymap.xkb: tools/gen_keymap.c
 # The WebKit image is the default build: the 64-bit edition needs WebKitGTK 6.0 on the build
 # machine, and stops with what to install if it is missing. LX_WEBKITGTK=0 builds the smaller
 # image with the browser's classic engine instead.
+# make classic / make CLASSIC=1: the same as LX_WEBKITGTK=0
+ifneq ($(CLASSIC),)
+LX_WEBKITGTK := 0
+endif
 LX_WEBKITGTK ?= $(if $(filter x86_64,$(ARCH)),1)
 LX_WEBKITGTK_ON := $(filter-out 0,$(LX_WEBKITGTK))
 ifneq ($(LX_WEBKITGTK_ON),)

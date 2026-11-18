@@ -107,7 +107,7 @@ sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bi
 The 64-bit edition's Linux userland (The WRLD Browser's WebKit engine, GTK 4, video and sound,
 `/bin/sh`) comes from these packages on the build machine (Ubuntu 24.04 or newer). The WebKit
 image is the default build: without these packages `make` stops and says what to install, and
-`make LX_WEBKITGTK=0` builds the smaller image with the browser's classic engine instead.
+`make classic` (the same as `make LX_WEBKITGTK=0`) builds the smaller image with the browser's classic engine instead.
 `Build to ISO.bat` installs them by itself, and on an older distribution builds the 64-bit
 edition in an Ubuntu 24.04 of its own (a Docker container, or a chroot it makes with
 debootstrap); `WRLD_CLASSIC=1 tools/build-iso.sh .` builds the classic image.
@@ -1068,6 +1068,14 @@ device manager's job is to say what the computer has and which driver runs it.
   - Double-clicking a `.wrldstyle` file anywhere installs and applies it.
 
 ### Applications (`src/apps`)
+- **The WRLD Search** (`search.c`; Start menu, the classic Start menu's Search, Enter in the
+  sidebar's Search tile, `start search` in the Command Prompt): a sky-blue start page with the
+  search box, nine areas of the computer with their most-used places, Recommendations, Your
+  Recent Activities (the files you opened last, kept in `C:\WRLD\recent.txt`) and Top Things
+  To Do. A search lists matching programs, Control Panel settings (by name and by the words
+  people use, such as "wallpaper"), and files and folders on every drive (your documents
+  first), plus a web search; every word typed must be in the name. File, Edit, View and Help
+  menus, a Back button and a breadcrumb in the top bar.
 - **File Explorer:** task pane, Icons/Tiles/Details views, history, copy/cut/paste, rename,
   Recycle Bin, eject.
 - **Notepad:** selection, clipboard, word wrap, Open/Save dialog.
@@ -1197,8 +1205,9 @@ device manager's job is to say what the computer has and which driver runs it.
 
 | Target | |
 |---|---|
-| `make` | Kernel and `wrldos.iso` (32-bit edition). |
-| `make ARCH=x86_64` | Kernel and `wrldos64.iso` (64-bit edition); `make both` builds both. |
+| `make` | Kernel and `wrldos64.iso`: the 64-bit edition with the WebKit browser (the main image). |
+| `make classic` (or `make CLASSIC=1`) | The 64-bit edition with the browser's classic engine instead of WebKit: smaller, needs no WebKitGTK. |
+| `make ARCH=i686` | Kernel and `wrldos.iso` (32-bit edition); `make both` builds both. |
 | `make run` / `run-install` / `run-disk` | See [Running and installing](#running-and-installing). |
 | `make check-tools` | Lists missing build tools. |
 | `make samples` | Rebuilds the Win32 samples (needs `gcc-mingw-w64-i686` and `gcc-mingw-w64-x86-64`). |
