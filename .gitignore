@@ -1,5 +1,6 @@
 build/
 wrldos.iso
+wrldos32.iso
 *.ppm
 serial.log
 __pycache__/

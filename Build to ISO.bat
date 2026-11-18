@@ -48,10 +48,11 @@ goto :done
 
 :done
 echo.
-if not exist "wrldos64.iso" goto :failed
+if not exist "wrldos.iso" goto :failed
 echo   Finished! Your ISOs are here:
-echo   %~dp0wrldos64.iso   (64-bit edition, the main image: WebKit browser, 64-bit .exe programs)
-echo   %~dp0wrldos.iso     (32-bit edition, for 32-bit machines and 32-bit .exe programs)
+echo   %~dp0wrldos.iso     (the main CD: both editions. A 64-bit PC starts the 64-bit
+echo                       edition with the WebKit browser; a 32-bit PC the 32-bit one)
+echo   %~dp0wrldos64.iso   (the 64-bit edition alone)
 echo.
 echo   Boot one in VirtualBox, VMware or QEMU - legacy BIOS boot, at least 256 MB RAM,
 echo   and an IDE hard disk if you want to install THE WRLD OS to it. The 64-bit

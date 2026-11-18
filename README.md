@@ -9,9 +9,12 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 
 - Boots from a GRUB CD image (BIOS or UEFI) into a spinning-globe boot screen, a log-on
   screen and the desktop.
-- **Two editions from the same sources:** `wrldos.iso` (32-bit, any Pentium-class CPU or later) runs 32-bit Win32
-  programs; `wrldos64.iso` (64-bit, x86-64 long mode) runs 64-bit (x64) Win32 programs.
-  Everything else is the same.
+- **Two editions from the same sources, on one CD:** the 64-bit edition (x86-64 long mode) runs
+  64-bit (x64) Win32 programs and has The WRLD Browser on WebKit; the 32-bit edition (any
+  Pentium-class CPU or later) runs 32-bit Win32 programs and uses the browser's built-in engine.
+  `wrldos.iso` carries both: its boot menu starts the 64-bit edition on a processor that can
+  run it and the 32-bit one otherwise, and offers both. `wrldos64.iso` is the 64-bit edition
+  alone.
 - Runs **live from the CD** or **installs to a hard disk** with a graphical Setup (a detailed
   disk list, confirmations before formatting and a progress page), after which every file and
   setting is saved to the disk.
@@ -87,7 +90,7 @@ Double-click **`Build to ISO.bat`** in the source folder. It:
 1. builds through **WSL** (Windows Subsystem for Linux), or through **Docker Desktop** if WSL
    is not set up;
 2. installs the Linux build tools on the first run (Ubuntu may ask for your Linux password);
-3. writes **`wrldos.iso`** (32-bit edition) and **`wrldos64.iso`** (64-bit edition) next to
+3. writes **`wrldos.iso`** (the CD with both editions) and **`wrldos64.iso`** (the 64-bit edition alone) next to
    the .bat file.
 
 If neither WSL nor Docker is available, it explains why and offers to install WSL with Ubuntu.
@@ -121,7 +124,11 @@ make            # the main image: the 64-bit edition with WebKit, build64/wrld.e
 ```
 
 ```bash
-make ARCH=i686      # the 32-bit edition: build/wrld.elf and wrldos.iso (or "make both")
+make ARCH=i686      # the 32-bit edition alone: build/wrld.elf and wrldos32.iso
+```
+
+```bash
+make both           # both editions, and wrldos.iso: the CD with both (make dual assembles it)
 ```
 
 ```bash
@@ -157,8 +164,8 @@ You can also choose the emulated hardware:
 
 ### In VirtualBox, VMware or on a real PC
 
-Boot `wrldos.iso` (or `wrldos64.iso`, in a VM set up for a 64-bit guest, for example
-VirtualBox's "Other/Unknown (64-bit)") with **legacy BIOS** or **UEFI** boot and at least
+Boot `wrldos.iso` (in a VM set up for a 64-bit guest, for example VirtualBox's
+"Other/Unknown (64-bit)", it starts the 64-bit edition; in a 32-bit guest the 32-bit one) with **legacy BIOS** or **UEFI** boot and at least
 **64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). The ISO
 is a hybrid image: a PC-BIOS core and an EFI System Partition with both `EFI/BOOT/BOOTX64.EFI` and
 `EFI/BOOT/BOOTIA32.EFI`, so 64-bit UEFI and 32-bit UEFI firmware (Bay Trail tablets and 2-in-1s,
@@ -188,10 +195,13 @@ when you report the problem.
 | Entry | |
 |---|---|
 | **Boot THE WRLD OS from the hard disk** | Shown, and selected by default, once the system is installed. |
-| **THE WRLD OS Live** | Runs from the CD in RAM (default when nothing is installed). |
-| **Install THE WRLD OS** | Starts Setup. |
-| Live (verbose boot) | Shows the kernel log on the boot screen. |
-| Live (safe mode) | Starts with the WRLD Classic style. |
+| **THE WRLD OS Live, 64-bit** | Runs from the CD in RAM, with the WebKit browser (default on a 64-bit processor when nothing is installed). |
+| **THE WRLD OS Live, 32-bit** | The 32-bit edition, for 32-bit Windows programs. On a 32-bit processor it is the only edition shown. |
+| **Install THE WRLD OS, 64-bit / 32-bit** | Starts Setup; it installs the edition it runs in. |
+| More options | Text-mode Setup, verbose boot (the kernel log on the boot screen), Basic Display recovery and safe mode (WRLD Classic style), for each edition. |
+
+GRUB tells the two kinds of processor apart with `cpuid -l` (`grub/grub-dual.cfg`).
+`wrldos64.iso` and `wrldos32.iso` have the single-edition menu (`grub/grub.cfg`).
 
 The installed system has its own boot menu with the same normal, verbose and safe-mode entries.
 
@@ -1207,7 +1217,8 @@ device manager's job is to say what the computer has and which driver runs it.
 |---|---|
 | `make` | Kernel and `wrldos64.iso`: the 64-bit edition with the WebKit browser (the main image). |
 | `make classic` (or `make CLASSIC=1`) | The 64-bit edition with the browser's classic engine instead of WebKit: smaller, needs no WebKitGTK. |
-| `make ARCH=i686` | Kernel and `wrldos.iso` (32-bit edition); `make both` builds both. |
+| `make ARCH=i686` | Kernel and `wrldos32.iso` (the 32-bit edition alone). |
+| `make both` | Both editions and `wrldos.iso`, the CD with both (`make dual` assembles it from built editions). |
 | `make run` / `run-install` / `run-disk` | See [Running and installing](#running-and-installing). |
 | `make check-tools` | Lists missing build tools. |
 | `make samples` | Rebuilds the Win32 samples (needs `gcc-mingw-w64-i686` and `gcc-mingw-w64-x86-64`). |

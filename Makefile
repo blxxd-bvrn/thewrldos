@@ -6,7 +6,9 @@ endif
 NASM    ?= nasm
 # ARCH=x86_64 (default): the 64-bit edition, wrldos64.iso, with The WRLD Browser on WebKit
 #                        (runs x64 Win32 programs and the Linux userland)
-# ARCH=i686:             the 32-bit edition, wrldos.iso (the browser's classic engine)
+# ARCH=i686:             the 32-bit edition, wrldos32.iso (the browser's classic engine)
+# make dual (or both):    wrldos.iso, one CD with both editions: the 64-bit one on processors
+#                        that can run it (WebKit browser), else the 32-bit one
 ARCH    ?= x86_64
 ifeq ($(ARCH),x86_64)
 ARCHFLAGS := -m64 -march=x86-64 -mno-red-zone -mcmodel=small
@@ -17,7 +19,7 @@ else ifeq ($(ARCH),i686)
 ARCHFLAGS := -m32 -march=i586 -mtune=i686 -mno-sse -mno-mmx
 NASMFMT := elf32
 BUILD   := build
-ISO     := wrldos.iso
+ISO     := wrldos32.iso
 else
 $(error ARCH must be i686 or x86_64)
 endif
@@ -123,7 +125,7 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both classic iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE
+.PHONY: all both classic dual iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
@@ -154,6 +156,23 @@ classic:
 both:
 	$(MAKE) ARCH=i686
 	$(MAKE) ARCH=x86_64
+	$(MAKE) ARCH=i686 dual
+
+# wrldos.iso: the CD with both editions. GRUB starts the 64-bit edition (WebKit browser)
+# when the processor can run it, and the 32-bit edition otherwise or when chosen in its
+# menu (grub/grub-dual.cfg). Builds the 32-bit edition here; the 64-bit one must be built
+# already (make ARCH=x86_64), so this also works where WebKitGTK is not installed.
+DUALDIR := build/dualiso
+dual:
+	$(MAKE) ARCH=i686
+	@test -f build64/wrld.elf -a -f build64/initrd.tar || { echo "make dual: build the 64-bit edition first (make ARCH=x86_64)"; exit 1; }
+	@mkdir -p $(DUALDIR)/boot/grub
+	cp build/wrld.elf $(DUALDIR)/boot/wrld.elf
+	cp build/initrd.tar $(DUALDIR)/boot/initrd.tar
+	cp build64/wrld.elf $(DUALDIR)/boot/wrld64.elf
+	cp build64/initrd.tar $(DUALDIR)/boot/initrd64.tar
+	cp grub/grub-dual.cfg $(DUALDIR)/boot/grub/grub.cfg
+	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS) cpuid" -o wrldos.iso $(DUALDIR)
 
 $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/win32/*.inc src/apps/*.h)
 	@mkdir -p $(dir $@)
@@ -562,6 +581,6 @@ shader-fixtures:
 	python3 tools/build_shader_fixtures.py $(if $(DXC),--dxc "$(DXC)")
 
 clean:
-	rm -rf build build64 wrldos.iso wrldos64.iso
+	rm -rf build build64 wrldos.iso wrldos32.iso wrldos64.iso
 
 FORCE:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds wrldos.iso from the source folder given as $1 (default: current folder).
+# Builds wrldos.iso (both editions) and wrldos64.iso from the source folder given as $1 (default: current folder).
 # Used by "Build to ISO.bat" on Windows (runs inside WSL or a Docker container),
 # but works on any Debian/Ubuntu-like Linux too.
 #
@@ -126,10 +126,10 @@ case "$NOBLE" in
     chroot) build64_noble_chroot ;;
     *) make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" $MAKE64 ;;
 esac
-say "Building THE WRLD OS (32-bit edition, for 32-bit machines)"
-make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=i686
+say "Building THE WRLD OS (32-bit edition) and the CD with both editions"
+make -C "$BUILD_DIR" -j"$(nproc 2>/dev/null || echo 2)" ARCH=i686 dual
 
-cp "$BUILD_DIR/wrldos64.iso" "$SRC/wrldos64.iso"
 cp "$BUILD_DIR/wrldos.iso" "$SRC/wrldos.iso"
-say "Done: $SRC/wrldos64.iso ($(du -h "$SRC/wrldos64.iso" | cut -f1), 64-bit, the main image)"
-say "      $SRC/wrldos.iso ($(du -h "$SRC/wrldos.iso" | cut -f1), 32-bit)"
+cp "$BUILD_DIR/wrldos64.iso" "$SRC/wrldos64.iso"
+say "Done: $SRC/wrldos.iso ($(du -h "$SRC/wrldos.iso" | cut -f1), both editions: 64-bit with WebKit where the processor can run it, else 32-bit)"
+say "      $SRC/wrldos64.iso ($(du -h "$SRC/wrldos64.iso" | cut -f1), the 64-bit edition alone)"
