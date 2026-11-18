@@ -317,11 +317,8 @@ static int stream_getc(FILE32 *f) {
     if (!rf(x->h, &c, 1, &r, NULL) || !r) { x->eof = true; return -1; }
     return c;
 }
-static int CDECL vfprintf_(FILE32 *f, const char *fmt, w32_va_list ap) {
-    char buf[2048]; int n = w32_vformat(buf, sizeof buf, fmt, ap);
-    stream_write(f, buf, MIN(n, (int)sizeof buf - 1));
-    return n;
-}
+static int vfprintf2_(FILE32 *f, const char *fmt, w32_va_list ap);
+static int CDECL vfprintf_(FILE32 *f, const char *fmt, w32_va_list ap) { return vfprintf2_(f, fmt, ap); }
 static int CDECL fprintf_(FILE32 *f, const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = vfprintf_(f, fmt, ap); w32_va_end(ap); return r; }
 static int CDECL vprintf_(const char *fmt, w32_va_list ap) { return vfprintf_(F_STDOUT, fmt, ap); }
 static int CDECL printf_(const char *fmt, ...) { w32_va_list ap; w32_va_start(ap, fmt); int r = vfprintf_(F_STDOUT, fmt, ap); w32_va_end(ap); return r; }
@@ -362,6 +359,7 @@ static size_t CDECL fread_(void *p, size_t sz, size_t n, FILE32 *f) {
     while (k < total) { int c = stream_getc(f); if (c < 0) break; d[k++] = c; }
     return k / sz;
 }
+static int fd_alloc(w32_proc_t *p, uintptr_t h);
 static FILE32 *CDECL fopen_(const char *name, const char *mode) {
     HANDLE (WINAPI *cf)(const char *, DWORD, DWORD, void *, DWORD, DWORD, HANDLE) = k32("CreateFileA");
     DWORD acc = 0x80000000u, disp = 3;
@@ -369,13 +367,20 @@ static FILE32 *CDECL fopen_(const char *name, const char *mode) {
     if (mode[0] == 'a') { acc = 0x40000000u; disp = 4; }
     if (strchr(mode, '+')) acc |= 0xC0000000u;
     HANDLE h = cf(name, acc, 0, NULL, disp, 0, 0);
-    if (h == 0xFFFFFFFF) { P->errno_val = 2; return NULL; }
+    if ((uint32_t)h == 0xFFFFFFFF) { P->errno_val = 2; return NULL; }
     xfile_t *x = w32_alloc(P, sizeof(xfile_t)); memset(x, 0, sizeof *x);
-    x->h = h; x->unget = -1; x->f.file = 3 + (h & 0xFF);
+    x->h = h; x->unget = -1; x->f.file = fd_alloc(P, h);
     if (mode[0] == 'a') { DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); sfp(h, 0, NULL, 2); }
     return &x->f;
 }
-static int CDECL fclose_(FILE32 *f) { if (IS_STD(f)) return 0; xfile_t *x = (xfile_t *)f; BOOL (WINAPI *ch)(HANDLE) = k32("CloseHandle"); ch(x->h); w32_free(P, x); return 0; }
+static int CDECL fclose_(FILE32 *f) {
+    if (IS_STD(f)) return 0;
+    xfile_t *x = (xfile_t *)f; w32_proc_t *p = P;
+    int fd = x->f.file; bool shared = false;
+    if (fd >= 3 && fd < 64 && p->fdh[fd] == x->h) { p->fdh[fd] = 0; for (int i = 0; i < 64; i++) if (p->fdh[i] == x->h) shared = true; }
+    if (!shared) { BOOL (WINAPI *ch)(HANDLE) = k32("CloseHandle"); ch(x->h); }
+    w32_free(P, x); return 0;
+}
 static int CDECL fseek_(FILE32 *f, wlong_t off, int wh) { if (IS_STD(f)) return -1; xfile_t *x = (xfile_t *)f; DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); x->eof = false; x->unget = -1; return sfp(x->h, off, NULL, wh) == 0xFFFFFFFF ? -1 : 0; }
 static wlong_t CDECL ftell_(FILE32 *f) { if (IS_STD(f)) return -1; xfile_t *x = (xfile_t *)f; DWORD (WINAPI *sfp)(HANDLE, LONG, LONG *, DWORD) = k32("SetFilePointer"); return sfp(x->h, 0, NULL, 1); }
 static void CDECL rewind_(FILE32 *f) { fseek_(f, 0, 0); }
@@ -517,35 +522,38 @@ static int CDECL _except_handler4_common(void) { return 1; }
 static void *CDECL _beginthreadex(void *sec, unsigned st, void *fn, void *arg, unsigned fl, unsigned *tid) { HANDLE (WINAPI *ct)(void *, DWORD, void *, void *, DWORD, DWORD *) = k32("CreateThread"); return (void *)ct(NULL, st, fn, arg, fl, (DWORD *)tid); }
 static void CDECL _endthreadex(unsigned c) { task_exit(c); }
 
+#include "crt2.inc"
+
 #define E(n) { #n, (void *)n }
 #define EA(n, f) { n, (void *)f }
 const w32_export_t msvcrt_exports[] = {
+#include "crt2_tab.inc"
     E(_errno), E(__p__fmode), E(__p__commode), E(__p__environ), E(__p__acmdln), E(__p___argc), E(__p___argv), E(__getmainargs), E(__set_app_type), E(__setusermatherr),
     E(_initterm), E(_initterm_e), E(_cexit), E(_c_exit), EA("exit", exit_), EA("_exit", _exit_), EA("abort", abort_), E(_amsg_exit), E(_onexit), EA("atexit", atexit_),
     E(_lock), E(_unlock), EA("signal", signal_), EA("raise", raise_), EA("setlocale", setlocale_), EA("localeconv", localeconv_), E(_ismbblead), E(__mb_cur_max_func),
     EA("__mb_cur_max", &mb_cur_max), EA("__initenv", &initenv_dummy), EA("_iob", iob), E(__iob_func), E(__acrt_iob_func),
-    E(_set_invalid_parameter_handler), E(_setmode), E(_fileno), E(_isatty), E(_controlfp), E(_fpreset), E(_configthreadlocale),
+    E(_set_invalid_parameter_handler), EA("_setmode", _setmode2_), E(_fileno), EA("_isatty", _isatty2_), E(_controlfp), E(_fpreset), E(_configthreadlocale),
     EA("malloc", malloc_), EA("calloc", calloc_), EA("realloc", realloc_), EA("free", free_), E(_msize), E(_strdup), EA("strdup", _strdup),
     EA("memcpy", memcpy_), EA("memmove", memmove_), EA("memset", memset_), EA("memcmp", memcmp_), EA("memchr", memchr_),
     EA("strlen", strlen_), EA("strnlen", strnlen_), EA("strcmp", strcmp_), EA("strncmp", strncmp_), E(_stricmp), E(_strnicmp), EA("_strcmpi", _stricmp), EA("stricmp", _stricmp),
     EA("strcpy", strcpy_), EA("strncpy", strncpy_), EA("strcat", strcat_), EA("strncat", strncat_), EA("strchr", strchr_), EA("strrchr", strrchr_), EA("strstr", strstr_),
-    EA("strspn", strspn_), EA("strcspn", strcspn_), EA("strpbrk", strpbrk_), EA("strtok", strtok_), E(_strupr), E(_strlwr), E(_strrev), EA("strerror", strerror_), EA("wcslen", wcslen_),
+    EA("strspn", strspn_), EA("strcspn", strcspn_), EA("strpbrk", strpbrk_), EA("strtok", strtok_), E(_strupr), E(_strlwr), E(_strrev), EA("wcslen", wcslen_),
     EA("toupper", toupper_), EA("tolower", tolower_), EA("isalpha", isalpha_), EA("isdigit", isdigit_), EA("isalnum", isalnum_), EA("isspace", isspace_), EA("isupper", isupper_),
     EA("islower", islower_), EA("isxdigit", isxdigit_), EA("ispunct", ispunct_), EA("isprint", isprint_), EA("iscntrl", iscntrl_), EA("isgraph", isgraph_),
     EA("atoi", atoi_), EA("atol", atol_), EA("strtol", strtol_), EA("strtoul", strtoul_), E(_atoi64), EA("strtod", strtod_), EA("atof", atof_), EA("abs", abs_), EA("labs", labs_),
     EA("rand", rand_), EA("srand", srand_), EA("qsort", qsort_), EA("bsearch", bsearch_), EA("getenv", getenv_), EA("system", system_),
     E(___mb_cur_max_func), E(___lc_codepage_func), E(__C_specific_handler),
-    EA("time", time_), E(_time32), E(_time64), EA("clock", clock_), EA("localtime", localtime_), E(_localtime64), EA("strftime", strftime_),
+    EA("clock", clock_), EA("strftime", strftime_),
     EA("vfprintf", vfprintf_), EA("fprintf", fprintf_), EA("vprintf", vprintf_), EA("printf", printf_), EA("vsprintf", vsprintf_), EA("sprintf", sprintf_),
     E(_vsnprintf), E(_snprintf), EA("vsnprintf", vsnprintf_), EA("snprintf", snprintf_), EA("puts", puts_), EA("fputs", fputs_), EA("fputc", fputc_), EA("putc", fputc_),
     EA("putchar", putchar_), E(_flsbuf), EA("fwrite", fwrite_), EA("fflush", fflush_), EA("fgetc", fgetc_), EA("getc", getc_), EA("getchar", getchar_), E(_getch), E(_kbhit),
     EA("ungetc", ungetc_), EA("fgets", fgets_), EA("gets", gets_), EA("fread", fread_), EA("fopen", fopen_), EA("fclose", fclose_), EA("fseek", fseek_), EA("ftell", ftell_),
     EA("rewind", rewind_), EA("feof", feof_), EA("ferror", ferror_), EA("clearerr", clearerr_), EA("setvbuf", setvbuf_), EA("setbuf", setbuf_),
-    EA("remove", remove_), EA("rename", rename_), E(_mkdir), E(_chdir), E(_getcwd), E(_access), E(_write), E(_read),
+    EA("remove", remove_), EA("rename", rename_), E(_mkdir), E(_chdir), E(_getcwd), E(_access), EA("_write", _write2_), EA("_read", _read2_),
     EA("sscanf", sscanf_), EA("scanf", scanf_), EA("fscanf", fscanf_),
     EA("sqrt", sqrt_), EA("sin", sin_), EA("cos", cos_), EA("tan", tan_), EA("atan2", atan2_), EA("atan", atan_), EA("fabs", fabs_), EA("floor", floor_), EA("ceil", ceil_),
     EA("fmod", fmod_), EA("log", log_), EA("log10", log10_), EA("log2", log2_), EA("exp", exp_), EA("pow", pow_), EA("asin", asin_), EA("acos", acos_), EA("sinh", sinh_),
     EA("cosh", cosh_), EA("tanh", tanh_), EA("ldexp", ldexp_), EA("modf", modf_), E(_ftol), E(_hypot), EA("round", round_),
-    E(_assert), E(_setjmp3), E(__dllonexit), E(_XcptFilter), E(_except_handler3), E(_except_handler4_common), E(_beginthreadex), E(_endthreadex),
+    E(_assert), E(__dllonexit), E(_XcptFilter), E(_except_handler3), E(_except_handler4_common), E(_beginthreadex), E(_endthreadex),
 };
 const int msvcrt_count = ARRAY_LEN(msvcrt_exports);

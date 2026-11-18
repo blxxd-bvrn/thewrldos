@@ -1002,6 +1002,77 @@ static void dl_progress(void *ctx, const char *status, uint32_t got, uint32_t to
     if (got) { if (total) out_f(p->io, "  %u / %u KB\n", got / 1024, total / 1024); else out_f(p->io, "  %u KB\n", got / 1024); }
     else out_f(p->io, "%s\n", status);
 }
+/* unzip ARCHIVE [-d DIR] [-l]: extract (or list) a .zip archive (stored and deflated entries) */
+static uint16_t zrd16(const uint8_t *p) { return p[0] | p[1] << 8; }
+static uint32_t zrd32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static bool mkdirs(const char *path) {
+    char b[512]; strlcpy(b, path, sizeof b);
+    for (char *c = b + 3; ; c++) {
+        if (*c == '\\' || *c == '/' || !*c) {
+            char t = *c; *c = 0;
+            vnode_t *v = vfs_resolve(b, NULL);
+            if (!v && !vfs_create(b, NULL, true)) return false;
+            if (v && !v->dir) return false;
+            *c = t;
+            if (!t) break;
+        }
+    }
+    return true;
+}
+static int b_unzip(sh_t *s, int argc, char **argv, io_t *io) {
+    const char *zip = NULL, *dest = NULL; bool list = false;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-d") && i + 1 < argc) dest = argv[++i];
+        else if (!strcmp(argv[i], "-l")) list = true;
+        else if (!strcmp(argv[i], "-o") || !strcmp(argv[i], "-q")) {}
+        else zip = argv[i];
+    }
+    if (!zip) { err_f(io, "usage: unzip ARCHIVE [-d DIR] [-l]\n"); return 1; }
+    vnode_t *z = vfs_resolve(zip, s->cwd);
+    if (!z || z->dir || z->size < 22) { err_f(io, "unzip: cannot open %s\n", zip); return 1; }
+    const uint8_t *d = z->data; uint32_t n = z->size;
+    int64_t eocd = -1;
+    for (int64_t i = (int64_t)n - 22; i >= 0 && i >= (int64_t)n - 65557; i--) if (zrd32(d + i) == 0x06054b50) { eocd = i; break; }
+    if (eocd < 0) { err_f(io, "unzip: %s is not a zip archive\n", zip); return 1; }
+    uint32_t count = zrd16(d + eocd + 10), cd = zrd32(d + eocd + 16);
+    char root[512];
+    if (dest) { if (isalpha(dest[0]) && dest[1] == ':') strlcpy(root, dest, sizeof root); else path_join(root, sizeof root, s->cwd, dest); }
+    else strlcpy(root, s->cwd, sizeof root);
+    path_normalize(root);
+    if (!list && !mkdirs(root)) { err_f(io, "unzip: cannot create %s\n", root); return 1; }
+    int files = 0, rc = 0; uint64_t bytes = 0;
+    for (uint32_t k = 0, o = cd; k < count && o + 46 <= n; k++) {
+        if (zrd32(d + o) != 0x02014b50) break;
+        uint16_t method = zrd16(d + o + 10), nl = zrd16(d + o + 28), xl = zrd16(d + o + 30), cl = zrd16(d + o + 32);
+        uint32_t csize = zrd32(d + o + 20), usize = zrd32(d + o + 24), lho = zrd32(d + o + 42);
+        char name[256]; int l = MIN(nl, 255); memcpy(name, d + o + 46, l); name[l] = 0;
+        o += 46 + nl + xl + cl;
+        if (strstr(name, "..")) continue;
+        for (char *c = name; *c; c++) if (*c == '/') *c = '\\';
+        if (list) { out_f(io, "%10u  %s\n", usize, name); files++; bytes += usize; continue; }
+        char full[512]; path_join(full, sizeof full, root, name);
+        size_t fl = strlen(full);
+        if (fl && full[fl - 1] == '\\') { full[fl - 1] = 0; mkdirs(full); continue; }
+        char dir[512]; path_dirname(full, dir, sizeof dir);
+        if (!mkdirs(dir)) { err_f(io, "unzip: cannot create %s\n", dir); rc = 1; continue; }
+        if (lho + 30 > n) continue;
+        uint32_t data = lho + 30 + zrd16(d + lho + 26) + zrd16(d + lho + 28);
+        if (data + csize > n) { err_f(io, "unzip: %s: truncated\n", name); rc = 1; continue; }
+        uint8_t *buf = kmalloc(usize ? usize : 1);
+        if (!buf) { err_f(io, "unzip: out of memory for %s\n", name); rc = 1; continue; }
+        uint32_t got = 0; bool ok;
+        if (method == 0) { memcpy(buf, d + data, usize); got = usize; ok = csize == usize; }
+        else if (method == 8) ok = inflate_raw(d + data, csize, buf, usize, &got) >= 0 && got == usize;
+        else ok = false;
+        if (!ok) err_f(io, "unzip: %s: unsupported or damaged entry (method %u)\n", name, method), rc = 1;
+        else if (!vfs_write_file(full, buf, got)) err_f(io, "unzip: cannot write %s\n", full), rc = 1;
+        else { files++; bytes += got; }
+        kfree(buf);
+        task_yield();
+    }
+    out_f(io, "%s%d file(s), %llu KB\n", list ? "" : "extracted ", files, (unsigned long long)(bytes / 1024));
+    return rc;
+}
 static int b_wget(sh_t *s, int argc, char **argv, io_t *io) {
     bool curl = !strcmp(argv[0], "curl");
     const char *url = NULL, *outf = NULL; bool headers_only = false, quiet = false;
@@ -1550,7 +1621,7 @@ static const builtin_t builtins[] = {
     { "date", b_date, "show date (+FORMAT)" }, { "uname", b_uname, "system name (-a)" }, { "ver", b_ver, "OS version" },
     { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew)" }, { "ifconfig", b_ipconfig, NULL },
     { "ping", b_ping, "send ICMP echo requests" }, { "nslookup", b_nslookup, "look up a host name" },
-    { "wget", b_wget, "download a URL (http/https)" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "js", b_js, "run JavaScript (js FILE or js -e CODE)" }, { "display", b_display, "show or change the screen resolution" },
+    { "wget", b_wget, "download a URL (http/https)" }, { "unzip", b_unzip, "extract a .zip archive (unzip FILE [-d DIR] [-l])" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "js", b_js, "run JavaScript (js FILE or js -e CODE)" }, { "display", b_display, "show or change the screen resolution" },
     { "play", b_play, "play a .wav file" }, { "volume", b_volume, "show or set the volume (0-100, mute)" }, { "sndinfo", b_sndinfo, "sound card diagnostics" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },
     { "kill", b_kill, "terminate a process" }, { "taskkill", b_kill, NULL }, { "free", b_free, "memory usage" }, { "sync", b_sync, "write changes to the system disk now" }, { "mem", b_free, NULL },
     { "uptime", b_uptime, NULL }, { "dmesg", b_dmesg, "kernel log" }, { "export", b_export, "set variables" }, { "set", b_env, NULL },

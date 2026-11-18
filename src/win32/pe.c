@@ -153,9 +153,19 @@ static const resent_t *res_level(const uint8_t *root, uint32_t diroff, uintptr_t
     }
     return NULL;
 }
+w32_mod_t *w32_mod_by_base(w32_proc_t *p, uintptr_t base);
+w32_mod_t *w32_mod_at(w32_proc_t *p, uintptr_t a);
 uintptr_t w32_find_resource(w32_proc_t *p, uintptr_t type, uintptr_t name, bool wide, int lang) {
-    if (!p || !p->res_rva) return 0;
-    const uint8_t *root = (const uint8_t *)(p->base + p->res_rva);
+    return w32_find_resource_in(p, 0, type, name, wide, lang);
+}
+/* in the module hmod (0 or the program: the program's own resources) */
+uintptr_t w32_find_resource_in(w32_proc_t *p, uintptr_t hmod, uintptr_t type, uintptr_t name, bool wide, int lang) {
+    if (!p) return 0;
+    uintptr_t mbase = p->base; uint32_t rva = p->res_rva;
+    w32_mod_t *m = hmod && hmod != p->base ? w32_mod_by_base(p, hmod) : NULL;
+    if (m) { mbase = m->base; rva = m->res_rva; }
+    if (!rva) return 0;
+    const uint8_t *root = (const uint8_t *)(mbase + rva);
     const resent_t *t = res_level(root, 0, res_id(type, wide), wide);
     if (!t || !(t->off & 0x80000000)) return 0;
     const resent_t *n = res_level(root, t->off & 0x7FFFFFFF, res_id(name, wide), wide);
@@ -169,7 +179,8 @@ void *w32_resource_data(w32_proc_t *p, uintptr_t hrsrc, uint32_t *size) {
     if (!p || !hrsrc) return NULL;
     const resdata_t *d = (const resdata_t *)hrsrc;
     if (size) *size = d->size;
-    return (void *)(p->base + d->rva);
+    w32_mod_t *m = w32_mod_at(p, hrsrc);             /* the data entry lies in its module's image */
+    return (void *)((m ? m->base : p->base) + d->rva);
 }
 
 typedef struct { char dll[32]; char name[64]; } unimpl_t;
@@ -204,7 +215,7 @@ static void *make_thunk(const char *dll, const char *name) {
 }
 
 /* ---------------- probing ---------------- */
-static bool parse_headers(const uint8_t *d, uint32_t n, file_hdr_t **fh, pe_info_t *pi, sect_hdr_t **sh, char *err, int ecap) {
+static bool parse_headers_ex(const uint8_t *d, uint32_t n, file_hdr_t **fh, pe_info_t *pi, sect_hdr_t **sh, char *err, int ecap, bool dll) {
     if (n < 64 || d[0] != 'M' || d[1] != 'Z') { snprintf(err, ecap, "Not a valid Win32 application (no MZ header)."); return false; }
     uint32_t lf = ((const dos_hdr_t *)d)->e_lfanew;
     if (lf + 24 > n || memcmp(d + lf, "PE\0\0", 4)) { snprintf(err, ecap, "This is an MS-DOS program; 16-bit DOS executables are not supported."); return false; }
@@ -229,9 +240,13 @@ static bool parse_headers(const uint8_t *d, uint32_t n, file_hdr_t **fh, pe_info
     pi->subsystem = o->Subsystem; pi->stack_reserve = o->SizeOfStackReserve; pi->nrva = MIN(o->NumberOfRvaAndSizes, 16u);
     memcpy(pi->dir, o->dir, sizeof(data_dir_t) * pi->nrva);
     *sh = (sect_hdr_t *)(oh + (*fh)->SizeOfOptionalHeader);
-    if ((*fh)->Characteristics & 0x2000) { snprintf(err, ecap, "This file is a DLL, not a program."); return false; }
+    if (!dll && ((*fh)->Characteristics & 0x2000)) { snprintf(err, ecap, "This file is a DLL, not a program."); return false; }
+    if (dll && !((*fh)->Characteristics & 0x2000)) { snprintf(err, ecap, "This file is not a DLL."); return false; }
     if (pi->nrva > 14 && pi->dir[14].Size) { snprintf(err, ecap, "This is a .NET (CLR) assembly; the .NET runtime is not available."); return false; }
     return true;
+}
+static bool parse_headers(const uint8_t *d, uint32_t n, file_hdr_t **fh, pe_info_t *pi, sect_hdr_t **sh, char *err, int ecap) {
+    return parse_headers_ex(d, n, fh, pi, sh, err, ecap, false);
 }
 bool pe_probe(vnode_t *n, char *desc, int cap) {
     file_hdr_t *fh; pe_info_t pi; sect_hdr_t *sh; char err[300];
@@ -254,6 +269,8 @@ static void free_proc(w32_proc_t *p) {
     p->heap.next = NULL;
     for (int i = 0; i < 64; i++) if (procs[i] == p) procs[i] = NULL;
     kfree_aligned(p->frames);
+    for (int i = 0; i < p->nmods; i++) { if (!p->mods[i]->is_exe) kfree_aligned(p->mods[i]->img); kfree(p->mods[i]); }
+    p->nmods = 0;
 #ifdef __x86_64__
     vm_space_free(p->space);
 #else
@@ -288,6 +305,7 @@ w32_proc_t *pe_find(int pid) { for (int i = 0; i < 64; i++) if (procs[i] && proc
 
 static void pe_main(void *arg) {
     w32_proc_t *p = arg;
+    w32_run_dll_inits(p);
     if (p->tls_callbacks) {
         uintptr_t *cb = (uintptr_t *)p->tls_callbacks;
         for (int i = 0; i < 16 && cb[i]; i++) call_tls_cb((void *)cb[i], p->base, 1, 0);
@@ -337,6 +355,265 @@ uint8_t *w32_new_teb(w32_proc_t *p, task_t *t) {
     q[0x30 / 4] = (uint32_t)p->peb;
 #endif
     return teb;
+}
+
+/* ---------------- program DLLs ----------------
+ * A DLL that is not one of the built-in system DLLs is loaded from a file: the
+ * program's folder, the current folder, C:\WRLD\System32 or C:\WRLD. Each process
+ * gets its own copy, mapped into its address space (x64: from 448 GiB up, or at the
+ * DLL's preferred base; x86: in the 4..16 MiB window after the program, then in the
+ * DLL area mm.c sets aside), relocated, with its own imports resolved the same way.
+ * DllMain(DLL_PROCESS_ATTACH) runs in the process's task, dependencies first. */
+#define DLL_BASE64 0x7000000000ull
+#define DLL_TOP64  0x7F00000000ull
+static void set_mod_dirs(w32_mod_t *m, const pe_info_t *pi) {
+    if (pi->nrva > 0) { m->exp_rva = pi->dir[0].VirtualAddress; m->exp_size = pi->dir[0].Size; }
+    if (pi->nrva > 2) { m->res_rva = pi->dir[2].VirtualAddress; m->res_size = pi->dir[2].Size; }
+    if (pi->nrva > 3) { m->pdata_rva = pi->dir[3].VirtualAddress; m->pdata_size = pi->dir[3].Size; }
+}
+bool w32_is_system_dll(const char *name) {
+    char b[64]; strlcpy(b, path_basename(name), sizeof b);
+    if (!strchr(b, '.')) strlcat(b, ".dll", sizeof b);
+    if (find_dll(b)) return true;
+    if (!strncasecmp(b, "api-ms-", 7) || !strncasecmp(b, "ext-ms-", 7)) return true;
+    static const char *sys[] = { "oleaut32.dll", "shlwapi.dll", "winmm.dll", "version.dll", "setupapi.dll", "crypt32.dll", "uxtheme.dll",
+        "dwmapi.dll", "psapi.dll", "secur32.dll", "iphlpapi.dll", "bcrypt.dll", "userenv.dll", "netapi32.dll", "wtsapi32.dll", "oleacc.dll",
+        "msimg32.dll", "powrprof.dll", "dbghelp.dll", "shcore.dll", "wldap32.dll", "normaliz.dll", "rpcrt4.dll", "mpr.dll", "dnsapi.dll",
+        "winhttp.dll", "wininet.dll", "urlmon.dll", "msacm32.dll", "avrt.dll", "hid.dll", "dinput8.dll", "dinput.dll", "xinput1_3.dll",
+        "xinput1_4.dll", "xinput9_1_0.dll", "dsound.dll", "ddraw.dll", "usp10.dll", "gdiplus.dll", "comctl32.dll", "msvcp60.dll", "imagehlp.dll" };
+    for (unsigned i = 0; i < ARRAY_LEN(sys); i++) if (!strcasecmp(b, sys[i])) return true;
+    return false;
+}
+w32_mod_t *w32_mod_by_base(w32_proc_t *p, uintptr_t base) {
+    for (int i = 0; p && i < p->nmods; i++) if (p->mods[i]->base == base) return p->mods[i];
+    return NULL;
+}
+w32_mod_t *w32_mod_by_name(w32_proc_t *p, const char *name) {
+    char b[64]; strlcpy(b, path_basename(name), sizeof b);
+    if (!strchr(b, '.')) strlcat(b, ".dll", sizeof b);
+    for (int i = 0; p && i < p->nmods; i++) if (!strcasecmp(p->mods[i]->name, b)) return p->mods[i];
+    return NULL;
+}
+w32_mod_t *w32_mod_at(w32_proc_t *p, uintptr_t a) {
+    for (int i = 0; p && i < p->nmods; i++) if (a >= p->mods[i]->base && a < p->mods[i]->base + p->mods[i]->size) return p->mods[i];
+    return NULL;
+}
+/* map size bytes of frames at va in the process */
+static bool map_pages(w32_proc_t *p, uintptr_t va, uint8_t *frames, uint32_t size) {
+#ifdef __x86_64__
+    for (uint32_t off = 0; off < size; off += 4096) if (!vm_map_4k(p->space, va + off, (uintptr_t)frames + off)) return false;
+#else
+    for (uint32_t off = 0; off < size; off += 4096) {
+        uint32_t a = (uint32_t)va + off, pd = a >> 22;
+        uint32_t *pt = (uint32_t *)(p->pagedir[pd] & ~0xFFFu);
+        bool own = false;
+        for (int i = 0; i < p->nptabs; i++) if (p->ptabs[i] == pt && !(p->pagedir[pd] & 0x80)) own = true;
+        if (!own) {
+            if (p->nptabs >= (int)ARRAY_LEN(p->ptabs)) return false;
+            pt = kmalloc_aligned(4096, 4096);
+            if (!pt) return false;
+            memset(pt, 0, 4096);
+            p->ptabs[p->nptabs++] = pt;
+            p->pagedir[pd] = (uint32_t)pt | 0x07;
+        }
+        pt[(a >> 12) & 1023] = ((uint32_t)frames + off) | 0x07;
+    }
+    uint32_t cr3; __asm__ volatile("mov %%cr3,%0" : "=r"(cr3));
+    if (cr3 == (uint32_t)p->pagedir) __asm__ volatile("mov %0,%%cr3" :: "r"(cr3) : "memory");
+#endif
+    return true;
+}
+static bool range_free(w32_proc_t *p, uint64_t a, uint32_t size) {
+    for (int i = 0; i < p->nmods; i++) { w32_mod_t *m = p->mods[i]; if (a < m->base + m->size && m->base < a + size) return false; }
+    return true;
+}
+/* an address for a DLL of this size: its preferred base when that is usable, else the next free one */
+static uintptr_t dll_address(w32_proc_t *p, uint64_t pref, uint32_t size, bool reloc) {
+#ifdef __x86_64__
+    if (pref >= 0x100000000ull && pref + size <= DLL_TOP64 && !(pref & 0xFFF) && range_free(p, pref, size)) return pref;
+    if (!reloc) return 0;
+    uintptr_t a = (p->dll_next + 0xFFFF) & ~(uintptr_t)0xFFFF;
+    if (a + size > DLL_TOP64) return 0;
+    p->dll_next = a + size;
+    return a;
+#else
+    if (!reloc) {
+        bool ok = (pref >= WIN_LO && pref + size <= WIN_HI) || (w32_dll_area && pref >= w32_dll_area && pref + size <= w32_dll_area + w32_dll_area_size);
+        return ok && !(pref & 0xFFF) && range_free(p, pref, size) ? (uintptr_t)pref : 0;
+    }
+    uintptr_t a = (p->dll_next + 0xFFFF) & ~(uintptr_t)0xFFFF;
+    if (a < WIN_HI && a + size > WIN_HI) a = w32_dll_area;            /* the window is full: the DLL area */
+    if (!a || (a >= WIN_HI && (!w32_dll_area || a + size > w32_dll_area + w32_dll_area_size))) return 0;
+    p->dll_next = a + size;
+    return a;
+#endif
+}
+static void relocate(uint8_t *img, uint32_t size, const pe_info_t *pi, int64_t delta) {
+    if (!delta || pi->nrva <= 5 || !pi->dir[5].Size) return;
+    uint8_t *r = img + pi->dir[5].VirtualAddress, *re = r + pi->dir[5].Size;
+    while (r + 8 <= re) {
+        uint32_t page = ((uint32_t *)r)[0], bsz = ((uint32_t *)r)[1];
+        if (bsz < 8) break;
+        uint16_t *e = (uint16_t *)(r + 8);
+        for (uint32_t k = 0; k < (bsz - 8) / 2; k++) {
+            int type = e[k] >> 12, off = e[k] & 0xFFF;
+            if (page + off + 8 > size) continue;
+            if (type == 10) *(uint64_t *)(img + page + off) += delta;
+            else if (type == 3) *(uint32_t *)(img + page + off) += (uint32_t)delta;
+            else if (type == 1) *(uint16_t *)(img + page + off) += (uint16_t)(delta >> 16);
+            else if (type == 2) *(uint16_t *)(img + page + off) += (uint16_t)delta;
+        }
+        r += bsz;
+    }
+}
+static bool find_dll_file(w32_proc_t *p, const char *name, char *out, int cap) {
+    char b[96]; strlcpy(b, name, sizeof b);
+    if (!strchr(path_basename(b), '.')) strlcat(b, ".dll", sizeof b);
+    if (strchr(b, '\\') || strchr(b, '/') || strchr(b, ':')) {
+        if (isalpha(b[0]) && b[1] == ':') strlcpy(out, b, cap);
+        else path_join(out, cap, p->cwd, b);
+        path_normalize(out);
+        vnode_t *v = vfs_resolve(out, NULL);
+        return v && !v->dir;
+    }
+    char dir[256]; path_dirname(p->mods[0] ? p->mods[0]->path : p->path, dir, sizeof dir);
+    const char *dirs[] = { dir, p->cwd, "C:\\WRLD\\System32", "C:\\WRLD" };
+    for (unsigned i = 0; i < ARRAY_LEN(dirs); i++) {
+        path_join(out, cap, dirs[i], b); path_normalize(out);
+        vnode_t *v = vfs_resolve(out, NULL);
+        if (v && !v->dir) return true;
+    }
+    return false;
+}
+static int resolve_imports(w32_proc_t *p, uint8_t *img, const pe_info_t *pi);
+static w32_mod_t *load_mod(w32_proc_t *p, const char *name, int depth) {
+    w32_mod_t *m = w32_mod_by_name(p, name);
+    if (m) { m->refs++; return m; }
+    if (depth > 16 || p->nmods >= W32_MAX_MODS) return NULL;
+    char path[300];
+    if (!find_dll_file(p, name, path, sizeof path)) return NULL;
+    vnode_t *n = vfs_resolve(path, NULL);
+    file_hdr_t *fh; pe_info_t pi; sect_hdr_t *sh; char err[200];
+    if (!parse_headers_ex(n->data, n->size, &fh, &pi, &sh, err, sizeof err, true)) { klog("w32: %s: %s", path, err); return NULL; }
+    uint32_t size = (pi.size_image + 0xFFF) & ~0xFFFu;
+    if (!size || size > 64u * 1024 * 1024) return NULL;
+    bool reloc = pi.nrva > 5 && pi.dir[5].Size && !(fh->Characteristics & 1);
+    uintptr_t base = dll_address(p, pi.image_base, size, reloc);
+    if (!base) { klog("w32: no room for %s (%u KB)", path, size / 1024); return NULL; }
+    uint8_t *img = kmalloc_aligned(size, 4096);
+    if (!img) return NULL;
+    memset(img, 0, size);
+    if (!map_pages(p, base, img, size)) { kfree_aligned(img); return NULL; }
+    memcpy(img, n->data, MIN(pi.size_headers, n->size));
+    for (int i = 0; i < fh->NumberOfSections; i++) {
+        sect_hdr_t *sc = &sh[i];
+        if (sc->VirtualAddress + MAX(sc->VirtualSize, sc->SizeOfRawData) > size) continue;
+        uint32_t raw = MIN(sc->SizeOfRawData, sc->VirtualSize ? sc->VirtualSize : sc->SizeOfRawData);
+        if (sc->PointerToRawData + raw <= n->size) memcpy(img + sc->VirtualAddress, n->data + sc->PointerToRawData, raw);
+    }
+    relocate(img, size, &pi, (int64_t)(base - pi.image_base));
+    m = kzalloc(sizeof *m);
+    strlcpy(m->path, path, sizeof m->path); strlcpy(m->name, path_basename(path), sizeof m->name);
+    m->base = base; m->size = size; m->entry = pi.entry; m->img = img; m->refs = 1;
+    set_mod_dirs(m, &pi);
+    p->mods[p->nmods++] = m;                       /* before its imports, so circular imports find it */
+    int un = resolve_imports(p, img, &pi);
+    if (p->ninitq < W32_MAX_MODS) p->initq[p->ninitq++] = m;
+    klog("w32: %s: loaded %s at 0x%llx (%u KB, %d unresolved imports)", path_basename(p->path), path, (unsigned long long)base, size / 1024, un);
+    return m;
+}
+uintptr_t w32_load_library(w32_proc_t *p, const char *name) {
+    if (!p || !name || !*name) return 0;
+    w32_mod_t *m = w32_mod_by_name(p, name);
+    if (m) { m->refs++; return m->base; }
+    char b[96]; strlcpy(b, name, sizeof b);
+    for (char *c = b; *c; c++) if (*c == '/') *c = '\\';
+    if (w32_is_system_dll(path_basename(b))) return 0;
+    m = load_mod(p, b, 0);
+    return m ? m->base : 0;
+}
+static void *builtin_import(w32_proc_t *p, const char *dll, const char *name);
+void *w32_mod_export(w32_proc_t *p, w32_mod_t *m, const char *name, uint32_t ord) {
+    if (!m || !m->exp_rva || m->exp_rva + 40 > m->size) return NULL;
+    const uint8_t *img = m->img;
+    const uint32_t *ed = (const uint32_t *)(img + m->exp_rva);
+    uint32_t obase = ed[4], nfunc = ed[5], nname = ed[6];
+    const uint32_t *funcs = (const uint32_t *)(img + ed[7]), *names = (const uint32_t *)(img + ed[8]);
+    const uint16_t *ords = (const uint16_t *)(img + ed[9]);
+    int64_t idx = -1;
+    if (name && name[0] == '#') { ord = (uint32_t)atoi(name + 1); name = NULL; }
+    if (name) {
+        int lo = 0, hi = (int)nname - 1;                 /* names are sorted */
+        while (lo <= hi) {
+            int mid = (lo + hi) / 2, c = strcmp((const char *)(img + names[mid]), name);
+            if (!c) { idx = ords[mid]; break; }
+            if (c < 0) lo = mid + 1; else hi = mid - 1;
+        }
+        if (idx < 0) for (uint32_t i = 0; i < nname; i++) if (!strcmp((const char *)(img + names[i]), name)) { idx = ords[i]; break; }
+    } else if (ord >= obase) idx = ord - obase;
+    if (idx < 0 || idx >= nfunc || !funcs[idx]) return NULL;
+    uint32_t rva = funcs[idx];
+    if (rva >= m->exp_rva && rva < m->exp_rva + m->exp_size) {    /* forwarder: "OTHER.Name" or "OTHER.#12" */
+        char fw[128]; strlcpy(fw, (const char *)(img + rva), sizeof fw);
+        char *dot = strrchr(fw, '.');
+        if (!dot) return NULL;
+        *dot = 0;
+        char dll[96]; snprintf(dll, sizeof dll, "%s.dll", fw);
+        if (w32_is_system_dll(dll)) return builtin_import(p, dll, dot + 1);
+        w32_mod_t *o = load_mod(p, dll, 1);
+        return o && o != m ? w32_mod_export(p, o, dot + 1, 0) : NULL;
+    }
+    return (void *)(m->base + rva);
+}
+static void *builtin_import(w32_proc_t *p, const char *dll, const char *name) {
+    void *fn = NULL;
+    const dll_t *dl = find_dll(dll);
+    if (dl) { for (int e = 0; e < *dl->count; e++) if (!strcmp(dl->tab[e].name, name)) { fn = dl->tab[e].fn; break; } }
+    if (!fn && dl && dl->tab == msvcrt_exports) {   /* C runtime variables imported as data (x64 CRT) */
+        if (!strcmp(name, "_fmode")) fn = &p->fmode;
+        else if (!strcmp(name, "_commode")) fn = &p->commode;
+        else if (!strcmp(name, "_acmdln")) fn = &p->acmdln;
+        else if (!strcmp(name, "__argc")) fn = &p->argc;
+        else if (!strcmp(name, "__argv")) fn = &p->argv;
+        else if (!strcmp(name, "_environ") || !strcmp(name, "__initenv")) fn = &p->envp;
+    }
+    if (!fn) fn = w32_compat_find(dll, name);
+    return fn;
+}
+/* imports (thunk entries are pointer-sized; bit 31 / 63 marks an ordinal) */
+static int resolve_imports(w32_proc_t *p, uint8_t *img, const pe_info_t *pi) {
+    int unresolved = 0;
+    const uintptr_t ord_flag = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
+    if (pi->nrva <= 1 || !pi->dir[1].Size) return 0;
+    for (import_desc_t *id = (import_desc_t *)(img + pi->dir[1].VirtualAddress); id->Name; id++) {
+        const char *dll = (const char *)(img + id->Name);
+        uintptr_t *ilt = (uintptr_t *)(img + (id->OriginalFirstThunk ? id->OriginalFirstThunk : id->FirstThunk));
+        uintptr_t *iat = (uintptr_t *)(img + id->FirstThunk);
+        w32_mod_t *m = w32_is_system_dll(dll) ? NULL : load_mod(p, dll, 1);
+        for (int k = 0; ilt[k]; k++) {
+            void *fn = NULL;
+            char name[64]; uint32_t ord = 0;
+            if (ilt[k] & ord_flag) { ord = (uint32_t)(ilt[k] & 0xFFFF); snprintf(name, sizeof name, "Ordinal%u", ord); }
+            else strlcpy(name, (const char *)(img + (uint32_t)ilt[k] + 2), sizeof name);
+            if (m) fn = w32_mod_export(p, m, ord ? NULL : name, ord);
+            else fn = builtin_import(p, dll, name);
+            if (!fn) { fn = make_thunk(dll, name); unresolved++; klog("w32: %s: unresolved import %s!%s", path_basename(p->path), dll, name); }
+            iat[k] = (uintptr_t)fn;
+        }
+    }
+    return unresolved;
+}
+/* DllMain(hinst, DLL_PROCESS_ATTACH, NULL) for the DLLs loaded since the last call */
+void w32_run_dll_inits(w32_proc_t *p) {
+    for (int i = 0; i < p->ninitq; i++) {
+        w32_mod_t *m = p->initq[i];
+        if (m->inited) continue;
+        m->inited = true;
+        if (!m->entry) continue;
+        uint32_t ok = call_tls_cb((void *)(m->base + m->entry), m->base, 1, 0);
+        if (!(ok & 0xFF)) klog("w32: pid %d: DllMain of %s failed", p->pid, m->name);
+    }
+    p->ninitq = 0;
 }
 
 int pe_spawn(const char *path, const char *args, console_t *con, char *err, int ecap) {
@@ -397,7 +674,7 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
     memset(p->frames, 0, size);
     p->pagedir = paging_new_dir();
     uint32_t pde_first = (uint32_t)base >> 22, pde_last = (uint32_t)(base + size - 1) >> 22;
-    for (uint32_t pd = pde_first; pd <= pde_last && p->nptabs < 4; pd++) {
+    for (uint32_t pd = pde_first; pd <= pde_last && p->nptabs < (int)ARRAY_LEN(p->ptabs); pd++) {
         uint32_t *pt = kmalloc_aligned(4096, 4096);
         memset(pt, 0, 4096);
         p->ptabs[p->nptabs++] = pt;
@@ -440,35 +717,18 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
             r += bsz;
         }
     }
-    /* imports (thunk entries are pointer-sized; bit 31 / 63 marks an ordinal) */
-    int unresolved = 0;
-    const uintptr_t ord_flag = (uintptr_t)1 << (sizeof(uintptr_t) * 8 - 1);
-    if (pi.nrva > 1 && pi.dir[1].Size) {
-        for (import_desc_t *id = (import_desc_t *)(img + pi.dir[1].VirtualAddress); id->Name; id++) {
-            const char *dll = (const char *)(img + id->Name);
-            uintptr_t *ilt = (uintptr_t *)(img + (id->OriginalFirstThunk ? id->OriginalFirstThunk : id->FirstThunk));
-            uintptr_t *iat = (uintptr_t *)(img + id->FirstThunk);
-            const dll_t *dl = find_dll(dll);
-            for (int k = 0; ilt[k]; k++) {
-                void *fn = NULL;
-                char name[64];
-                if (ilt[k] & ord_flag) snprintf(name, sizeof name, "Ordinal%u", (uint32_t)(ilt[k] & 0xFFFF));
-                else strlcpy(name, (const char *)(img + (uint32_t)ilt[k] + 2), sizeof name);
-                if (dl) { for (int e = 0; e < *dl->count; e++) if (!strcmp(dl->tab[e].name, name)) { fn = dl->tab[e].fn; break; } }
-                if (!fn && dl && dl->tab == msvcrt_exports) {   /* C runtime variables imported as data (x64 CRT) */
-                    if (!strcmp(name, "_fmode")) fn = &p->fmode;
-                    else if (!strcmp(name, "_commode")) fn = &p->commode;
-                    else if (!strcmp(name, "_acmdln")) fn = &p->acmdln;
-                    else if (!strcmp(name, "__argc")) fn = &p->argc;
-                    else if (!strcmp(name, "__argv")) fn = &p->argv;
-                    else if (!strcmp(name, "_environ") || !strcmp(name, "__initenv")) fn = &p->envp;
-                }
-                if (!fn) fn = w32_compat_find(dll, name);
-                if (!fn) { fn = make_thunk(dll, name); unresolved++; klog("w32: %s: unresolved import %s!%s", path_basename(p->path), dll, name); }
-                iat[k] = (uintptr_t)fn;
-            }
-        }
-    }
+    /* the program is module 0; DLLs it imports from files are loaded after it */
+    w32_mod_t *me = kzalloc(sizeof *me);
+    strlcpy(me->path, p->path, sizeof me->path); strlcpy(me->name, path_basename(p->path), sizeof me->name);
+    me->base = base; me->size = size; me->entry = pi.entry; me->img = img; me->refs = 1; me->inited = true; me->is_exe = true;
+    set_mod_dirs(me, &pi);
+    p->mods[p->nmods++] = me;
+#ifdef __x86_64__
+    p->dll_next = DLL_BASE64;
+#else
+    p->dll_next = (base + size + 0xFFFF) & ~(uintptr_t)0xFFFF;
+#endif
+    int unresolved = resolve_imports(p, img, &pi);
     /* TLS */
     p->tls_array = kzalloc(64 * sizeof(uintptr_t));
     if (pi.nrva > 9 && pi.dir[9].Size) {

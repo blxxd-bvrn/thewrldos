@@ -14,6 +14,7 @@
 typedef __builtin_ms_va_list w32_va_list;
 #define w32_va_start(ap, last) __builtin_ms_va_start(ap, last)
 #define w32_va_end(ap) __builtin_ms_va_end(ap)
+#define w32_va_copy(d, s) __builtin_ms_va_copy(d, s)
 #define W32_MACHINE 0x8664
 #else
 #define WINAPI __attribute__((stdcall))
@@ -21,6 +22,7 @@ typedef __builtin_ms_va_list w32_va_list;
 typedef va_list w32_va_list;
 #define w32_va_start(ap, last) va_start(ap, last)
 #define w32_va_end(ap) va_end(ap)
+#define w32_va_copy(d, s) __builtin_va_copy(d, s)
 #define W32_MACHINE 0x014C
 #endif
 /* LLP64: handles and WPARAM/LPARAM/LRESULT are pointer-sized, DWORD/LONG stay 32-bit */
@@ -33,6 +35,15 @@ typedef uint16_t WORD, WCHAR;
 typedef uint8_t BYTE;
 
 typedef struct w32_proc w32_proc_t;
+/* a DLL loaded into a process from a file (pe.c); the program itself is mods[0] */
+typedef struct w32_mod {
+    char name[64], path[256];
+    uintptr_t base; uint32_t size, entry;
+    uint32_t exp_rva, exp_size, res_rva, res_size, pdata_rva, pdata_size;
+    uint8_t *img;               /* kernel-visible alias of the image (the program's: p->frames) */
+    int refs; bool inited, is_exe;
+} w32_mod_t;
+#define W32_MAX_MODS 48
 #define MAX_HANDLES 128
 enum { H_NONE, H_FILE, H_THREAD, H_FIND, H_EVENT, H_PROCESS };
 typedef struct { int kind; vnode_t *node; uint32_t pos; bool write; int tid; vnode_t *find_dir, *find_cur; char find_pat[96]; bool signaled, manual; } w32_handle_t;
@@ -53,7 +64,7 @@ struct w32_proc {
     uint32_t size, entry;
     uintptr_t space;            /* CR3 of the process address space */
     uint32_t *pagedir;          /* x86 */
-    uint32_t *ptabs[4]; int nptabs;   /* x86: page tables for the image window */
+    uint32_t *ptabs[40]; int nptabs;  /* x86: page tables for the image window and DLLs */
     uint8_t *frames;
     uint8_t *teb, *peb;
     uintptr_t tls_index_addr; uint8_t *tls_block; uintptr_t *tls_array;
@@ -77,6 +88,12 @@ struct w32_proc {
     char title[96];
     uint32_t fmode, commode;
     uint32_t res_rva, res_size;   /* the image's resource directory */
+    w32_mod_t *mods[W32_MAX_MODS]; int nmods;   /* the program, then its DLLs in load order */
+    w32_mod_t *initq[W32_MAX_MODS]; int ninitq; /* DLLs whose DllMain is still to run (dependencies first) */
+    uintptr_t dll_next;           /* where the next DLL goes */
+    uintptr_t fdh[64]; uint8_t fdfl[64];        /* C runtime file descriptors: kernel32 handles (0-2: the console) */
+    WCHAR **wargv, **wenvp; WCHAR *wcmdln;      /* wide copies, made when a program asks */
+    int umask;
 };
 
 w32_proc_t *w32_cur(void);
@@ -93,11 +110,25 @@ int w32_stdin_read(w32_proc_t *p, char *buf, int n);
 int w32_vformat(char *out, int cap, const char *fmt, w32_va_list ap);
 int w32_vsscanf(const char *str, const char *fmt, w32_va_list ap);
 bool w32_lookup(const char *dll, const char *name, void **out);
+/* program DLLs (pe.c): load one by name or path (0 if there is no such file or it is
+ * a built-in system DLL), find a loaded one, look up an export ("Name" or "#12"),
+ * run pending DllMain(DLL_PROCESS_ATTACH) calls in the process's own task */
+uintptr_t w32_load_library(w32_proc_t *p, const char *name);
+w32_mod_t *w32_mod_by_base(w32_proc_t *p, uintptr_t base);
+w32_mod_t *w32_mod_by_name(w32_proc_t *p, const char *name);
+w32_mod_t *w32_mod_at(w32_proc_t *p, uintptr_t addr);
+void *w32_mod_export(w32_proc_t *p, w32_mod_t *m, const char *name, uint32_t ord);
+void w32_run_dll_inits(w32_proc_t *p);
+bool w32_is_system_dll(const char *name);
+uintptr_t w32_find_resource_in(w32_proc_t *p, uintptr_t hmod, uintptr_t type, uintptr_t name, bool wide, int lang);
 /* resources (pe.c): type and name are MAKEINTRESOURCE ids (< 0x10000) or strings, ANSI or wide;
  * the result is the image's IMAGE_RESOURCE_DATA_ENTRY (the HRSRC), or 0 */
 uintptr_t w32_find_resource(w32_proc_t *p, uintptr_t type, uintptr_t name, bool wide, int lang);
 void *w32_resource_data(w32_proc_t *p, uintptr_t hrsrc, uint32_t *size);
 void w32_user_cleanup(w32_proc_t *p);
+vnode_t *w32_handle_node(w32_proc_t *p, uintptr_t h);         /* kernel32.c: a file handle's node, or NULL */
+uint32_t w32_handle_pos(w32_proc_t *p, uintptr_t h);
+w32_proc_t *pe_find(int pid);
 bool w32_pump_timers(w32_proc_t *p);
 
 typedef struct { const char *name; void *fn; } w32_export_t;

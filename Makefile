@@ -85,7 +85,7 @@ MINGW   := i686-w64-mingw32-gcc
 # The 32-bit kernel enables x87, not SSE. Use an x87-compatible MinGW CRT too;
 # per-source flags cannot remove SSE2 already built into a toolchain's startup.
 MINGW32_SHADER_FLAGS ?= -march=i686 -mno-sse -mno-mmx -mfpmath=387
-SAMPLES := $(wildcard samples/*.c)
+SAMPLES := $(filter-out samples/mathlib.c,$(wildcard samples/*.c))
 SAMPLE_EXES := $(patsubst samples/%.c,rootfs/Samples/%.exe,$(SAMPLES))
 MINGW64 := x86_64-w64-mingw32-gcc
 SAMPLE_EXES64 := $(patsubst samples/%.c,rootfs64/Samples/%.exe,$(SAMPLES))
@@ -257,6 +257,16 @@ rootfs64/Samples/gpuverify.exe: samples/gpuverify.c samples/d3d10cube.c samples/
 rootfs64/Samples/wsget.exe: samples/wsget.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $< -lws2_32
+rootfs64/Samples/mathlib.dll: samples/mathlib.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -shared -o $@ $< -Wl,--out-implib,build64/libmathlib.a
+rootfs64/Samples/dlldemo.exe: samples/dlldemo.c rootfs64/Samples/mathlib.dll
+	$(MINGW64) -O2 -s -o $@ $< build64/libmathlib.a
+rootfs/Samples/mathlib.dll: samples/mathlib.c
+	@mkdir -p build
+	$(MINGW) -O2 -s -shared -o $@ $< -Wl,--out-implib,build/libmathlib.a
+rootfs/Samples/dlldemo.exe: samples/dlldemo.c rootfs/Samples/mathlib.dll
+	$(MINGW) -O2 -s -o $@ $< build/libmathlib.a
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<

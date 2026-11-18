@@ -223,6 +223,7 @@ bool video_mode_ok(int w, int h);
 bool video_set_mode(int w, int h);
 void video_update(int x, int y, int w, int h);
 extern uint8_t *initrd_data;
+extern uintptr_t w32_dll_area; extern uint32_t w32_dll_area_size;   /* x86: address range for Win32 DLLs (mm.c), or 0 */
 extern uint32_t initrd_size;
 extern bool boot_safe_mode;
 #endif

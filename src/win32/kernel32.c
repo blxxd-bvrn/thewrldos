@@ -5,7 +5,7 @@
 #define STD_IN_H  0x11
 #define STD_OUT_H 0x12
 #define STD_ERR_H 0x13
-#define INVALID_HANDLE 0xFFFFFFFFu
+#define INVALID_HANDLE ((HANDLE)(intptr_t)-1)   /* INVALID_HANDLE_VALUE: all ones on x86 and x64 */
 #define HFILE_BASE 0x100
 static inline void set_err(uint32_t e) { w32_proc_t *p = P; if (p) p->last_error = e; }
 
@@ -45,14 +45,15 @@ int w32_stdin_read(w32_proc_t *p, char *buf, int n) {
 }
 
 /* ---------------- handles ---------------- */
-static w32_handle_t *hget(uint32_t h) {
+static w32_handle_t *hget(uintptr_t h) {
+    if (h >> 31 >> 1) return NULL;
     w32_proc_t *p = P; if (!p) return NULL;
     if (h < HFILE_BASE || ((h - HFILE_BASE) & 3)) return NULL;
     uint32_t i = (h - HFILE_BASE) / 4;
     if (i >= MAX_HANDLES || p->handles[i].kind == H_NONE) return NULL;
     return &p->handles[i];
 }
-static uint32_t halloc(int kind) {
+static HANDLE halloc(int kind) {
     w32_proc_t *p = P;
     for (int i = 1; i < MAX_HANDLES; i++) if (p->handles[i].kind == H_NONE) { memset(&p->handles[i], 0, sizeof(w32_handle_t)); p->handles[i].kind = kind; return HFILE_BASE + i * 4; }
     return INVALID_HANDLE;
@@ -83,7 +84,7 @@ static HANDLE WINAPI CreateFileA(const char *name, DWORD access, DWORD share, vo
     if (n->dir) { set_err(5); return INVALID_HANDLE; }
     if ((access & GENERIC_WRITE) && n->readonly) { set_err(5); return INVALID_HANDLE; }
     if (disp == 2 || disp == 5) { n->size = 0; vfs_generation++; }
-    uint32_t h = halloc(H_FILE);
+    HANDLE h = halloc(H_FILE);
     if (h == INVALID_HANDLE) { set_err(4); return h; }
     w32_handle_t *e = hget(h); e->node = n; e->pos = 0; e->write = (access & GENERIC_WRITE) != 0;
     set_err(disp == 4 || disp == 2 ? 183 : 0);
@@ -177,8 +178,16 @@ static BOOL WINAPI CopyFileA(const char *a, const char *b, BOOL fail) {
 static DWORD WINAPI GetFileAttributesA(const char *n) { char p[512]; vnode_t *v = vfs_resolve(fixpath(n, p, sizeof p), NULL); if (!v) { set_err(2); return 0xFFFFFFFF; } return (v->dir ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL) | (v->readonly ? FILE_ATTRIBUTE_READONLY : 0); }
 static DWORD WINAPI GetCurrentDirectoryA(DWORD n, char *buf) { w32_proc_t *p = P; DWORD l = strlen(p->cwd); if (buf && n > l) strcpy(buf, p->cwd); return n > l ? l : l + 1; }
 static BOOL WINAPI SetCurrentDirectoryA(const char *d) { char p[512]; vnode_t *v = vfs_resolve(fixpath(d, p, sizeof p), NULL); if (!v || !v->dir) { set_err(3); return 0; } vfs_path(v, P->cwd, sizeof P->cwd); return 1; }
-static DWORD WINAPI GetModuleFileNameA(HMODULE m, char *buf, DWORD n) { w32_proc_t *p = P; strlcpy(buf, p->path, n); return strlen(buf); }
-static DWORD WINAPI GetModuleFileNameW(HMODULE m, WCHAR *buf, DWORD n) { w32_proc_t *p = P; DWORD i = 0; for (; p->path[i] && i + 1 < n; i++) buf[i] = p->path[i]; buf[i] = 0; return i; }
+static const char *module_path(HMODULE h) {
+    w32_proc_t *p = P;
+    w32_mod_t *m = h ? w32_mod_by_base(p, h) : NULL;
+    if (m) return m->path;
+    static char sys[64];
+    if (h && h != p->base) { const char *k = NULL; extern const char *k32_kmod_name(HMODULE); k = k32_kmod_name(h); if (k) { snprintf(sys, sizeof sys, "C:\\WRLD\\System32\\%s", k); return sys; } }
+    return p->path;
+}
+static DWORD WINAPI GetModuleFileNameA(HMODULE m, char *buf, DWORD n) { if (!n) return 0; const char *s = module_path(m); strlcpy(buf, s, n); return strlen(buf); }
+static DWORD WINAPI GetModuleFileNameW(HMODULE m, WCHAR *buf, DWORD n) { if (!n) return 0; const char *s = module_path(m); DWORD i = 0; for (; s[i] && i + 1 < n; i++) buf[i] = (uint8_t)s[i]; buf[i] = 0; return i; }
 static DWORD WINAPI GetFullPathNameA(const char *n, DWORD cap, char *buf, char **fp) { char p[512]; fixpath(n, p, sizeof p); strlcpy(buf, p, cap); if (fp) { char *b = strrchr(buf, '\\'); *fp = b ? b + 1 : buf; } return strlen(p); }
 static DWORD WINAPI GetTempPathA(DWORD n, char *buf) { strlcpy(buf, "C:\\tmp\\", n); return 7; }
 
@@ -207,7 +216,7 @@ static HANDLE WINAPI FindFirstFileA(const char *pat, WIN32_FIND_DATAA *f) {
     char p[512], dir[512]; fixpath(pat, p, sizeof p); path_dirname(p, dir, sizeof dir);
     vnode_t *d = vfs_resolve(dir, NULL);
     if (!d || !d->dir) { set_err(3); return INVALID_HANDLE; }
-    uint32_t h = halloc(H_FIND); w32_handle_t *e = hget(h);
+    HANDLE h = halloc(H_FIND); w32_handle_t *e = hget(h);
     e->find_dir = d; e->find_cur = d->child; strlcpy(e->find_pat, path_basename(p), sizeof e->find_pat);
     if (!FindNextFileA(h, f)) { e->kind = H_NONE; set_err(2); return INVALID_HANDLE; }
     return h;
@@ -256,9 +265,9 @@ static BOOL WINAPI FillConsoleOutputAttribute(HANDLE h, WORD a, DWORD n, COORD x
 
 /* ---------------- process / thread ---------------- */
 static void WINAPI ExitProcess(UINT code) { w32_exit_process(code); }
-static BOOL WINAPI TerminateProcess(HANDLE h, UINT code) { if (h == 0xFFFFFFFF || h == 0) w32_exit_process(code); return 0; }
-static HANDLE WINAPI GetCurrentProcess(void) { return 0xFFFFFFFF; }
-static HANDLE WINAPI GetCurrentThread(void) { return 0xFFFFFFFE; }
+static BOOL WINAPI TerminateProcess(HANDLE h, UINT code) { if ((uint32_t)h == 0xFFFFFFFF || h == 0) w32_exit_process(code); return 0; }
+static HANDLE WINAPI GetCurrentProcess(void) { return (HANDLE)(intptr_t)-1; }
+static HANDLE WINAPI GetCurrentThread(void) { return (HANDLE)(intptr_t)-2; }
 static DWORD WINAPI GetCurrentProcessId(void) { return P->pid; }
 static DWORD WINAPI GetCurrentThreadId(void) { return task_current()->pid; }
 static char *WINAPI GetCommandLineA(void) { return P->cmdline; }
@@ -285,7 +294,7 @@ static HANDLE WINAPI CreateThread(void *sa, DWORD stack, void *fn, void *arg, DW
     t->teb = (uintptr_t)w32_new_teb(p, t);
     p->threads++;
     if (tid) *tid = t->pid;
-    uint32_t h = halloc(H_THREAD); hget(h)->tid = t->pid;
+    HANDLE h = halloc(H_THREAD); hget(h)->tid = t->pid;
     return h;
 }
 /* the object behind a handle of process p, or NULL (callable from any task) */
@@ -295,7 +304,7 @@ static w32_handle_t *hget_p(w32_proc_t *p, uint32_t h) {
     return i < MAX_HANDLES && p->handles[i].kind != H_NONE ? &p->handles[i] : NULL;
 }
 bool w32_handle_signaled(w32_proc_t *p, uintptr_t h, bool consume) {
-    if (h == (uintptr_t)0xFFFFFFFFu || h == (uintptr_t)0xFFFFFFFEu) return false;   /* this process / thread: never, while running */
+    if ((uint32_t)h == 0xFFFFFFFFu || (uint32_t)h == 0xFFFFFFFEu) return false;   /* this process / thread: never, while running */
     w32_handle_t *e = hget_p(p, (uint32_t)h);
     if (!e) return true;                                            /* not a waitable object: nothing to wait for */
     if (e->kind == H_THREAD) return !task_find(e->tid);
@@ -319,16 +328,23 @@ static DWORD WINAPI WaitForMultipleObjects(DWORD n, HANDLE *hs, BOOL all, DWORD 
 }
 static DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) { return WaitForMultipleObjects(1, &h, 0, ms); }
 static BOOL WINAPI GetExitCodeThread(HANDLE h, DWORD *c) { w32_handle_t *e = hget(h); if (!e) return 0; *c = task_find(e->tid) ? 259 : (DWORD)task_exit_code(e->tid); return 1; }
-static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL init, const char *n) { uint32_t h = halloc(H_EVENT); if (h == INVALID_HANDLE) return 0; hget(h)->signaled = init; hget(h)->manual = manual; return h; }
+static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL init, const char *n) { HANDLE h = halloc(H_EVENT); if (h == INVALID_HANDLE) return 0; hget(h)->signaled = init; hget(h)->manual = manual; return h; }
 static BOOL WINAPI SetEvent(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 1; return 1; }
 static BOOL WINAPI ResetEvent(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 0; return 1; }
-static HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *n) { uint32_t h = halloc(H_EVENT); if (h != INVALID_HANDLE) { hget(h)->signaled = !own; } return h; }
+static HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *n) { HANDLE h = halloc(H_EVENT); if (h != INVALID_HANDLE) { hget(h)->signaled = !own; } return h; }
 static BOOL WINAPI ReleaseMutex(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 1; return 1; }
 /* semaphores as auto-reset events: enough for the usual "count up, wait" pairs */
-static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG i, LONG m, const char *n) { uint32_t h = halloc(H_EVENT); if (h != INVALID_HANDLE) hget(h)->signaled = i > 0; return h; }
+static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG i, LONG m, const char *n) { HANDLE h = halloc(H_EVENT); if (h != INVALID_HANDLE) hget(h)->signaled = i > 0; return h; }
 static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG c, LONG *p) { w32_handle_t *e = hget(h); if (p) *p = 0; if (e) e->signaled = 1; return 1; }
 static BOOL WINAPI DuplicateHandle(HANDLE a, HANDLE b, HANDLE c, HANDLE *d, DWORD e, BOOL f, DWORD g) { if (d) *d = b; return 1; }
-static BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *c) { *c = 259; return 1; }
+static BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *c) {
+    if ((uint32_t)h == 0xFFFFFFFFu) { *c = 259; return 1; }
+    w32_handle_t *e = hget(h); if (!e) { set_err(6); return 0; }
+    *c = task_find(e->tid) ? 259 : (DWORD)task_exit_code(e->tid); return 1;
+}
+/* the file behind a kernel32 handle (for the C runtime's fstat) */
+vnode_t *w32_handle_node(w32_proc_t *p, uintptr_t h) { w32_handle_t *e = hget_p(p, (uint32_t)h); return e && e->kind == H_FILE ? e->node : NULL; }
+uint32_t w32_handle_pos(w32_proc_t *p, uintptr_t h) { w32_handle_t *e = hget_p(p, (uint32_t)h); return e ? e->pos : 0; }
 typedef struct { HANDLE proc, thread; DWORD pid, tid; } PROCESS_INFORMATION;
 static BOOL WINAPI CreateProcessA(const char *app, char *cmd, void *a, void *b, BOOL inh, DWORD fl, void *env, const char *cwd, STARTUPINFOA *si, PROCESS_INFORMATION *pi) {
     char path[512], args[512] = "";
@@ -339,12 +355,19 @@ static BOOL WINAPI CreateProcessA(const char *app, char *cmd, void *a, void *b, 
     else while (*s && *s != ' ' && n < 511) path[n++] = *s++;
     path[n] = 0;
     if (cmd && !app) { while (*s == ' ') s++; strlcpy(args, s, sizeof args); }
+    else if (cmd && app) {                               /* the command line repeats the program name first */
+        const char *c = cmd; while (*c == ' ') c++;
+        if (*c == '"') { c++; while (*c && *c != '"') c++; if (*c) c++; } else while (*c && *c != ' ') c++;
+        while (*c == ' ') c++; strlcpy(args, c, sizeof args);
+    }
     char full[512]; fixpath(path, full, sizeof full);
     if (!vfs_resolve(full, NULL)) { strlcat(full, ".exe", sizeof full); }
     char err[200];
+    char cwdbuf[256]; if (cwd) fixpath(cwd, cwdbuf, sizeof cwdbuf);
     int pid = pe_spawn(full, args, P->con, err, sizeof err);
+    if (pid >= 0 && cwd) { w32_proc_t *np = pe_find(pid); if (np) strlcpy(np->cwd, cwdbuf, sizeof np->cwd); }
     if (pid < 0) { set_err(2); return 0; }
-    if (pi) { pi->pid = pi->tid = pid; uint32_t h = halloc(H_THREAD); hget(h)->tid = pid; pi->proc = h; pi->thread = h; }
+    if (pi) { pi->pid = pi->tid = pid; HANDLE h = halloc(H_THREAD); hget(h)->tid = pid; pi->proc = h; pi->thread = h; }
     return 1;
 }
 
@@ -522,28 +545,63 @@ static const char *modnames[] = {
     "kernel32.dll", "msvcrt.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "ntdll.dll", "kernelbase.dll", "ucrtbase.dll",
     "d3d10.dll", "dxgi.dll", "d3dcompiler_47.dll", "d3d9.dll", "opengl32.dll", "glu32.dll", "ws2_32.dll", "wsock32.dll", "oleaut32.dll", "imm32.dll", "ole32.dll", "comdlg32.dll", "comctl32.dll", "winspool.drv"
 };
+static char kmod_extra[32][32]; static int kmod_nextra;   /* more built-in DLLs, numbered as asked for */
 static HMODULE mod_handle(const char *n) {
     if (!n) return P->base;
     char b[64]; strlcpy(b, path_basename(n), sizeof b);
     if (!strchr(b, '.')) strlcat(b, ".dll", sizeof b);
+    w32_mod_t *m = w32_mod_by_name(P, b);
+    if (m) return m->base;
     for (unsigned i = 0; i < ARRAY_LEN(modnames); i++) if (!strcasecmp(b, modnames[i])) return KMOD(i);
+    if (w32_is_system_dll(b)) {                          /* another built-in DLL: a handle of its own */
+        for (int i = 0; i < kmod_nextra; i++) if (!strcasecmp(kmod_extra[i], b)) return KMOD(64 + i);
+        if (kmod_nextra < 32) { strlcpy(kmod_extra[kmod_nextra], b, 32); return KMOD(64 + kmod_nextra++); }
+    }
     return 0;
 }
+static const char *kmod_name(HMODULE h) {
+    if (h >= KMOD(0) && h < KMOD(ARRAY_LEN(modnames)) && !((h - KMOD(0)) & 0xFFFF)) return modnames[(h - KMOD(0)) / 0x10000];
+    if (h >= KMOD(64) && h < KMOD(64 + kmod_nextra) && !((h - KMOD(0)) & 0xFFFF)) return kmod_extra[(h - KMOD(64)) / 0x10000];
+    return NULL;
+}
+const char *k32_kmod_name(HMODULE h) { return kmod_name(h); }
 static HMODULE WINAPI GetModuleHandleA(const char *n) { HMODULE h = mod_handle(n); if (!h) set_err(126); return h; }
-static HMODULE WINAPI GetModuleHandleW(const WCHAR *n) { if (!n) return P->base; char b[64]; int i = 0; for (; n[i] && i < 63; i++) b[i] = (char)n[i]; b[i] = 0; return GetModuleHandleA(b); }
-static BOOL WINAPI GetModuleHandleExW(DWORD f, const WCHAR *n, HMODULE *h) { *h = GetModuleHandleW(n); return *h != 0; }
-static HMODULE WINAPI LoadLibraryA(const char *n) { HMODULE h = mod_handle(n); if (!h) { set_err(126); klog("w32: LoadLibrary(%s) failed", n); } return h; }
-static HMODULE WINAPI LoadLibraryW(const WCHAR *n) { return GetModuleHandleW(n); }
-static HMODULE WINAPI LoadLibraryExA(const char *n, HANDLE f, DWORD fl) { return LoadLibraryA(n); }
-static BOOL WINAPI FreeLibrary(HMODULE h) { return 1; }
+static HMODULE WINAPI GetModuleHandleW(const WCHAR *n) { if (!n) return P->base; char b[260]; int i = 0; for (; n[i] && i < 259; i++) b[i] = (char)n[i]; b[i] = 0; return GetModuleHandleA(b); }
+static BOOL WINAPI GetModuleHandleExW(DWORD f, const WCHAR *n, HMODULE *h) {
+    if (f & 4) { w32_mod_t *m = w32_mod_at(P, (uintptr_t)n); *h = m ? m->base : 0; }   /* FROM_ADDRESS */
+    else *h = GetModuleHandleW(n);
+    return *h != 0;
+}
+static HMODULE WINAPI LoadLibraryA(const char *n) {
+    if (!n) { set_err(87); return 0; }
+    w32_mod_t *m = w32_mod_by_name(P, n);
+    if (m) { m->refs++; return m->base; }
+    HMODULE h = w32_is_system_dll(path_basename(n)) ? 0 : w32_load_library(P, n);
+    if (h) { w32_run_dll_inits(P); return h; }
+    h = mod_handle(n);
+    if (!h) { set_err(126); klog("w32: LoadLibrary(%s) failed", n); }
+    return h;
+}
+static HMODULE WINAPI LoadLibraryW(const WCHAR *n) { if (!n) return 0; char b[260]; int i = 0; for (; n[i] && i < 259; i++) b[i] = (char)n[i]; b[i] = 0; return LoadLibraryA(b); }
+static HMODULE WINAPI LoadLibraryExA(const char *n, HANDLE f, DWORD fl) {
+    if (fl & 0x22) {                                     /* as a data file / image resource: map it, no DllMain */
+        HMODULE h = w32_is_system_dll(path_basename(n)) ? 0 : w32_load_library(P, n);
+        if (h) { w32_mod_t *m = w32_mod_by_base(P, h); if (m) m->inited = true; return h; }
+    }
+    return LoadLibraryA(n);
+}
+static BOOL WINAPI FreeLibrary(HMODULE h) { w32_mod_t *m = w32_mod_by_base(P, h); if (m && m->refs > 1) m->refs--; return 1; }
 static void *WINAPI GetProcAddress(HMODULE h, const char *name) {
-    if ((uintptr_t)name < 0x10000) return NULL;
     void *fn = NULL;
-    if (h >= KMOD(0) && h < KMOD(ARRAY_LEN(modnames))) {
-        const char *dll = modnames[(h - KMOD(0)) / 0x10000];
-        if (!strcasecmp(dll, "ntdll.dll") || !strcasecmp(dll, "kernelbase.dll")) dll = "kernel32.dll";
-        if (!strcasecmp(dll, "ucrtbase.dll")) dll = "msvcrt.dll";
-        w32_lookup(dll, name, &fn);
+    w32_mod_t *m = w32_mod_by_base(P, h ? h : P->base);
+    if (m) fn = w32_mod_export(P, m, (uintptr_t)name < 0x10000 ? NULL : name, (uint32_t)(uintptr_t)name);
+    else if ((uintptr_t)name >= 0x10000) {
+        const char *dll = kmod_name(h);
+        if (dll) {
+            if (!strcasecmp(dll, "ntdll.dll") || !strcasecmp(dll, "kernelbase.dll")) dll = "kernel32.dll";
+            if (!strcasecmp(dll, "ucrtbase.dll")) dll = "msvcrt.dll";
+            w32_lookup(dll, name, &fn);
+        }
     }
     if (!fn) set_err(127);
     return fn;

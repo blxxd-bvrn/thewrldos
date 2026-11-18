@@ -7,7 +7,7 @@
 #include "w32.h"
 
 #define P w32_cur()
-#define INVALID_HANDLE ((HANDLE)0xFFFFFFFFu)
+#define INVALID_HANDLE ((HANDLE)(intptr_t)-1)
 static inline void set_err(uint32_t e) { w32_proc_t *p = P; if (p) p->last_error = e; }
 static void *K(const char *name) { void *fn = NULL; w32_lookup("kernel32.dll", name, &fn); return fn; }
 
@@ -201,7 +201,7 @@ static BOOL WINAPI GetThreadTimes(HANDLE h, uint64_t *c, uint64_t *e, uint64_t *
 static void WINAPI ExitThread(DWORD code) { task_exit(code); for (;;) ; }
 static void WINAPI FreeLibraryAndExitThread(HMODULE m, DWORD code) { ExitThread(code); }
 static BOOL WINAPI IsThreadAFiber(void) { return 0; }
-static HANDLE WINAPI OpenProcess(DWORD acc, BOOL inh, DWORD pid) { if (pid == (DWORD)P->pid) return (HANDLE)0xFFFFFFFFu; set_err(87); return 0; }
+static HANDLE WINAPI OpenProcess(DWORD acc, BOOL inh, DWORD pid) { if (pid == (DWORD)P->pid) return (HANDLE)(intptr_t)-1; set_err(87); return 0; }
 static BOOL WINAPI SetHandleInformation(HANDLE h, DWORD m, DWORD f) { return 1; }
 static BOOL WINAPI GetHandleInformation(HANDLE h, DWORD *f) { if (f) *f = 0; return 1; }
 static BOOL WINAPI CreatePipe(HANDLE *r, HANDLE *w, void *sa, DWORD n) { set_err(1); return 0; }
@@ -412,11 +412,10 @@ static UINT WINAPI GetTempFileNameA(const char *d, const char *p, UINT u, char *
     return u;
 }
 /* resources of the program's own image (other modules have none: they are built in) */
-static bool own_module(HMODULE m) { return !m || m == P->base; }
-static HANDLE WINAPI FindResourceW(HMODULE m, const WCHAR *n, const WCHAR *t) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, true, 0) : 0; if (!r) set_err(1814); return r; }
-static HANDLE WINAPI FindResourceExW(HMODULE m, const WCHAR *t, const WCHAR *n, WORD l) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, true, l) : 0; if (!r) set_err(1814); return r; }
-static HANDLE WINAPI FindResourceA2(HMODULE m, const char *n, const char *t) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, false, 0) : 0; if (!r) set_err(1814); return r; }
-static HANDLE WINAPI FindResourceExA(HMODULE m, const char *t, const char *n, WORD l) { HANDLE r = own_module(m) ? w32_find_resource(P, (uintptr_t)t, (uintptr_t)n, false, l) : 0; if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceW(HMODULE m, const WCHAR *n, const WCHAR *t) { HANDLE r = w32_find_resource_in(P, m, (uintptr_t)t, (uintptr_t)n, true, 0); if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceExW(HMODULE m, const WCHAR *t, const WCHAR *n, WORD l) { HANDLE r = w32_find_resource_in(P, m, (uintptr_t)t, (uintptr_t)n, true, l); if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceA2(HMODULE m, const char *n, const char *t) { HANDLE r = w32_find_resource_in(P, m, (uintptr_t)t, (uintptr_t)n, false, 0); if (!r) set_err(1814); return r; }
+static HANDLE WINAPI FindResourceExA(HMODULE m, const char *t, const char *n, WORD l) { HANDLE r = w32_find_resource_in(P, m, (uintptr_t)t, (uintptr_t)n, false, l); if (!r) set_err(1814); return r; }
 static HANDLE WINAPI LoadResource(HMODULE m, HANDLE r) { return (HANDLE)w32_resource_data(P, r, NULL); }
 static void *WINAPI LockResource(HANDLE r) { return (void *)r; }
 static BOOL WINAPI FreeResource(HANDLE r) { return 0; }
@@ -439,7 +438,7 @@ static BOOL WINAPI SetProcessDEPPolicy(DWORD f) { return 1; }
 /* x64 exception tables: the subsystem has none to walk, so code that looks for a handler finds a
  * leaf function, and an exception that must unwind ends the program with a message */
 static void *WINAPI RtlLookupFunctionEntry(uintptr_t pc, uintptr_t *base, void *hist) { if (base) *base = P->base; return NULL; }
-static void *WINAPI RtlPcToFileHeader(uintptr_t pc, uintptr_t *base) { *base = P->base; return (void *)P->base; }
+static void *WINAPI RtlPcToFileHeader(uintptr_t pc, uintptr_t *base) { w32_mod_t *m = w32_mod_at(P, pc); *base = m ? m->base : 0; return (void *)*base; }
 static void *WINAPI RtlVirtualUnwind(DWORD t, uintptr_t base, uintptr_t pc, void *fe, void *ctx, void **hd, uintptr_t *est, void *cp) { if (hd) *hd = NULL; return NULL; }
 static void fatal_exception(const char *what) {
     w32_proc_t *p = P;
@@ -640,7 +639,7 @@ static void dll_group(const char *dll, char *g, int cap) {
     char b[64]; strlcpy(b, dll, sizeof b);
     for (char *c = b; *c; c++) *c = tolower(*c);
     char *dot = strstr(b, ".dll"); if (dot) *dot = 0;
-    if (!strncmp(b, "api-ms-win-crt-", 15) || !strcmp(b, "ucrtbase") || !strncmp(b, "msvcr", 5) || !strcmp(b, "crtdll")) strlcpy(g, "msvcrt", cap);
+    if (!strncmp(b, "api-ms-win-crt-", 15) || !strcmp(b, "ucrtbase") || !strncmp(b, "vcruntime", 9) || !strncmp(b, "msvcp", 5) || !strncmp(b, "msvcr", 5) || !strcmp(b, "crtdll")) strlcpy(g, "msvcrt", cap);
     else if (!strncmp(b, "api-ms-win-core-", 16) || !strcmp(b, "kernelbase") || !strcmp(b, "ntdll")) strlcpy(g, "kernel32", cap);
     else if (!strncmp(b, "api-ms-win-security-", 20)) strlcpy(g, "advapi32", cap);
     else strlcpy(g, b, cap);

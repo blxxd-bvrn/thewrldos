@@ -346,6 +346,7 @@ void mm_release_initrd(void) {
 }
 uint8_t *initrd_data;
 uint32_t initrd_size;
+uintptr_t w32_dll_area; uint32_t w32_dll_area_size;
 bool boot_verbose, boot_safe_mode, boot_force_lapic;
 
 void mm_init(void) {
@@ -403,6 +404,16 @@ void mm_init(void) {
             break;
         }
     }
+#ifndef __x86_64__
+    /* x86: with plenty of memory, the top 64 MiB of the heap's range becomes an address
+     * range for the DLLs of Win32 programs (each process maps its own pages there; the
+     * kernel never touches those addresses) */
+    if (top > lowest && top - lowest >= 320u * 1024 * 1024) {
+        uint32_t area = (top - 64u * 1024 * 1024) & ~0x3FFFFFu;
+        w32_dll_area = area; w32_dll_area_size = 64u * 1024 * 1024;
+        top = area;
+    }
+#endif
     paging_init();
     heap_init(lowest, top);
     /* GRUB may load the initrd in low memory, where the ISA DMA buffer and the Win32
