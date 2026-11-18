@@ -339,9 +339,17 @@ static void fonts_load(void) {
 /* fonts past the generated set are TrueType sizes only; before the font files
  * are loaded they are drawn with the nearest bitmap */
 static const uint8_t ext_fallback[FONT_ALL - FONT_COUNT] = { [FONT_DISPLAY_BI - FONT_COUNT] = FONT_HUGE, [FONT_DISPLAY - FONT_COUNT] = FONT_LOGO };
+/* fonts made on demand (font_sized): any size of the sans, serif and mono families */
+#define FONT_DYN_MAX 96
+static font_t dyn_fonts[FONT_DYN_MAX];
+static bool dyn_ok[FONT_DYN_MAX];               /* metrics taken from the loaded face */
+static int dyn_n;
+static void dyn_metrics(int i);
 static inline font_t *F(int f) {
     if (!fonts_loaded) fonts_load();
+    if (f >= FONT_ALL && f < FONT_ALL + dyn_n) { if (!dyn_ok[f - FONT_ALL]) dyn_metrics(f - FONT_ALL); return &dyn_fonts[f - FONT_ALL]; }
     if (f >= FONT_COUNT && f < FONT_ALL) f = ext_fallback[f - FONT_COUNT];
+    if (f < 0 || f >= FONT_COUNT) f = FONT_UI;
     return &fonts[f];
 }
 int font_height(int f) { return F(f)->height; }
@@ -358,7 +366,8 @@ static inline const glyph_t *glyph(font_t *f, char ch) {
  * is available, the same family the bitmaps were generated from (Liberation,
  * SIL OFL) is loaded from C:\WRLD\Fonts and drawn by the TrueType engine: any
  * size, anti-aliased, and every character the font covers, read as UTF-8. */
-enum { TF_REGULAR, TF_BOLD, TF_ITALIC, TF_BOLD_ITALIC, TF_MONO, TF_ARABIC, TF_COUNT };
+enum { TF_REGULAR, TF_BOLD, TF_ITALIC, TF_BOLD_ITALIC, TF_MONO, TF_ARABIC,
+       TF_SERIF, TF_SERIF_BOLD, TF_SERIF_ITALIC, TF_SERIF_BOLD_ITALIC, TF_MONO_BOLD, TF_MONO_ITALIC, TF_MONO_BOLD_ITALIC, TF_COUNT };
 
 static const char *const ttf_files[TF_COUNT] = {
     "LiberationSans-Regular.ttf",
@@ -367,10 +376,17 @@ static const char *const ttf_files[TF_COUNT] = {
     "LiberationSans-BoldItalic.ttf",
     "LiberationMono-Regular.ttf",
     "NotoNaskhArabic-Regular.ttf",
+    "LiberationSerif-Regular.ttf",
+    "LiberationSerif-Bold.ttf",
+    "LiberationSerif-Italic.ttf",
+    "LiberationSerif-BoldItalic.ttf",
+    "LiberationMono-Bold.ttf",
+    "LiberationMono-Italic.ttf",
+    "LiberationMono-BoldItalic.ttf",
 };
 
 typedef struct { uint8_t face, px; } font_spec_t;
-static const font_spec_t font_specs[FONT_ALL] = {
+static font_spec_t font_specs[FONT_ALL + FONT_DYN_MAX] = {
     [FONT_UI]         = { TF_REGULAR, 12 },
     [FONT_UI_BOLD]    = { TF_BOLD, 12 },
     [FONT_TITLE]      = { TF_BOLD, 13 },
@@ -432,8 +448,46 @@ static ttf_face_t *ttf_get(int which) {
     return f;
 }
 static ttf_face_t *font_face(int font) {
-    if (font < 0 || font >= FONT_ALL) return NULL;
+    if (font < 0 || font >= FONT_ALL + dyn_n) return NULL;
     return ttf_get(font_specs[font].face);
+}
+/* a font made on demand gets its line metrics from its TrueType face, and the bitmap
+ * glyphs of the nearest built-in size for the moments before the face is loaded */
+static void dyn_metrics(int i) {
+    font_spec_t *sp = &font_specs[FONT_ALL + i];
+    font_t *d = &dyn_fonts[i];
+    int fb = sp->px >= 26 ? FONT_HUGE : sp->px >= 16 ? FONT_LARGE : sp->px <= 10 ? FONT_SMALL : FONT_UI;
+    *d = fonts[fb];
+    ttf_face_t *f = ttf_get(sp->face);
+    if (f) {
+        int upem = ttf_units_per_em(f);
+        int asc = (ttf_ascender(f) * sp->px + upem - 1) / upem, desc = (-ttf_descender(f) * sp->px + upem - 1) / upem;
+        d->ascent = asc; d->descent = desc; d->height = asc + desc;
+        dyn_ok[i] = true;
+    }                                                       /* else: try again next time */
+}
+int font_sized(int family, int px, bool bold, bool italic) {
+    if (px < 6) px = 6;
+    if (px > 160) px = 160;
+    static const uint8_t faces[3][4] = {
+        { TF_REGULAR, TF_BOLD, TF_ITALIC, TF_BOLD_ITALIC },
+        { TF_SERIF, TF_SERIF_BOLD, TF_SERIF_ITALIC, TF_SERIF_BOLD_ITALIC },
+        { TF_MONO, TF_MONO_BOLD, TF_MONO_ITALIC, TF_MONO_BOLD_ITALIC },
+    };
+    if (family < 0 || family > 2) family = 0;
+    uint8_t face = faces[family][(bold ? 1 : 0) | (italic ? 2 : 0)];
+    for (int i = 0; i < dyn_n; i++) if (font_specs[FONT_ALL + i].face == face && font_specs[FONT_ALL + i].px == px) return FONT_ALL + i;
+    if (dyn_n >= FONT_DYN_MAX) {                            /* full: the nearest size of that face */
+        int best = FONT_UI, bd = 1 << 30;
+        for (int i = 0; i < dyn_n; i++) if (font_specs[FONT_ALL + i].face == face) { int dd = font_specs[FONT_ALL + i].px - px; if (dd < 0) dd = -dd; if (dd < bd) { bd = dd; best = FONT_ALL + i; } }
+        return best;
+    }
+    if (!fonts_loaded) fonts_load();
+    int i = dyn_n;
+    font_specs[FONT_ALL + i].face = face; font_specs[FONT_ALL + i].px = (uint8_t)px;
+    dyn_n++;
+    dyn_metrics(i);
+    return FONT_ALL + i;
 }
 
 static int scale_units(int units, int px, int upem) {

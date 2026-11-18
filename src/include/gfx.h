@@ -5,6 +5,9 @@
 
 /* TrueType-only sizes after the generated fonts (bitmap fallback in gfx.c) */
 enum { FONT_DISPLAY_BI = FONT_COUNT, FONT_DISPLAY, FONT_ALL };   /* bold italic 30 px; regular 40 px */
+/* any size of a family, made on demand (TrueType): a font id for draw_text, text_width & co */
+enum { FAM_SANS, FAM_SERIF, FAM_MONO };
+int font_sized(int family, int px, bool bold, bool italic);
 
 #define RGB(r,g,b)    (0xFF000000u | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))
 #define RGBA(r,g,b,a) (((uint32_t)(a) << 24) | ((uint32_t)(r) << 16) | ((uint32_t)(g) << 8) | (uint32_t)(b))

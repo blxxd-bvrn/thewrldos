@@ -1133,7 +1133,7 @@ static const sm_item_t sm_right[] = {
 static const sm_item_t all_programs_base[] = {
     { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "The WRLD Browser", NULL, ICON_BROWSER, "xplorer" },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
-    { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "Paint", NULL, ICON_PAINT, "paint" },
+    { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "WordPad", NULL, ICON_WORDPAD, "wordpad" }, { "Paint", NULL, ICON_PAINT, "paint" },
     { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },
     { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer" }, { "WRLD 3D", NULL, ICON_CP_DISPLAY, "wrld3d" },
     { "Logon Skin Maker", NULL, ICON_CP_APPEARANCE, "logonmaker" }, { "Logon Skin Themer", NULL, ICON_CP_APPEARANCE, "logonthemer" },

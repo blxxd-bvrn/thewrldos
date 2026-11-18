@@ -38,7 +38,7 @@ category-style Control Panel, and it runs **Win32 `.exe` programs**, **`.sh` she
 - **Security:** optional account password at first-boot setup and the logon screen, an inbound
   firewall in the network stack (blocks unsolicited TCP SYNs and unbound UDP), and a Security
   Center for the firewall, password and shell status.
-- **Text:** scalable TrueType fonts (Liberation Sans and Mono, read from `C:\WRLD\Fonts`) with
+- **Text:** scalable TrueType fonts (Liberation Sans, Serif and Mono, read from `C:\WRLD\Fonts`) with
   OpenType shaping: Arabic (with its joining forms and mark positioning, in Noto Naskh Arabic),
   Hebrew, ligatures, and the Unicode bidirectional algorithm, so right-to-left text mixes with
   Latin and numbers correctly — at any size.
@@ -116,7 +116,7 @@ edition in an Ubuntu 24.04 of its own (a Docker container, or a chroot it makes 
 debootstrap); `WRLD_CLASSIC=1 tools/build-iso.sh .` builds the classic image.
 
 ```bash
-sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad xkb-data gsettings-desktop-schemas libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk4
+sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad xkb-data gsettings-desktop-schemas
 ```
 
 ```bash
@@ -548,18 +548,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   `lxtrace on` in the Command Prompt logs every Linux system call to the serial port (with
   the path of calls that take one), and
   `guiprof on` logs how long each window takes to paint, every 2 seconds.
-- **LibreOffice** (64-bit edition): Writer, Calc and Impress 24.2 with LibreOffice's GTK 4
-  front end, on the wrldcomp compositor, copied from the build machine by
-  `tools/stage_libreoffice.sh` (about 380 MB; part of the WebKit image, `LX_LIBREOFFICE=0`
-  leaves it out). They are in Start, All Programs; double-clicking an `.odt`, `.ods`, `.odp`,
-  `.docx`, `.xlsx`, `.pptx`, `.doc`, `.xls`, `.ppt` or `.rtf` file opens it; documents on C:
-  are opened and saved as `/mnt/c/...`. `C:\Samples\Welcome to LibreOffice.odt` is a sample.
-  The image starts the user's profile with the light Colibre icons, and a GTK style sheet
-  folds GTK's own title bar away on main windows (THE WRLD OS draws the frame). With
-  LibreOffice the 64-bit CD is about 680 MB, and the live session needs 2 GB of memory
-  (4 GB to use LibreOffice and the WebKit browser comfortably).
-  Getting it to run fixed a wrldcomp bug: a window that changed size released its old pixel
-  mapping with the new, larger size, taking neighbouring memory with it.
+- **wrldcomp** releases a window's old pixel mapping with that mapping's own length when the
+  window changes size (it used the new, larger size, which freed neighbouring memory and
+  crashed the compositor under programs that resize while starting).
 - **Software packages (.deb and .rpm).** Double-clicking a `.deb` (Debian, Ubuntu, Mint) or an
   `.rpm` (Fedora, openSUSE, Red Hat) opens the Linux Package Installer (`src/apps/pkg.c`,
   `pkgui.c`): it shows what the package is and checks what it needs before installing:
@@ -965,7 +956,7 @@ device manager's job is to say what the computer has and which driver runs it.
   - **TrueType text** (`src/gui/ttf.c`): a small engine with no library dependencies that reads
     the sfnt tables, Unicode cmaps (formats 4 and 12), composite glyphs and `kern` pairs, and
     fills each glyph with 8 horizontal scanlines per pixel. Faces come from `C:\WRLD\Fonts`
-    (Liberation Sans and Mono, SIL OFL) and can be drawn at any pixel size; rasterisations are
+    (Liberation Sans, Serif and Mono, SIL OFL) and can be drawn at any pixel size; rasterisations are
     cached. If the files are missing, or before the file system is up, the original
     anti-aliased bitmaps are used instead.
   - **OpenType layout** in the same engine: GSUB and GPOS (single, multiple, alternate,
@@ -1108,6 +1099,19 @@ device manager's job is to say what the computer has and which driver runs it.
 - **File Explorer:** task pane, Icons/Tiles/Details views, history, copy/cut/paste, rename,
   Recycle Bin, eject.
 - **Notepad:** selection, clipboard, word wrap, Open/Save dialog.
+- **WordPad** (`wordpad.c`): a word processor after the one in Windows 7, with a ribbon (the
+  File menu button, Home and View tabs, undo/redo on the title row), a ruler with indent
+  markers, a page view and a status bar with a zoom slider. Text can be any size in Liberation
+  Sans, Serif or Mono, bold, italic, underlined, struck through, subscript or superscript,
+  coloured and highlighted; paragraphs can be aligned left, centred, right or justified,
+  indented, bulleted and spaced at 1.0 to 3.0 lines. It opens and saves Rich Text (`.rtf`),
+  Office Open XML (`.docx`, which Word opens) and plain text, and opens OpenDocument text
+  (`.odt`). Undo and redo, find and replace, insert date and time, double-click to select a
+  word, and a context menu. `C:\Samples\Welcome to WordPad.rtf` is a sample; double-clicking
+  an `.rtf`, `.docx` or `.odt` file opens it, and `wordpad` or `write` starts it from the
+  Command Prompt.
+- **One clipboard for the whole system:** Notepad, WordPad, the Command Prompt's programs and
+  Windows programs (`OpenClipboard`, `SetClipboardData`, `GetClipboardData`) share it.
 - **Command Prompt.**
 - **Control Panel (category style):**
   - Category / Large icons / Small icons views, breadcrumb bar, search, navigation pane.
@@ -1334,7 +1338,7 @@ src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, H
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
-src/apps           explorer, notepad, terminal, control panel, accessories, launcher, setup,
+src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
                    browser (html.c, imgdec.c, dom.c, adblock.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)

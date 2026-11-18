@@ -965,28 +965,30 @@ static BOOL WINAPI ShowCaret(HWND h) { caret.shown = true; return 1; }
 static BOOL WINAPI HideCaret(HWND h) { caret.shown = false; return 1; }
 static UINT WINAPI GetCaretBlinkTime(void) { return 530; }
 static BOOL WINAPI SetCaretBlinkTime(UINT ms) { return 1; }
-/* one clipboard, CF_TEXT (1) and CF_UNICODETEXT (13), shared by the programs */
-static char *clip_text; static HWND clip_owner;
+/* the system clipboard (src/apps/launcher.c), as CF_TEXT (1), CF_OEMTEXT (7) and CF_UNICODETEXT (13):
+ * shared with WordPad, Notepad and every other program */
+static HWND clip_owner;
 static BOOL WINAPI OpenClipboard2(HWND h) { return 1; }
-static BOOL WINAPI EmptyClipboard(void) { kfree(clip_text); clip_text = NULL; clip_owner = 0; return 1; }
+static BOOL WINAPI EmptyClipboard(void) { clip_set_text(NULL); clip_owner = 0; return 1; }
 static HANDLE WINAPI SetClipboardData(UINT fmt, HANDLE mem) {
     if (!mem) return 0;
-    if (fmt == 13) { char *a = kmalloc(8192); w2u((const WCHAR *)mem, a, 8192); kfree(clip_text); clip_text = a; }
-    else if (fmt == 1 || fmt == 7) { kfree(clip_text); clip_text = strdup((const char *)mem); }
+    if (fmt == 13) { char *a = kmalloc(65536); w2u((const WCHAR *)mem, a, 65536); clip_set_text(a); kfree(a); }
+    else if (fmt == 1 || fmt == 7) clip_set_text((const char *)mem);
     return mem;
 }
 static HANDLE WINAPI GetClipboardData(UINT fmt) {
-    if (!clip_text) return 0;
+    const char *t = clip_text();
+    if (!t) return 0;
     w32_proc_t *p = P;
-    if (fmt == 13) { int n = strlen(clip_text) + 1; WCHAR *w = w32_alloc(p, n * 2); u2w(clip_text, w, n); return (HANDLE)w; }
-    if (fmt == 1 || fmt == 7) { char *a = w32_alloc(p, strlen(clip_text) + 1); strcpy(a, clip_text); return (HANDLE)a; }
+    if (fmt == 13) { int n = strlen(t) + 1; WCHAR *w = w32_alloc(p, n * 2); u2w(t, w, n); return (HANDLE)w; }
+    if (fmt == 1 || fmt == 7) { char *a = w32_alloc(p, strlen(t) + 1); strcpy(a, t); return (HANDLE)a; }
     return 0;
 }
-static BOOL WINAPI IsClipboardFormatAvailable(UINT fmt) { return clip_text && (fmt == 1 || fmt == 7 || fmt == 13); }
+static BOOL WINAPI IsClipboardFormatAvailable(UINT fmt) { return clip_text() && (fmt == 1 || fmt == 7 || fmt == 13); }
 static UINT WINAPI RegisterClipboardFormatA(const char *n) { return 0xC000 + (strlen(n) & 0xFFF); }
 static UINT WINAPI RegisterClipboardFormatW(const WCHAR *n) { return 0xC000 + (w_len(n) & 0xFFF); }
 static HWND WINAPI GetClipboardOwner2(void) { return clip_owner; }
-static UINT WINAPI EnumClipboardFormats(UINT f) { return f == 0 && clip_text ? 13 : 0; }
+static UINT WINAPI EnumClipboardFormats(UINT f) { return f == 0 && clip_text() ? 13 : 0; }
 static HANDLE WINAPI GetKeyboardLayout(DWORD tid) { return 0x04090409; }
 static int WINAPI GetKeyboardLayoutList(int n, HANDLE *l) { if (n && l) l[0] = 0x04090409; return 1; }
 static BOOL WINAPI SetKeyboardState(BYTE *s) { for (int i = 0; i < 256; i++) keystate[i] = (s[i] & 0x80) != 0; return 1; }

@@ -12,6 +12,7 @@ const app_info_t app_table[] = {
     { "xplorer", "The WRLD Browser", "Browse the web", ICON_BROWSER },
     { "explorer", "File Explorer", "Browse files and folders", ICON_EXPLORER },
     { "notepad", "Notepad", "Edit text files", ICON_NOTEPAD },
+    { "wordpad", "WordPad", "Write documents with fonts, colours and pictures of text", ICON_WORDPAD },
     { "cmd", "Command Prompt", "Shell & scripts", ICON_TERMINAL },
     { "calc", "Calculator", "Perform calculations", ICON_CALCULATOR },
     { "paint", "Paint", "Draw pictures", ICON_PAINT },
@@ -38,6 +39,7 @@ const app_info_t *app_find(const char *id) {
 void app_launch(const char *name, const char *arg) {
     if (!strcasecmp(name, "explorer")) explorer_open(arg ? arg : USER_DOCS);
     else if (!strcasecmp(name, "notepad")) notepad_open(arg);
+    else if (!strcasecmp(name, "wordpad") || !strcasecmp(name, "write")) wordpad_open(arg);
     else if (!strcasecmp(name, "xplorerlite") || !strcasecmp(name, "classicbrowser")) browser_classic_open(arg);   /* the built-in engine */
     else if (!strcasecmp(name, "xplorer") || !strcasecmp(name, "wrldbrowser") || !strcasecmp(name, "browser") || !strcasecmp(name, "iexplore")) browser_open(arg);
     else if (!strcasecmp(name, "cmd") || !strcasecmp(name, "terminal") || !strcasecmp(name, "sh") || !strcasecmp(name, "bash")) terminal_open(arg, NULL);
@@ -72,6 +74,7 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "txt") || !strcasecmp(e, "log") || !strcasecmp(e, "ini") || !strcasecmp(e, "md") || !strcasecmp(e, "cfg")) return ICON_TEXT_FILE;
     if (!strcasecmp(e, "c") || !strcasecmp(e, "h") || !strcasecmp(e, "plist") || !strcasecmp(e, "xml") || !strcasecmp(e, "json")) return ICON_NOTEPAD;
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) return ICON_EXE;
+    if (!strcasecmp(e, "rtf") || !strcasecmp(e, "docx") || !strcasecmp(e, "odt") || !strcasecmp(e, "wri")) return ICON_WORDPAD;
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
     if (!strcasecmp(e, "deb") || !strcasecmp(e, "rpm")) return ICON_PACKAGE;
@@ -91,6 +94,9 @@ const char *file_type_name(vnode_t *n) {
     if (n->dir) return !n->parent ? "Local Disk" : str_ends_with_ci(n->name, ".app") ? "Application Bundle" : "File Folder";
     const char *e = vfs_ext(n->name);
     if (!strcasecmp(e, "txt")) return "Text Document";
+    if (!strcasecmp(e, "rtf")) return "Rich Text Document";
+    if (!strcasecmp(e, "docx")) return "Office Open XML Document";
+    if (!strcasecmp(e, "odt")) return "OpenDocument Text";
     if (!strcasecmp(e, "exe")) return "Application";
     if (!strcasecmp(e, "sh")) return "Shell Script";
     if (!strcasecmp(e, "dmg")) return "Apple Disk Image";
@@ -117,6 +123,11 @@ const char *file_type_name(vnode_t *n) {
 }
 
 static void err_box(const char *title, const char *msg) { msgbox(title, msg, MBI_ERROR, MBX_OK, NULL, NULL); }
+
+/* the system clipboard: plain text (UTF-8), shared by WordPad, Notepad and Windows programs */
+static char *clip_buf;
+void clip_set_text(const char *s) { kfree(clip_buf); clip_buf = s ? strdup(s) : NULL; }
+const char *clip_text(void) { return clip_buf; }
 
 /* files opened lately, newest first, for The WRLD Search; kept in C:\WRLD\recent.txt */
 #define RECENT_MAX 12
@@ -160,12 +171,6 @@ bool shell_open(const char *path, const char *cwd) {
         return true;
     }
     recent_add(full);
-    if (office_is_document(n->name) && office_available()) {                 /* Writer, Calc or Impress */
-        char err[160];
-        if (office_open(full, NULL, err, sizeof err)) return true;
-        err_box(n->name, err);
-        return true;
-    }
     const char *e = vfs_ext(n->name);
     if (!strcasecmp(e, "exe") || !strcasecmp(e, "com")) {
         char err[256];
@@ -173,6 +178,8 @@ bool shell_open(const char *path, const char *cwd) {
         if (!pe_probe(n, err, sizeof err)) err_box(n->name, err);
         else if (pe_is_gui(n)) { if (pe_spawn(full, "", NULL, err, sizeof err) < 0) err_box(n->name, err); }
         else { char dir[512]; path_dirname(full, dir, sizeof dir); terminal_open(full, dir); }
+    } else if (!strcasecmp(e, "rtf") || !strcasecmp(e, "docx") || !strcasecmp(e, "odt")) {
+        wordpad_open(full);
     } else if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash")) {
         char dir[512]; path_dirname(full, dir, sizeof dir);
         terminal_open(full, dir);
@@ -239,6 +246,7 @@ bool shell_execute(const char *cmdline, const char *cwd) {
     if (arg) { while (*arg == ' ') arg++; if (!*arg) arg = NULL; }
     if (app_find(s) || !strcasecmp(s, "terminal") || !strcasecmp(s, "mspaint") || !strcasecmp(s, "winver") || !strcasecmp(s, "sh") || !strcasecmp(s, "bash")) { app_launch(s, arg); return true; }
     if (!strcasecmp(s, "notepad.exe")) { app_launch("notepad", arg); return true; }
+    if (!strcasecmp(s, "wordpad.exe") || !strcasecmp(s, "write.exe") || !strcasecmp(s, "write")) { app_launch("wordpad", arg); return true; }
     if (!strcasecmp(s, "cmd.exe")) { app_launch("cmd", arg); return true; }
     if (!strcasecmp(s, "calc.exe")) { app_launch("calc", NULL); return true; }
     if (!strcasecmp(s, "explorer.exe")) { app_launch("explorer", arg); return true; }

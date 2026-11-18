@@ -611,6 +611,17 @@ def ic_desktop():
 def ic_shell_folder():
     i = new(); folder_shape(i); circle_badge(i, 50, 46, 92, 88, "#7CE07C", "#1E8E1E", "#106010"); return i
 
+def ic_wordpad():
+    i = new()
+    rect(i, 16, 8, 80, 94, hexc("#FFFFFF"), hexc("#E4EBF5"), r=2, ol=hexc("#5C6E8C"), ow=1.6)
+    for y, w, c in ((46, 52, "#3A78D8"), (56, 44, "#3A78D8"), (66, 52, "#E08A28"), (76, 36, "#3A78D8"), (86, 46, "#3BAA3B")):
+        line(i, [(24, y), (24 + w, y)], hexc(c), 2.2)
+    text(i, 40, 26, "A", hexc("#1E4FC4"), 30)
+    line(i, [(58, 36), (88, 6)], hexc("#3B3B3B"), 5)
+    line(i, [(58, 36), (88, 6)], hexc("#F2C04A"), 3)
+    line(i, [(54, 40), (58, 36)], hexc("#202020"), 3)
+    return i
+
 ICONS = [
     ("computer", ic_computer), ("folder", ic_folder), ("folder_open", ic_folder_open), ("my_documents", ic_my_documents),
     ("recycle_bin", lambda: ic_recycle(False)), ("recycle_full", lambda: ic_recycle(True)),
@@ -629,7 +640,7 @@ ICONS = [
     ("user_flower", user_pic("flower")), ("user_planet", user_pic("planet")), ("user_fish", user_pic("fish")), ("user_mountain", user_pic("mountain")),
     ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder), ("setup", ic_setup),
     ("browser", ic_browser), ("stop", ic_stop), ("refresh", ic_refresh), ("home", ic_home), ("lock", ic_lock),
-    ("media_player", ic_media_player), ("music_file", ic_music_file), ("package", ic_package),
+    ("media_player", ic_media_player), ("music_file", ic_music_file), ("package", ic_package), ("wordpad", ic_wordpad),
 ]
 SIZES = [48, 32, 16]
 

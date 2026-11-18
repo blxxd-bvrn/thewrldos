@@ -39,7 +39,7 @@ static void fdlg_paint(window_t *w) {
     rect_t old = canvas_push_clip(c, R(lr.x + 1, lr.y + 1, lr.w - 2, lr.h - 2));
     for (int i = f->scroll; i < n && i < f->scroll + vis + 1; i++) {
         rect_t r = R(lr.x + 2, lr.y + 2 + (i - f->scroll) * ih, lr.w - 22, ih);
-        if (ui_click_area(w, r)) {
+        if (ui_click_area(w, rect_intersect(r, R(lr.x + 1, lr.y + 1, lr.w - 2, lr.h - 2)))) {   /* only the part inside the list */
             if (w->ui.dblclick || (f->sel == i && items[i]->dir)) {}
             f->sel = i;
             if (!items[i]->dir) strlcpy(f->name, items[i]->name, sizeof f->name);
@@ -98,7 +98,6 @@ typedef struct {
     window_t *win;
     bool closing;
 } np_t;
-static char *np_clip; static int np_clip_len;
 #define NP_FONT FONT_MONO
 static int cw(void) { return text_width(NP_FONT, "M"); }
 static int lh(void) { return font_height(NP_FONT) + 1; }
@@ -190,8 +189,8 @@ static void np_cmd(window_t *w, int id) {
     case NP_SAVE: np_save(w, false); break;
     case NP_SAVEAS: np_save(w, true); break;
     case NP_EXIT: wm_close(w); break;
-    case NP_CUT: case NP_COPY: if (b > a) { kfree(np_clip); np_clip = strndup(n->buf + a, b - a); np_clip_len = b - a; if (id == NP_CUT) del_sel(n); } break;
-    case NP_PASTE: if (np_clip) insert(n, np_clip, np_clip_len); break;
+    case NP_CUT: case NP_COPY: if (b > a) { char *t = strndup(n->buf + a, b - a); clip_set_text(t); kfree(t); if (id == NP_CUT) del_sel(n); } break;
+    case NP_PASTE: if (clip_text()) insert(n, clip_text(), strlen(clip_text())); break;
     case NP_DEL: if (b > a) del_sel(n); else if (n->cur < n->len) del_range(n, n->cur, n->cur + 1); break;
     case NP_ALL: n->anchor = 0; n->cur = n->len; break;
     case NP_TIME: { rtc_time_t t; rtc_now(&t); char s[40]; snprintf(s, sizeof s, "%d:%02d %s %d/%d/%d", t.hour % 12 ? t.hour % 12 : 12, t.minute, t.hour >= 12 ? "PM" : "AM", t.month, t.day, t.year); insert(n, s, strlen(s)); break; }

@@ -235,8 +235,8 @@ static const area_t areas[] = {
       { "open:::computer", "cp:devices", "cp:system" } },
     { "Music & Video", ICON_MEDIA_PLAYER, "app:wmplayer", { "play music", "my music", "sound settings" },
       { "app:wmplayer", "dir:" USER_DOCS "\\My Music", "cp:sound" } },
-    { "Accessories", ICON_NOTEPAD, "app:notepad", { "write in notepad", "draw in paint", "calculator" },
-      { "app:notepad", "app:paint", "app:calc" } },
+    { "Accessories", ICON_NOTEPAD, "app:notepad", { "write in wordpad", "draw in paint", "calculator" },
+      { "app:wordpad", "app:paint", "app:calc" } },
     { "Games", ICON_GAME, "app:minesweeper", { "minesweeper", "snake", "pong" },
       { "app:minesweeper", "app:snake", "app:pong" } },
     { "Help", ICON_HELP, "app:help", { "help and support", "about the wrld os", "security center" },
@@ -249,7 +249,7 @@ static const struct { const char *text, *action; int icon; } recommendations[] =
     { "Explore the *web*", "app:xplorer", ICON_BROWSER },
 };
 static const struct { const char *text, *action; } top_things[] = {
-    { "Write a *text document*", "app:notepad" }, { "Open *My Documents*", "dir:" USER_DOCS }, { "Change *desktop wallpaper*", "cp:personalization" },
+    { "Write a *document*", "app:wordpad" }, { "Open *My Documents*", "dir:" USER_DOCS }, { "Change *desktop wallpaper*", "cp:personalization" },
     { "Draw a *picture*", "app:paint" }, { "Listen to *music*", "app:wmplayer" }, { "Check *network* status", "cp:network" },
     { "Install a *program*", "cp:programs" }, { "Open the *Command Prompt*", "app:cmd" }, { "Set the *date and time*", "cp:datetime" },
     { "Change *sound* settings", "cp:sound" }, { "See what is *running*", "app:taskmgr" }, { "Review your *security*", "app:security" },

@@ -35,7 +35,10 @@ void minesweeper_open(void);
 void pong_open(void);
 void security_open(void);
 void wrldsearch_open(const char *query);   /* The WRLD Search, optionally already searching */
-void recent_add(const char *path);          /* a file the user opened, for Recent Activities */
+void recent_add(const char *path);
+void clip_set_text(const char *s);         /* the system clipboard (plain text, UTF-8) */
+const char *clip_text(void);                /* NULL when empty */
+void wordpad_open(const char *path);          /* a file the user opened, for Recent Activities */
 void mediaplayer_open(const char *path);
 void demo3d_open(void);                    /* WRLD 3D: the 3D engine's test */   /* NULL: My Music */
 void imageview_open(const char *path);

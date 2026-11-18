@@ -96,6 +96,7 @@ enum {
     ICON_MEDIA_PLAYER = 69,
     ICON_MUSIC_FILE = 70,
     ICON_PACKAGE = 71,
-    ICON_COUNT = 72
+    ICON_WORDPAD = 72,
+    ICON_COUNT = 73
 };
 #endif
