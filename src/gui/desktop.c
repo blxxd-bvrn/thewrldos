@@ -57,10 +57,11 @@ static const char *wallpaper_files[] = {
     "C:\\WRLD\\Wallpapers\\Aurora sky.jpg",
     "C:\\WRLD\\Wallpapers\\City lights.jpg",
     "C:\\WRLD\\Wallpapers\\Summer leaves.jpg",
+    CUSTOM_WALLPAPER,                                    /* "Your picture": Custom desktop... in Personalization */
 };
 const char *wallpaper_names[] = { "Blue shoal", "Home planet", "We carry the world", "Bubble city",
                                   "Kelp forest", "Northern lights", "Aurora sky", "City lights",
-                                  "Summer leaves", "(None)" };
+                                  "Summer leaves", "Your picture", "(None)" };
 int wallpaper_count = ARRAY_LEN(wallpaper_names);
 
 static uint32_t wall_mix(uint32_t a, uint32_t b, int w)
@@ -121,6 +122,25 @@ static canvas_t *wall_source(int id)
     }
     return wall_src;
 }
+static int wall_gen;                                     /* bumped when the custom picture changes */
+/* a picture chosen with "Custom desktop...": copied to CUSTOM_WALLPAPER (so it stays when the
+ * original moves) and shown; false with a reason if it is not a picture this OS can read */
+bool wallpaper_set_custom(const char *path, char *err, int cap) {
+    vnode_t *n = vfs_resolve(path, NULL);
+    if (!n || n->dir || !n->size || !n->data) { snprintf(err, cap, "The file could not be read."); return false; }
+    canvas_t *test = image_decode(n->data, n->size, err, cap);
+    if (!test) return false;
+    canvas_free(test);
+    vfs_mkdir_p("C:\\WRLD\\Custom");
+    if (!vfs_write_file(CUSTOM_WALLPAPER, n->data, n->size)) { snprintf(err, cap, "There is no room to keep a copy of the picture."); return false; }
+    if (wall_src && wall_src_id == WALLPAPER_CUSTOM) { canvas_free(wall_src); wall_src = NULL; wall_src_id = -1; }
+    wall_out_id = -1;
+    wallpaper_id = WALLPAPER_CUSTOM;
+    wall_gen++;
+    shell_wallpaper_changed();
+    return true;
+}
+bool wallpaper_custom_exists(void) { vnode_t *n = vfs_resolve(CUSTOM_WALLPAPER, NULL); return n && !n->dir && n->size; }
 void wallpaper_render(canvas_t *c, int id) {
     if (id < 0 || id >= wallpaper_count - 1) { gfx_clear(c, desktop_color); return; }
     if (wall_out && wall_out_id == id && wall_out_fit == wallpaper_fit && wall_out->w == c->w && wall_out->h == c->h) {
@@ -139,12 +159,12 @@ void wallpaper_render(canvas_t *c, int id) {
     if (wall_out) { memcpy(wall_out->px, c->px, (size_t)c->w * c->h * 4); wall_out_id = id; wall_out_fit = wallpaper_fit; }
 }
 void shell_wallpaper_changed(void) {
-    static int last_id = -1, last_w, last_h, last_fit = -1; static uint32_t last_col;
+    static int last_id = -1, last_w, last_h, last_fit = -1, last_gen; static uint32_t last_col;
     if (wallpaper && (wallpaper->w != SCREEN_W || wallpaper->h != SCREEN_H)) { canvas_free(wallpaper); wallpaper = NULL; last_id = -1; }
     if (!wallpaper) wallpaper = canvas_new(SCREEN_W, SCREEN_H);
-    if (last_id == wallpaper_id && last_fit == wallpaper_fit && last_w == SCREEN_W && last_h == SCREEN_H && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color)) return;
+    if (last_id == wallpaper_id && last_fit == wallpaper_fit && last_w == SCREEN_W && last_h == SCREEN_H && last_gen == wall_gen && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color)) return;
     wallpaper_render(wallpaper, wallpaper_id);
-    last_id = wallpaper_id; last_col = desktop_color; last_fit = wallpaper_fit; last_w = SCREEN_W; last_h = SCREEN_H;
+    last_gen = wall_gen; last_id = wallpaper_id; last_col = desktop_color; last_fit = wallpaper_fit; last_w = SCREEN_W; last_h = SCREEN_H;
     wm_need_redraw = true;
 }
 
@@ -153,7 +173,7 @@ void shell_wallpaper_changed(void) {
  * thumbnails; draw_user_picture() masks one to a circle at the size asked
  * for, so the log-on tile, the Start menu and the account page all use it. */
 #define AVATAR_CACHE 128
-static canvas_t *avatar_cache[71];
+static canvas_t *avatar_cache[72];                      /* the 71 photographs and the custom picture */
 static void avatar_scale(canvas_t *dst, canvas_t *src)
 {
     int size = dst->w, sw = src->w, sh = src->h;
@@ -176,10 +196,11 @@ static void avatar_scale(canvas_t *dst, canvas_t *src)
 }
 static canvas_t *avatar_thumb(int id)
 {
-    if (id < 0 || id >= user_picture_count) id = 0;
+    if (id < 0 || id > USER_PICTURE_CUSTOM) id = 0;
     if (avatar_cache[id]) return avatar_cache[id];
     char path[80];
-    snprintf(path, sizeof path, "C:\\WRLD\\Avatars\\Avatar %02d.jpg", id + 1);
+    if (id == USER_PICTURE_CUSTOM) strlcpy(path, CUSTOM_AVATAR, sizeof path);
+    else snprintf(path, sizeof path, "C:\\WRLD\\Avatars\\Avatar %02d.jpg", id + 1);
     vnode_t *n = vfs_resolve(path, NULL);
     if (!n || n->dir || !n->size) return NULL;
     char err[64];
@@ -190,6 +211,23 @@ static canvas_t *avatar_thumb(int id)
     canvas_free(src);
     return dst;
 }
+/* "Custom avatar...": the picture is copied to CUSTOM_AVATAR and becomes the account picture */
+bool user_picture_set_custom(const char *path, char *err, int cap) {
+    vnode_t *n = vfs_resolve(path, NULL);
+    if (!n || n->dir || !n->size || !n->data) { snprintf(err, cap, "The file could not be read."); return false; }
+    canvas_t *test = image_decode(n->data, n->size, err, cap);
+    if (!test) return false;
+    bool tiny = test->w < 2 || test->h < 2;
+    canvas_free(test);
+    if (tiny) { snprintf(err, cap, "The picture is too small."); return false; }
+    vfs_mkdir_p("C:\\WRLD\\Custom");
+    if (!vfs_write_file(CUSTOM_AVATAR, n->data, n->size)) { snprintf(err, cap, "There is no room to keep a copy of the picture."); return false; }
+    if (avatar_cache[USER_PICTURE_CUSTOM]) { canvas_free(avatar_cache[USER_PICTURE_CUSTOM]); avatar_cache[USER_PICTURE_CUSTOM] = NULL; }
+    user_picture = USER_PICTURE_CUSTOM;
+    wm_need_redraw = true;
+    return true;
+}
+bool user_picture_custom_exists(void) { vnode_t *n = vfs_resolve(CUSTOM_AVATAR, NULL); return n && !n->dir && n->size; }
 void draw_user_picture(canvas_t *c, int id, int size, int x, int y)
 {
     if (size <= 0) return;

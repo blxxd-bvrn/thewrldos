@@ -176,6 +176,7 @@ static int picture_from_name(const char *s, int def) {
     }
     if (!strcasecmp(s, "flower") || !strcasecmp(s, "planet") ||
         !strcasecmp(s, "fish") || !strcasecmp(s, "mountain")) return 0;
+    if (!strcasecmp(s, "custom")) return user_picture_custom_exists() ? USER_PICTURE_CUSTOM : def;
     if (!strncasecmp(s, "avatar", 6)) {
         int v = atoi(s + 6) - 1;
         if (v >= 0 && v < user_picture_count) return v;
@@ -184,6 +185,7 @@ static int picture_from_name(const char *s, int def) {
 }
 static const char *picture_name(int id) {
     static char b[16];
+    if (id == USER_PICTURE_CUSTOM) return "custom";
     if (id < 0 || id >= user_picture_count) id = 0;
     snprintf(b, sizeof b, "avatar%d", id + 1);
     return b;
@@ -263,7 +265,14 @@ void settings_load(void) {
     sidebar_slide = geti("sidebar_slide", sidebar_slide ? 1 : 0) != 0;
     sidebar_tile_fade = geti("tile_fade", sidebar_tile_fade ? 1 : 0) != 0;
     wm_effects_changed();
-    if (settings_get("wallpaper")) { wallpaper_id = geti("wallpaper", wallpaper_id); if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count) wallpaper_id = 0; shell_wallpaper_changed(); }
+    if ((s = settings_get("wallpaper"))) {
+        /* saved by name; a number is an older setting, from before "Your picture" sat just
+         * before "(None)": that number was "(None)" */
+        if (isdigit((unsigned char)s[0])) { int v = atoi(s); wallpaper_id = v == wallpaper_count - 2 ? wallpaper_count - 1 : v; }
+        else for (int i = 0; i < wallpaper_count; i++) if (!strcasecmp(wallpaper_names[i], s)) wallpaper_id = i;
+        if (wallpaper_id < 0 || wallpaper_id >= wallpaper_count || (wallpaper_id == WALLPAPER_CUSTOM && !wallpaper_custom_exists())) wallpaper_id = 0;
+        shell_wallpaper_changed();
+    }
     klog("settings: loaded %d values", nkv);
 }
 static void capture(void) {
@@ -275,7 +284,7 @@ static void capture(void) {
     snprintf(b, sizeof b, "%d", theme_hue); settings_set("hue", b);
     snprintf(b, sizeof b, "%d", theme_sat); settings_set("saturation", b);
     snprintf(b, sizeof b, "%d", theme_light); settings_set("lightness", b);
-    snprintf(b, sizeof b, "%d", wallpaper_id); settings_set("wallpaper", b);
+    settings_set("wallpaper", wallpaper_id >= 0 && wallpaper_id < wallpaper_count ? wallpaper_names[wallpaper_id] : "");
     snprintf(b, sizeof b, "%d", wallpaper_fit); settings_set("wallpaper_fit", b);
     snprintf(b, sizeof b, "%d", sidebar_open ? 1 : 0); settings_set("sidebar", b);
     snprintf(b, sizeof b, "%d", sidebar_tiles); settings_set("side_tiles", b);

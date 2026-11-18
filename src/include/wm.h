@@ -189,6 +189,15 @@ extern char computer_name[32];
 extern int user_picture;
 extern int user_picture_count;
 void draw_user_picture(canvas_t *c, int id, int size, int x, int y);
+/* pictures the user chose (Control Panel): copied into C:\WRLD\Custom */
+#define CUSTOM_WALLPAPER "C:\\WRLD\\Custom\\Desktop picture"
+#define CUSTOM_AVATAR "C:\\WRLD\\Custom\\Account picture"
+#define USER_PICTURE_CUSTOM user_picture_count               /* the id of the custom account picture */
+#define WALLPAPER_CUSTOM (wallpaper_count - 2)               /* "Your picture", just before "(None)" */
+bool wallpaper_set_custom(const char *path, char *err, int cap);
+bool wallpaper_custom_exists(void);
+bool user_picture_set_custom(const char *path, char *err, int cap);
+bool user_picture_custom_exists(void);
 extern bool show_clock, show_seconds, clock_24h, font_smoothing_dummy;
 extern bool wm_animations;
 enum { WINDOW_ANIM_NONE, WINDOW_ANIM_BORDER, WINDOW_ANIM_AERO, WINDOW_ANIM_COUNT };

@@ -294,6 +294,19 @@ void cp_theme_thumb(canvas_t *s, int x, int y, int id, int hue, bool sel) {
     if (pre) blit(s, x, y, pre, 0, 0, 120, 80);
     draw_rect(s, x, y, 120, 80, HEX(0x808080));
 }
+/* the background thumbnails, and "Custom desktop...": any picture file as the background */
+static canvas_t *wall_thumbs[12];
+typedef void (*fdlg_cb_t)(void *ctx, const char *path);
+void file_dialog(const char *title, const char *initial, bool save, const char *ext, fdlg_cb_t cb, void *ctx);
+static void custom_wall_cb(void *ctx, const char *path) {
+    char err[96];
+    if (!wallpaper_set_custom(path, err, sizeof err)) { char m[200]; snprintf(m, sizeof m, "That picture cannot be used: %s", err); msgbox("Custom desktop", m, MBI_WARNING, MBX_OK, NULL, NULL); return; }
+    int k = WALLPAPER_CUSTOM;
+    if (k >= 0 && k < 12 && wall_thumbs[k]) { canvas_free(wall_thumbs[k]); wall_thumbs[k] = NULL; }
+    settings_save();
+    window_t *w = ctx; if (wm_alive(w)) w->dirty = true;
+    wm_need_redraw = true;
+}
 static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Change the visuals on your computer", "Pick a visual style, adjust its hue, saturation and lightness, and choose a background.");
@@ -385,7 +398,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         y += 64;
     }
     draw_text(s, FONT_UI_BOLD, ox + 20, y, "Desktop background", T.text);
-    static canvas_t *thumbs[12];
+    canvas_t **thumbs = wall_thumbs;
     static const char *fit_names[] = { "Crop", "Scale", "Stretch" };
     int fx = ox + 20 + text_width(FONT_UI_BOLD, "Desktop background") + 18;
     draw_text(s, FONT_UI, fx, y + 1, "Fit:", T.gray_text);
@@ -396,6 +409,7 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
             shell_wallpaper_changed();
             wm_need_redraw = true;
         }
+    if (ui_button(w, R(fx + 32 + 3 * 82 + 6, y - 5, 132, 24), "Custom desktop...")) file_dialog("Choose a desktop picture", USER_DOCS, false, NULL, custom_wall_cb, w);
     y += 22;
     int wper = 6, wpages = (wallpaper_count + wper - 1) / wper;
     if (wpages > 1) {
@@ -417,7 +431,14 @@ static void page_personalization(window_t *w, cp_t *c, int ox, int oy) {
         for (int j = 0; j < 64; j++) for (int q = 0; q < 86; q++) put_pixel(s, x + q, y + j, i == wallpaper_count - 1 ? desktop_color : thumbs[i]->px[(j * thumbs[i]->h / 64) * thumbs[i]->w + q * thumbs[i]->w / 86]);
         draw_rect(s, x, y, 86, 64, HEX(0x808080));
         draw_text_centered(s, FONT_UI, R(x - 3, y + 67, 92, 16), wallpaper_names[i], T.text);
-        if (ui_click_area(w, R(x - 3, y - 3, 92, 86))) { wallpaper_id = i; shell_wallpaper_changed(); wm_need_redraw = true; }
+        if (i == WALLPAPER_CUSTOM && !wallpaper_custom_exists()) {          /* no picture chosen yet: the slot asks for one */
+            fill_rect(s, x + 1, y + 1, 84, 62, T.window_bg);
+            draw_text_centered(s, FONT_UI, R(x, y + 18, 86, 16), "Choose a", T.gray_text);
+            draw_text_centered(s, FONT_UI, R(x, y + 34, 86, 16), "picture...", T.gray_text);
+            if (ui_click_area(w, R(x - 3, y - 3, 92, 86))) file_dialog("Choose a desktop picture", USER_DOCS, false, NULL, custom_wall_cb, w);
+            continue;
+        }
+        if (ui_click_area(w, R(x - 3, y - 3, 92, 86))) { wallpaper_id = i; shell_wallpaper_changed(); settings_save(); wm_need_redraw = true; }
     }
     y += 92 + (wpages > 1 ? 20 : 0);
     if (wallpaper_id == wallpaper_count - 1) {
@@ -1148,18 +1169,29 @@ static void page_defaults(window_t *w, cp_t *c, int ox, int oy) {
         y += 36;
     }
 }
+/* "Custom avatar...": any picture file becomes the account picture */
+static void custom_avatar_cb(void *ctx, const char *path) {
+    char err[96];
+    if (!user_picture_set_custom(path, err, sizeof err)) { char m[200]; snprintf(m, sizeof m, "That picture cannot be used: %s", err); msgbox("Custom avatar", m, MBI_WARNING, MBX_OK, NULL, NULL); return; }
+    settings_save();
+    window_t *w = ctx; if (wm_alive(w)) w->dirty = true;
+}
 static void page_users(window_t *w, cp_t *c, int ox, int oy) {
     canvas_t *s = w->surf;
     heading(s, ox + 20, oy + 16, "Make changes to your user account", NULL);
     draw_text(s, FONT_UI_BOLD, ox + 28, oy + 214, "Picture", T.text);
     int per = 12, pitch = 42, sz = 36;
-    for (int i = 0; i < user_picture_count; i++) {
+    int npics = user_picture_count + (user_picture_custom_exists() ? 1 : 0);   /* your own picture last */
+    for (int i = 0; i < npics; i++) {
         int col = i % per, row = i / per;
         rect_t r = R(ox + 28 + col * pitch, oy + 236 + row * pitch, sz + 4, sz + 4);
         if (ui_click_area(w, r)) user_picture = i;
         fill_round_rect(s, r.x, r.y, r.w, r.h, 4, user_picture == i ? T.select : T.face_dark);
         draw_user_picture(s, i, sz, r.x + 2, r.y + 2);
     }
+    int by = oy + 236 + ((npics + per - 1) / per) * pitch + 6;
+    if (ui_button(w, R(ox + 28, by, 140, 26), "Custom avatar...")) file_dialog("Choose a picture for your account", USER_DOCS, false, NULL, custom_avatar_cb, w);
+    draw_text(s, FONT_UI, ox + 178, by + 6, "Use any picture (JPEG, PNG, GIF, BMP or SVG) as your account picture.", W7_TEXT);
     /* the summary is drawn after the grid so a new pick shows in this paint */
     fill_round_rect(s, ox + 28, oy + 68, 56, 56, 5, mix(T.face, T.select, 70)); draw_user_picture(s, user_picture, 48, ox + 32, oy + 72);
     draw_text(s, FONT_LARGE, ox + 100, oy + 72, user_name, T.text);

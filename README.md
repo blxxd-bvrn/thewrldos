@@ -973,6 +973,12 @@ device manager's job is to say what the computer has and which driver runs it.
     photographs in `WRLD/Wallpapers` and the account pictures are the 71 photographs in
     `WRLD/Avatars`, all decoded by the same image decoder as the browser. Each wallpaper can be
     cropped to the screen, scaled to fit inside it or stretched to both edges.
+  - **Your own pictures:** **Custom desktop...** in Personalization and **Custom avatar...** in
+    User Accounts open a file dialog; any JPEG, PNG, GIF, BMP or SVG becomes the desktop
+    background ("Your picture" among the backgrounds) or the account picture (the log-on
+    screen, the Start menu and the last tile of the picture grid). A copy is kept in
+    `C:\WRLD\Custom`, so the choice survives the original file moving; the wallpaper is now
+    saved in `wrld.ini` by name.
 - **Branding:** a **globe logo** projected from a hand-drawn world map (`tools/globe.py`). It
   spins on the boot screen and is used for the Start button, About and Setup.
 - **Window manager:**
