@@ -401,7 +401,10 @@ LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)
 $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub: samples/linux-webkitgtk/stub/libEGL.c $(LXGTK) $(LXWEBKITGTK)
 	gcc -shared -fPIC -O2 -Wall -fvisibility=hidden -Wl,-soname,libEGL.so.1 -o $(dir $@)libEGL.so.1 $< -ldl
 	@touch $@
-$(LXROOT)/.stamp: $(LXBINS) $(LXCXX) $(LXGNOME) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK) $(LXWEBKITGTK) $(LXEGL)
+# the build machine's BusyBox, when it is position-independent (Debian/Ubuntu's "busybox" package; their
+# "busybox-static" is linked at a fixed address in the low 4 GiB, which the kernel keeps for itself)
+LXBUSYBOX := $(firstword $(foreach b,/usr/bin/busybox /bin/busybox,$(if $(wildcard $(b)),$(if $(shell readelf -h $(b) 2>/dev/null | grep -q DYN && echo pie),$(b)))))
+$(LXROOT)/.stamp: $(LXBUSYBOX) tools/gen_busybox_links.py $(LXBINS) $(LXCXX) $(LXGNOME) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK) $(LXWEBKITGTK) $(LXEGL)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"
@@ -413,6 +416,15 @@ endif
 	printf 'root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:User:/home/user:/bin/sh\n' > $(LXROOT)/Linux/etc/passwd
 	printf 'root:x:0:\nuser:x:1000:\n' > $(LXROOT)/Linux/etc/group
 	printf 'wrld\n' > $(LXROOT)/Linux/etc/hostname
+	@# /bin/sh for Linux programs: the build machine's BusyBox (Debian/Ubuntu: busybox) as /usr/bin/busybox,
+	@# with the libraries it loads, and a stub script for each of its commands (sh, ls, sed, grep, awk...):
+	@# the file system has no symbolic links, and "#!/usr/bin/busybox" runs the command the path names
+	@if [ -n "$(LXBUSYBOX)" ]; then mkdir -p $(LXROOT)/Linux/usr/bin $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 && \
+	  cp -L $(LXBUSYBOX) $(LXROOT)/Linux/usr/bin/busybox && \
+	  for lib in $$(ldd $(LXBUSYBOX) | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done && \
+	  cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/ && \
+	  python3 tools/gen_busybox_links.py $(LXBUSYBOX) $(LXROOT)/Linux; \
+	else echo "  linux userland: no BusyBox on this machine (apt install busybox): Linux programs get no /bin/sh"; fi
 	@# the Debian packages those files come from, for the package installer's dependency checks
 	python3 tools/gen_lx_packages.py $(LXROOT)/Linux
 	@touch $@

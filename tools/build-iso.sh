@@ -10,6 +10,12 @@ set -euo pipefail
 SRC="$(cd "${1:-.}" && pwd)"
 BUILD_DIR="${WRLD_BUILD_DIR:-$HOME/.cache/wrldos-build}"
 PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin grub-common xorriso mtools"
+# The 64-bit edition's Linux userland comes from these: WebKitGTK (The WRLD Browser's engine),
+# GTK 4, Wayland, GStreamer (video and sound), musl, BusyBox (/bin/sh) and the CA list.
+# Without them the build still works, but The WRLD Browser falls back to its classic engine.
+LXPKGS="pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev
+        libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev
+        libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -33,6 +39,21 @@ if ! have_tools; then
         have_tools || fail "the build tools are still missing after installing them."
     else
         fail "missing build tools and no apt-get. Install the equivalents of: $PKGS"
+    fi
+fi
+
+# the Linux userland's packages (64-bit edition), installed when any is missing
+lx_missing() { for p in $LXPKGS; do dpkg -s "$p" >/dev/null 2>&1 || echo "$p"; done; }
+if command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1 && [ -n "$(lx_missing)" ]; then
+    say "Installing the 64-bit edition's Linux userland: $(lx_missing | tr '\n' ' ')"
+    SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    export DEBIAN_FRONTEND=noninteractive
+    $SUDO apt-get update -qq
+    # one at a time, so a package an older distribution lacks does not stop the others
+    for p in $(lx_missing); do $SUDO apt-get install -y -qq "$p" >/dev/null 2>&1 || say "  (could not install $p)"; done
+    if ! pkg-config --exists webkitgtk-6.0 2>/dev/null; then
+        say "WebKitGTK 6.0 is not available here (it needs Ubuntu 24.04 or newer, or Debian 13):"
+        say "the 64-bit edition's WRLD Browser will use its classic engine."
     fi
 fi
 

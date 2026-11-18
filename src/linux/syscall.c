@@ -269,13 +269,21 @@ int64_t lx_syscall(regs_t *r) {
         if (f->type != FD_CONSOLE) return -ENOTTY;
         if (a1 == 0x5401) {                                                                  /* TCGETS: struct termios (kernel layout, 36 bytes) */
             uint8_t tio[36]; memset(tio, 0, sizeof tio);
-            uint32_t iflag = 0x500, oflag = 0x5, cflag = 0xBF, lflag = 0x8A3B;            /* ICRNL|IXON, OPOST|ONLCR, B38400|CS8|CREAD, ISIG|ICANON|ECHO... */
+            /* ICRNL|IXON, OPOST|ONLCR, B38400|CS8|CREAD, ISIG|ICANON|IEXTEN. No ECHO: the console window
+             * edits and echoes the line itself (history, completion), so a program's own line editor
+             * (BusyBox sh, GNU readline) must not echo it a second time; they read lines as typed. */
+            uint32_t iflag = 0x500, oflag = 0x5, cflag = 0xBF, lflag = 0x8003;
             memcpy(tio, &iflag, 4); memcpy(tio + 4, &oflag, 4); memcpy(tio + 8, &cflag, 4); memcpy(tio + 12, &lflag, 4);
             return uout(a2, tio, sizeof tio) ? 0 : -EFAULT;
         }
         if (a1 == 0x5402 || a1 == 0x5403 || a1 == 0x5404) return 0;                         /* TCSETS* */
         if (a1 == 0x5413) { uint16_t ws[4] = { 25, 80, 640, 400 }; return uout(a2, ws, 8) ? 0 : -EFAULT; }   /* TIOCGWINSZ */
         if (a1 == 0x540F) { int32_t pg = p->pid; return uout(a2, &pg, 4) ? 0 : -EFAULT; }   /* TIOCGPGRP */
+        if (a1 == 0x5429) { int32_t sid = p->pid; return uout(a2, &sid, 4) ? 0 : -EFAULT; } /* TIOCGSID */
+        /* a shell taking the terminal (TIOCSPGRP, TIOCSCTTY, TIOCNOTTY), flushing it (TCFLSH, TCXONC,
+         * TCSBRK) or setting its size (TIOCSWINSZ): one console per program here, so nothing to do */
+        if (a1 == 0x5410 || a1 == 0x540E || a1 == 0x5422 || a1 == 0x540B || a1 == 0x540A || a1 == 0x5409 || a1 == 0x5414) return 0;
+        if (a1 == 0x541B) { int32_t avail = 0; return uout(a2, &avail, 4) ? 0 : -EFAULT; }   /* FIONREAD */
         return -ENOTTY;
     }
     case 32: case 33: case 292: {                                     /* dup, dup2, dup3 */

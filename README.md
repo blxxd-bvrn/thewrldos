@@ -104,6 +104,15 @@ again.
 sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools qemu-system-x86
 ```
 
+The 64-bit edition's Linux userland (The WRLD Browser's WebKit engine, GTK 4, video and sound,
+`/bin/sh`) comes from these packages on the build machine (Ubuntu 24.04 or newer). Without them
+the image still builds, but The WRLD Browser uses its classic engine. `Build to ISO.bat`
+installs them by itself.
+
+```bash
+sudo apt install pkg-config python3 musl-tools busybox ca-certificates libwebkitgtk-6.0-dev libgtk-4-dev libwayland-dev libwayland-bin wayland-protocols libxkbcommon-dev libglib2.0-dev libcairo2-dev libfontconfig-dev libfreetype-dev gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad
+```
+
 ```bash
 make            # the 32-bit edition: build/wrld.elf and wrldos.iso
 ```
@@ -532,9 +541,15 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   Prompt's PATH. In the Command Prompt: `dpkg -i/-r/-l/-L/-I/-c`, `rpm -i/-e/-qa/-ql/-qip`,
   `apt install ./FILE.deb`. Packages may be gzip, xz or Zstandard compressed (XZ Embedded and
   the zstd reference decoder, in `third_party`). Not done: setup scripts (`postinst`, `%post`)
-  are not run, apart from their `update-alternatives --install` lines; there is no Linux
-  `/bin/sh` (installing `busybox-static` gives `busybox sh`); symbolic links are installed as
-  copies; and nothing is downloaded: dependencies are installed from their own package files.
+  are not run, apart from their `update-alternatives --install` lines; symbolic links are
+  installed as copies; and nothing is downloaded: dependencies are installed from their own
+  package files.
+- **/bin/sh.** BusyBox (from the build machine's `busybox` package) is `/usr/bin/sh`, with its
+  commands (`ls`, `sed`, `grep`, `awk`, `tar`, `vi`...): each is a small `#!/usr/bin/busybox`
+  stub, since the file system has no symbolic links, and the Linux layer runs `#!` scripts with
+  their interpreter. So package scripts, `system()` and `popen()` work, and
+  `C:/Linux/usr/bin/sh` in the Command Prompt is an interactive Linux shell. Linux scripts under
+  `C:\Linux` started from the Command Prompt run with their own interpreter.
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
   loopback interface, and `MAP_SHARED` write-back to ordinary files. See `ROADMAP.md` for what is left before WebKit becomes the browser.
 

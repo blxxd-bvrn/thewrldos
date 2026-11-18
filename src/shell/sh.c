@@ -1663,6 +1663,16 @@ static int run_external(sh_t *s, int argc, char **argv, io_t *io) {
         if (pe_is_gui(n)) { out_f(io, "Started %s (pid %d)\n", n->name, pid); return 0; }
         return wait_pid(s, pid);
     }
+#ifdef __x86_64__
+    /* a Linux script ("#!/bin/sh", "#!/usr/bin/env python3"...) under C:\Linux: its Linux interpreter runs it */
+    if (n->size > 3 && n->data[0] == '#' && n->data[1] == '!' && !strncasecmp(path, "C:\\Linux\\", 9)) {
+        extern int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in, console_t *out, char *err, int ecap);
+        char err[256];
+        int pid = lx_spawn(path, argc, argv, NULL, io->in, io->out, err, sizeof err);
+        if (pid < 0) { err_f(io, "%s: %s\n", argv[0], err); return 126; }
+        return wait_pid(s, pid);
+    }
+#endif
     if (!strcasecmp(ext, "sh") || !strcasecmp(ext, "bash") || (n->size > 2 && n->data[0] == '#' && n->data[1] == '!')) return sh_run_file_io(s, path, argc, argv, io);
     if (!strcasecmp(ext, "dmg")) { char *a[2] = { "mount", path }; return b_mount(s, 2, a, io); }
     char desc[128];

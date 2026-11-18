@@ -83,7 +83,15 @@ static bool webkit_open(const char *url) { (void)url; return false; }
 #endif
 
 void browser_open(const char *url) {
-    char why[96];
+    char why[96] = "it did not start";
     if (webkit_browser_available(why, sizeof why) && webkit_open(url)) return;
+    /* the classic engine stands in: say why, once, unless the user chose it */
+    static bool told;
+    const char *pref = settings_get("browser");
+    if (!told && !(pref && !strcasecmp(pref, "classic"))) {
+        char m[200]; snprintf(m, sizeof m, "The WRLD Browser is using its classic engine: WebKit could not start (%s).", why);
+        notify_balloon("The WRLD Browser", m);
+        told = true;
+    }
     browser_classic_open(url);
 }

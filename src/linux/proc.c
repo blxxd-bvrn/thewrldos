@@ -213,9 +213,49 @@ static bool build_image(lxproc_t *p, vnode_t *n, uvm_t *vm, int argc, char **arg
     return true;
 }
 
+#define LX_MAXARG 256
+/* "#!interpreter [arg]": the first line of a script. False if n is not one. */
+static bool parse_shebang(vnode_t *n, char *interp, int icap, char *arg, int acap) {
+    if (!n || n->dir || n->size < 3 || n->data[0] != '#' || n->data[1] != '!') return false;
+    char line[256]; int l = 0;
+    for (uint32_t i = 2; i < n->size && l < 255 && n->data[i] != '\n'; i++) line[l++] = n->data[i];
+    line[l] = 0;
+    char *s = line; while (*s == ' ' || *s == '\t') s++;
+    char *e = s; while (*e && *e != ' ' && *e != '\t' && *e != '\r') e++;
+    char *a = e; if (*a) { *a++ = 0; while (*a == ' ' || *a == '\t') a++; }
+    int al = strlen(a); while (al && (a[al - 1] == ' ' || a[al - 1] == '\t' || a[al - 1] == '\r')) a[--al] = 0;
+    if (!*s) return false;
+    strlcpy(interp, s, icap); strlcpy(arg, a, acap);           /* Linux passes the rest of the line as one argument */
+    return true;
+}
+/* a WRLD path as the Linux programs see it */
+static void wrld_to_linux(const char *wp, char *out, int cap) {
+    if (!strncasecmp(wp, "C:\\Linux", 8) && (wp[8] == '\\' || !wp[8])) snprintf(out, cap, "%s", wp[8] ? wp + 8 : "/");
+    else if (wp[1] == ':') snprintf(out, cap, "/mnt/%c%s", tolower(wp[0]), wp + 2);
+    else strlcpy(out, wp, cap);
+    for (char *c = out; *c; c++) if (*c == '\\') *c = '/';
+}
 int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_t *in_con, console_t *con, char *err, int ecap) {
     vnode_t *n = vfs_resolve(wrld_path, NULL);
     if (!n || n->dir) { snprintf(err, ecap, "File not found: %s", wrld_path); return -1; }
+    /* a script: start its interpreter with the script's path (up to 4 levels, as Linux allows) */
+    static char sb_interp[4][256], sb_arg[4][256], sb_script[4][512];
+    char *sargv[LX_MAXARG + 8];
+    for (int depth = 0; depth < 4; depth++) {
+        if (!parse_shebang(n, sb_interp[depth], 256, sb_arg[depth], 256)) break;
+        if (n->size >= 4 && !memcmp(n->data, "\x7F" "ELF", 4)) break;
+        char wp[512]; vfs_path(n, wp, sizeof wp); wrld_to_linux(wp, sb_script[depth], 512);
+        int k = 0; sargv[k++] = sb_interp[depth];
+        if (sb_arg[depth][0]) sargv[k++] = sb_arg[depth];
+        sargv[k++] = sb_script[depth];
+        for (int i = 1; i < argc && k < LX_MAXARG + 6; i++) sargv[k++] = argv[i];
+        sargv[k] = NULL;
+        if (sb_interp[depth][0] != '/') { snprintf(err, ecap, "%s names its interpreter without a full path (%s).", path_basename(wrld_path), sb_interp[depth]); return -1; }
+        char ip[512]; lx_path(NULL, -100, sb_interp[depth], ip, sizeof ip);
+        vnode_t *in = vfs_resolve(ip, NULL);
+        if (!in || in->dir) { snprintf(err, ecap, "%s needs %s, which is not installed.", path_basename(wrld_path), sb_interp[depth]); return -1; }
+        n = in; argc = k; argv = sargv;
+    }
     lxproc_t *p = proc_new();
     if (!p) { snprintf(err, ecap, "Not enough memory to start the program."); return -1; }
     p->con = con;
@@ -326,7 +366,6 @@ static int user_str(lxproc_t *p, char *dst, uint64_t src, int cap) {
     }
     return -ENAMETOOLONG;
 }
-#define LX_MAXARG 256
 static int copy_vec(lxproc_t *p, uint64_t uvec, char **out) {
     int n = 0;
     if (!uvec) { out[0] = NULL; return 0; }
@@ -369,6 +408,23 @@ int64_t lx_execve(regs_t *r, uint64_t upath, uint64_t uargv, uint64_t uenvp) {
     vnode_t *n = kind == LP_FILE ? vfs_resolve(wrld, NULL) : NULL;
     int64_t ret = -ENOEXEC;
     if (!n || n->dir) { ret = -ENOENT; goto out; }
+    /* "#!interpreter [arg]": run the interpreter with the script's path in front of the arguments */
+    for (int depth = 0; depth < 4; depth++) {
+        char interp[256], arg[256];
+        if (!parse_shebang(n, interp, sizeof interp, arg, sizeof arg)) break;
+        int extra = arg[0] ? 2 : 1;
+        if (argc + extra > LX_MAXARG) { ret = -E2BIG; goto out; }
+        kfree(argv[0]);
+        memmove(argv + extra + 1, argv + 1, sizeof(char *) * argc);    /* argv[1..argc] (with its NULL) moves up */
+        argv[0] = strdup(interp);
+        if (arg[0]) argv[1] = strdup(arg);
+        argv[extra] = strdup(path);                                 /* the script, as the caller named it */
+        argc += extra;
+        kind = lx_path(p, -100, interp, wrld, sizeof wrld);
+        n = kind == LP_FILE ? vfs_resolve(wrld, NULL) : NULL;
+        if (!n || n->dir) { ret = -ENOENT; goto out; }
+        strlcpy(path, interp, sizeof path);
+    }
     uvm_t *nv = uvm_new();
     if (!nv) { ret = -ENOMEM; goto out; }
     regs_t nr; char err[128];
