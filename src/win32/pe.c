@@ -185,7 +185,7 @@ void *w32_resource_data(w32_proc_t *p, uintptr_t hrsrc, uint32_t *size) {
     return (void *)((m ? m->base : p->base) + d->rva);
 }
 
-typedef struct { char dll[32]; char name[64]; } unimpl_t;
+typedef struct { char dll[32]; char name[160]; } unimpl_t;
 static void __attribute__((used)) w32_unimplemented(unimpl_t *u) {
     w32_proc_t *p = w32_cur();
     char msg[200];
@@ -614,7 +614,7 @@ static int resolve_imports(w32_proc_t *p, uint8_t *img, const pe_info_t *pi) {
         w32_mod_t *m = w32_is_system_dll(dll) ? NULL : load_mod(p, dll, 1);
         for (int k = 0; ilt[k]; k++) {
             void *fn = NULL;
-            char name[64]; uint32_t ord = 0;
+            char name[256]; uint32_t ord = 0;
             if (ilt[k] & ord_flag) { ord = (uint32_t)(ilt[k] & 0xFFFF); snprintf(name, sizeof name, "Ordinal%u", ord); }
             else strlcpy(name, (const char *)(img + (uint32_t)ilt[k] + 2), sizeof name);
             if (m) fn = w32_mod_export(p, m, ord ? NULL : name, ord);

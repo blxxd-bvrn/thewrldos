@@ -1185,6 +1185,11 @@ device manager's job is to say what the computer has and which driver runs it.
   - **Common controls:** toolbar, status bar, rebar, progress bar, trackbar, up-down, tab control
     and list view (report and list modes, `WM_NOTIFY`), image lists and window subclassing
     (`C:\Samples\ccdemo.exe` uses them, with the registry and an INI file).
+  - **msvcp60.dll:** Visual C++ 6's `std::basic_string<char>` and `_Lockit`, with VC6's own object
+    layout (programs inline parts of it), `__thiscall` on x86. With keyboard accelerators
+    (`LoadAccelerators`/`TranslateAccelerator`), class menus, baseline-aligned text and
+    clipped `ExtTextOut`, Notepad2 (x86 and x64) runs: its Scintilla editor, menus, toolbar and
+    shortcuts work.
   - A much larger C runtime (file descriptors, `stat`/`findfirst`, the Universal CRT start-up
     and `__stdio_common_*` functions, wide printf, `setjmp`/`longjmp`, time conversions),
     DIB sections, regions, viewport origins and bitmaps from resources in GDI, shlwapi, more

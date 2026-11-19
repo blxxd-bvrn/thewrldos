@@ -832,8 +832,9 @@ static ATOM class_w(const WCHAR *name, void *proc, uintptr_t bg, uint32_t style,
     if ((uintptr_t)name < 0x10000) snprintf(n, sizeof n, "#%u", (unsigned)(uintptr_t)name); else w2u(name, n, sizeof n);
     return reg_class_ex(n, proc, bg, style, extra, true);
 }
-static ATOM WINAPI RegisterClassW(const WNDCLASSW_ *wc) { return class_w(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra); }
-static ATOM WINAPI RegisterClassExW(const WNDCLASSEXW_ *wc) { return class_w(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra); }
+static void class_menu_w(const WCHAR *name, HINSTANCE inst, const WCHAR *menu) { char n[64]; if ((uintptr_t)name < 0x10000) snprintf(n, sizeof n, "#%u", (unsigned)(uintptr_t)name); else w2u(name, n, sizeof n); class_menu(n, inst, menu, true); }
+static ATOM WINAPI RegisterClassW(const WNDCLASSW_ *wc) { ATOM a = class_w(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra); if (a) class_menu_w(wc->name, wc->inst, wc->menu); return a; }
+static ATOM WINAPI RegisterClassExW(const WNDCLASSEXW_ *wc) { ATOM a = class_w(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra); if (a) class_menu_w(wc->name, wc->inst, wc->menu); return a; }
 static BOOL WINAPI UnregisterClassW(const WCHAR *n, HINSTANCE h) { return 1; }
 static BOOL WINAPI GetClassInfoW(HINSTANCE h, const WCHAR *n, WNDCLASSW_ *wc) {
     char a[64]; if ((uintptr_t)n < 0x10000) return 0; w2u(n, a, sizeof a);
@@ -884,6 +885,7 @@ static const uint8_t *menu_parse(const uint8_t *p, HANDLE hm) {
         if (flags & 0x80) return p;                                              /* MF_END */
     }
 }
+HANDLE WINAPI w32_load_menu(HINSTANCE inst, uintptr_t name);
 static HANDLE WINAPI LoadMenuA2(HINSTANCE inst, const char *name) {
     uintptr_t r = w32_find_resource(P, 4, (uintptr_t)name, false, 0);
     if (!r) return 0;
@@ -1159,6 +1161,7 @@ static BOOL WINAPI ExtTextOutW(HDC h, int x, int y, UINT o, const LONG *r, const
     if (dx) {                                                                    /* character cells at given advances (terminals) */
         rect_t sv; dc_begin(d, &sv);
         int cx = x;
+        if ((d->align & 24) == 24) y -= font_ascent(f); else if (d->align & 8) y -= font_height(f);
         if (d->bkmode == 2 && !(o & 2)) { int tw = 0; for (UINT i = 0; i < n; i++) tw += dx[i]; fill_rect(d->surf, d->ox + x, d->oy + y, tw, font_height(f), d->bk); }
         for (UINT i = 0; i < n; i++) {
             WCHAR w[2] = { s[i], 0 }; char a[8]; w2u(w, a, sizeof a);
@@ -1418,3 +1421,5 @@ const w32_export_t winspool_exports[] = {
     E(EndDocPrinter), E(StartPagePrinter), E(EndPagePrinter), E(WritePrinter), E(GetDefaultPrinterA), E(GetDefaultPrinterW),
 };
 const int winspool_count = ARRAY_LEN(winspool_exports);
+/* a class menu, by ordinal or by its (ANSI) name */
+HANDLE WINAPI w32_load_menu(HINSTANCE inst, uintptr_t name) { return LoadMenuA2(inst, (const char *)name); }

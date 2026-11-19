@@ -1503,6 +1503,62 @@ static LRESULT WINAPI DefSubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     return DefWindowProcA(h, m, w, l);
 }
 
+
+/* ================================================================ keyboard accelerators */
+/* a table: entries of (flags, key, command); flags FVIRTKEY 1, FNOINVERT 2, FSHIFT 4, FCONTROL 8, FALT 0x10 */
+#define ACCMAGIC 0x41434345
+typedef struct { uint8_t flags; uint16_t key, cmd; } accent_t;
+typedef struct { uint32_t magic; int n; accent_t e[]; } acctab_t;
+static acctab_t *ACC(HANDLE h) { acctab_t *a = (acctab_t *)h; return h > 0x100000 && !(h & 3) && a->magic == ACCMAGIC ? a : NULL; }
+static acctab_t *acc_new(int n) { acctab_t *a = kzalloc(sizeof *a + n * sizeof(accent_t)); a->magic = ACCMAGIC; a->n = n; return a; }
+static HANDLE load_accel(HINSTANCE inst, uintptr_t name, bool wide) {
+    uintptr_t r = w32_find_resource_in(P, inst, 9, name, wide, 0);              /* RT_ACCELERATOR: 8-byte entries, the last flagged 0x80 */
+    uint32_t sz = 0; const uint16_t *d = r ? w32_resource_data(P, r, &sz) : NULL;
+    if (!d) { P->last_error = 1814; return 0; }
+    int n = 0; while ((uint32_t)(n + 1) * 8 <= sz) { n++; if (d[(n - 1) * 4] & 0x80) break; }
+    acctab_t *a = acc_new(n);
+    for (int i = 0; i < n; i++) { a->e[i].flags = d[i * 4] & 0x7F; a->e[i].key = d[i * 4 + 1]; a->e[i].cmd = d[i * 4 + 2]; }
+    return (HANDLE)a;
+}
+static HANDLE WINAPI LoadAcceleratorsA2(HINSTANCE h, const char *n) { return load_accel(h, (uintptr_t)n, false); }
+static HANDLE WINAPI LoadAcceleratorsW2(HINSTANCE h, const WCHAR *n) { return load_accel(h, (uintptr_t)n, true); }
+/* ACCEL in memory: BYTE fVirt, (pad), WORD key, WORD cmd */
+static HANDLE WINAPI CreateAcceleratorTableW(const uint8_t *e, int n) {
+    if (n <= 0 || !e) return 0;
+    acctab_t *a = acc_new(n);
+    for (int i = 0; i < n; i++) { a->e[i].flags = e[i * 6]; a->e[i].key = *(const uint16_t *)(e + i * 6 + 2); a->e[i].cmd = *(const uint16_t *)(e + i * 6 + 4); }
+    return (HANDLE)a;
+}
+static BOOL WINAPI DestroyAcceleratorTable2(HANDLE h) { acctab_t *a = ACC(h); if (!a) return 0; a->magic = 0; kfree(a); return 1; }
+static int WINAPI CopyAcceleratorTableW(HANDLE h, uint8_t *e, int n) {
+    acctab_t *a = ACC(h); if (!a) return 0;
+    if (!e) return a->n;
+    int k = MIN(n, a->n);
+    for (int i = 0; i < k; i++) { e[i * 6] = a->e[i].flags; e[i * 6 + 1] = 0; *(uint16_t *)(e + i * 6 + 2) = a->e[i].key; *(uint16_t *)(e + i * 6 + 4) = a->e[i].cmd; }
+    return k;
+}
+static int WINAPI TranslateAcceleratorA2(HWND h, HANDLE ht, MSG32 *m) {
+    acctab_t *a = ACC(ht);
+    if (!a || !m || !W(h)) return 0;
+    bool keydown = m->message == WM_KEYDOWN || m->message == 0x104, chr = m->message == WM_CHAR || m->message == 0x106;   /* WM_SYSKEYDOWN, WM_SYSCHAR */
+    if (!keydown && !chr) return 0;
+    bool shift = keystate[0x10] != 0, ctrl = keystate[0x11] != 0, alt = keystate[0x12] != 0 || m->message == 0x104 || m->message == 0x106;
+    for (int i = 0; i < a->n; i++) {
+        accent_t *e = &a->e[i];
+        if (e->flags & 1) {                                                       /* a virtual key with modifiers */
+            if (!keydown || e->key != (m->wParam & 0xFFFF)) continue;
+            if (!!(e->flags & 4) != shift || !!(e->flags & 8) != ctrl || !!(e->flags & 0x10) != alt) continue;
+        } else {                                                                  /* a character */
+            if (!chr || e->key != (m->wParam & 0xFFFF)) continue;
+            if ((e->flags & 0x10) && !alt) continue;
+        }
+        w32win_t *t = top_of(W(h));
+        send(t, WM_COMMAND, e->cmd | (1 << 16), 0);
+        return 1;
+    }
+    return 0;
+}
+
 #define U(n) { "user32", #n, (void *)n }
 #define UA(n, f) { "user32", n, (void *)f }
 #define GD(n) { "gdi32", #n, (void *)n }
@@ -1537,6 +1593,9 @@ const w32_api_t usermore_api[] = {
     { "msimg32", "AlphaBlend", (void *)GdiAlphaBlend }, { "msimg32", "TransparentBlt", (void *)GdiTransparentBlt }, { "msimg32", "GradientFill", (void *)GdiGradientFill },
     GDA("CreateMetaFileW", zero_h), GDA("CloseMetaFile", zero_h), GDA("DeleteMetaFile", zero_u),
     /* user32 */
+    UA("LoadAcceleratorsA", LoadAcceleratorsA2), UA("LoadAcceleratorsW", LoadAcceleratorsW2), U(CreateAcceleratorTableW), UA("CreateAcceleratorTableA", CreateAcceleratorTableW),
+    UA("DestroyAcceleratorTable", DestroyAcceleratorTable2), U(CopyAcceleratorTableW), UA("CopyAcceleratorTableA", CopyAcceleratorTableW), UA("TranslateAcceleratorA", TranslateAcceleratorA2),
+    UA("TranslateAcceleratorW", TranslateAcceleratorA2), UA("TranslateAccelerator", TranslateAcceleratorA2),
     U(LoadBitmapA), U(LoadBitmapW), UA("LoadImageA", LoadImageA2), UA("LoadImageW", LoadImageW2), U(CreateIcon), U(CreateIconFromResource), U(CreateIconFromResourceEx),
     U(LookupIconIdFromDirectoryEx), U(GetCursor), U(GetCursorInfo), U(CharUpperBuffW), U(CharLowerBuffW), U(CharUpperBuffA), U(CharLowerBuffA), UA("CharUpperW", CharUpperW2),
     UA("CharLowerW", CharLowerW2), U(CharNextW), U(CharPrevW), UA("CharNextA", CharNextA2), UA("CharPrevA", CharPrevA2), U(IsCharAlphaW), U(IsCharAlphaNumericW),

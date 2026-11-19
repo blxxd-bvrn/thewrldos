@@ -3,8 +3,8 @@
  * replaces a stub there. */
 #include "w32.h"
 
-extern const w32_api_t registry_api[], k32more_api[], shell_api[], comctl_api[], usermore_api[], misc_api[];
-static const w32_api_t *const tables[] = { registry_api, k32more_api, shell_api, comctl_api, usermore_api, misc_api };
+extern const w32_api_t registry_api[], k32more_api[], shell_api[], comctl_api[], usermore_api[], misc_api[], msvcp60_api[];
+static const w32_api_t *const tables[] = { registry_api, k32more_api, shell_api, comctl_api, usermore_api, misc_api, msvcp60_api };
 
 void *w32_extra_find(const char *dll, const char *name) {
     char g[64]; w32_dll_group(dll ? dll : "", g, sizeof g);

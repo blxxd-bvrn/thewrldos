@@ -639,7 +639,7 @@ void w32_dll_group(const char *dll, char *g, int cap) {
     char b[64]; strlcpy(b, dll, sizeof b);
     for (char *c = b; *c; c++) *c = tolower(*c);
     char *dot = strstr(b, ".dll"); if (dot) *dot = 0;
-    if (!strncmp(b, "api-ms-win-crt-", 15) || !strcmp(b, "ucrtbase") || !strncmp(b, "vcruntime", 9) || !strncmp(b, "msvcp", 5) || !strncmp(b, "msvcr", 5) || !strcmp(b, "crtdll")) strlcpy(g, "msvcrt", cap);
+    if (!strncmp(b, "api-ms-win-crt-", 15) || !strcmp(b, "ucrtbase") || !strncmp(b, "vcruntime", 9) || (!strncmp(b, "msvcp", 5) && strcmp(b, "msvcp60")) || !strncmp(b, "msvcr", 5) || !strcmp(b, "crtdll")) strlcpy(g, "msvcrt", cap);
     else if (!strncmp(b, "api-ms-win-core-", 16) || !strcmp(b, "kernelbase") || !strcmp(b, "ntdll")) strlcpy(g, "kernel32", cap);
     else if (!strncmp(b, "api-ms-win-security-", 20) || !strncmp(b, "api-ms-win-eventing-", 20)) strlcpy(g, "advapi32", cap);
     else if (!strcmp(b, "wsock32")) strlcpy(g, "ws2_32", cap);

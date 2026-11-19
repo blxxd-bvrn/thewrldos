@@ -26,7 +26,8 @@ enum { WM_CREATE = 1, WM_DESTROY = 2, WM_MOVE = 3, WM_SIZE = 5, WM_ACTIVATE = 6,
 
 enum { CTL_NONE, CTL_BUTTON, CTL_STATIC, CTL_EDIT, CTL_LISTBOX, CTL_COMBO, CTL_TREE, CTL_SCROLLBAR,
        CTL_TOOLBAR = 20, CTL_STATUS, CTL_REBAR, CTL_PROGRESS, CTL_TRACKBAR, CTL_UPDOWN, CTL_TAB, CTL_LISTVIEW, CTL_HEADER, CTL_QUIET, CTL_TOOLTIP };   /* comctl.inc */
-typedef struct w32cls { char name[64]; void *proc; uintptr_t brush; uint32_t style; w32_proc_t *owner; struct w32cls *next; int wnd_extra; bool unicode; } w32cls_t;
+typedef struct w32cls { char name[64]; void *proc; uintptr_t brush; uint32_t style; w32_proc_t *owner; struct w32cls *next; int wnd_extra; bool unicode;
+                       uintptr_t menu_id; char menu_name[64]; HINSTANCE inst; } w32cls_t;   /* the class menu (lpszMenuName) */
 struct tvitem;
 typedef struct w32win {
     uint32_t magic;
@@ -196,6 +197,8 @@ static BOOL WINAPI TextOutA(HDC h, int x, int y, const char *s, int n) {
     rect_t sv; dc_begin(d, &sv);
     int f = dcfont(d), tw = text_width_n(f, s, n);
     if (d->align & 6) x -= (d->align & 6) == 6 ? tw / 2 : tw;
+    if ((d->align & 24) == 24) y -= font_ascent(f);                 /* TA_BASELINE: y is the baseline */
+    else if (d->align & 8) y -= font_height(f);                     /* TA_BOTTOM */
     if (d->bkmode == 2) fill_rect(d->surf, d->ox + x, d->oy + y, tw, font_height(f), d->bk);
     draw_text_n(d->surf, f, d->ox + x, d->oy + y, s, n, d->text);
     dc_end(d, sv);
@@ -203,6 +206,13 @@ static BOOL WINAPI TextOutA(HDC h, int x, int y, const char *s, int n) {
 }
 static BOOL WINAPI ExtTextOutA(HDC h, int x, int y, UINT o, const LONG *r, const char *s, UINT n, const int *dx) {
     dc_t *d = DC(h); if (!d) return 0;
+    if ((o & 4) && r) {                                             /* ETO_CLIPPED */
+        rect_t save = d->clip;
+        d->clip = rect_intersect(d->clip, R(d->ox + r[0], d->oy + r[1], r[2] - r[0], r[3] - r[1]));
+        BOOL res = ExtTextOutA(h, x, y, o & ~4u, r, s, n, dx);
+        d->clip = save;
+        return res;
+    }
     if (r && (o & 2)) { rect_t sv; dc_begin(d, &sv); fill_rect(d->surf, d->ox + r[0], d->oy + r[1], r[2] - r[0], r[3] - r[1], d->bk); dc_end(d, sv); }
     return s ? TextOutA(h, x, y, s, n) : 1;
 }
@@ -446,8 +456,17 @@ static ATOM reg_class_ex(const char *name, void *proc, uintptr_t bg, uint32_t st
     return 0xC000 + ((uintptr_t)c & 0x3FFF);
 }
 static ATOM reg_class(const char *name, void *proc, uintptr_t bg, uint32_t style) { return reg_class_ex(name, proc, bg, style, 0, false); }
-static ATOM WINAPI RegisterClassA(const WNDCLASSA *wc) { return reg_class_ex(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra, false); }
-static ATOM WINAPI RegisterClassExA(const WNDCLASSEXA *wc) { return reg_class_ex(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra, false); }
+static w32cls_t *find_class(const char *n);
+/* remember a class's menu: an ordinal or a name (ANSI or wide) */
+static void class_menu(const char *cls, HINSTANCE inst, const void *menu, bool wide) {
+    w32cls_t *c = find_class(cls); if (!c || !menu) return;
+    c->inst = inst;
+    if ((uintptr_t)menu < 0x10000) c->menu_id = (uintptr_t)menu;
+    else if (wide) { const WCHAR *w = menu; int i = 0; for (; w[i] && i < 63; i++) c->menu_name[i] = (char)w[i]; c->menu_name[i] = 0; }
+    else strlcpy(c->menu_name, menu, sizeof c->menu_name);
+}
+static ATOM WINAPI RegisterClassA(const WNDCLASSA *wc) { ATOM a = reg_class_ex(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra, false); if (a && (uintptr_t)wc->name >= 0x10000) class_menu(wc->name, wc->inst, wc->menu, false); return a; }
+static ATOM WINAPI RegisterClassExA(const WNDCLASSEXA *wc) { ATOM a = reg_class_ex(wc->name, wc->proc, wc->bg, wc->style, wc->wnd_extra, false); if (a && (uintptr_t)wc->name >= 0x10000) class_menu(wc->name, wc->inst, wc->menu, false); return a; }
 static BOOL WINAPI UnregisterClassA(const char *n, HINSTANCE h) { return 1; }
 static BOOL WINAPI GetClassInfoA(HINSTANCE h, const char *n, WNDCLASSA *wc) { w32cls_t *c = find_class(n); if (!c) return 0; memset(wc, 0, sizeof *wc); wc->proc = c->proc; wc->name = c->name; wc->bg = c->brush; return 1; }
 
@@ -538,6 +557,8 @@ static void wm_key_cb(window_t *win, key_event_t *e) {
     }
     /* the character this key makes, for TranslateMessage to turn into WM_CHAR */
     if (vk && e->pressed) key_char[vk & 0xFF] = e->ch == '\n' ? 13 : e->ch ? (uint8_t)e->ch : vk == 0x0D ? 13 : vk == 8 ? 8 : vk == 9 ? 9 : vk == 0x1B ? 27 : 0;
+    /* Ctrl with a letter makes a control character (Ctrl+O: 0x0F), as on Windows; editors ignore those */
+    if (vk >= 'A' && vk <= 'Z' && e->pressed && keystate[0x11] && !keystate[0x12]) key_char[vk] = vk - 'A' + 1;
     w32win_t *f = focus_win && top_of(focus_win) == t && W((uintptr_t)focus_win) ? focus_win : t;
     if (f->ctl >= CTL_TOOLBAR && cc_key(f, e)) return;
     if ((f->ctl == CTL_LISTBOX || f->ctl == CTL_COMBO || f->ctl == CTL_TREE) && ctl_key_ext(f, e)) return;
@@ -666,6 +687,10 @@ static HWND WINAPI CreateWindowExA(DWORD ex, const char *clsname, const char *ti
         win->top = tw; win->w = tw->surf->w; win->h = tw->surf->h;
         win->visible = (style & WS_VISIBLE) != 0;
         win->need_paint = true; win->erase = true;
+        if (!menu && cls && (cls->menu_id || cls->menu_name[0])) {      /* the class's menu */
+            extern HANDLE WINAPI w32_load_menu(HINSTANCE, uintptr_t);
+            menu = w32_load_menu(cls->inst, cls->menu_id ? cls->menu_id : (uintptr_t)cls->menu_name);
+        }
         if (menu) { win->menu = menu; apply_menu(win); }
     }
     CREATESTRUCTA cs = { param, inst, menu, parent, h, w, y, x, style, title, clsname, ex };
