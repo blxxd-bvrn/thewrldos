@@ -48,6 +48,7 @@ typedef struct {
     float *depth;                        /* this context's depth buffer (view.w * view.h), or NULL for the shared one */
     bool depth_test, depth_write;
     int alpha;                           /* 0..255, multiplied with texture and vertex alpha */
+    bool blend;                          /* blend by alpha (the default); false: every drawn pixel is opaque (OpenGL with GL_BLEND off) */
     uint32_t triangles, pixels;          /* statistics for the frame */
 } r3d_t;
 

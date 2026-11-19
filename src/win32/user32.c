@@ -471,6 +471,7 @@ static BOOL WINAPI UnregisterClassA(const char *n, HINSTANCE h) { return 1; }
 static BOOL WINAPI GetClassInfoA(HINSTANCE h, const char *n, WNDCLASSA *wc) { w32cls_t *c = find_class(n); if (!c) return 0; memset(wc, 0, sizeof *wc); wc->proc = c->proc; wc->name = c->name; wc->bg = c->brush; return 1; }
 
 /* ---------------- WM integration (runs on the GUI thread) ---------------- */
+static UINT vk_scan(UINT vk);   /* user32_more.inc */
 static int vk_of(key_event_t *e) {
     int k = e->key;
     if (k >= 'a' && k <= 'z') return k - 32;
@@ -581,9 +582,14 @@ static void wm_key_cb(window_t *win, key_event_t *e) {
     }
     if (f->ctl == CTL_BUTTON && e->pressed && (e->key == ' ' || e->key == KEY_ENTER)) { w32_post(f->proc, (uintptr_t)f->parent, WM_COMMAND, f->id & 0xFFFF, (uintptr_t)f); return; }
     if (f->ctl) f = t;
-    /* lParam: repeat count 1, and on key-up the previous-state and transition bits (30, 31),
-     * which programs that translate keys themselves (terminals) look at */
-    if (vk) w32_post(f->proc, (uintptr_t)f, e->pressed ? WM_KEYDOWN : WM_KEYUP, vk, e->pressed ? 1 : 0xC0000001u);
+    /* lParam: repeat count 1, the PC scan code (bits 16-23) and the extended-key bit (24), which
+     * SDL and other games identify keys by, and on key-up the previous-state and transition bits
+     * (30, 31), which programs that translate keys themselves (terminals) look at */
+    if (vk) {
+        bool ext = (vk >= 0x21 && vk <= 0x28) || vk == 0x2D || vk == 0x2E || vk == 0x5B || vk == 0x5C || vk == 0x5D || vk == 0x6F;
+        uint32_t lp = 1 | (vk_scan(vk) << 16) | (ext ? 1u << 24 : 0) | (e->pressed ? 0 : 0xC0000000u);
+        w32_post(f->proc, (uintptr_t)f, e->pressed ? WM_KEYDOWN : WM_KEYUP, vk, lp);
+    }
 }
 static bool wm_close_cb(window_t *win) { w32win_t *t = win->w32; if (!t) return true; w32_post(t->proc, (uintptr_t)t, WM_CLOSE, 0, 0); return false; }
 static void wm_resized_cb(window_t *win) {
@@ -1083,7 +1089,8 @@ static BOOL WINAPI DrawIcon(HDC h, int x, int y, HANDLE i) { dc_t *d = DC(h); if
 static int16_t WINAPI GetKeyState(int vk) { return keystate[vk & 0xFF] ? (int16_t)0x8000 : 0; }
 static int16_t WINAPI GetAsyncKeyState(int vk) { if (vk == 1) return wm_window_count() ? 0 : 0; return keystate[vk & 0xFF] ? (int16_t)0x8001 : 0; }
 static BOOL WINAPI GetKeyboardState(BYTE *s) { for (int i = 0; i < 256; i++) s[i] = keystate[i] ? 0x80 : 0; return 1; }
-static UINT WINAPI MapVirtualKeyA(UINT c, UINT t) { return c; }
+static UINT WINAPI MapVirtualKeyW(UINT c, UINT t);
+static UINT WINAPI MapVirtualKeyA(UINT c, UINT t) { return MapVirtualKeyW(c, t); }
 static DWORD WINAPI GetSysColor(int i) { gdiobj_t *o = OBJ(i + 1); return o ? (C_R(o->color) | (C_G(o->color) << 8) | (C_B(o->color) << 16)) : 0; }
 static HGDIOBJ WINAPI GetSysColorBrush(int i) { return i + 1; }
 static int CDECL wsprintfA(char *b, const char *f, ...) { w32_va_list ap; w32_va_start(ap, f); int r = w32_vformat(b, 1024, f, ap); w32_va_end(ap); return r; }

@@ -298,7 +298,10 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   context-switch assembly and the linker script are per architecture.
 - **32-bit:** compiled for the Pentium (i586, tuned for i686) without MMX or SSE, so it also runs
   on Pentium MMX, AMD K6 and the VIA C3 of many thin clients; PAT, the local APIC, write-combining
-  and the TSC are used only when CPUID reports them.
+  and the TSC are used only when CPUID reports them. Programs may use SSE all the same: on a
+  processor that has it, the kernel turns it on at boot (`CR4.OSFXSR`) and interrupts save the
+  interrupted code's x87/SSE state with `FXSAVE` (`FNSAVE` on older processors), so SSE-built
+  libraries such as SDL2 work.
 - **x86-64:** GRUB loads the 64-bit ELF kernel through Multiboot 2 (or Multiboot 1 on an older
   GRUB). A 32-bit stub checks for long mode, identity-maps the first 4 GiB with 2 MiB pages,
   enables PAE, long mode, the FPU and SSE, and calls the same `kmain`. Interrupt stubs save the
@@ -849,6 +852,10 @@ device manager's job is to say what the computer has and which driver runs it.
       `wglCreateContext`, `SwapBuffers`), `glBegin`/`glEnd` with every primitive type, vertex
       arrays, display lists, the matrix stacks, textures (RGB, RGBA, BGR(A), luminance), one
       directional light, culling, depth and blending; `gluPerspective`, `gluLookAt` and friends.
+      For 2D layers such as SDL2's OpenGL renderer there are also the remaining 1.1 pixel calls
+      (`glReadPixels`, `glDrawPixels`, `glScissor`, `glCopyTexSubImage2D`), packed pixel formats
+      and row-length unpacking, render-to-texture with `GL_EXT_framebuffer_object`, one-unit
+      `GL_ARB_multitexture`, and vsync through `WGL_EXT_swap_control` (60 frames/s at most).
     - **Direct3D 9** (`d3d9.dll`, fixed function): `Direct3DCreate9`, devices, `Clear`,
       `Present`, transforms, viewport, material, one directional light, render and sampler
       states, flexible vertex formats (`XYZ` or pre-transformed `XYZRHW`, normal, diffuse, one
@@ -1208,6 +1215,14 @@ device manager's job is to say what the computer has and which driver runs it.
     (`LoadAccelerators`/`TranslateAccelerator`), class menus, baseline-aligned text and
     clipped `ExtTextOut`, Notepad2 (x86 and x64) runs: its Scintilla editor, menus, toolbar and
     shortcuts work.
+  - **Doom (Chocolate Doom 3.0, SDL2) runs and plays** on the 32-bit edition, with the Freedoom
+    IWAD: video through SDL's OpenGL renderer, keyboard, OPL music and sound effects through
+    winmm. What it needed: SSE in the 32-bit kernel; real counting semaphores, owned recursive
+    mutexes, critical sections, SRW locks and condition variables (semaphores had been
+    auto-reset events, which lose releases and hung SDL's audio); PC scan codes in the
+    `WM_KEYDOWN`/`WM_KEYUP` lParam (SDL identifies keys by them); and the OpenGL additions above.
+  - For hung programs, Ctrl+Alt+Shift+F12 logs every task's stack (the code addresses on it) to
+    the serial port.
   - A much larger C runtime (file descriptors, `stat`/`findfirst`, the Universal CRT start-up
     and `__stdio_common_*` functions, wide printf, `setjmp`/`longjmp`, time conversions),
     DIB sections, regions, viewport origins and bitmaps from resources in GDI, shlwapi, more

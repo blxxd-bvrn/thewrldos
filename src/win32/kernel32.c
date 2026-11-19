@@ -308,22 +308,35 @@ bool w32_handle_signaled(w32_proc_t *p, uintptr_t h, bool consume) {
     w32_handle_t *e = hget_p(p, (uint32_t)h);
     if (!e) return true;                                            /* not a waitable object: nothing to wait for */
     if (e->kind == H_THREAD) return !task_find(e->tid);
-    if (e->kind == H_EVENT) { if (!e->signaled) return false; if (consume && !e->manual) e->signaled = 0; return true; }
-    return true;
+    bool ok = true;
+    uintptr_t f = irq_save();                                       /* test and take as one step: threads of the program, audio callbacks */
+    if (e->kind == H_EVENT) { ok = e->signaled; if (ok && consume && !e->manual) e->signaled = 0; }
+    else if (e->kind == H_SEM) { ok = e->count > 0; if (ok && consume) e->count--; }
+    else if (e->kind == H_MUTEX) {                                  /* free, ours (recursive), or abandoned by a thread that ended */
+        int me = task_current()->pid;
+        ok = !e->owner || e->owner == me || !task_find(e->owner);
+        if (ok && consume) { if (e->owner != me) { e->owner = me; e->recursion = 0; } e->recursion++; }
+    }
+    irq_restore(f);
+    return ok;
 }
-void w32_event_signal(w32_proc_t *p, uintptr_t h) { w32_handle_t *e = hget_p(p, (uint32_t)h); if (e && e->kind == H_EVENT) e->signaled = 1; }
+void w32_event_signal(w32_proc_t *p, uintptr_t h) {
+    w32_handle_t *e = hget_p(p, (uint32_t)h);
+    if (e && e->kind == H_EVENT) e->signaled = 1;
+    else if (e && e->kind == H_SEM) { uintptr_t f = irq_save(); if (e->count < e->max) e->count++; irq_restore(f); }
+}
 /* WAIT_OBJECT_0 + i, or WAIT_TIMEOUT (0x102); "all" waits until every object is signalled at once */
 static DWORD WINAPI WaitForMultipleObjects(DWORD n, HANDLE *hs, BOOL all, DWORD ms) {
     w32_proc_t *p = P;
     uint32_t end = timer_ticks() + ms;
+    int spins = 0;
     for (;;) {
         if (all) {
             DWORD k = 0; for (; k < n; k++) if (!w32_handle_signaled(p, hs[k], false)) break;
             if (k == n) { for (k = 0; k < n; k++) w32_handle_signaled(p, hs[k], true); return 0; }
         } else for (DWORD i = 0; i < n; i++) if (w32_handle_signaled(p, hs[i], true)) return i;
-        if (ms != 0xFFFFFFFF && (int32_t)(timer_ticks() - end) >= 0) return 0x102;
-        task_sleep(ms == 0 ? 0 : 5);
-        if (ms == 0) return 0x102;
+        if (ms == 0 || (ms != 0xFFFFFFFF && (int32_t)(timer_ticks() - end) >= 0)) return 0x102;
+        if (spins++ < 4) task_yield(); else task_sleep(1);         /* let the thread that will signal run, then poll each millisecond */
     }
 }
 static DWORD WINAPI WaitForSingleObject(HANDLE h, DWORD ms) { return WaitForMultipleObjects(1, &h, 0, ms); }
@@ -331,11 +344,36 @@ static BOOL WINAPI GetExitCodeThread(HANDLE h, DWORD *c) { w32_handle_t *e = hge
 static HANDLE WINAPI CreateEventA(void *sa, BOOL manual, BOOL init, const char *n) { HANDLE h = halloc(H_EVENT); if (h == INVALID_HANDLE) return 0; hget(h)->signaled = init; hget(h)->manual = manual; return h; }
 static BOOL WINAPI SetEvent(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 1; return 1; }
 static BOOL WINAPI ResetEvent(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 0; return 1; }
-static HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *n) { HANDLE h = halloc(H_EVENT); if (h != INVALID_HANDLE) { hget(h)->signaled = !own; } return h; }
-static BOOL WINAPI ReleaseMutex(HANDLE h) { w32_handle_t *e = hget(h); if (e) e->signaled = 1; return 1; }
-/* semaphores as auto-reset events: enough for the usual "count up, wait" pairs */
-static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG i, LONG m, const char *n) { HANDLE h = halloc(H_EVENT); if (h != INVALID_HANDLE) hget(h)->signaled = i > 0; return h; }
-static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG c, LONG *p) { w32_handle_t *e = hget(h); if (p) *p = 0; if (e) e->signaled = 1; return 1; }
+/* mutexes: owned by a thread, recursive; semaphores: counted */
+static HANDLE WINAPI CreateMutexA(void *sa, BOOL own, const char *n) {
+    HANDLE h = halloc(H_MUTEX); if (h == INVALID_HANDLE) return 0;
+    if (own) { hget(h)->owner = task_current()->pid; hget(h)->recursion = 1; }
+    return h;
+}
+static BOOL WINAPI ReleaseMutex(HANDLE h) {
+    w32_handle_t *e = hget(h);
+    if (!e || e->kind != H_MUTEX) { set_err(6); return 0; }
+    if (e->owner != task_current()->pid) { set_err(288); return 0; }  /* ERROR_NOT_OWNER */
+    if (--e->recursion <= 0) { e->owner = 0; e->recursion = 0; }
+    return 1;
+}
+static HANDLE WINAPI CreateSemaphoreA(void *sa, LONG i, LONG m, const char *n) {
+    if (m <= 0 || i < 0 || i > m) { set_err(87); return 0; }
+    HANDLE h = halloc(H_SEM); if (h == INVALID_HANDLE) return 0;
+    hget(h)->count = i; hget(h)->max = m;
+    return h;
+}
+static BOOL WINAPI ReleaseSemaphore(HANDLE h, LONG c, LONG *prev) {
+    w32_handle_t *e = hget(h);
+    if (!e || e->kind != H_SEM) { set_err(6); return 0; }
+    uintptr_t f = irq_save();
+    LONG old = e->count; bool ok = c > 0 && (int64_t)old + c <= e->max;
+    if (ok) e->count += c;
+    irq_restore(f);
+    if (prev) *prev = old;
+    if (!ok) { set_err(298); return 0; }                            /* ERROR_TOO_MANY_POSTS */
+    return 1;
+}
 static BOOL WINAPI DuplicateHandle(HANDLE a, HANDLE b, HANDLE c, HANDLE *d, DWORD e, BOOL f, DWORD g) { if (d) *d = b; return 1; }
 static BOOL WINAPI GetExitCodeProcess(HANDLE h, DWORD *c) {
     if ((uint32_t)h == 0xFFFFFFFFu) { *c = 259; return 1; }
@@ -449,10 +487,38 @@ static DWORD WINAPI GetTimeZoneInformation(TZI *t) { memset(t, 0, sizeof *t); t-
 #define CS_SIZE (sizeof(void *) == 8 ? 40 : 24)       /* sizeof(CRITICAL_SECTION) */
 static void WINAPI InitializeCriticalSection(void *cs) { memset(cs, 0, CS_SIZE); }
 static BOOL WINAPI InitializeCriticalSectionAndSpinCount(void *cs, DWORD n) { memset(cs, 0, CS_SIZE); return 1; }
-static void WINAPI DeleteCriticalSection(void *cs) {}
-static void WINAPI EnterCriticalSection(void *cs) {}
-static void WINAPI LeaveCriticalSection(void *cs) {}
-static BOOL WINAPI TryEnterCriticalSection(void *cs) { return 1; }
+/* CRITICAL_SECTION: { DebugInfo, LockCount, RecursionCount, OwningThread, LockSemaphore, SpinCount };
+ * the owner is the thread id. Threads switch only when they block, so taking a free lock is
+ * one test; a held one is waited for by yielding. A lock whose owner ended is taken over. */
+typedef struct { void *debug; LONG lock_count, recursion; uintptr_t owner, sem, spin; } cs_t;
+static void WINAPI DeleteCriticalSection(void *cs) { (void)cs; }
+static void WINAPI EnterCriticalSection(void *cs_) {
+    cs_t *cs = cs_; uintptr_t me = (uintptr_t)task_current()->pid;
+    for (int spins = 0;; spins++) {
+        uintptr_t f = irq_save();
+        if (!cs->owner || cs->owner == me || !task_find((int)cs->owner)) {
+            if (cs->owner != me) { cs->owner = me; cs->recursion = 0; }
+            cs->recursion++; cs->lock_count++;
+            irq_restore(f); return;
+        }
+        irq_restore(f);
+        if (spins < 4) task_yield(); else task_sleep(1);
+    }
+}
+static void WINAPI LeaveCriticalSection(void *cs_) {
+    cs_t *cs = cs_;
+    if (cs->owner != (uintptr_t)task_current()->pid) return;
+    cs->lock_count--;
+    if (--cs->recursion <= 0) { cs->recursion = 0; cs->owner = 0; }
+}
+static BOOL WINAPI TryEnterCriticalSection(void *cs_) {
+    cs_t *cs = cs_; uintptr_t me = (uintptr_t)task_current()->pid;
+    uintptr_t f = irq_save();
+    bool ok = !cs->owner || cs->owner == me || !task_find((int)cs->owner);
+    if (ok) { if (cs->owner != me) { cs->owner = me; cs->recursion = 0; } cs->recursion++; cs->lock_count++; }
+    irq_restore(f);
+    return ok;
+}
 static LONG WINAPI InterlockedIncrement(volatile LONG *v) { return ++*v; }
 static LONG WINAPI InterlockedDecrement(volatile LONG *v) { return --*v; }
 static LONG WINAPI InterlockedExchange(volatile LONG *v, LONG n) { LONG o = *v; *v = n; return o; }
@@ -460,8 +526,30 @@ static LONG WINAPI InterlockedExchangeAdd(volatile LONG *v, LONG n) { LONG o = *
 static LONG WINAPI InterlockedCompareExchange(volatile LONG *v, LONG n, LONG cmp) { LONG o = *v; if (o == cmp) *v = n; return o; }
 static void WINAPI InitializeSListHead(void *h) { memset(h, 0, 8); }
 static void WINAPI InitOnceInitialize(void *p) { *(uint32_t *)p = 0; }
-static void WINAPI AcquireSRWLockExclusive(void *l) {}
-static void WINAPI ReleaseSRWLockExclusive(void *l) {}
+/* SRW locks: the word is 1 while held exclusively, else twice the number of shared holders */
+void WINAPI w32_srw_acquire(volatile uintptr_t *l, bool excl) {
+    for (int spins = 0;; spins++) {
+        uintptr_t f = irq_save();
+        uintptr_t v = *l;
+        if (excl ? v == 0 : !(v & 1)) { *l = excl ? 1 : v + 2; irq_restore(f); return; }
+        irq_restore(f);
+        if (spins < 4) task_yield(); else task_sleep(1);
+    }
+}
+BOOL WINAPI w32_srw_try(volatile uintptr_t *l, bool excl) {
+    uintptr_t f = irq_save(), v = *l;
+    bool ok = excl ? v == 0 : !(v & 1);
+    if (ok) *l = excl ? 1 : v + 2;
+    irq_restore(f);
+    return ok;
+}
+void WINAPI w32_srw_release(volatile uintptr_t *l, bool excl) {
+    uintptr_t f = irq_save();
+    if (excl) *l = 0; else if (*l >= 2) *l -= 2;
+    irq_restore(f);
+}
+static void WINAPI AcquireSRWLockExclusive(void *l) { w32_srw_acquire(l, true); }
+static void WINAPI ReleaseSRWLockExclusive(void *l) { w32_srw_release(l, true); }
 static void WINAPI InitializeSRWLock(void *l) { *(uint32_t *)l = 0; }
 
 /* ---------------- TLS ---------------- */

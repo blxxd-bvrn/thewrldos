@@ -75,7 +75,11 @@ ISR_NOERR i
 %endrep
 ISR_NOERR 128
 
+; The interrupted code's x87/SSE state is saved around the handler on its own stack (a task
+; switch inside the handler then keeps each task's state): FXSAVE when the kernel turned SSE on
+; at boot (cpu_enable_sse), FNSAVE otherwise. ebx holds the regs_t pointer (callee-saved).
 extern isr_handler
+extern fpu_fxsr
 isr_common:
     pusha
     push ds
@@ -87,9 +91,28 @@ isr_common:
     mov es, ax
     mov gs, ax
     cld
-    push esp
+    mov ebx, esp
+    sub esp, 512
+    and esp, -16
+    cmp byte [fpu_fxsr], 0
+    je .fnsave
+    fxsave [esp]
+    jmp .saved
+.fnsave:
+    fnsave [esp]
+.saved:
+    sub esp, 12
+    push ebx
     call isr_handler
-    add esp, 4
+    add esp, 16
+    cmp byte [fpu_fxsr], 0
+    je .frstor
+    fxrstor [esp]
+    jmp .restored
+.frstor:
+    frstor [esp]
+.restored:
+    mov esp, ebx
     pop gs
     pop fs
     pop es

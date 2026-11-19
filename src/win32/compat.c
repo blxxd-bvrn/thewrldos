@@ -244,16 +244,48 @@ static DWORD WINAPI GetConsoleProcessList(DWORD *l, DWORD n) { if (n) l[0] = P->
 static HWND WINAPI GetConsoleWindow(void) { return 0; }
 static BOOL WINAPI SetConsoleScreenBufferSize(HANDLE h, uint32_t c) { return 1; }
 
-/* SRW locks, slists, init-once: one processor and no preemption inside the subsystem */
-static BOOL WINAPI TryAcquireSRWLockExclusive(void *l) { return 1; }
-static void WINAPI AcquireSRWLockShared(void *l) {}
-static void WINAPI ReleaseSRWLockShared(void *l) {}
-static BOOL WINAPI TryAcquireSRWLockShared(void *l) { return 1; }
+/* SRW locks (kernel32.c) and condition variables. A condition variable's word counts wakeups:
+ * a sleeper waits until it changes. Waking one wakes every sleeper, which Windows allows
+ * (spurious wakeups); callers re-check their condition. */
+void WINAPI w32_srw_acquire(volatile uintptr_t *l, bool excl);
+BOOL WINAPI w32_srw_try(volatile uintptr_t *l, bool excl);
+void WINAPI w32_srw_release(volatile uintptr_t *l, bool excl);
+static BOOL WINAPI TryAcquireSRWLockExclusive(void *l) { return w32_srw_try(l, true); }
+static void WINAPI AcquireSRWLockShared(void *l) { w32_srw_acquire(l, false); }
+static void WINAPI ReleaseSRWLockShared(void *l) { w32_srw_release(l, false); }
+static BOOL WINAPI TryAcquireSRWLockShared(void *l) { return w32_srw_try(l, false); }
 static void WINAPI InitializeConditionVariable(void *c) { *(uintptr_t *)c = 0; }
-static void WINAPI WakeConditionVariable(void *c) {}
-static void WINAPI WakeAllConditionVariable(void *c) {}
-static BOOL WINAPI SleepConditionVariableSRW(void *c, void *l, DWORD ms, DWORD f) { task_sleep(ms == 0xFFFFFFFF ? 10 : MIN(ms, 10u)); return 1; }
-static BOOL WINAPI SleepConditionVariableCS(void *c, void *cs, DWORD ms) { task_sleep(ms == 0xFFFFFFFF ? 10 : MIN(ms, 10u)); return 1; }
+static void WINAPI WakeConditionVariable(void *c) { __atomic_add_fetch((uintptr_t *)c, 1, __ATOMIC_SEQ_CST); }
+static void WINAPI WakeAllConditionVariable(void *c) { __atomic_add_fetch((uintptr_t *)c, 1, __ATOMIC_SEQ_CST); }
+/* wait for a wakeup after `seq`; false on timeout */
+static bool cv_wait(volatile uintptr_t *c, uintptr_t seq, DWORD ms) {
+    uint32_t end = timer_ticks() + ms;
+    for (int spins = 0; *c == seq; spins++) {
+        if (ms != 0xFFFFFFFF && (int32_t)(timer_ticks() - end) >= 0) return false;
+        if (spins < 4) task_yield(); else task_sleep(1);
+    }
+    return true;
+}
+static BOOL WINAPI SleepConditionVariableSRW(void *c, void *l, DWORD ms, DWORD f) {
+    bool shared = f & 1;                                            /* CONDITION_VARIABLE_LOCKMODE_SHARED */
+    uintptr_t seq = *(volatile uintptr_t *)c;
+    w32_srw_release(l, !shared);
+    bool ok = cv_wait(c, seq, ms);
+    w32_srw_acquire(l, !shared);
+    if (!ok) { set_err(1460); return 0; }                           /* ERROR_TIMEOUT */
+    return 1;
+}
+static BOOL WINAPI SleepConditionVariableCS(void *c, void *cs, DWORD ms) {
+    /* the critical section may be held recursively: release it fully and take it back as deep */
+    typedef struct { void *debug; LONG lock_count, recursion; uintptr_t owner, sem, spin; } cs_t;
+    cs_t *s = cs; LONG depth = s->recursion;
+    uintptr_t seq = *(volatile uintptr_t *)c;
+    for (LONG i = 0; i < depth; i++) ((void (WINAPI *)(void *))K("LeaveCriticalSection"))(cs);
+    bool ok = cv_wait(c, seq, ms);
+    for (LONG i = 0; i < depth; i++) ((void (WINAPI *)(void *))K("EnterCriticalSection"))(cs);
+    if (!ok) { set_err(1460); return 0; }
+    return 1;
+}
 static BOOL WINAPI InitializeCriticalSectionEx(void *cs, DWORD spin, DWORD fl) { memset(cs, 0, sizeof(void *) == 8 ? 40 : 24); return 1; }
 static BOOL WINAPI InitOnceExecuteOnce(uintptr_t *once, BOOL (WINAPI *fn)(void *, void *, void **), void *param, void **ctx) {
     if (*once == 2) return 1;

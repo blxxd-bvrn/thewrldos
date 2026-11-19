@@ -91,6 +91,10 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     { extern void cpu_enable_avx(void); extern uint8_t fpu_xsave;
       cpu_enable_avx();                                /* before any interrupt saves FPU state */
       klog("cpu: %s", fpu_xsave ? "AVX on for programs (XSAVE)" : "no AVX: SSE state saved with FXSAVE"); }
+#else
+    { extern void cpu_enable_sse(void); extern uint8_t fpu_fxsr;
+      cpu_enable_sse();                                /* before any interrupt saves FPU state */
+      klog("cpu: %s", fpu_fxsr ? "SSE on for programs (FXSAVE)" : "no SSE: x87 state saved with FNSAVE"); }
 #endif
     gdt_init();
     idt_init();

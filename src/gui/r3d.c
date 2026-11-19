@@ -66,7 +66,7 @@ static void defaults(r3d_t *r) {
     for (int i = 0; i < 3; i++) r->light[i] /= l;
     r->ambient = 0.35f; r->diffuse = 0.75f;
     r->bilinear = true; r->depth_test = r->depth_write = true; r->cull_back = true;
-    r->alpha = 255;
+    r->alpha = 255; r->blend = true;
 }
 bool r3d_begin_with(r3d_t *r, canvas_t *target, rect_t view, float *depth, bool clear) {
     if (!accel3d || !depth) return false;
@@ -231,7 +231,7 @@ static void raster(r3d_t *r, const sv_t *a, const sv_t *b, const sv_t *c) {
                 if (r->depth_test && iz <= zrow[x]) continue;
                 uint32_t col = tex ? (r->bilinear ? fetch_bilinear(tex, U, V) : fetch_nearest(tex, U, V)) : 0xFFFFFFFFu;
                 int R_ = (int)((C_R(col) * (int64_t)CR) >> 16), G_ = (int)((C_G(col) * (int64_t)CG) >> 16), B_ = (int)((C_B(col) * (int64_t)CB) >> 16);
-                int A_ = (int)(((C_A(col) * (int64_t)CA) >> 16) * galpha / 255);
+                int A_ = r->blend ? (int)(((C_A(col) * (int64_t)CA) >> 16) * galpha / 255) : 255;
                 R_ = R_ > 255 ? 255 : R_ < 0 ? 0 : R_; G_ = G_ > 255 ? 255 : G_ < 0 ? 0 : G_; B_ = B_ > 255 ? 255 : B_ < 0 ? 0 : B_;
                 if (A_ <= 0) continue;
                 if (A_ >= 255) row[x] = 0xFF000000u | (R_ << 16) | (G_ << 8) | B_;

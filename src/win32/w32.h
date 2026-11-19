@@ -45,8 +45,8 @@ typedef struct w32_mod {
 } w32_mod_t;
 #define W32_MAX_MODS 48
 #define MAX_HANDLES 128
-enum { H_NONE, H_FILE, H_THREAD, H_FIND, H_EVENT, H_PROCESS };
-typedef struct { int kind; vnode_t *node; uint32_t pos; bool write; int tid; vnode_t *find_dir, *find_cur; char find_pat[96]; bool signaled, manual; } w32_handle_t;
+enum { H_NONE, H_FILE, H_THREAD, H_FIND, H_EVENT, H_PROCESS, H_SEM, H_MUTEX };
+typedef struct { int kind; vnode_t *node; uint32_t pos; bool write; int tid; vnode_t *find_dir, *find_cur; char find_pat[96]; bool signaled, manual; int32_t count, max; int owner, recursion; } w32_handle_t;
 /* waiting (kernel32.c): is the object signalled? an auto-reset event is reset by a successful wait */
 bool w32_handle_signaled(w32_proc_t *p, uintptr_t h, bool consume);
 void w32_event_signal(w32_proc_t *p, uintptr_t h);              /* SetEvent for another task (Winsock's poller) */

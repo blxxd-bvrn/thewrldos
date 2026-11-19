@@ -872,6 +872,7 @@ static void handle_key(key_event_t *e) {
     if (flip3d_active()) { flip3d_key(e); return; }
     if (e->pressed && wm_active) effect_cancel_window(wm_active);
     if (e->pressed) {
+        if (e->key == KEY_F12 && (e->mods & MOD_CTRL) && (e->mods & MOD_ALT) && (e->mods & MOD_SHIFT)) { extern void task_dump_stacks(void); task_dump_stacks(); return; }
         if ((e->key == KEY_DELETE && (e->mods & MOD_CTRL) && (e->mods & MOD_ALT)) || (e->key == KEY_ESC && (e->mods & MOD_CTRL) && (e->mods & MOD_SHIFT))) { app_launch("taskmgr", NULL); return; }
         if (e->key == KEY_TAB && (e->mods & MOD_ALT)) {
             /* with 3D acceleration on: Flip 3D (Ctrl+Alt+Tab keeps it open) */

@@ -1017,7 +1017,8 @@ static int WINAPI ToAsciiEx(UINT vk, UINT scan, const BYTE *ks, WORD *out, UINT 
 static int WINAPI ToAscii(UINT vk, UINT scan, const BYTE *ks, WORD *out, UINT f) { return ToAsciiEx(vk, scan, ks, out, f, 0); }
 static int WINAPI ToUnicode(UINT vk, UINT scan, const BYTE *ks, WCHAR *out, int n, UINT f) { WORD c; int r = ToAsciiEx(vk, scan, ks, &c, f, 0); if (r && n > 0) out[0] = c; return r; }
 static int WINAPI ToUnicodeEx(UINT vk, UINT scan, const BYTE *ks, WCHAR *out, int n, UINT f, HANDLE l) { return ToUnicode(vk, scan, ks, out, n, f); }
-static UINT WINAPI MapVirtualKeyExA(UINT c, UINT t, HANDLE l) { return c; }
+static UINT WINAPI MapVirtualKeyW(UINT c, UINT t);
+static UINT WINAPI MapVirtualKeyExA(UINT c, UINT t, HANDLE l) { return MapVirtualKeyW(c, t); }
 static int16_t WINAPI VkKeyScanA(char c) { if (c >= 'a' && c <= 'z') return c - 32; if (c >= 'A' && c <= 'Z') return (c) | 0x100; return (uint8_t)c; }
 /* scroll bars of a window: remembered, not drawn */
 typedef struct { UINT size, mask; int min, max; UINT page; int pos, track; } SCROLLINFO_;

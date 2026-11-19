@@ -174,3 +174,32 @@ bool task_kill(int pid) {
     irq_restore(f);
     return true;
 }
+
+/* For debugging hung programs (Ctrl+Alt+Shift+F12): log each task's state and the values on
+ * its stack that look like code addresses, read through the task's own address space. Match
+ * them against the kernel's symbols and the "loaded ... at" lines of program modules. */
+void task_dump_stacks(void) {
+    extern char kernel_end[];
+    static uintptr_t buf[1024];
+    klog("task dump at %u ms:", timer_ticks());
+    for (task_t *t = tasks; t; t = t->next) {
+        if (t == current) { klog("  pid %d '%s' (running: the dumper)", t->pid, t->name); continue; }
+        uintptr_t sp = t->esp, end = t->stack && sp >= (uintptr_t)t->stack && sp < (uintptr_t)t->stack + t->stack_size ? (uintptr_t)t->stack + t->stack_size : (sp | 0xFFF) + 1;
+        int n = (int)MIN((end - sp) / sizeof(uintptr_t), ARRAY_LEN(buf));
+        uintptr_t f = irq_save(), old;
+        __asm__ volatile("mov %%cr3, %0" : "=r"(old));
+        if (t->cr3 && t->cr3 != old) __asm__ volatile("mov %0, %%cr3" :: "r"(t->cr3) : "memory");
+        memcpy(buf, (void *)sp, n * sizeof(uintptr_t));
+        if (t->cr3 && t->cr3 != old) __asm__ volatile("mov %0, %%cr3" :: "r"(old) : "memory");
+        irq_restore(f);
+        klog("  pid %d '%s' state %d sp %llx:", t->pid, t->name, t->state, (unsigned long long)sp);
+        char line[200]; int k = 0, shown = 0;
+        for (int i = 0; i < n && shown < 96; i++) {
+            uintptr_t v = buf[i];
+            if (!(v >= 0x100000 && v < 0x80000000u && (v < 0x1000000 || v < (uintptr_t)kernel_end))) continue;
+            k += snprintf(line + k, sizeof line - k, " %llx", (unsigned long long)v); shown++;
+            if (shown % 12 == 0) { klog("   %s", line); k = 0; line[0] = 0; }
+        }
+        if (k) klog("   %s", line);
+    }
+}

@@ -306,6 +306,28 @@ void cpu_enable_avx(void) {
     fpu_xsave = 1;
 #endif
 }
+/* SSE for programs (32-bit edition): the kernel itself is built for a Pentium without SSE,
+ * but Windows programs and their libraries (SDL2, codecs) use it freely. On a processor that
+ * has FXSR and SSE, turn on CR4.OSFXSR and OSXMMEXCPT; interrupts then save the interrupted
+ * code's x87/SSE state with FXSAVE (src/arch/i686/isr.asm), or its x87 state with FNSAVE
+ * on older processors. */
+uint8_t fpu_fxsr;
+void cpu_enable_sse(void) {
+#ifndef __x86_64__
+    uint32_t cr0; __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
+    cr0 = (cr0 & ~((1u << 2) | (1u << 3))) | (1u << 1) | (1u << 5);   /* EM and TS off, MP and NE on */
+    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
+    __asm__ volatile("fninit");
+    uint32_t a, b, c, d;
+    cpuid(0, &a, &b, &c, &d);
+    if (a < 1) return;
+    cpuid(1, &a, &b, &c, &d);
+    if (!((d >> 24) & 1) || !((d >> 25) & 1)) return;             /* FXSR and SSE */
+    uint32_t cr4; __asm__ volatile("mov %%cr4, %0" : "=r"(cr4));
+    __asm__ volatile("mov %0, %%cr4" :: "r"(cr4 | (1u << 9) | (1u << 10)));
+    fpu_fxsr = 1;
+#endif
+}
 bool cpu_has_rdrand(void) { uint32_t a, b, c, d; cpuid(1, &a, &b, &c, &d); return (c >> 30) & 1; }
 /* every bus is scanned: VMware puts NVMe, SAS and network adapters behind
  * PCIe root ports on buses 2..0x40 */
