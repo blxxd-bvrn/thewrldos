@@ -238,7 +238,7 @@ static BOOL WINAPI ReadConsoleW(HANDLE h, WCHAR *buf, DWORD n, DWORD *rd, void *
     return 1;
 }
 static BOOL WINAPI SetConsoleTitleW(const WCHAR *t) { char a[200]; w2a(t, a, sizeof a); return ((BOOL (WINAPI *)(const char *))K("SetConsoleTitleA"))(a); }
-static BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, DWORD *n) { if (n) *n = 0; return 1; }
+static BOOL WINAPI GetNumberOfConsoleInputEvents(HANDLE h, DWORD *n) { if (h != 0x11) { set_err(6); return 0; } if (n) *n = 0; return 1; }   /* the console's input handle only */
 static BOOL WINAPI FlushConsoleInputBuffer(HANDLE h) { return 1; }
 static DWORD WINAPI GetConsoleProcessList(DWORD *l, DWORD n) { if (n) l[0] = P->pid; return 1; }
 static HWND WINAPI GetConsoleWindow(void) { return 0; }

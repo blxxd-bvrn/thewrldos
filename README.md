@@ -1172,6 +1172,26 @@ device manager's job is to say what the computer has and which driver runs it.
   - PE loader: PE32 (x86) in the 32-bit edition, PE32+ (x64) in the 64-bit edition, with
     sections, base relocations (`HIGHLOW`, `DIR64`), import binding, TLS callbacks and the
     TEB/PEB of each architecture.
+  - **Programs' own DLLs:** a DLL that ships with a program (its folder, the current folder,
+    `C:\WRLD\System32`) is mapped into the process, relocated, has its imports resolved the same
+    way and gets `DllMain`; `LoadLibrary`/`GetProcAddress` (names, ordinals, forwarders),
+    `GetModuleHandle`, `GetModuleFileName` and `FindResource` work with it. Tested with Tiny C
+    Compiler (`libtcc.dll`: it compiles and runs C programs) and embedded Python 3.8
+    (`python38.dll` with the real `vcruntime140.dll`). `C:\Samples\dlldemo.exe` with
+    `mathlib.dll` shows both ways of using a DLL.
+  - **A real registry** shared by all programs and kept in `C:\WRLD\registry.dat`, a per-process
+    environment, INI files (`GetPrivateProfileString` and friends) and the standard Open and
+    Save As dialogs (`GetOpenFileName`/`GetSaveFileName`, on the system's file dialog).
+  - **Common controls:** toolbar, status bar, rebar, progress bar, trackbar, up-down, tab control
+    and list view (report and list modes, `WM_NOTIFY`), image lists and window subclassing
+    (`C:\Samples\ccdemo.exe` uses them, with the registry and an INI file).
+  - A much larger C runtime (file descriptors, `stat`/`findfirst`, the Universal CRT start-up
+    and `__stdio_common_*` functions, wide printf, `setjmp`/`longjmp`, time conversions),
+    DIB sections, regions, viewport origins and bitmaps from resources in GDI, shlwapi, more
+    of shell32, version.dll, winmm (`PlaySound`, `waveOut`), and failure-reporting versions of
+    the security, crypto, printing, LDAP and device-setup calls programs probe for. The newer
+    tables (`apitab.c`: `registry.c`, `k32more.c`, `shell.c`, `misc_api.c`, `user32_more.inc`,
+    `comctl.inc`, `crt2.inc`) are looked up first.
   - On x64 every exported function uses the Microsoft x64 calling convention (GCC's
     `ms_abi`), variadic ones (`printf`, `wsprintfA`) the matching `va_list`; handles,
     `WPARAM`/`LPARAM` and `*LongPtr` values are pointer-sized while `long` stays 32-bit (LLP64).

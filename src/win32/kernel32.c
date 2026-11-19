@@ -247,7 +247,7 @@ static BOOL WINAPI ReadConsoleA(HANDLE h, char *buf, DWORD n, DWORD *rd, void *c
 static BOOL WINAPI SetConsoleTitleA(const char *t) { w32_proc_t *p = P; if (p->con) p->con->set_title(p->con, t); return 1; }
 static DWORD WINAPI GetConsoleTitleA(char *b, DWORD n) { strlcpy(b, path_basename(P->path), n); return strlen(b); }
 static BOOL WINAPI SetConsoleTextAttribute(HANDLE h, WORD a) { w32_proc_t *p = P; if (p->con) p->con->set_color(p->con, a & 15, (a >> 4) & 15); return 1; }
-static BOOL WINAPI GetConsoleMode(HANDLE h, DWORD *m) { if (m) *m = 3; return 1; }
+static BOOL WINAPI GetConsoleMode(HANDLE h, DWORD *m) { if (h != STD_IN_H && h != STD_OUT_H && h != STD_ERR_H) { set_err(6); return 0; } if (m) *m = h == STD_IN_H ? 0x1F7 : 3; return 1; }   /* consoles only: files and pipes fail */
 static BOOL WINAPI SetConsoleMode(HANDLE h, DWORD m) { return 1; }
 static UINT WINAPI GetConsoleCP(void) { return 437; }
 static UINT WINAPI GetConsoleOutputCP(void) { return 437; }
