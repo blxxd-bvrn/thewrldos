@@ -257,6 +257,8 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `wsget.exe`, a Windows sockets program that fetches a web page (`wsget example.com`);
   - `glcube.exe`, `d3dcube.exe` and `d3d10cube.exe`, spinning cubes drawn through OpenGL,
     Direct3D 9 and Direct3D 10 (3D acceleration must be on);
+  - `dxdemo.exe`, a textured cube through Direct3D 8 that turns with the arrow keys or a
+    mouse drag through DirectInput 8 and plays a tone through DirectSound on Space;
   - `demo.sh`, a shell script;
   - `Sample.dmg`, a disk image with a `.app` bundle and an installer script.
 - **The WRLD Browser** (Start menu > Internet, or the globe on Quick Launch):
@@ -855,6 +857,22 @@ device manager's job is to say what the computer has and which driver runs it.
       (`tools/gen_d3d9.py`), so methods that are not implemented return `D3DERR_INVALIDCALL`
       with the stack intact. A few `d3dx9` matrix helpers are exported too. Shaders are not
       supported: `SetVertexShader`/`SetPixelShader` accept only NULL.
+    - **Direct3D 8** (`d3d8.dll`): the same device behind D3D8's method tables (generated from
+      mingw-w64's `d3d8.h` by `tools/gen_com.py`): D3D8 presentation parameters, caps and
+      adapter identifier, `SetVertexShader` with an FVF, `SetIndices` with a base vertex, and
+      texture-stage filtering. Textures in both versions take 16-bit (R5G6B5, X1R5G5B5,
+      A1R5G5B5, A4R4G4B4), 8-bit (L8, A8, P8 as grey), A8L8, 24/32-bit and DXT1-5 formats,
+      converted when they are unlocked.
+    - **DirectInput** (`dinput.dll`, `dinput8.dll`; versions 3-8, ANSI and wide): the system
+      keyboard and mouse, immediate (`GetDeviceState`) and buffered (`GetDeviceData`) data,
+      custom data formats, properties, `EnumDevices`/`EnumObjects`. Input goes only to the
+      program whose window has the focus. There are no joysticks: `CreateDevice` answers
+      `DIERR_DEVICENOTREG` for them.
+    - **DirectSound** (`dsound.dll`): `DirectSoundCreate(8)`, a primary buffer and any number of
+      secondary buffers (8/16-bit, mono/stereo, any rate), mixed by a kernel task into one
+      sound-card stream with resampling, volume, pan, frequency, looping and position
+      notifications. 3D-buffer and listener interfaces are accepted but sound unpositioned;
+      capture answers `DSERR_NODRIVER`, as does everything without a sound card.
     - **Direct3D 10 and staged shader extensions** (`d3d10.dll`, `dxgi.dll`,
       `src/win32/d3d10.c`, `dxbc.c`, `dxil.c`): vertex/pixel shaders use a native CPU
       interpreter or eligible **VMware SVGA3D GPU** offload. SM4.0/4.1 DXBC is joined by
@@ -1368,7 +1386,7 @@ src/apps           explorer, notepad, wordpad, terminal, control panel, accessor
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          sh interpreter
-src/win32          PE loader, kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 9 and 10
+src/win32          PE loader, kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 8/9/10, DirectInput, DirectSound
 src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 licence
 third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this OS
@@ -1379,7 +1397,7 @@ third_party/stb_vorbis  stb_vorbis (Ogg Vorbis), public domain or MIT
 third_party/dr_flac  dr_flac (FLAC), public domain or MIT-0
 third_party/pl_mpeg  PL_MPEG (MPEG-1 video, MP2), MIT
 src/media          decoder glue: one interface (mdec.c), WAV/AIFF/AU (pcm.c), MP3, Vorbis, FLAC, MPEG-1
-samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c, d3d10cube.c)
+samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c, d3d10cube.c, dxdemo.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)
 rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrldstyle;

@@ -272,6 +272,11 @@ rootfs64/Samples/ccdemo.exe: samples/ccdemo.c
 	$(MINGW64) -O2 -s -mwindows -o $@ $< -lcomctl32
 rootfs/Samples/ccdemo.exe: samples/ccdemo.c
 	$(MINGW) -O2 -s -mwindows -o $@ $< -lcomctl32
+rootfs64/Samples/dxdemo.exe: samples/dxdemo.c
+	@mkdir -p $(dir $@)
+	$(MINGW64) -O2 -s -mwindows -o $@ $< -ldinput8 -ldsound -ldxguid
+rootfs/Samples/dxdemo.exe: samples/dxdemo.c
+	$(MINGW) -O2 -s -mwindows -o $@ $< -ldinput8 -ldsound -ldxguid
 rootfs64/Samples/%.exe: samples/%.c
 	@mkdir -p $(dir $@)
 	$(MINGW64) -O2 -s -o $@ $<

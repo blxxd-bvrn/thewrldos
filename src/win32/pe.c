@@ -85,7 +85,7 @@ static const dll_t dlls[] = {
     { "msvcr120.dll", msvcrt_exports, &msvcrt_count }, { "crtdll.dll", msvcrt_exports, &msvcrt_count },
     { "kernelbase.dll", kernel32_exports, &kernel32_count }, { "ntdll.dll", kernel32_exports, &kernel32_count },
     { "opengl32.dll", opengl32_exports, &opengl32_count }, { "glu32.dll", glu32_exports, &glu32_count },
-    { "d3d9.dll", d3d9_exports, &d3d9_count }, { "d3dx9_43.dll", d3dx9_exports, &d3dx9_count },
+    { "d3d9.dll", d3d9_exports, &d3d9_count }, { "d3d8.dll", d3d8_exports, &d3d8_count }, { "d3dx9_43.dll", d3dx9_exports, &d3dx9_count },
     { "vulkan-1.dll", vulkan_exports, &vulkan_count },
     { "d3d10.dll", d3d10_exports, &d3d10_count }, { "dxgi.dll", dxgi_exports, &dxgi_count },
     { "d3dcompiler_47.dll", d3dcompiler_exports, &d3dcompiler_count },

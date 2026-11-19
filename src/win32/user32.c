@@ -513,6 +513,10 @@ static void wm_mouse_cb(window_t *win, int type, int x, int y, int btn) {
     int ox, oy; abs_origin(target, &ox, &oy);
     int lx = x - ox, ly = y - oy;
     uint32_t lp = (lx & 0xFFFF) | ((ly & 0xFFFF) << 16);
+    /* the button state, as GetAsyncKeyState and DirectInput see it (VK_LBUTTON, VK_RBUTTON, VK_MBUTTON) */
+    if (type == ME_DOWN) { if (btn & MB_LEFT) keystate[1] = 1; if (btn & MB_RIGHT) keystate[2] = 1; if (btn & MB_MIDDLE) keystate[4] = 1; }
+    if (type == ME_UP) { if (!btn || (btn & MB_LEFT)) keystate[1] = 0; if (!btn || (btn & MB_RIGHT)) keystate[2] = 0; if (!btn || (btn & MB_MIDDLE)) keystate[4] = 0; }
+    if (type == ME_WHEEL) { extern int w32_wheel_acc; w32_wheel_acc += -btn * 120; }
     uint32_t mk = (win->ui.down ? 1 : 0) | (keystate[0x10] ? 4 : 0) | (keystate[0x11] ? 8 : 0);
     /* built-in control behaviour */
     if (hot_ctl && hot_ctl != target && W((uintptr_t)hot_ctl)) { hot_ctl->hot = false; if (type != ME_UP) hot_ctl->pressed = false; draw_control(hot_ctl); }

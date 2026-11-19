@@ -1504,6 +1504,12 @@ static LRESULT WINAPI DefSubclassProc(HWND h, UINT m, WPARAM w, LPARAM l) {
 }
 
 
+/* ================================================================ input state for DirectInput (dinput.c) */
+int w32_wheel_acc;
+bool w32_vk_down(int vk) { return vk > 0 && vk < 256 && keystate[vk]; }
+int w32_wheel_take(void) { int v = w32_wheel_acc; w32_wheel_acc = 0; return v; }
+bool w32_has_focus(w32_proc_t *p) { return focus_win ? focus_win->proc == p : (wm_active && wm_active->w32 && ((w32win_t *)wm_active->w32)->proc == p); }
+
 /* ================================================================ keyboard accelerators */
 /* a table: entries of (flags, key, command); flags FVIRTKEY 1, FNOINVERT 2, FSHIFT 4, FCONTROL 8, FALT 0x10 */
 #define ACCMAGIC 0x41434345

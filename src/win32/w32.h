@@ -159,8 +159,8 @@ static inline void call_void_proc(void *fn) { call_pe_entry(fn, 0); }
 extern const w32_export_t kernel32_exports[], msvcrt_exports[], user32_exports[], gdi32_exports[], advapi32_exports[], shell32_exports[];
 extern const int kernel32_count, msvcrt_count, user32_count, gdi32_count, advapi32_count, shell32_count;
 /* graphics APIs on the WRLD 3D engine: gl.c (OpenGL 1.1, GLU), d3d9.c (Direct3D 9), vulkan.c */
-extern const w32_export_t opengl32_exports[], glu32_exports[], d3d9_exports[], d3dx9_exports[], vulkan_exports[];
-extern const int opengl32_count, glu32_count, d3d9_count, d3dx9_count, vulkan_count;
+extern const w32_export_t opengl32_exports[], glu32_exports[], d3d9_exports[], d3dx9_exports[], vulkan_exports[], d3d8_exports[];
+extern const int opengl32_count, glu32_count, d3d9_count, d3dx9_count, vulkan_count, d3d8_count;
 /* d3d10.c: Direct3D 10, DXGI and the (absent) run-time HLSL compiler */
 extern const w32_export_t d3d10_exports[], dxgi_exports[], d3dcompiler_exports[];
 extern const int d3d10_count, dxgi_count, d3dcompiler_count;
