@@ -1535,6 +1535,45 @@ sound_t *sound_load_wav(const uint8_t *d, uint32_t n, char *err, int errcap) {
 }
 void sound_free(sound_t *s) { if (s) { kfree(s->pcm); kfree(s); } }
 
+/* Any other format the media decoders read (the system sounds are FLAC, a sixth of the WAV
+ * size): decoded whole, then resampled to the mixer's rate like a WAV. */
+#include "mediadec.h"
+static sound_t *sound_load_media(const uint8_t *d, uint32_t n, const char *ext, char *err, int errcap) {
+    mdec_info_t info;
+    mdec_t *m = mdec_open(d, n, ext, &info, err, errcap);
+    if (!m) return NULL;
+    uint32_t cap = 0, frames = 0; int16_t *src = NULL;
+    for (;;) {
+        if (frames + 4096 > cap) {
+            uint32_t nc = cap ? cap * 2 : 65536;
+            int16_t *ns = krealloc(src, (size_t)nc * 4);
+            if (!ns) { kfree(src); mdec_close(m); snprintf(err, errcap, "not enough memory"); return NULL; }
+            src = ns; cap = nc;
+        }
+        int k = mdec_read(m, src + frames * 2, 4096);
+        if (k <= 0) break;
+        frames += k;
+    }
+    mdec_close(m);
+    int rate = info.rate;
+    if (!frames || rate < 4000 || rate > 192000) { kfree(src); snprintf(err, errcap, "no audio"); return NULL; }
+    uint32_t out_frames = (uint32_t)((uint64_t)frames * RATE / rate);
+    sound_t *s = kzalloc(sizeof *s);
+    if (s) s->pcm = kmalloc((size_t)out_frames * 4 + 4);
+    if (!s || !s->pcm) { kfree(s); kfree(src); snprintf(err, errcap, "not enough memory"); return NULL; }
+    s->frames = out_frames;
+    uint64_t step = ((uint64_t)rate << 16) / RATE, pos = 0;
+    for (uint32_t i = 0; i < out_frames; i++, pos += step) {
+        uint32_t f = pos >> 16, fr = pos & 0xFFFF, f2 = f + 1 < frames ? f + 1 : f;
+        for (int c = 0; c < 2; c++) {
+            int a = src[f * 2 + c], b = src[f2 * 2 + c];
+            s->pcm[i * 2 + c] = a + (int)(((int64_t)(b - a) * fr) >> 16);
+        }
+    }
+    kfree(src);
+    return s;
+}
+
 
 /* ======================= files ======================= */
 #include "fs.h"
@@ -1550,6 +1589,7 @@ bool audio_play_file(const char *path, char *err, int errcap) {
     for (int i = 0; i < 4; i++) if (cache[i].s && !strcasecmp(cache[i].path, full) && cache[i].size == n->size) c = &cache[i];
     if (!c) {
         sound_t *s = sound_load_wav(n->data, n->size, err, errcap);
+        if (!s) s = sound_load_media(n->data, n->size, vfs_ext(n->name), err, errcap);
         if (!s) { klog("audio: %s: %s", full, err); return false; }
         int lru = 0; for (int i = 1; i < 4; i++) if (cache[i].used < cache[lru].used) lru = i;
         c = &cache[lru];

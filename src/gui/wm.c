@@ -1078,13 +1078,16 @@ void wm_run(void) {
         for (int i = 0; i < nwin; i++) {
             window_t *w = wins[i];
             if (!(w->flags & WF_NOMEM)) continue;
+            static window_t *oom_box;                     /* the message below, while it is open */
             w->flags &= ~WF_NOMEM;
             char msg[220];
             snprintf(msg, sizeof msg, "There is not enough memory to show \"%s\". Close some programs or windows and try again.", w->title);
             klog("wm: not enough memory for window '%s'; closing it", w->title);
+            bool is_box = w == oom_box;
+            if (is_box) { oom_box = NULL; wm_destroy(w); break; }     /* the message itself did not fit */
             wm_close(w);
             if (wm_alive(w)) wm_destroy(w);
-            msgbox("Not enough memory", msg, MBI_ERROR, MBX_OK, NULL, NULL);
+            if (!oom_box || !wm_alive(oom_box)) oom_box = msgbox("Not enough memory", msg, MBI_ERROR, MBX_OK, NULL, NULL);
             break;
         }
         while (defn) { defer_t d = defq[0]; memmove(defq, defq + 1, (--defn) * sizeof(defer_t)); d.fn(d.arg); }

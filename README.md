@@ -176,9 +176,10 @@ You can also choose the emulated hardware:
 
 Boot `wrldos.iso` (in a VM set up for a 64-bit guest, for example VirtualBox's
 "Other/Unknown (64-bit)", it starts the 64-bit edition; in a 32-bit guest the 32-bit one) with **legacy BIOS** or **UEFI** boot and at least
-**64 MB RAM** for the 32-bit edition (a Pentium-class PC; 96 MB shows the photo wallpapers and
-leaves room for several programs, and a program that does not fit is refused with a "Not enough
-memory" message) and **384 MB** for the 64-bit one, whose live CD carries the Linux programs and
+**48 MB RAM** for the 32-bit edition (a Pentium-class PC; in 48 MB the desktop, in a plain colour,
+and the Command Prompt run, 64 MB adds Notepad, Explorer and the system sounds, and 96 MB shows the
+photo wallpapers and leaves room for several programs; a program that does not fit is refused with
+a "Not enough memory" message) and **384 MB** for the 64-bit one, whose live CD carries the Linux programs and
 WebKit; 256 MB is comfortable for the 32-bit browser. The ISO
 is a hybrid image: a PC-BIOS core and an EFI System Partition with both `EFI/BOOT/BOOTX64.EFI` and
 `EFI/BOOT/BOOTIA32.EFI`, so 64-bit UEFI and 32-bit UEFI firmware (Bay Trail tablets and 2-in-1s,
@@ -296,7 +297,7 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - `hdiutil info` shows mounted images;
   - `sync` writes pending changes to the disk now (installed systems);
   - `display` lists screen resolutions, and `display 1280x800` switches to one;
-  - `volume 60`, `volume mute`; `play "C:/WRLD/Media/WRLD Startup.wav"`;
+  - `volume 60`, `volume mute`; `play "C:/WRLD/Media/WRLD Startup.flac"`;
   - `hostname`, `ps`, `free`, `shutdown -r`;
   - `help` lists all commands.
 - **Keyboard**:

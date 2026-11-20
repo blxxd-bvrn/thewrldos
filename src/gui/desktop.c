@@ -162,9 +162,15 @@ void wallpaper_render(canvas_t *c, int id) {
 void shell_wallpaper_changed(void) {
     static int last_id = -1, last_w, last_h, last_fit = -1, last_gen; static uint32_t last_col;
     if (wallpaper && (wallpaper->w != SCREEN_W || wallpaper->h != SCREEN_H)) { canvas_free(wallpaper); wallpaper = NULL; last_id = -1; }
-    if (!wallpaper) wallpaper = canvas_new(SCREEN_W, SCREEN_H);
     if (last_id == wallpaper_id && last_fit == wallpaper_fit && last_w == SCREEN_W && last_h == SCREEN_H && last_gen == wall_gen && (wallpaper_id != wallpaper_count - 1 || last_col == desktop_color)) return;
-    wallpaper_render(wallpaper, wallpaper_id);
+    /* a plain colour (chosen, or a picture that cannot be read or does not fit in memory) needs
+     * no full-screen canvas: desktop_paint fills the colour itself */
+    bool picture = wallpaper_id >= 0 && wallpaper_id < wallpaper_count - 1 && wall_source(wallpaper_id);
+    if (!picture) { canvas_free(wallpaper); wallpaper = NULL; canvas_free(wall_out); wall_out = NULL; }
+    else {
+        if (!wallpaper) wallpaper = canvas_new(SCREEN_W, SCREEN_H);
+        wallpaper_render(wallpaper, wallpaper_id);
+    }
     last_gen = wall_gen; last_id = wallpaper_id; last_col = desktop_color; last_fit = wallpaper_fit; last_w = SCREEN_W; last_h = SCREEN_H;
     wm_need_redraw = true;
 }

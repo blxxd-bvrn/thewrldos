@@ -880,4 +880,7 @@ void welcome_screen(void) {
     }
     memset(login_pw, 0, sizeof login_pw);
     speaker_beep(0, 0);
+    /* the rendered backgrounds (up to three screens' worth) are only needed while this screen is
+     * up: the desktop gets the memory back */
+    for (int i = 0; i < 3; i++) { canvas_free(bgc[i].c); bgc[i].c = NULL; }
 }

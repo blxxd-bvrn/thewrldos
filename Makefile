@@ -81,6 +81,9 @@ PKG_CFLAGS = $(filter-out -DLEXBOR_STATIC,$(LXB_CFLAGS)) -I$(XZE) -I$(ZSTDD) -DX
 ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
 OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ) $(MP3_OBJ) $(PKG_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
+# the kernel that ships (ISO, Setup): without symbols and debug information, which GRUB would
+# otherwise load into memory too (build/wrld.elf keeps them for debugging)
+KERNEL_SHIP := $(BUILD)/wrld-ship.elf
 # The kernel's Rust part (rust/, README "Rust in the kernel"): a no_std static library from
 # cargo, for the edition's target. The 32-bit edition uses i586-unknown-linux-gnu only for its
 # prebuilt core/alloc (Pentium code, x87); install both with `rustup target add`.
@@ -176,11 +179,11 @@ both:
 DUALDIR := build/dualiso
 dual:
 	$(MAKE) ARCH=i686
-	@test -f build64/wrld.elf -a -f build64/initrd.tar || { echo "make dual: build the 64-bit edition first (make ARCH=x86_64)"; exit 1; }
+	@test -f build64/wrld-ship.elf -a -f build64/initrd.tar || { echo "make dual: build the 64-bit edition first (make ARCH=x86_64)"; exit 1; }
 	@mkdir -p $(DUALDIR)/boot/grub
-	cp build/wrld.elf $(DUALDIR)/boot/wrld.elf
+	cp build/wrld-ship.elf $(DUALDIR)/boot/wrld.elf
 	cp build/initrd.tar $(DUALDIR)/boot/initrd.tar
-	cp build64/wrld.elf $(DUALDIR)/boot/wrld64.elf
+	cp build64/wrld-ship.elf $(DUALDIR)/boot/wrld64.elf
 	cp build64/initrd.tar $(DUALDIR)/boot/initrd64.tar
 	cp grub/grub-dual.cfg $(DUALDIR)/boot/grub/grub.cfg
 	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS) cpuid" -o wrldos.iso $(DUALDIR)
@@ -243,6 +246,9 @@ $(RUST_LIB): $(RUST_SRC)
 	+CARGO_TARGET_DIR=$(abspath $(BUILD)/rust) RUSTFLAGS="-C relocation-model=static" \
 	    $(CARGO) build --manifest-path rust/Cargo.toml --release --features kernel --target $(RUST_TARGET) --quiet
 	@touch $@
+
+$(KERNEL_SHIP): $(KERNEL)
+	strip --strip-all -o $@ $<
 
 $(KERNEL): $(OBJS) $(RUST_LIB) src/arch/$(ARCH)/linker.ld
 	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(RUST_LIB)
@@ -340,7 +346,7 @@ $(SYS)/boot/grub/BOOTIA32.EFI: grub/efi.cfg Makefile
 	$(GRUB_MKIMAGE) -O i386-efi -d $(GRUBIA32DIR) -o $@ -p /boot/grub -c grub/efi.cfg $(GRUB_EFI_MODS)
 # the kernel Setup installs, as a parts file: its code and constants come from the running
 # kernel's memory (tools/kparts.py), so the live CD does not hold a second 8 MB copy in RAM
-$(SYS)/boot/wrld.kpt: $(KERNEL) tools/kparts.py
+$(SYS)/boot/wrld.kpt: $(KERNEL_SHIP) tools/kparts.py
 	@mkdir -p $(dir $@)
 	rm -f $(SYS)/boot/wrld.elf
 	python3 tools/kparts.py $< $@
@@ -522,9 +528,9 @@ $(BUILD)/initrd.tar: $(SYS)/boot/wrld.kpt $(SYS)/boot/grub/boot.img $(SYS)/boot/
 	@mkdir -p $(BUILD)
 	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .) $(if $(filter x86_64,$(ARCH)),-C $(CURDIR)/$(LXROOT) Linux)
 
-$(ISO): $(KERNEL) $(BUILD)/initrd.tar grub/grub.cfg
+$(ISO): $(KERNEL_SHIP) $(BUILD)/initrd.tar grub/grub.cfg
 	@mkdir -p $(BUILD)/iso/boot/grub
-	cp $(KERNEL) $(BUILD)/iso/boot/wrld.elf
+	cp $(KERNEL_SHIP) $(BUILD)/iso/boot/wrld.elf
 	cp $(BUILD)/initrd.tar $(BUILD)/iso/boot/initrd.tar
 	cp grub/grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
 	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS)" -o $@ $(BUILD)/iso
