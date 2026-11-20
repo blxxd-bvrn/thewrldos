@@ -40,7 +40,7 @@ impl Dev for KDev {
     }
 }
 
-type FatVol = Vol<KDev>;
+pub(super) type FatVol = Vol<KDev>;
 
 unsafe fn vol<'a>(v: *mut FatVol) -> Option<&'a mut FatVol> { v.as_mut() }
 unsafe fn cpath<'a>(p: *const c_char) -> &'a [u8] {

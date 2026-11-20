@@ -22,6 +22,8 @@ pub mod fat32;
 pub mod inflate;
 pub mod net;
 pub mod netstack;
+pub mod ntfs;
+pub mod vfspath;
 pub mod pe;
 pub mod registry;
 pub mod w32util;

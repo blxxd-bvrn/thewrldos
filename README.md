@@ -440,6 +440,32 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     stops at cycles and 64 levels; C recursed). Tested by installing both editions onto FAT32,
     putting a file on the disk with mtools, then creating, renaming, deleting and copying files
     on the running system and checking the disk with `fsck.fat` and mtools.
+  - **The NTFS driver (`rust/src/ntfs.rs` and `rust/src/kernel/ntfsk.rs`, was
+    `src/kernel/ntfs.c`):** the other file system Setup offers (format, MFT records with
+    fixups, run lists, `$I30` B-tree folders, the cluster and MFT bitmaps). Like the FAT32
+    driver it works over a small disk interface and was compared with the C driver on disk
+    images: 150 random sequences of formatting, writing, reading, renaming, deleting, syncing
+    and remounting, and 60 volumes made by `mkntfs` and filled by `ntfscp`, gave byte-identical
+    images, and every result passes `ntfsfix`. Of 800 damaged volumes, 784 behaved
+    identically; 13 crashed the C driver (heap buffer overflows) and are handled by the Rust
+    one; in the other 3 a damaged `$STANDARD_INFORMATION` length made the C driver read
+    timestamps from past the attribute, where the Rust one ignores them. A damaged volume can
+    no longer make the driver read past a record or an attribute, follow a run list outside
+    its attribute, read or write past the volume, allocate bitmaps or record tables of any size
+    it claims (they are capped and checked against the volume), or recurse without end
+    (loading and deleting trees no longer recurse). `rust/src/kernel/volk.rs` (was
+    `src/kernel/vol.c`) puts the two drivers behind the one interface Setup and persistence use.
+  - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
+    reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
+    the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
+    reads them directly; `rust_init` checks every field's offset at boot), so the C API is
+    unchanged. The same file commands (creating, appending, copying and moving folders,
+    renaming, deleting, relative, `..` and `~` paths) printed the same on the old and new
+    kernels, and installs to NTFS and FAT32 kept every change across reboots. Changes:
+    walking, copying and freeing trees no longer recurse; copying a folder into itself (which
+    looped until memory ran out) and moving a drive's root are refused; making folders under a
+    file or on a missing drive fails instead of creating unreachable nodes; and a damaged
+    initrd member can no longer read past the archive.
   - **The smaller Win32 API files (`rust/src/kernel/w32misc.rs`, `w32k32.rs`, `w32shell.rs`,
     was `src/win32/misc_api.c`, `k32more.c` and `shell.c`):** about 660 functions. ole32 and
     oleaut32 basics (GUID strings, SAFEARRAYs, VARIANT conversions) and the other "misc" DLLs
@@ -592,7 +618,7 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
   - MBR partition tables.
   - **Read/write FAT32** driver (in Rust: `rust/src/fat32.rs`): format, long file names,
     create/replace, recursive delete, rename/move, in-memory FAT with write-back.
-  - **Read/write NTFS** driver (`ntfs.c`), written from scratch for NTFS 3.1:
+  - **Read/write NTFS** driver (in Rust: `rust/src/ntfs.rs`), written from scratch for NTFS 3.1:
     - Format: boot sector and its backup, `$MFT` and `$MFTMirr`, an empty `$LogFile`,
       `$Volume`, `$AttrDef`, `$Bitmap`, `$Boot`, `$BadClus`, `$Secure`, `$UpCase`, `$Extend`.
     - 1 KB MFT records and 4 KB index blocks with update-sequence fixups; resident and
@@ -603,10 +629,10 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     - Create/replace, mkdir, rename/move, recursive delete, read; GRUB boots from it through
       its `ntfs` module.
     - Volumes it creates pass `ntfsfix`, and `ntfs-3g` lists and reads every file.
-  - `vol.c` puts FAT32 and NTFS behind one interface for Setup and persistence.
+  - `rust/src/kernel/volk.rs` puts FAT32 and NTFS behind one interface for Setup and persistence.
   - Read-only FAT12/16/32 reader for disk images.
   - DEFLATE/zlib decompressor and UDIF `.dmg` parser.
-- **Files:** in-memory VFS with drive letters, filled from a tar initrd (live CD) or from the
+- **Files:** in-memory VFS with drive letters (in Rust: `rust/src/kernel/vfsk.rs`), filled from a tar initrd (live CD) or from the
   system partition (installed). `persist.c` writes changes back to the disk and keeps the
   settings file.
 
@@ -1541,12 +1567,13 @@ used to test every screen above, including a full install from a blank disk.
 ```
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
-src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, NTFS (r/w; FAT32 is in rust/),
-                   persistence
+src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, ATA, persistence (the VFS, FAT32
+                   and NTFS are in rust/)
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
                    FAT image reader, DMG disk images, network packet parsers and network stack,
-                   PE (Windows program) loader, the registry, the FAT32 driver, the smaller Win32 API files
-                   (kernel/w32*.rs, their parsing in w32util.rs)
+                   PE (Windows program) loader, the registry, the FAT32 and NTFS drivers, the in-memory
+                   file system (kernel/vfsk.rs, paths and the initrd in vfspath.rs), the smaller Win32 API
+                   files (kernel/w32*.rs, their parsing in w32util.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and

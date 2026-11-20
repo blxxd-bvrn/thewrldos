@@ -12,6 +12,9 @@ use crate::{dmg, fat, inflate, net, netstack, pe};
 #[macro_use]
 mod w32;
 mod fat32k;
+mod ntfsk;
+mod vfsk;
+mod volk;
 mod w32misc;
 mod w32k32;
 mod w32shell;
@@ -28,7 +31,7 @@ extern "C" {
     fn panic(fmt: *const c_char, ...) -> !;
     fn vfs_new_node(parent: *mut Vnode, name: *const c_char, dir: CBool) -> *mut Vnode;
     fn vfs_mount(root: *mut Vnode, label: *const c_char, kind: c_int) -> c_char;
-    static rust_vnode_layout: [u32; 8];
+    static rust_vnode_layout: [u32; 13];
     static rust_net_layout: [u32; 12];
     static rust_pe_layout: [u32; 4];
 }
@@ -124,7 +127,7 @@ pub extern "C" fn rust_init() {
     if !vnode_layout_ok() {
         unsafe { panic(c"Rust: vnode_t in rust/src/kernel.rs does not match src/include/fs.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, dmg, net, netstack, pe, registry)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)
@@ -208,8 +211,10 @@ pub struct Vnode {
 fn vnode_layout_ok() -> bool {
     use core::mem::{offset_of, size_of};
     let want = unsafe { rust_vnode_layout };
-    want == [size_of::<Vnode>() as u32, offset_of!(Vnode, dir) as u32, offset_of!(Vnode, readonly) as u32, offset_of!(Vnode, data) as u32,
-             offset_of!(Vnode, size) as u32, offset_of!(Vnode, parent) as u32, offset_of!(Vnode, mtime) as u32, offset_of!(Vnode, dirty) as u32]
+    want == [size_of::<Vnode>() as u32, offset_of!(Vnode, name) as u32, offset_of!(Vnode, dir) as u32, offset_of!(Vnode, readonly) as u32,
+             offset_of!(Vnode, data) as u32, offset_of!(Vnode, size) as u32, offset_of!(Vnode, cap) as u32, offset_of!(Vnode, parent) as u32,
+             offset_of!(Vnode, child) as u32, offset_of!(Vnode, next) as u32, offset_of!(Vnode, mtime) as u32, offset_of!(Vnode, drive) as u32,
+             offset_of!(Vnode, dirty) as u32]
 }
 
 /// A NUL-terminated copy of `s` in a stack buffer (names are at most 95 bytes in the VFS).
