@@ -440,6 +440,25 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     stops at cycles and 64 levels; C recursed). Tested by installing both editions onto FAT32,
     putting a file on the disk with mtools, then creating, renaming, deleting and copying files
     on the running system and checking the disk with `fsck.fat` and mtools.
+  - **The smaller Win32 API files (`rust/src/kernel/w32misc.rs`, `w32k32.rs`, `w32shell.rs`,
+    was `src/win32/misc_api.c`, `k32more.c` and `shell.c`):** about 660 functions. ole32 and
+    oleaut32 basics (GUID strings, SAFEARRAYs, VARIANT conversions) and the other "misc" DLLs
+    (security, event log, crypt32, setupapi, winspool, ldap, IME, fibers), more of kernel32
+    (environment, version checks, INI files, atoms, Tool Help snapshots, SearchPath, console
+    input records, file and volume information), and shlwapi, shell32, version.dll and winmm
+    (paths, strings, URLs, colours, special folders, item ID lists, ShellExecute,
+    SHFileOperation, CommandLineToArgvW, version resources, PlaySound, waveOut, MCI). The
+    parsing they need (INI files, %VAR% expansion, VerifyVersionInfo, paths, command lines,
+    version resources and blocks, GUIDs, OLE dates) is in `rust/src/w32util.rs` with host
+    tests; `src/win32/rsglue.c` gives Rust what it needs of the C process structure, and the
+    four C-variadic `wnsprintf` functions, which stable Rust cannot define, stay in
+    `src/win32/shell_va.c`. A test program (`tools/apitest`, 186 checks) printed the same on
+    the old and new kernels on both editions; ccdemo, Notepad2 and Chocolate Doom run as
+    before. Changes: version resources are read with every offset checked against the file
+    (the C code read past short or damaged files), INI files longer than 4,096 lines are no
+    longer cut when written, deleting a folder that cannot be emptied stops instead of
+    looping, and `GetVersionEx` no longer clears more than its structure when a program
+    passes a larger size.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -1360,7 +1379,7 @@ device manager's job is to say what the computer has and which driver runs it.
     DIB sections, regions, viewport origins and bitmaps from resources in GDI, shlwapi, more
     of shell32, version.dll, winmm (`PlaySound`, `waveOut`), and failure-reporting versions of
     the security, crypto, printing, LDAP and device-setup calls programs probe for. The newer
-    tables (`apitab.c`: the registry's `registry_api` from Rust, `k32more.c`, `shell.c`, `misc_api.c`, `user32_more.inc`,
+    tables (`apitab.c`: the registry, kernel32, shell and misc tables from Rust, `user32_more.inc`,
     `comctl.inc`, `crt2.inc`) are looked up first.
   - On x64 every exported function uses the Microsoft x64 calling convention (GCC's
     `ms_abi`), variadic ones (`printf`, `wsprintfA`) the matching `va_list`; handles,
@@ -1526,7 +1545,8 @@ src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, NTFS (
                    persistence
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
                    FAT image reader, DMG disk images, network packet parsers and network stack,
-                   PE (Windows program) loader, the registry, the FAT32 driver
+                   PE (Windows program) loader, the registry, the FAT32 driver, the smaller Win32 API files
+                   (kernel/w32*.rs, their parsing in w32util.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and

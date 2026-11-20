@@ -9,7 +9,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{dmg, fat, inflate, net, netstack, pe};
 
+#[macro_use]
+mod w32;
 mod fat32k;
+mod w32misc;
+mod w32k32;
+mod w32shell;
 mod winreg;
 use crate::netstack::{Netif, Stack, Tcb, St, DnsState, FwConfig, FwEvent, UdpFn};
 

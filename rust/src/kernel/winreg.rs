@@ -141,15 +141,6 @@ unsafe fn wlen(d: *const u16) -> usize { let mut l = 0; if !d.is_null() { while 
 
 // ---------------------------------------------------------------- the functions
 
-macro_rules! winapi {
-    ($(fn $name:ident($($a:ident: $t:ty),* $(,)?) -> $r:ty $body:block)*) => {$(
-        #[cfg(target_arch = "x86")] #[allow(non_snake_case, unused_variables)]
-        unsafe extern "stdcall" fn $name($($a: $t),*) -> $r $body
-        #[cfg(target_arch = "x86_64")] #[allow(non_snake_case, unused_variables)]
-        unsafe extern "win64" fn $name($($a: $t),*) -> $r $body
-    )*};
-}
-
 type W = *const u16;
 type A = *const u8;
 type H = usize;
@@ -237,35 +228,7 @@ winapi! {
     fn SHEnumKeyExA(h: H, i: u32, n: *mut u8, cc: P) -> i32 { with_reg(|r| enum_key(r, h, i, n, cc, false)) }
 }
 
-// ---------------------------------------------------------------- the table apitab.c searches
-
-/// One entry: a DLL group ("advapi32", "kernel32", "shlwapi"), a name and the function
-/// (src/win32/w32.h's w32_api_t).
-#[repr(C)]
-pub struct W32Api { group: *const c_char, name: *const c_char, f: *const c_void }
-unsafe impl Sync for W32Api {}
-
-macro_rules! table {
-    ($($g:literal: $($n:ident $(= $alias:literal)?),*;)*) => {
-        /// The registry functions, ending with an empty entry.
-        #[no_mangle]
-        #[allow(non_upper_case_globals)]
-        pub static registry_api: [W32Api; table!(@count $($($n)*)*) + 1] = [
-            $($(W32Api {
-                group: concat!($g, "\0").as_ptr() as *const c_char,
-                name: table!(@name $n $($alias)?),
-                f: $n as *const c_void,
-            },)*)*
-            W32Api { group: core::ptr::null(), name: core::ptr::null(), f: core::ptr::null() },
-        ];
-    };
-    (@name $n:ident) => { concat!(stringify!($n), "\0").as_ptr() as *const c_char };
-    (@name $n:ident $alias:literal) => { concat!($alias, "\0").as_ptr() as *const c_char };
-    (@count) => { 0 };
-    (@count $h:ident $($t:ident)*) => { 1 + table!(@count $($t)*) };
-}
-
-table! {
+api_table! { registry_api;
     "advapi32": RegOpenKeyExA, RegOpenKeyExW, RegOpenKeyA, RegOpenKeyW, RegOpenCurrentUser, RegCreateKeyExA, RegCreateKeyExW,
         RegCreateKeyA, RegCreateKeyW, RegCloseKey, RegFlushKey, RegQueryValueExA, RegQueryValueExW, RegQueryValueA, RegQueryValueW,
         RegSetValueExA, RegSetValueExW, RegSetValueA, RegSetValueW, RegDeleteValueA, RegDeleteValueW, RegDeleteKeyA, RegDeleteKeyW,

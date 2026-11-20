@@ -24,6 +24,7 @@ pub mod net;
 pub mod netstack;
 pub mod pe;
 pub mod registry;
+pub mod w32util;
 
 /// The kernel's `bool` (src/include/types.h: `typedef int bool`): 4 bytes, not Rust's bool.
 /// Use it for every C bool, in structs and in function arguments.
