@@ -74,7 +74,45 @@ unsafe fn append_child(parent: *mut Vnode, n: *mut Vnode) {
     *pp = n;
 }
 unsafe fn set_drive(n: *mut Vnode, d: c_int) { for c in subtree(n) { (*c).drive = d; } }
-unsafe fn free_tree(n: *mut Vnode) { for c in subtree(n) { kfree((*c).data as *mut c_void); kfree(c as *mut c_void); } }
+unsafe fn free_tree(n: *mut Vnode) { for c in subtree(n) { release_data(c); kfree(c as *mut c_void); } }
+
+// ---------------------------------------------------------------- pinned file data
+// Code that keeps pointers into a file's contents (the TrueType faces) pins the buffer instead of
+// copying it. The file stays writable: whatever would change, move or free a pinned buffer gives
+// the file a new buffer first (vfs_unshare), and the old one stays with whoever pinned it.
+const NPIN: usize = 32;
+static mut PINS: [(*mut Vnode, *mut u8); NPIN] = [(null_mut(), null_mut()); NPIN];
+unsafe fn pin_slot(n: *mut Vnode) -> Option<usize> {
+    if n.is_null() || (*n).data.is_null() { return None; }
+    (0..NPIN).find(|&i| PINS[i].0 == n && PINS[i].1 == (*n).data)
+}
+/// The node's contents, guaranteed not to change or be freed (NULL if it cannot be pinned).
+#[no_mangle]
+pub unsafe extern "C" fn vfs_pin(n: *mut Vnode) -> *const u8 {
+    if n.is_null() || (*n).dir != 0 || (*n).data.is_null() { return core::ptr::null(); }
+    if pin_slot(n).is_some() { return (*n).data; }
+    let Some(i) = (0..NPIN).find(|&i| PINS[i].0.is_null()) else { return core::ptr::null() };
+    PINS[i] = (n, (*n).data);
+    (*n).data
+}
+/// Before changing a node's buffer in place: a pinned buffer is replaced by a private copy.
+#[no_mangle]
+pub unsafe extern "C" fn vfs_unshare(n: *mut Vnode) -> CBool {
+    let Some(i) = pin_slot(n) else { return 1 };
+    let cap = (*n).cap.max((*n).size).max(1);
+    let d = kmalloc(cap as usize) as *mut u8;
+    if d.is_null() { return 0; }
+    core::ptr::copy_nonoverlapping((*n).data, d, (*n).size as usize);
+    (*n).data = d;
+    (*n).cap = cap;
+    PINS[i] = (null_mut(), null_mut());
+    1
+}
+/// Frees a node's buffer unless it is pinned (then it stays with its pinner).
+pub(super) unsafe fn release_data(n: *mut Vnode) {
+    match pin_slot(n) { Some(i) => PINS[i] = (null_mut(), null_mut()), None => kfree((*n).data as *mut c_void) }
+    (*n).data = null_mut();
+}
 unsafe fn unlink_node(n: *mut Vnode) {
     if (*n).parent.is_null() { return; }
     let mut pp = &mut (*(*n).parent).child as *mut *mut Vnode;
@@ -283,11 +321,11 @@ pub unsafe extern "C" fn vfs_write_node(n: *mut Vnode, data: *const c_void, len:
     if n.is_null() || (*n).dir != 0 || (*n).readonly != 0 || (data.is_null() && len != 0) { return 0; }
     let src = if len == 0 { &[][..] } else { core::slice::from_raw_parts(data as *const u8, len as usize) };
     if !(*n).data.is_null() && (*n).size == len && core::slice::from_raw_parts((*n).data, len as usize) == src { return 1; }
-    if len > (*n).cap || (*n).data.is_null() {
+    if len > (*n).cap || (*n).data.is_null() || pin_slot(n).is_some() {
         let Some(cap) = len.checked_add(64) else { return 0 };
         let d = kmalloc(cap as usize) as *mut u8;
         if d.is_null() { return 0; }
-        kfree((*n).data as *mut c_void);
+        release_data(n);
         (*n).data = d;
         (*n).cap = cap;
     }
@@ -302,6 +340,7 @@ pub unsafe extern "C" fn vfs_write_node(n: *mut Vnode, data: *const c_void, len:
 pub unsafe extern "C" fn vfs_append_node(n: *mut Vnode, data: *const c_void, len: u32) -> CBool {
     if n.is_null() || (*n).dir != 0 || (*n).readonly != 0 || (data.is_null() && len != 0) { return 0; }
     let Some(total) = (*n).size.checked_add(len) else { return 0 };
+    if vfs_unshare(n) == 0 { return 0; }
     if total > (*n).cap {
         let Some(cap) = total.checked_mul(2).and_then(|c| c.checked_add(64)) else { return 0 };
         let d = krealloc((*n).data as *mut c_void, cap as usize) as *mut u8;

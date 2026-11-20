@@ -34,6 +34,10 @@ bool vfs_delete(vnode_t *n);
 bool vfs_rename(vnode_t *n, const char *newname);
 bool vfs_move(vnode_t *n, vnode_t *newdir);
 vnode_t *vfs_copy(vnode_t *n, vnode_t *destdir, const char *newname);
+/* pinned contents: never changed, moved or freed (a later write gives the file a new buffer
+ * first); vfs_unshare must precede any change made to n->data in place */
+const uint8_t *vfs_pin(vnode_t *n);
+bool vfs_unshare(vnode_t *n);
 void vfs_path(vnode_t *n, char *buf, int cap);
 int vfs_count_children(vnode_t *dir);
 void vfs_sort_children(vnode_t *dir);

@@ -177,7 +177,7 @@ You can also choose the emulated hardware:
 Boot `wrldos.iso` (in a VM set up for a 64-bit guest, for example VirtualBox's
 "Other/Unknown (64-bit)", it starts the 64-bit edition; in a 32-bit guest the 32-bit one) with **legacy BIOS** or **UEFI** boot and at least
 **48 MB RAM** for the 32-bit edition (a Pentium-class PC; in 48 MB the desktop, in a plain colour,
-and the Command Prompt run, 64 MB adds Notepad, Explorer and the system sounds, and 96 MB shows the
+the Command Prompt and Notepad run, 64 MB adds Explorer and the system sounds, and 96 MB shows the
 photo wallpapers and leaves room for several programs; a program that does not fit is refused with
 a "Not enough memory" message) and **384 MB** for the 64-bit one, whose live CD carries the Linux programs and
 WebKit; 256 MB is comfortable for the 32-bit browser. The ISO

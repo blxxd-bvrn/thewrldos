@@ -143,7 +143,10 @@ static int64_t sys_mmap(lxproc_t *p, uint64_t addr, uint64_t len, uint64_t prot,
         }
         if (f->type == FD_ZERO) anon = true;                            /* like anonymous */
         else if (f->type != FD_FILE) return -ENODEV;
-        else { data = f->node->data; size = f->node->size; node = f->node; }
+        else {
+            if ((flags & MAP_SHARED) && (prot & 2) && !vfs_unshare(f->node)) return -ENOMEM;   /* PROT_WRITE */
+            data = f->node->data; size = f->node->size; node = f->node;
+        }
     }
     if (anon && (flags & MAP_SHARED)) {                                 /* shared anonymous: shared with children after fork */
         shmobj_t *o = shm_new(NULL);

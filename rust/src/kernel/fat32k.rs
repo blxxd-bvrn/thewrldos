@@ -17,7 +17,6 @@ extern "C" {
     fn timer_ticks() -> u32;
     fn vfs_lookup_child(dir: *mut Vnode, name: *const c_char) -> *mut Vnode;
     fn vfs_new_node(parent: *mut Vnode, name: *const c_char, dir: CBool) -> *mut Vnode;
-    fn kfree(p: *mut c_void);
     fn klog(fmt: *const c_char, ...);
     static mut vfs_generation: u32;
     static vol_load_progress: Option<unsafe extern "C" fn(u64, u64)>;
@@ -135,7 +134,7 @@ impl Tree for VfsTree {
             };
             if d.try_reserve_exact(1).is_err() { d = Vec::new(); }
             d.push(0);                                   // the C driver kept a byte past the data
-            kfree((*n).data as *mut c_void);
+            super::vfsk::release_data(n);
             (*n).size = d.len() as u32 - 1;
             (*n).cap = d.len() as u32;
             (*n).data = into_c_buffer(d);

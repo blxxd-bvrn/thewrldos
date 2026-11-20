@@ -34,6 +34,15 @@ void canvas_free(canvas_t *c) { if (!c) return; kfree(c->px); kfree(c); }
 void canvas_resize(canvas_t *c, int w, int h) {
     if (w < 1) w = 1; if (h < 1) h = 1;
     if (!c || (w == c->w && h == c->h)) return;
+    /* no wider and it fits in the current allocation: move the rows down in place (a window
+     * shrinking needs no second buffer, which matters when memory is short) */
+    if (c->px && w <= c->w && c->stride == c->w && (uint64_t)w * h * 4 <= kmalloc_usable(c->px)) {
+        int ch = MIN(h, c->h);
+        for (int y = 0; y < ch; y++) memmove(c->px + (size_t)y * w, c->px + (size_t)y * c->stride, (size_t)w * 4);
+        if (h > ch) memset32(c->px + (size_t)ch * w, 0xFFFFFFFF, (size_t)(h - ch) * w);
+        canvas_init(c, c->px, w, h);
+        return;
+    }
     uint32_t *n = (uint64_t)w * h <= 0x1FFFFFFFull / 4 ? kmalloc((size_t)w * h * 4) : NULL;
     if (!n) return;                                   /* out of memory: the canvas keeps its old size */
     memset32(n, 0xFFFFFFFF, w * h);
@@ -416,7 +425,7 @@ static font_spec_t font_specs[FONT_ALL + FONT_DYN_MAX] = {
 };
 
 static ttf_face_t *ttf_face[TF_COUNT];
-static uint8_t *ttf_bytes[TF_COUNT];        /* the copies ttf_face points into */
+static uint8_t *ttf_bytes[TF_COUNT];        /* a copy ttf_face points into (NULL when the file is pinned) */
 static uint8_t ttf_tries[TF_COUNT];
 static uint32_t ttf_retry[TF_COUNT];
 static void shape_cache_clear(void);
@@ -439,12 +448,18 @@ static ttf_face_t *ttf_get(int which) {
     snprintf(path, sizeof path, "C:\\WRLD\\Fonts\\%s", ttf_files[which]);
     vnode_t *n = vfs_resolve(path, NULL);
     if (!n || n->dir || !n->data || n->size < 12) return NULL;
-    /* The face keeps pointers into the file, so give it a copy of its own: a
-     * write to the vnode (or the file being replaced) must not move it. */
-    uint8_t *copy = kmalloc(n->size);
-    if (!copy) return NULL;
-    memcpy(copy, n->data, n->size);
-    ttf_face_t *f = ttf_open(copy, n->size, ttf_mem_alloc, ttf_mem_free, NULL);
+    /* The face keeps pointers into the file: pin its contents (no copy; a later write to the
+     * file gives the file a new buffer and leaves this one to the face), or copy them if the
+     * pin table is full. */
+    uint32_t size = n->size;
+    uint8_t *copy = NULL;
+    const uint8_t *bytes = vfs_pin(n);
+    if (!bytes) {
+        if (!(copy = kmalloc(size))) return NULL;
+        memcpy(copy, n->data, size);
+        bytes = copy;
+    }
+    ttf_face_t *f = ttf_open(bytes, size, ttf_mem_alloc, ttf_mem_free, NULL);
     if (!f) { kfree(copy); return NULL; }
     ttf_face[which] = f;
     ttf_bytes[which] = copy;

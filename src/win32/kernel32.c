@@ -98,7 +98,7 @@ static HANDLE WINAPI CreateFileW(const WCHAR *name, DWORD a, DWORD s, void *sa, 
 }
 static BOOL file_write(w32_handle_t *e, const void *buf, DWORD n) {
     vnode_t *v = e->node;
-    if (!e->write || v->readonly) return 0;
+    if (!e->write || v->readonly || !vfs_unshare(v)) return 0;
     uint32_t end = e->pos + n;
     if (end > v->cap) { v->cap = end * 2 + 64; v->data = krealloc(v->data, v->cap); }
     if (e->pos > v->size) memset(v->data + v->size, 0, e->pos - v->size);
@@ -148,6 +148,7 @@ static BOOL WINAPI SetFilePointerEx(HANDLE h, int64_t dist, int64_t *np, DWORD m
 static BOOL WINAPI SetEndOfFile(HANDLE h) {
     w32_handle_t *e = hget(h); if (!e || !e->node) return 0;
     vnode_t *v = e->node;
+    if (!vfs_unshare(v)) return 0;
     if (e->pos > v->size) {                                          /* longer: zeros up to the position */
         if (e->pos > v->cap) { v->cap = e->pos + 64; v->data = krealloc(v->data, v->cap); }
         memset(v->data + v->size, 0, e->pos - v->size);
