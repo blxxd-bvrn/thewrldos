@@ -403,6 +403,23 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     and ordinal exports, a forwarder, string tables in two languages, a named resource and
     TLS, checked against `objdump`, and the same program linked at two base addresses to
     check relocation.
+  - **The registry (`rust/src/registry.rs` and `rust/src/kernel/winreg.rs`, was
+    `src/win32/registry.c`):** the key tree, handles, `registry.dat` and all 57 advapi32,
+    kernel32 and shlwapi registry functions (74 table entries). They are written in Rust with each
+    edition's Windows calling convention (stdcall on x86, the Microsoft x64 one on x86-64),
+    and `apitab.c` finds them in a table Rust exports. Old and new were compared on the
+    build machine, the C code under AddressSanitizer: 3,000 random sequences of registry
+    operations and 6,000 damaged `registry.dat` files gave identical results, buffer sizes
+    and saved files. A test program (`tools/regtest`: 136 checks of every function,
+    including short buffers, wide names, HKEY_CLASSES_ROOT and deletion under open handles)
+    printed the same on the old and new kernels, on both editions. What changed: names
+    longer than 127 bytes are cut the same way when stored and when looked up (the C code
+    stored a cut name and then never found it, and created a new key each time); `registry.dat`
+    is now version 2, which escapes control bytes and `%` in key names so that a key name
+    with a line break cannot inject keys at the next start (version 1 files still load);
+    keys and data have upper limits (200,000 keys, 32 MB of data); saving and deleting deep
+    trees no longer use recursion; `RegOpenCurrentUser` returns the sign-extended
+    `HKEY_CURRENT_USER` on x64, as Windows does.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -1298,7 +1315,8 @@ device manager's job is to say what the computer has and which driver runs it.
     Compiler (`libtcc.dll`: it compiles and runs C programs) and embedded Python 3.8
     (`python38.dll` with the real `vcruntime140.dll`). `C:\Samples\dlldemo.exe` with
     `mathlib.dll` shows both ways of using a DLL.
-  - **A real registry** shared by all programs and kept in `C:\WRLD\registry.dat`, a per-process
+  - **A real registry** shared by all programs and kept in `C:\WRLD\registry.dat` (in Rust:
+    `rust/src/registry.rs` and `rust/src/kernel/winreg.rs`), a per-process
     environment, INI files (`GetPrivateProfileString` and friends) and the standard Open and
     Save As dialogs (`GetOpenFileName`/`GetSaveFileName`, on the system's file dialog).
   - **Common controls:** toolbar, status bar, rebar, progress bar, trackbar, up-down, tab control
@@ -1322,7 +1340,7 @@ device manager's job is to say what the computer has and which driver runs it.
     DIB sections, regions, viewport origins and bitmaps from resources in GDI, shlwapi, more
     of shell32, version.dll, winmm (`PlaySound`, `waveOut`), and failure-reporting versions of
     the security, crypto, printing, LDAP and device-setup calls programs probe for. The newer
-    tables (`apitab.c`: `registry.c`, `k32more.c`, `shell.c`, `misc_api.c`, `user32_more.inc`,
+    tables (`apitab.c`: the registry's `registry_api` from Rust, `k32more.c`, `shell.c`, `misc_api.c`, `user32_more.inc`,
     `comctl.inc`, `crt2.inc`) are looked up first.
   - On x64 every exported function uses the Microsoft x64 calling convention (GCC's
     `ms_abi`), variadic ones (`printf`, `wsprintfA`) the matching `va_list`; handles,
@@ -1488,7 +1506,7 @@ src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 
                    persistence
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
                    FAT image reader, DMG disk images, network packet parsers and network stack,
-                   PE (Windows program) loader
+                   PE (Windows program) loader, the registry
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
