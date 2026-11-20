@@ -9,6 +9,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{dmg, fat, inflate, net, netstack, pe};
 
+mod fat32k;
 mod winreg;
 use crate::netstack::{Netif, Stack, Tcb, St, DnsState, FwConfig, FwEvent, UdpFn};
 
@@ -118,7 +119,7 @@ pub extern "C" fn rust_init() {
     if !vnode_layout_ok() {
         unsafe { panic(c"Rust: vnode_t in rust/src/kernel.rs does not match src/include/fs.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, dmg, net, netstack, pe, registry)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, dmg, net, netstack, pe, registry)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)

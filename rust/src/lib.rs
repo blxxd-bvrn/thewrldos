@@ -18,6 +18,7 @@ extern crate alloc;
 
 pub mod dmg;
 pub mod fat;
+pub mod fat32;
 pub mod inflate;
 pub mod net;
 pub mod netstack;

@@ -420,6 +420,26 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     keys and data have upper limits (200,000 keys, 32 MB of data); saving and deleting deep
     trees no longer use recursion; `RegOpenCurrentUser` returns the sign-extended
     `HKEY_CURRENT_USER` on x64, as Windows does.
+  - **The FAT32 driver (`rust/src/fat32.rs` and `rust/src/kernel/fat32k.rs`, was
+    `src/kernel/fat32.c`):** the file system of installed systems that chose FAT32 (Setup
+    formats it, and `C:` is loaded from it and saved back to it). The driver works over a small
+    disk interface, so the build machine runs it against disk images in memory. On valid
+    volumes it writes exactly what the C driver wrote, so whole disk images were compared:
+    350 random sequences of formatting, writing, reading, renaming, deleting, syncing and
+    remounting, and 150 volumes made by `mkfs.fat` and filled by mtools, gave byte-identical
+    images, and every result passes `fsck.fat`. That test found three bugs in the C driver,
+    fixed in the Rust one: a file or folder could be created with the name `..`, which no
+    listing shows and no deletion frees (clusters were lost); a rename whose target path ran
+    through a file removed the source before failing, losing the file and its clusters; and a
+    volume formatted without a label got a blank label entry that `fsck.fat` rejects (it is now
+    `NO NAME`). Of 1,500 damaged volumes, 1,475 behaved identically; in the rest the Rust driver
+    refuses volumes whose root lies outside them, or does not count clusters outside the volume
+    as freed. A damaged volume can no longer make the driver read or write past the volume (a
+    cluster number beyond it ends a chain), allocate a file's claimed size before checking it
+    against its chain (a 4 GB size wrapped the C allocation), or recurse without end (deletion
+    stops at cycles and 64 levels; C recursed). Tested by installing both editions onto FAT32,
+    putting a file on the disk with mtools, then creating, renaming, deleting and copying files
+    on the running system and checking the disk with `fsck.fat` and mtools.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -551,8 +571,8 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     - virtio-blk (`virtio.c`). Both virtio drivers handle the virtio 1.0 and the legacy PCI transport.
     - Disks with 4 KB sectors are read and written with read-modify-write of partial blocks.
   - MBR partition tables.
-  - **Read/write FAT32** driver: format, long file names, create/replace, recursive delete,
-    rename/move, in-memory FAT with write-back.
+  - **Read/write FAT32** driver (in Rust: `rust/src/fat32.rs`): format, long file names,
+    create/replace, recursive delete, rename/move, in-memory FAT with write-back.
   - **Read/write NTFS** driver (`ntfs.c`), written from scratch for NTFS 3.1:
     - Format: boot sector and its backup, `$MFT` and `$MFTMirr`, an empty `$LogFile`,
       `$Volume`, `$AttrDef`, `$Bitmap`, `$Boot`, `$BadClus`, `$Secure`, `$UpCase`, `$Extend`.
@@ -1502,11 +1522,11 @@ used to test every screen above, including a full install from a blank disk.
 ```
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
-src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
+src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, NTFS (r/w; FAT32 is in rust/),
                    persistence
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
                    FAT image reader, DMG disk images, network packet parsers and network stack,
-                   PE (Windows program) loader, the registry
+                   PE (Windows program) loader, the registry, the FAT32 driver
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
