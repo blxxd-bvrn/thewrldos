@@ -1,0 +1,13 @@
+label FLOPPY fat 12
+F A long file name.txt 680 c1a2e19aeb1c2a45 2021-06-15 13:45:30
+F Caf_ cr_me.txt 10 75bec5762c88c865 2021-06-15 13:45:30
+F README.TXT 26 fe91da35c2ec464d 2021-06-15 13:45:30
+D Sub Folder
+D Sub Folder/deeper
+F Sub Folder/deeper/inner.bin 10000 2a9ae4d75db8012a 1980-01-01 00:00:00
+F Sub Folder/notes.txt 7 c061bc3d7219fe00 2021-06-15 13:45:30
+F a.bin 3000 52ceb371a827307b 2021-06-15 13:45:30
+F big.bin 20000 f0caa0c0abf689c6 2107-12-31 23:59:58
+F c.bin 3000 3d36ef7010874066 2021-06-15 13:45:30
+F empty.txt 0 cbf29ce484222325 2021-06-15 13:45:30
+F lower.txt 10 12c3ab62ea823b04 1999-12-31 23:59:58

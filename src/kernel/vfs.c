@@ -11,6 +11,9 @@ void (*vfs_hook)(int op, vnode_t *n, const char *oldpath);
 
 const char *vfs_ext(const char *name) { const char *d = strrchr(name, '.'); return d && d != name ? d + 1 : ""; }
 
+/* vnode_t's layout, for the Rust copy of it (rust/src/kernel.rs checks it at boot) */
+const uint32_t rust_vnode_layout[8] = { sizeof(vnode_t), offsetof(vnode_t, dir), offsetof(vnode_t, readonly), offsetof(vnode_t, data),
+                                        offsetof(vnode_t, size), offsetof(vnode_t, parent), offsetof(vnode_t, mtime), offsetof(vnode_t, dirty) };
 vnode_t *vfs_new_node(vnode_t *parent, const char *name, bool dir) {
     vnode_t *n = kzalloc(sizeof(vnode_t));
     strlcpy(n->name, name, sizeof n->name);

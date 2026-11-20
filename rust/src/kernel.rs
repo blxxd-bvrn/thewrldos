@@ -7,7 +7,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::inflate;
+use crate::{dmg, fat, inflate};
 
 extern "C" {
     fn kmalloc(n: usize) -> *mut c_void;
@@ -17,6 +17,9 @@ extern "C" {
     fn kfree_aligned(p: *mut c_void);
     fn klog(fmt: *const c_char, ...);
     fn panic(fmt: *const c_char, ...) -> !;
+    fn vfs_new_node(parent: *mut Vnode, name: *const c_char, dir: CBool) -> *mut Vnode;
+    fn vfs_mount(root: *mut Vnode, label: *const c_char, kind: c_int) -> c_char;
+    static rust_vnode_layout: [u32; 8];
 }
 
 // ---------------------------------------------------------------- heap
@@ -101,7 +104,10 @@ pub extern "C" fn rust_init() {
     let mut v: Vec<u32> = Vec::new();
     for i in 0..1000u32 { v.push(i * 3); }
     let ok = v.iter().copied().sum::<u32>() == 3 * 999 * 1000 / 2;
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    if !vnode_layout_ok() {
+        unsafe { panic(c"Rust: vnode_t in rust/src/kernel.rs does not match src/include/fs.h".as_ptr()) }
+    }
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, dmg)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)
@@ -156,3 +162,152 @@ pub extern "C" fn _Unwind_Resume() -> ! {
 #[cfg(target_os = "linux")]
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
+
+// ---------------------------------------------------------------- the VFS (src/include/fs.h)
+
+/// The kernel's `bool` (src/include/types.h: `typedef int bool`): 4 bytes, not Rust's bool.
+/// Use it for every C bool, in structs and in function arguments.
+pub type CBool = c_int;
+
+/// rtc_time_t
+#[repr(C)]
+pub struct RtcTime { year: c_int, month: c_int, day: c_int, hour: c_int, minute: c_int, second: c_int, weekday: c_int }
+
+/// vnode_t; rust_init() checks this against the C definition.
+#[repr(C)]
+pub struct Vnode {
+    name: [c_char; 96],
+    dir: CBool,
+    readonly: CBool,
+    data: *mut u8,
+    size: u32,
+    cap: u32,
+    parent: *mut Vnode,
+    child: *mut Vnode,
+    next: *mut Vnode,
+    mtime: RtcTime,
+    drive: c_int,
+    dirty: CBool,
+}
+
+fn vnode_layout_ok() -> bool {
+    use core::mem::{offset_of, size_of};
+    let want = unsafe { rust_vnode_layout };
+    want == [size_of::<Vnode>() as u32, offset_of!(Vnode, dir) as u32, offset_of!(Vnode, readonly) as u32, offset_of!(Vnode, data) as u32,
+             offset_of!(Vnode, size) as u32, offset_of!(Vnode, parent) as u32, offset_of!(Vnode, mtime) as u32, offset_of!(Vnode, dirty) as u32]
+}
+
+/// A NUL-terminated copy of `s` in a stack buffer (names are at most 95 bytes in the VFS).
+struct CName([u8; 96]);
+impl CName {
+    fn new(s: &str) -> Self {
+        let mut b = [0u8; 96];
+        let n = s.len().min(95);
+        b[..n].copy_from_slice(&s.as_bytes()[..n]);
+        CName(b)
+    }
+    fn ptr(&self) -> *const c_char { self.0.as_ptr() as *const c_char }
+}
+
+/// Copies `s` into a C buffer of `cap` bytes, cut to fit, NUL-terminated (like snprintf).
+unsafe fn put_cstr(buf: *mut c_char, cap: c_int, s: &str) {
+    if buf.is_null() || cap <= 0 { return; }
+    let n = s.len().min(cap as usize - 1);
+    core::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
+    *buf.add(n) = 0;
+}
+
+/// Hands a buffer to C: a kmalloc'd block (our allocator) that C frees with kfree, or NULL.
+fn into_c_buffer(v: Vec<u8>) -> *mut u8 {
+    if v.is_empty() { return core::ptr::null_mut(); }
+    alloc::boxed::Box::into_raw(v.into_boxed_slice()) as *mut u8
+}
+
+/// Builds VFS nodes from a FAT volume: read-only, with the volume's dates.
+struct VfsBuilder;
+impl fat::Builder for VfsBuilder {
+    type Node = *mut Vnode;
+    fn dir(&mut self, parent: *mut Vnode, name: &str, t: fat::DosTime) -> *mut Vnode {
+        node(parent, name, true, t)
+    }
+    fn file(&mut self, parent: *mut Vnode, name: &str, t: fat::DosTime, data: Vec<u8>) {
+        let n = node(parent, name, false, t);
+        if n.is_null() { return; }
+        unsafe {
+            (*n).size = data.len() as u32;
+            (*n).cap = data.len() as u32;
+            (*n).data = into_c_buffer(data);
+        }
+    }
+}
+fn node(parent: *mut Vnode, name: &str, dir: bool, t: fat::DosTime) -> *mut Vnode {
+    let n = unsafe { vfs_new_node(parent, CName::new(name).ptr(), dir as CBool) };
+    if !n.is_null() {
+        unsafe {
+            (*n).readonly = 1;
+            (*n).mtime = RtcTime { year: t.year as c_int, month: t.month as c_int, day: t.day as c_int,
+                                   hour: t.hour as c_int, minute: t.minute as c_int, second: t.second as c_int, weekday: 0 };
+        }
+    }
+    n
+}
+
+/// Mounts the FAT volume in `img` as a new VFS tree: its root, or None with the reason.
+fn mount_fat(img: &[u8]) -> Result<(*mut Vnode, fat::Info), &'static str> {
+    let vol = fat::Volume::open(img)?;
+    let root = unsafe { vfs_new_node(core::ptr::null_mut(), c"X:".as_ptr(), 1) };
+    if root.is_null() { return Err("Not enough memory"); }
+    let info = vol.load(root, &mut VfsBuilder);
+    unsafe { (*root).readonly = 1; }
+    klog!("fat: mounted FAT{} volume '{}' ({} clusters){}", info.bits, info.label, info.clusters,
+          if info.damaged { "; the image is damaged, some entries were left out" } else { "" });
+    Ok((root, info))
+}
+
+/// vnode_t *fat_mount_image(const uint8_t *img, uint32_t size, char *label_out, int label_cap, char *err, int errcap)
+#[no_mangle]
+pub unsafe extern "C" fn fat_mount_image(img: *const u8, size: u32, label: *mut c_char, lcap: c_int, err: *mut c_char, ecap: c_int) -> *mut Vnode {
+    match mount_fat(in_slice(img, size)) {
+        Ok((root, info)) => { put_cstr(label, lcap, &info.label); root }
+        Err(e) => { put_cstr(err, ecap, e); core::ptr::null_mut() }
+    }
+}
+
+/// uint8_t *dmg_extract(const uint8_t *file, uint32_t size, uint32_t *out_size, char *info, int icap):
+/// the decoded disk (kfree it), or NULL with the reason in info.
+#[no_mangle]
+pub unsafe extern "C" fn dmg_extract(file: *const u8, size: u32, out_size: *mut u32, info: *mut c_char, icap: c_int) -> *mut u8 {
+    match dmg::extract(in_slice(file, size)) {
+        Ok(d) => {
+            put_cstr(info, icap, &d.info);
+            if !out_size.is_null() { *out_size = d.bytes.len() as u32; }
+            let p = into_c_buffer(d.bytes);
+            if p.is_null() { put_cstr(info, icap, "Empty disk image"); }
+            p
+        }
+        Err(e) => { put_cstr(info, icap, &e); core::ptr::null_mut() }
+    }
+}
+
+/// char dmg_mount(vnode_t *file, char *msg, int mcap): mounts a disk image file's FAT volume
+/// as a new drive; its letter, or 0 with the reason in msg.
+#[no_mangle]
+pub unsafe extern "C" fn dmg_mount(file: *mut Vnode, msg: *mut c_char, mcap: c_int) -> c_char {
+    let mut out = alloc::string::String::new();
+    let letter = (|| -> Result<c_char, ()> {
+        if file.is_null() { return Err(()); }
+        let disk = dmg::extract(in_slice((*file).data, (*file).size)).map_err(|e| out = e)?;
+        let (off, len) = dmg::find_partition(&disk.bytes).map_err(|why| {
+            out = alloc::format!("{}. {} - this file system is not supported yet (FAT12/16/32 volumes are).", disk.info, why);
+        })?;
+        let (root, info) = mount_fat(&disk.bytes[off..off + len])
+            .map_err(|e| out = alloc::format!("{}. Could not mount volume: {}", disk.info, e))?;
+        let l = vfs_mount(root, CName::new(&info.label).ptr(), 2);
+        if l == 0 { out = alloc::string::String::from("No free drive letters"); return Err(()); }
+        out = alloc::format!("Mounted '{}' as {}: ({})", info.label, l as u8 as char, disk.info);
+        klog!("dmg: {}", out);
+        Ok(l)
+    })();
+    put_cstr(msg, mcap, &out);
+    letter.unwrap_or(0)
+}

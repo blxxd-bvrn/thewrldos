@@ -335,6 +335,12 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
   replaces, so callers do not change. It must not panic on bad input (in the kernel that would
   be a kernel panic): it returns errors instead, and `make rust-test` (`cargo test` on the build
   machine) fuzzes it. Logic that does not touch the kernel builds and tests on the host.
+  Before the C file is deleted, the old and new versions are run side by side on the test
+  vectors and on thousands of damaged inputs (the C one under AddressSanitizer).
+- **Shared structs:** a C struct that Rust reads or writes is mirrored with `#[repr(C)]`, and
+  C exports its real size and field offsets, which `rust_init` checks at boot (a mismatch is a
+  kernel panic naming the struct, not silent memory corruption). The kernel's `bool` is an
+  `int` (`src/include/types.h`); Rust uses `kernel::CBool` for it.
 - **Converted so far:**
   - **DEFLATE/zlib (`rust/src/inflate.rs`, was `src/kernel/inflate.c`):** PNG images, ZIP
     archives, gzip packages, DMG images, HTTP compression and WordPad's documents. Every read
@@ -342,6 +348,21 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     threads can now decompress at once (the C version used static tables). Tested against
     62 zlib streams (`tools/gen_inflate_testdata.py`) and a 20,000-case fuzz run. Before the
     switch, 200,000 intact and damaged streams gave the same result in the C and Rust versions.
+  - **FAT12/16/32 image reader (`rust/src/fat.rs`, was `src/kernel/fat.c`) and Apple disk
+    images (`rust/src/dmg.rs`, was `src/kernel/dmg.c`):** what mounts a `.dmg` or raw `.img`
+    as a drive (`hdiutil attach`, double-clicking it). The C versions trusted the image: the
+    FAT lookups, the GPT entry table, a partition's length, a file size of 4 GB and chunk
+    offsets near 2^64 could all make them read or write outside their buffers. In 6,000
+    damaged images run through both, 83 crashed the C code under AddressSanitizer (heap
+    overflows in the partition and directory code, wild reads in the FAT chain code); the
+    Rust code handled all of them, and every other case gave the same tree, except that names
+    with control or non-ASCII bytes get `_` and impossible boot sectors are refused. Chains
+    stop at the volume's cluster count, copied file data is limited to the image's size and
+    entries to 200,000, so loops and cross-links cannot hang or exhaust memory. Mounted files
+    are now actually read-only. Test vectors: FAT12/16/32 volumes made with mkfs.fat and
+    mtools (long names, a 200-entry directory, a deleted entry, a fragmented file, dates) and
+    DMGs with zlib, raw and zero chunks, MBR and GPT maps, HFS+ and an unsupported codec
+    (`tools/gen_diskimage_testdata.py`).
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -1423,8 +1444,9 @@ used to test every screen above, including a full install from a blank disk.
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
-                   FAT reader, DMG, persistence
-rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder
+                   persistence
+rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
+                   FAT image reader, DMG disk images
 src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and

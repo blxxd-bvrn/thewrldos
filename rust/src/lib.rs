@@ -9,11 +9,15 @@
 //!   errors instead of indexing out of range or overflowing (`cargo test` fuzzes them).
 //! - Pure logic (parsers, codecs) lives in modules that build and test on the host; only
 //!   `kernel` (behind the `kernel` feature) touches the C kernel.
+//! - C structs that Rust reads or writes are mirrored with `#[repr(C)]`, and C exports
+//!   their real layout so `rust_init` can check it at boot. The kernel's `bool` is an `int`:
+//!   use `kernel::CBool` for it, never Rust's `bool`.
 #![cfg_attr(feature = "kernel", no_std)]
 
-#[cfg(feature = "kernel")]
 extern crate alloc;
 
+pub mod dmg;
+pub mod fat;
 pub mod inflate;
 
 #[cfg(feature = "kernel")]

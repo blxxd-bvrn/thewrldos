@@ -1,0 +1,7 @@
+dmg_udzo.dmg ok small
+dmg_raw.dmg ok small
+dmg_mbr.dmg ok small
+dmg_gpt.dmg ok small
+dmg_hfs.dmg err HFS+ volume found
+dmg_bzip2.dmg err Compression 'bzip2'
+dmg_plain.dmg ok small

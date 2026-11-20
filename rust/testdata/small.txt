@@ -1,0 +1,6 @@
+label SAMPLE fat 12
+D Folder
+F Folder/data.bin 40000 83680ba4e2b4bd8b 2010-05-04 03:02:00
+F Read Me First.txt 200 ec140420b7d4b3bd 2021-06-15 13:45:30
+F frag.bin 9000 a9a0e6fecffd7ec7 2021-06-15 13:45:30
+F y.bin 1500 15575b978af6fcfe 2021-06-15 13:45:30
