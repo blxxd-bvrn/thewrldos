@@ -107,7 +107,7 @@ again.
 sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools qemu-system-x86
 ```
 
-Part of the kernel is written in Rust (see [Rust in the kernel](#rust-in-the-kernel)), so the
+Part of the kernel is written in Rust (see [Rust in the kernel](#rust-in-the-kernel-rust)), so the
 build also needs Rust from [rustup](https://rustup.rs) with a freestanding target for each
 edition (distribution packages of Rust do not include them). `Build to ISO.bat` installs this
 by itself.
@@ -373,6 +373,19 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     editions with e1000 and virtio-net: DHCP, ping, a download with its SHA-256 checked, DNS
     through a CNAME and a non-existent name (`ipconfig /dns A.B.C.D` sets the DNS server by
     hand), and inbound connections to a Winsock server.
+  - **The network stack itself (`rust/src/netstack.rs`, was `src/net/net.c` and `tcp.c`):**
+    Ethernet, ARP, IPv4, ICMP, UDP, the inbound firewall, the DHCP and DNS clients and TCP
+    (active and passive opens, retransmission, close), behind the same `net.h` functions;
+    `netif` and the firewall switches are Rust statics with C's layout. The protocols are plain
+    state machines over a small `Link` (clock, randomness, frame output), so `cargo test`
+    plays whole exchanges against them: ARP, ping, DHCP, DNS, a TCP client conversation, a TCP
+    server accepting, retransmission and time-out, resets, the firewall, and random frames.
+    Changes in behaviour: a packet for an address whose MAC is unknown waits for the ARP
+    answer (and is dropped after a second) instead of `ip_send` sleeping; UDP handlers in C
+    are called after the stack is released, so they can reply; stale TCP handles from C are
+    refused instead of used; buffers that depend on traffic are reserved so that running out
+    of memory refuses a connection instead of panicking. Tested live like the parsers, plus
+    the Linux socket layer (`C:/Linux/usr/local/bin/socket` and `resolve`).
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -746,7 +759,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     leave the PHY as the firmware set it up, so a board whose firmware powers the port down may
     show "cable unplugged".
 - **Protocols:** Ethernet, ARP, IPv4, ICMP, UDP, DHCP client, and a DNS resolver (with
-  `C:\WRLD\hosts`).
+  `C:\WRLD\hosts`). The stack (these and TCP) is in Rust: `rust/src/netstack.rs`, with the
+  packet parsers in `rust/src/net.rs`; see [Rust in the kernel](#rust-in-the-kernel-rust).
 - **TCP:** client and server side, with MSS, a 64 KiB window, retransmission with back-off,
   graceful close, and non-blocking connects for the socket layer.
 - **HTTPS (TLS 1.3 and 1.2):**
@@ -1456,8 +1470,8 @@ src/arch           boot stub, interrupt/context-switch assembly, linker script: 
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    persistence
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
-                   FAT image reader, DMG disk images, network packet parsers
-src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
+                   FAT image reader, DMG disk images, network packet parsers and network stack
+src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),

@@ -27,7 +27,9 @@ bool net_parse_dhcp(const uint8_t *m, uint32_t len, uint32_t xid, net_dhcp_t *ou
 /* a DNS reply to query id: 1 with *ip its first A record, 0 with *rcode for none, -1 not ours */
 int net_parse_dns(const uint8_t *m, uint32_t len, uint16_t id, uint32_t *ip, int *rcode);
 
-/* ---- network interface ---- */
+/* ---- network interface ----
+ * The stack itself (ARP, IPv4, ICMP, UDP, firewall, DHCP, DNS, TCP) is rust/src/netstack.rs;
+ * these are its C entry points (rust/src/kernel.rs). */
 typedef struct {
     bool present, link, configured;
     char driver[48];
@@ -94,8 +96,6 @@ int tcp_recv(tcb_t *t, void *buf, uint32_t max, uint32_t timeout_ms); /* >0 byte
 int tcp_peek(tcb_t *t, void *buf, uint32_t max);            /* same without consuming; -2 when empty */
 void tcp_shutdown_wr(tcb_t *t);                                     /* send our FIN; reads still drain */
 void tcp_close(tcb_t *t);                                            /* graceful close; t must not be used afterwards */
-void tcp_input(uint32_t src, uint32_t dst, const uint8_t *seg, uint32_t len);
-void tcp_timers(void);
 int tcp_count(void);
 
 /* TCP for the Linux socket layer: non-blocking active opens and passive ones.

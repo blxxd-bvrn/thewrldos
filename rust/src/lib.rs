@@ -20,6 +20,11 @@ pub mod dmg;
 pub mod fat;
 pub mod inflate;
 pub mod net;
+pub mod netstack;
+
+/// The kernel's `bool` (src/include/types.h: `typedef int bool`): 4 bytes, not Rust's bool.
+/// Use it for every C bool, in structs and in function arguments.
+pub type CBool = core::ffi::c_int;
 
 #[cfg(feature = "kernel")]
 pub mod kernel;
