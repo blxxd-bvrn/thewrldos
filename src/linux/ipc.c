@@ -19,6 +19,7 @@
 #define MAX_MSG_FD    8
 
 #define O_NONBLOCK_F  04000
+#define O_RDWR_F      2         /* sockets, eventfds, timerfds and epoll fds are read-write, as on Linux (glibc fdopen "r+" checks) */
 #define O_CLOEXEC_F   02000000
 #define SOCK_NONBLOCK 04000
 #define SOCK_CLOEXEC  02000000
@@ -642,7 +643,7 @@ static int64_t do_socket(lxproc_t *p, int domain, int type, int proto) {
         if (!s) return -ENOMEM;
         lxfile_t *f = wrap(FD_SOCKET, s);
         if (!f) { kfree(s); return -ENOMEM; }
-        f->oflags = (type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+        f->oflags = O_RDWR_F | ((type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0);
         return install(p, f, type);
     }
     if (domain == AF_INET_) {
@@ -654,7 +655,7 @@ static int64_t do_socket(lxproc_t *p, int domain, int type, int proto) {
         s->proto = proto ? proto : want;
         lxfile_t *f = wrap(FD_SOCKET, s);
         if (!f) { inet_unlink(s); kfree(s); return -ENOMEM; }
-        f->oflags = (type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+        f->oflags = O_RDWR_F | ((type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0);
         return install(p, f, type);
     }
     return -EAFNOSUPPORT;
@@ -675,7 +676,7 @@ static int64_t do_socketpair(lxproc_t *p, int domain, int type, int proto, uint6
         if (fb) lx_file_put(fb); else kfree(b);
         return -ENOMEM;
     }
-    fa->oflags = fb->oflags = (type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+    fa->oflags = fb->oflags = O_RDWR_F | ((type & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0);
     int fd0 = install(p, fa, type), fd1 = install(p, fb, type);
     if (fd0 < 0 || fd1 < 0) {
         if (fd0 >= 0) { lx_file_put(p->fds[fd0]); p->fds[fd0] = NULL; }
@@ -831,7 +832,7 @@ static int64_t do_accept(lxproc_t *p, int fd, uint64_t uaddr, uint64_t ualen, in
                 ns->raddr = tcp_remote_ip(c); ns->rport = tcp_remote_port(c);
                 lxfile_t *f = wrap(FD_SOCKET, ns);
                 if (!f) { inet_unlink(ns); kfree(ns); tcp_close(c); return -ENOMEM; }
-                f->oflags = (flags & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+                f->oflags = O_RDWR_F | ((flags & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0);
                 int nfd = install(p, f, flags);
                 if (nfd < 0) return nfd;
                 int rr = in_put(p, uaddr, ualen, ns->raddr, ns->rport);
@@ -844,7 +845,7 @@ static int64_t do_accept(lxproc_t *p, int fd, uint64_t uaddr, uint64_t ualen, in
             c->accept_next = NULL;
             lxfile_t *f = wrap(FD_SOCKET, c);
             if (!f) return -ENOMEM;
-            f->oflags = (flags & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0;
+            f->oflags = O_RDWR_F | ((flags & SOCK_NONBLOCK) ? O_NONBLOCK_F : 0);
             int nfd = install(p, f, flags);
             if (nfd < 0) return nfd;
             if (uaddr && ualen) {
@@ -1234,7 +1235,7 @@ static int64_t do_eventfd(lxproc_t *p, uint32_t init, int flags) {
     e->sem = (flags & EFD_SEMAPHORE) != 0;
     lxfile_t *f = wrap(FD_EVENTFD, e);
     if (!f) { kfree(e); return -ENOMEM; }
-    f->oflags = (flags & EFD_NONBLOCK) ? O_NONBLOCK_F : 0;
+    f->oflags = O_RDWR_F | ((flags & EFD_NONBLOCK) ? O_NONBLOCK_F : 0);
     return install(p, f, flags);
 }
 
@@ -1244,7 +1245,7 @@ static int64_t do_timerfd_create(lxproc_t *p, int clockid, int flags) {
     if (!t) return -ENOMEM;
     lxfile_t *f = wrap(FD_TIMERFD, t);
     if (!f) { kfree(t); return -ENOMEM; }
-    f->oflags = (flags & TFD_NONBLOCK) ? O_NONBLOCK_F : 0;
+    f->oflags = O_RDWR_F | ((flags & TFD_NONBLOCK) ? O_NONBLOCK_F : 0);
     return install(p, f, flags);
 }
 
@@ -1287,6 +1288,7 @@ static int64_t do_epoll_create(lxproc_t *p, int flags) {
     if (!e) return -ENOMEM;
     lxfile_t *f = wrap(FD_EPOLL, e);
     if (!f) { kfree(e); return -ENOMEM; }
+    f->oflags = O_RDWR_F;
     return install(p, f, flags);
 }
 
