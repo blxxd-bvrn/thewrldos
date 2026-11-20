@@ -476,6 +476,23 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     nesting or long strings could overflow the task's stack (parsing, arithmetic and
     wildcards no longer recurse without limit). Output to a pipe or `$(…)` is dropped
     rather than crashing when memory runs out, and `seq` stops at Ctrl+C.
+  - **The image decoders (`rust/src/imgdec.rs` and `rust/src/kernel/imgk.rs`, were in
+    `src/apps/imgdec.c` and `accessories.c`):** PNG, GIF, baseline and progressive JPEG and
+    BMP, for the desktop wallpaper, the logon screen, the Image Viewer, Paint and the browser.
+    `imgdec.c` keeps the format sniffing, the size limits and SVG. Over 1,239 images (the
+    system's own wallpapers, avatars and samples, and ImageMagick conversions of three of them
+    into every PNG colour type and bit depth, interlaced and not, GIFs with and without
+    interlacing and transparency, and JPEGs at several qualities, subsamplings, restart
+    intervals and progressive scripts, from 1x1 to 300x201) the old and new decoders gave
+    identical pixels, and the Rust ones are as fast. On 4,904 damaged copies the C decoder
+    ran into 390 memory errors (all JPEG: heap overflows from Huffman, quantisation and
+    component table numbers above 3, scan bands past coefficient 63, blocks outside the
+    coefficient buffer, Huffman code counts that overflowed the lookup table into the rest of
+    the decoder's state, and one crash); the Rust decoders read every one safely, and 14,160
+    more damaged files caused no panic. Where both ran, 10 results differ, all from damaged
+    JPEG headers: a table segment shorter than it claims now reads as zeros instead of the
+    next segment's bytes, a zero sampling factor is refused, and the 3 where the C decoder had
+    overwritten its own state.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -896,7 +913,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Mbed TLS's random generator is seeded from RDRAND and timing jitter, conditioned with SHA-256.
 - **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
 
-### The WRLD Browser (`src/apps/browser.c`, `html.c`, `imgdec.c`)
+### The WRLD Browser (`src/apps/browser.c`, `html.c`; images: `rust/src/imgdec.rs`)
 - **Window:** up to 12 tabs per window, each with its own page, history and loading task, in
   the same 2007 look as the WebKit browser: round blue Back and Forward buttons, the address
   field with Refresh and Stop at its end (the lock shows on secure pages; focusing it selects
@@ -1594,14 +1611,15 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    FAT image reader, DMG disk images, network packet parsers and network stack,
                    PE (Windows program) loader, the registry, the FAT32 and NTFS drivers, the in-memory
                    file system (kernel/vfsk.rs, paths and the initrd in vfspath.rs), the smaller Win32 API
-                   files (kernel/w32*.rs, their parsing in w32util.rs), the shell (shell.rs, kernel/shk.rs)
+                   files (kernel/w32*.rs, their parsing in w32util.rs), the shell (shell.rs, kernel/shk.rs),
+                   the PNG/GIF/JPEG/BMP decoders (imgdec.rs, kernel/imgk.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
-                   browser (html.c, imgdec.c, dom.c, adblock.c)
+                   browser (html.c, dom.c, adblock.c), image format dispatch and SVG (imgdec.c, svg.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;

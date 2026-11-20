@@ -16,6 +16,7 @@ mod ntfsk;
 mod vfsk;
 mod volk;
 mod shk;
+mod imgk;
 mod w32misc;
 mod w32k32;
 mod w32shell;
@@ -128,7 +129,7 @@ pub extern "C" fn rust_init() {
     if !vnode_layout_ok() {
         unsafe { panic(c"Rust: vnode_t in rust/src/kernel.rs does not match src/include/fs.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)

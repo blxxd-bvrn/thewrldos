@@ -11,22 +11,7 @@ void file_dialog(const char *title, const char *initial, bool save, const char *
 static void free_data(window_t *w) { kfree(w->data); }
 
 /* ======================= BMP ======================= */
-canvas_t *bmp_load(const uint8_t *d, uint32_t n) {
-    if (n < 54 || d[0] != 'B' || d[1] != 'M') return NULL;
-    uint32_t off = *(uint32_t *)(d + 10); int32_t w = *(int32_t *)(d + 18), h = *(int32_t *)(d + 22);
-    uint16_t bpp = *(uint16_t *)(d + 28); uint32_t comp = *(uint32_t *)(d + 30);
-    if ((bpp != 24 && bpp != 32) || (comp != 0 && comp != 3) || w <= 0 || w > 4096 || h == 0 || ABSDIFF(h, 0) > 4096) return NULL;
-    bool top = h < 0; if (top) h = -h;
-    uint32_t stride = ((w * bpp / 8) + 3) & ~3u;
-    if (off + stride * h > n) return NULL;
-    canvas_t *c = canvas_new(w, h);
-    if (!c) return NULL;
-    for (int y = 0; y < h; y++) {
-        const uint8_t *row = d + off + stride * (top ? y : h - 1 - y);
-        for (int x = 0; x < w; x++) { const uint8_t *p = row + x * (bpp / 8); c->px[y * w + x] = RGB(p[2], p[1], p[0]); }
-    }
-    return c;
-}
+/* bmp_load is in Rust (rust/src/imgdec.rs) */
 uint8_t *bmp_save(canvas_t *c, uint32_t *size) {
     uint32_t stride = (c->w * 3 + 3) & ~3u, img = stride * c->h, total = 54 + img;
     uint8_t *d = kzalloc(total);
