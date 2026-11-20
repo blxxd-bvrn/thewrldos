@@ -1,0 +1,32 @@
+# wrldrs: the Rust part of THE WRLD OS kernel.
+#
+# Built by the Makefile as a freestanding static library (no_std, core + alloc only) and
+# linked into the kernel next to the C objects:
+#   64-bit edition: --target x86_64-unknown-none
+#   32-bit edition: --target i586-unknown-linux-gnu (only its prebuilt `core`/`alloc` are used,
+#                   so the code runs on the same Pentium-class processors as the C kernel)
+# The `kernel` feature adds the parts that talk to the C kernel (heap, log, panic, the C
+# entry points). Without it the crate builds for the host, where `cargo test` runs.
+[package]
+name = "wrldrs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["staticlib", "rlib"]
+
+[features]
+kernel = []
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+codegen-units = 1
+lto = true
+debug = false

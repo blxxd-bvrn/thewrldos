@@ -107,6 +107,16 @@ again.
 sudo apt install build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools qemu-system-x86
 ```
 
+Part of the kernel is written in Rust (see [Rust in the kernel](#rust-in-the-kernel)), so the
+build also needs Rust from [rustup](https://rustup.rs) with a freestanding target for each
+edition (distribution packages of Rust do not include them). `Build to ISO.bat` installs this
+by itself.
+
+```bash
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+rustup target add x86_64-unknown-none i586-unknown-linux-gnu
+```
+
 The 64-bit edition's Linux userland (The WRLD Browser's WebKit engine, GTK 4, video and sound,
 `/bin/sh`) comes from these packages on the build machine (Ubuntu 24.04 or newer). The WebKit
 image is the default build: without these packages `make` stops and says what to install, and
@@ -310,6 +320,28 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
 - Win32 programs get their own address space: on x64 a private PML4/PDPT, with the image
   mapped at its preferred base (usually `0x140000000`) in 2 MiB pages, so no relocation is
   needed.
+
+### Rust in the kernel (`rust/`)
+The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` static library
+(`wrldrs`) that the Makefile builds with cargo and links into the kernel beside the C objects:
+- **Targets:** `x86_64-unknown-none` for the 64-bit edition; for the 32-bit edition
+  `i586-unknown-linux-gnu`, used only for its prebuilt `core` and `alloc`, so the Rust code runs
+  on the same Pentium-class processors (x87, no SSE) as the C kernel. Both work with stable
+  Rust; nothing rebuilds the standard library.
+- **Bridge (`rust/src/kernel.rs`):** the kernel heap (`kmalloc`) is Rust's global allocator,
+  `klog!` writes to the kernel log, and a Rust panic is a kernel panic with its message. The
+  boot log says `rust: wrldrs 0.1.0 ready` once `kmain` has checked that allocation works.
+- **Converting a module:** the Rust module exports the same C functions as the file it
+  replaces, so callers do not change. It must not panic on bad input (in the kernel that would
+  be a kernel panic): it returns errors instead, and `make rust-test` (`cargo test` on the build
+  machine) fuzzes it. Logic that does not touch the kernel builds and tests on the host.
+- **Converted so far:**
+  - **DEFLATE/zlib (`rust/src/inflate.rs`, was `src/kernel/inflate.c`):** PNG images, ZIP
+    archives, gzip packages, DMG images, HTTP compression and WordPad's documents. Every read
+    and write is bounds-checked, and the Huffman tables are on the caller's stack, so two
+    threads can now decompress at once (the C version used static tables). Tested against
+    62 zlib streams (`tools/gen_inflate_testdata.py`) and a 20,000-case fuzz run. Before the
+    switch, 200,000 intact and damaged streams gave the same result in the C and Rust versions.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -1305,6 +1337,7 @@ device manager's job is to say what the computer has and which driver runs it.
 | `make samples` | Rebuilds the Win32 samples (needs `gcc-mingw-w64-i686` and `gcc-mingw-w64-x86-64`). |
 | `make dmg` | Rebuilds `rootfs/Samples/Sample.dmg` (needs `python3`, `dosfstools`). |
 | `make assets` | Regenerates fonts, icons and the globe (needs Python with Pillow and NumPy, `fonts-liberation`). |
+| `make rust-test` | Runs the tests of the kernel's Rust part on the build machine. |
 | `make clean` | Removes build output. |
 
 `tools/qemu_harness.py` drives a headless QEMU over QMP (mouse, keyboard, screenshots). It was
@@ -1390,7 +1423,8 @@ used to test every screen above, including a full install from a blank disk.
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
-                   FAT reader, inflate, DMG, persistence
+                   FAT reader, DMG, persistence
+rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder
 src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and

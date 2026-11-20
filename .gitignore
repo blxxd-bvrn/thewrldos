@@ -8,3 +8,4 @@ disk.img
 *.iso
 build64/
 disk64.img
+rust/target/

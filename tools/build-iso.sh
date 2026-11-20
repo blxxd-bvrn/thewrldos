@@ -9,7 +9,12 @@ set -euo pipefail
 
 SRC="$(cd "${1:-.}" && pwd)"
 BUILD_DIR="${WRLD_BUILD_DIR:-$HOME/.cache/wrldos-build}"
-PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin grub-common xorriso mtools"
+PKGS="build-essential gcc-multilib nasm grub-pc-bin grub-efi-amd64-bin grub-efi-ia32-bin grub-common xorriso mtools curl ca-certificates"
+# The kernel's Rust part (rust/) needs Rust with a freestanding target for each edition. Distribution
+# packages of Rust lack those targets, so it comes from rustup (into ~/.cargo, no root needed).
+RUST_TARGETS="x86_64-unknown-none i586-unknown-linux-gnu"
+RUST_SETUP='[ -x "$HOME/.cargo/bin/cargo" ] || command -v rustup >/dev/null 2>&1 || curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal; [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"; rustup target add '"$RUST_TARGETS"' >/dev/null'
+
 # The 64-bit edition's Linux userland comes from these: WebKitGTK (The WRLD Browser's engine),
 # GTK 4, Wayland, GStreamer (video and sound), musl, BusyBox (/bin/sh) and the CA list.
 # Without them the build still works, but The WRLD Browser falls back to its classic engine.
@@ -41,6 +46,18 @@ if ! have_tools; then
     else
         fail "missing build tools and no apt-get. Install the equivalents of: $PKGS"
     fi
+fi
+
+# Rust and its two targets (RUST_SETUP above): installed the first time, then only checked
+have_rust() {
+    [ -f "$HOME/.cargo/env" ] && . "$HOME/.cargo/env"
+    command -v cargo >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1 || return 1
+    for t in $RUST_TARGETS; do rustup target list --installed 2>/dev/null | grep -qx "$t" || return 1; done
+}
+if ! have_rust; then
+    say "Installing Rust (rustup, into ~/.cargo) with the targets $RUST_TARGETS"
+    bash -c "$RUST_SETUP" || fail "could not install Rust. Install it from https://rustup.rs, then: rustup target add $RUST_TARGETS"
+    have_rust || fail "Rust is still missing its targets: rustup target add $RUST_TARGETS"
 fi
 
 # the Linux userland's packages (64-bit edition), installed when any is missing
@@ -79,6 +96,7 @@ build64_noble_docker() {
     docker run --rm -v "$BUILD_DIR:/build" ubuntu:24.04 bash -c "
         export DEBIAN_FRONTEND=noninteractive
         apt-get update -qq && apt-get install -y -qq $PKGS $(echo $LXPKGS) >/dev/null &&
+        { $RUST_SETUP; } &&
         make -C /build -j$(nproc 2>/dev/null || echo 2) $MAKE64"
 }
 build64_noble_chroot() {
@@ -100,7 +118,8 @@ build64_noble_chroot() {
         say "Installing in Ubuntu 24.04: $(echo $missing)"
         $SUDO chroot "$CH" apt-get update -qq && $SUDO chroot "$CH" apt-get install -y -qq $missing >/dev/null || rc=$?
     fi
-    [ $rc -eq 0 ] && { $SUDO chroot "$CH" make -C /build -j"$(nproc 2>/dev/null || echo 2)" $MAKE64 || rc=$?; }
+    [ $rc -eq 0 ] && { $SUDO chroot "$CH" env HOME=/root bash -c "$RUST_SETUP" || rc=$?; }
+    [ $rc -eq 0 ] && { $SUDO chroot "$CH" env HOME=/root bash -c ". /root/.cargo/env && make -C /build -j$(nproc 2>/dev/null || echo 2) $MAKE64" || rc=$?; }
     $SUDO umount "$CH/build" "$CH/dev/pts" "$CH/dev" "$CH/proc"
     [ "$SUDO" ] && $SUDO chown -R "$(id -u):$(id -g)" "$BUILD_DIR/build64" "$BUILD_DIR/wrldos64.iso" 2>/dev/null
     return $rc
@@ -111,11 +130,11 @@ say "Copying sources to $BUILD_DIR"
 mkdir -p "$BUILD_DIR"
 # keep build/ (object files) for fast rebuilds, replace everything else
 find "$BUILD_DIR" -mindepth 1 -maxdepth 1 ! -name build ! -name build64 -exec rm -rf {} +
-( cd "$SRC" && tar --exclude=./build --exclude=./build64 --exclude=./.git --exclude='*.iso' --exclude=./disk.img --exclude=./disk64.img -cf - . ) | ( cd "$BUILD_DIR" && tar -xf - )
+( cd "$SRC" && tar --exclude=./build --exclude=./build64 --exclude=./rust/target --exclude=./.git --exclude='*.iso' --exclude=./disk.img --exclude=./disk64.img -cf - . ) | ( cd "$BUILD_DIR" && tar -xf - )
 
 # Windows checkouts may have CRLF line endings: convert text files back to LF
 find "$BUILD_DIR" \( -path "$BUILD_DIR/build" -o -path "$BUILD_DIR/build64" \) -prune -o -type f \( -name Makefile -o -name '*.c' -o -name '*.h' \
-    -o -name '*.asm' -o -name '*.ld' -o -name '*.cfg' -o -name '*.sh' -o -name '*.py' -o -name '*.txt' \
+    -o -name '*.asm' -o -name '*.rs' -o -name '*.toml' -o -name '*.ld' -o -name '*.cfg' -o -name '*.sh' -o -name '*.py' -o -name '*.txt' \
     -o -name '*.plist' -o -name '*.lnk' -o -name '.profile' -o -path '*/MacOS/*' \) -print0 | xargs -0 -r sed -i 's/\r$//'
 
 # ---- 3. build -------------------------------------------------------------

@@ -109,6 +109,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     klog("%s %s %s (build %s) starting", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD);
     klog("boot: %s, %s", bootinfo.from_mb2 ? "Multiboot 2" : "Multiboot 1",
          bootinfo.is_efi ? "EFI firmware" : "BIOS/legacy firmware");
+    { extern void rust_init(void); rust_init(); }      /* the kernel's Rust part (rust/): needs the heap */
     if (!video_boot_framebuffer())
         panic("No usable direct-RGB firmware framebuffer (flags=%d bpp=%d type=%d addr=%llx).\n"
               "Boot with GRUB using the supplied grub.cfg.", bootinfo.have_fb, bootinfo.fb_bpp,

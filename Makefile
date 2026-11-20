@@ -81,6 +81,17 @@ PKG_CFLAGS = $(filter-out -DLEXBOR_STATIC,$(LXB_CFLAGS)) -I$(XZE) -I$(ZSTDD) -DX
 ASRC    := $(wildcard src/kernel/*.asm src/arch/$(ARCH)/*.asm)
 OBJS    := $(patsubst src/%.c,$(BUILD)/%.o,$(CSRC)) $(patsubst src/%.asm,$(BUILD)/%.o,$(ASRC)) $(MBED_OBJ) $(QJS_OBJ) $(LXB_OBJ) $(MP3_OBJ) $(PKG_OBJ)
 KERNEL  := $(BUILD)/wrld.elf
+# The kernel's Rust part (rust/, README "Rust in the kernel"): a no_std static library from
+# cargo, for the edition's target. The 32-bit edition uses i586-unknown-linux-gnu only for its
+# prebuilt core/alloc (Pentium code, x87); install both with `rustup target add`.
+CARGO   ?= cargo
+ifeq ($(ARCH),x86_64)
+RUST_TARGET := x86_64-unknown-none
+else
+RUST_TARGET := i586-unknown-linux-gnu
+endif
+RUST_LIB := $(BUILD)/rust/$(RUST_TARGET)/release/libwrldrs.a
+RUST_SRC := rust/Cargo.toml $(wildcard rust/src/*.rs rust/src/*/*.rs)
 MINGW   := i686-w64-mingw32-gcc
 # The 32-bit kernel enables x87, not SSE. Use an x87-compatible MinGW CRT too;
 # per-source flags cannot remove SSE2 already built into a toolchain's startup.
@@ -125,7 +136,7 @@ QEMU_BIN := $(if $(filter x86_64,$(ARCH)),qemu-system-x86_64,qemu-system-i386)
 QEMU    := $(QEMU_BIN) -m 256 -vga $(VGA) -serial stdio -nic user,model=e1000 \
            -audiodev $(AUDIO),id=snd0 $(SOUND_DEV_$(SOUND)) -machine pcspk-audiodev=snd0
 
-.PHONY: all both classic dual iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE
+.PHONY: all both classic dual iso run run-headless run-install run-disk disk clean samples dmg assets check-tools check-hid check-audio check-animations check-composite check-shaders bench-shaders check-display bench-display shader-fixtures FORCE rust-test
 
 # ---- toolchain check: fail early with a useful message ----
 UNAME := $(shell uname -s 2>/dev/null)
@@ -227,8 +238,18 @@ $(BUILD)/%.o: src/%.asm
 	@mkdir -p $(dir $@)
 	$(NASM) -f $(NASMFMT) $< -o $@
 
-$(KERNEL): $(OBJS) src/arch/$(ARCH)/linker.ld
-	$(CC) $(LDFLAGS) -o $@ $(OBJS)
+$(RUST_LIB): $(RUST_SRC)
+	@command -v $(CARGO) >/dev/null 2>&1 || { echo "The kernel has a Rust part: install Rust (https://rustup.rs), then: rustup target add $(RUST_TARGET)"; exit 1; }
+	+CARGO_TARGET_DIR=$(abspath $(BUILD)/rust) RUSTFLAGS="-C relocation-model=static" \
+	    $(CARGO) build --manifest-path rust/Cargo.toml --release --features kernel --target $(RUST_TARGET) --quiet
+	@touch $@
+
+$(KERNEL): $(OBJS) $(RUST_LIB) src/arch/$(ARCH)/linker.ld
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) $(RUST_LIB)
+
+# the Rust part's tests, on the build machine
+rust-test:
+	$(CARGO) test --manifest-path rust/Cargo.toml --release
 
 assets:
 	python3 tools/gen_assets.py
@@ -532,6 +553,9 @@ check-tools:
 	@if [ -f $(GRUBDIR)/boot.img ]; then echo "  ok       GRUB BIOS files ($(GRUBDIR))"; else echo "  MISSING  GRUB BIOS files (grub-pc-bin)"; fi
 	@if [ -f $(GRUBEFIDIR)/kernel.img ]; then echo "  ok       GRUB EFI files ($(GRUBEFIDIR))"; else echo "  MISSING  GRUB EFI files (grub-efi-amd64-bin)"; fi
 	@if [ -n "$(EFI_IA32)" ]; then echo "  ok       GRUB 32-bit EFI files ($(GRUBIA32DIR))"; else echo "  optional GRUB 32-bit EFI files (grub-efi-ia32-bin): for 32-bit UEFI tablets"; fi
+	@if command -v $(CARGO) >/dev/null 2>&1; then echo "  ok       $(CARGO)"; else echo "  MISSING  $(CARGO) (Rust: https://rustup.rs)"; fi
+	@for t in x86_64-unknown-none i586-unknown-linux-gnu; do \
+	  if rustup target list --installed 2>/dev/null | grep -qx $$t; then echo "  ok       Rust target $$t"; else echo "  MISSING  Rust target $$t (rustup target add $$t)"; fi; done
 
 # the HID report-format code touches no hardware: check it on this machine
 check-hid:
