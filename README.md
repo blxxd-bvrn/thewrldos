@@ -386,6 +386,23 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     refused instead of used; buffers that depend on traffic are reserved so that running out
     of memory refuses a connection instead of panicking. Tested live like the parsers, plus
     the Linux socket layer (`C:/Linux/usr/local/bin/socket` and `resolve`).
+  - **The Windows program loader (`rust/src/pe.rs`, from `src/win32/pe.c`):** reading the PE
+    headers and section table, mapping sections, base relocations, walking the import table,
+    looking up exports (names, ordinals, forwarders), resources (`FindResource`,
+    `LoadString`, dialogs, icons) and TLS. `pe.c` keeps what needs the process: finding DLLs,
+    the API tables, thunks for missing functions, `DllMain` and TLS callbacks; Rust calls back
+    into it for each imported DLL and function. The C code trusted the file: import and
+    export tables, resource directories and relocation blocks could all make it read or
+    write outside the image. In 6,000 damaged programs and DLLs (the samples, Tiny C and
+    MinGW test DLLs, Notepad2, SDL2 and the libraries of a SDL game) run through both, 291
+    crashed the C code under AddressSanitizer and none the Rust code; 5,690 gave identical
+    results, and each of the other 19 is the C code reading or writing past the image or
+    skipping relocations because a pointer wrapped round, where Rust does the right thing.
+    One new refusal: an optional header too small for its own fields. Test vectors
+    (`tools/pe_testdata/`): an x86 and an x64 DLL and program built with MinGW, with named
+    and ordinal exports, a forwarder, string tables in two languages, a named resource and
+    TLS, checked against `objdump`, and the same program linked at two base addresses to
+    check relocation.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -1273,7 +1290,7 @@ device manager's job is to say what the computer has and which driver runs it.
 - **`.exe`: Win32 subsystem (`src/win32`)**
   - PE loader: PE32 (x86) in the 32-bit edition, PE32+ (x64) in the 64-bit edition, with
     sections, base relocations (`HIGHLOW`, `DIR64`), import binding, TLS callbacks and the
-    TEB/PEB of each architecture.
+    TEB/PEB of each architecture. The file format is read in Rust (`rust/src/pe.rs`); see [Rust in the kernel](#rust-in-the-kernel-rust).
   - **Programs' own DLLs:** a DLL that ships with a program (its folder, the current folder,
     `C:\WRLD\System32`) is mapped into the process, relocated, has its imports resolved the same
     way and gets `DllMain`; `LoadLibrary`/`GetProcAddress` (names, ordinals, forwarders),
@@ -1470,7 +1487,8 @@ src/arch           boot stub, interrupt/context-switch assembly, linker script: 
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    persistence
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
-                   FAT image reader, DMG disk images, network packet parsers and network stack
+                   FAT image reader, DMG disk images, network packet parsers and network stack,
+                   PE (Windows program) loader
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
@@ -1481,7 +1499,7 @@ src/apps           explorer, notepad, wordpad, terminal, control panel, accessor
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          sh interpreter
-src/win32          PE loader, kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 8/9/10, DirectInput, DirectSound
+src/win32          PE loader glue (the format: rust/src/pe.rs), kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 8/9/10, DirectInput, DirectSound
 src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 licence
 third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this OS

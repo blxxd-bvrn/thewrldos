@@ -34,6 +34,29 @@ typedef int BOOL, LONG, INT;
 typedef uint16_t WORD, WCHAR;
 typedef uint8_t BYTE;
 
+/* ---- the PE file format (rust/src/pe.rs) ----
+ * Everything read from a program or DLL is checked against the file or image first. */
+typedef struct {
+    uint64_t image_base, stack_reserve;
+    uint32_t entry, size_image, size_headers, subsystem, characteristics, nsections, nrva, machine;
+    uint32_t dir_rva[16], dir_size[16];                 /* 0 exports, 1 imports, 2 resources, 3 .pdata, 5 relocations, 9 TLS */
+} pe_hdr_t;
+typedef struct { uint64_t callbacks; uint32_t data_off, data_len, zero_fill, index_off; } pe_tls_t;   /* index_off ~0: none */
+bool pe_parse(const uint8_t *file, uint32_t n, bool dll, pe_hdr_t *out, char *err, int ecap);   /* this edition's kind only */
+void pe_load_image(const uint8_t *file, uint32_t n, bool dll, uint8_t *img, uint32_t size);      /* headers + sections */
+void pe_relocate(uint8_t *img, uint32_t size, const pe_hdr_t *h, int64_t delta);
+/* walks the imports: dll(ctx, name) once per DLL, entry(ctx, that, dll, name or NULL, ordinal) per
+ * function; their results fill the import address table. Returns the entries bound. */
+int pe_bind_imports(uint8_t *img, uint32_t size, const pe_hdr_t *h, void *ctx,
+                    uintptr_t (*dll)(void *ctx, const char *name),
+                    uintptr_t (*entry)(void *ctx, uintptr_t dllh, const char *dll, const char *name, uint32_t ord));
+/* an export's RVA, 0 when there is none, ~0 for a forwarder (then "DLL.Name" in fwd) */
+uint32_t pe_export(const uint8_t *img, uint32_t size, uint32_t exp_rva, uint32_t exp_size, const char *name, uint32_t ord, char *fwd, int fcap);
+/* type and name: numbers below 0x10000, else (wide or narrow) strings, "#123" a number */
+uint32_t pe_find_resource(const uint8_t *img, uint32_t size, uint32_t res_rva, uintptr_t type, uintptr_t name, bool wide, int lang);
+bool pe_resource_data(const uint8_t *img, uint32_t size, uint32_t entry, uint32_t *rva, uint32_t *len);
+bool pe_tls(const uint8_t *img, uint32_t size, const pe_hdr_t *h, uint64_t base, pe_tls_t *out);
+
 typedef struct w32_proc w32_proc_t;
 /* a DLL loaded into a process from a file (pe.c); the program itself is mods[0] */
 typedef struct w32_mod {

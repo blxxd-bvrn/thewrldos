@@ -1,0 +1,7 @@
+LANGUAGE 0x09, 0x01
+7 RCDATA { "english seven" }
+CHIME WAVE { "RIFF-not-really-a-wave" }
+123 RCDATA { "number one two three" }
+STRINGTABLE { 1, "first string" 2, "second string" 17, "seventeen" }
+LANGUAGE 0x07, 0x01
+7 RCDATA { "deutsch sieben" }

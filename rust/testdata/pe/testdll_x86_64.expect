@@ -1,0 +1,34 @@
+base 1c8c80000
+entry 1340
+size e000
+subsystem 3
+export #1 1390
+export #2 1394
+export #3 3010
+export #4 139a
+export add 1390
+export counter 3010
+export greeting 139a
+forward sleep_fwd kernel32.Sleep
+import kernel32.dll DeleteCriticalSection
+import kernel32.dll EnterCriticalSection
+import kernel32.dll GetLastError
+import kernel32.dll InitializeCriticalSection
+import kernel32.dll LeaveCriticalSection
+import kernel32.dll Sleep
+import kernel32.dll TlsGetValue
+import kernel32.dll VirtualProtect
+import kernel32.dll VirtualQuery
+import msvcrt.dll __iob_func
+import msvcrt.dll _amsg_exit
+import msvcrt.dll _initterm
+import msvcrt.dll _lock
+import msvcrt.dll _unlock
+import msvcrt.dll abort
+import msvcrt.dll calloc
+import msvcrt.dll free
+import msvcrt.dll fwrite
+import msvcrt.dll realloc
+import msvcrt.dll strlen
+import msvcrt.dll strncmp
+import msvcrt.dll vfprintf

@@ -7,7 +7,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{dmg, fat, inflate, net, netstack};
+use crate::{dmg, fat, inflate, net, netstack, pe};
 use crate::netstack::{Netif, Stack, Tcb, St, DnsState, FwConfig, FwEvent, UdpFn};
 
 extern "C" {
@@ -22,6 +22,7 @@ extern "C" {
     fn vfs_mount(root: *mut Vnode, label: *const c_char, kind: c_int) -> c_char;
     static rust_vnode_layout: [u32; 8];
     static rust_net_layout: [u32; 12];
+    static rust_pe_layout: [u32; 4];
 }
 
 // ---------------------------------------------------------------- heap
@@ -109,10 +110,13 @@ pub extern "C" fn rust_init() {
     if unsafe { rust_net_layout } != net_layout() {
         unsafe { panic(c"Rust: the net_*_t structs in rust/src/kernel.rs do not match src/include/net.h".as_ptr()) }
     }
+    if unsafe { rust_pe_layout } != pe_layout() {
+        unsafe { panic(c"Rust: pe_hdr_t/pe_tls_t in rust/src/kernel.rs do not match src/win32/w32.h".as_ptr()) }
+    }
     if !vnode_layout_ok() {
         unsafe { panic(c"Rust: vnode_t in rust/src/kernel.rs does not match src/include/fs.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, dmg, net, netstack)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, dmg, net, netstack, pe)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)
@@ -213,7 +217,9 @@ impl CName {
 }
 
 /// Copies `s` into a C buffer of `cap` bytes, cut to fit, NUL-terminated (like snprintf).
-unsafe fn put_cstr(buf: *mut c_char, cap: c_int, s: &str) {
+unsafe fn put_cstr(buf: *mut c_char, cap: c_int, s: &str) { put_cbytes(buf, cap, s.as_bytes()) }
+
+unsafe fn put_cbytes(buf: *mut c_char, cap: c_int, s: &[u8]) {
     if buf.is_null() || cap <= 0 { return; }
     let n = s.len().min(cap as usize - 1);
     core::ptr::copy_nonoverlapping(s.as_ptr(), buf as *mut u8, n);
@@ -800,3 +806,138 @@ pub extern "C" fn tcp_unlisten(port: u16) { with_stack(|st, _| st.tcp.unlisten(n
 pub extern "C" fn tcp_accept_ready(port: u16) -> CBool { with_stack(|st, _| st.tcp.accept_ready(port)) as CBool }
 #[no_mangle]
 pub extern "C" fn tcp_accept(port: u16) -> *mut Tcb { with_stack(|st, _| st.tcp.accept(now(), port)).unwrap_or(core::ptr::null_mut()) }
+
+// ---------------------------------------------------------------- the PE format (src/win32/w32.h)
+
+#[cfg(target_arch = "x86_64")]
+const ARCH: pe::Arch = pe::Arch::X64;
+#[cfg(target_arch = "x86")]
+const ARCH: pe::Arch = pe::Arch::X86;
+
+/// pe_hdr_t
+#[repr(C)]
+pub struct PeHdr {
+    image_base: u64, stack_reserve: u64,
+    entry: u32, size_image: u32, size_headers: u32, subsystem: u32, characteristics: u32, nsections: u32, nrva: u32, machine: u32,
+    dir_rva: [u32; 16], dir_size: [u32; 16],
+}
+/// pe_tls_t
+#[repr(C)]
+pub struct PeTls { callbacks: u64, data_off: u32, data_len: u32, zero_fill: u32, index_off: u32 }
+
+fn pe_layout() -> [u32; 4] {
+    use core::mem::{offset_of, size_of};
+    [size_of::<PeHdr>() as u32, offset_of!(PeHdr, entry) as u32, offset_of!(PeHdr, dir_rva) as u32, size_of::<PeTls>() as u32]
+}
+
+/// The headers again from what C kept (the directories and flags; no sections).
+fn headers_of(h: &PeHdr) -> pe::Headers {
+    let mut x = pe::Headers { characteristics: h.characteristics as u16, nrva: 16, image_base: h.image_base, ..pe::Headers::default() };
+    for i in 0..16 { x.dirs[i] = (h.dir_rva[i], h.dir_size[i]); }
+    x
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_parse(file: *const u8, n: u32, dll: CBool, out: *mut PeHdr, err: *mut c_char, ecap: c_int) -> CBool {
+    match pe::parse(in_slice(file, n), dll != 0, ARCH) {
+        Ok(h) => {
+            if out.is_null() { return 1; }
+            let mut o = PeHdr {
+                image_base: h.image_base, stack_reserve: h.stack_reserve, entry: h.entry, size_image: h.size_image,
+                size_headers: h.size_headers, subsystem: h.subsystem as u32, characteristics: h.characteristics as u32,
+                nsections: h.sections.len() as u32, nrva: h.nrva, machine: h.machine as u32, dir_rva: [0; 16], dir_size: [0; 16],
+            };
+            for i in 0..16 { let (r, s) = h.dir(i); o.dir_rva[i] = r; o.dir_size[i] = s; }
+            out.write(o);
+            1
+        }
+        Err(e) => { put_cstr(err, ecap, &e); 0 }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_load_image(file: *const u8, n: u32, dll: CBool, img: *mut u8, size: u32) {
+    let f = in_slice(file, n);
+    if let Ok(h) = pe::parse(f, dll != 0, ARCH) { pe::load_image(f, &h, out_slice(img, size)); }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_relocate(img: *mut u8, size: u32, h: *const PeHdr, delta: i64) {
+    if h.is_null() { return; }
+    pe::relocate(out_slice(img, size), &headers_of(&*h), delta);
+}
+
+type DllCb = unsafe extern "C" fn(*mut c_void, *const c_char) -> usize;
+type EntryCb = unsafe extern "C" fn(*mut c_void, usize, *const c_char, *const c_char, u32) -> usize;
+
+/// A NUL-terminated copy of up to 255 bytes of a name, for C.
+struct CStr256([u8; 256]);
+impl CStr256 {
+    fn new(s: &[u8]) -> Self { let mut b = [0u8; 256]; let n = s.len().min(255); b[..n].copy_from_slice(&s[..n]); CStr256(b) }
+    fn ptr(&self) -> *const c_char { self.0.as_ptr() as *const c_char }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_bind_imports(img: *mut u8, size: u32, h: *const PeHdr, ctx: *mut c_void, dll: Option<DllCb>, entry: Option<EntryCb>) -> c_int {
+    let (Some(dll), Some(entry)) = (dll, entry) else { return 0 };
+    if h.is_null() { return 0; }
+    // the callbacks may load other DLLs (other images); this one is only touched here
+    pe::bind_imports(out_slice(img, size), &headers_of(&*h), ARCH,
+        |name| dll(ctx, CStr256::new(name).ptr()),
+        |m, dname, imp, _slot| {
+            let d = CStr256::new(dname);
+            match imp {
+                pe::Import::Name(n) => entry(ctx, m, d.ptr(), CStr256::new(n).ptr(), 0) as u64,
+                pe::Import::Ordinal(o) => entry(ctx, m, d.ptr(), core::ptr::null(), o as u32) as u64,
+            }
+        }) as c_int
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_export(img: *const u8, size: u32, exp_rva: u32, exp_size: u32, name: *const c_char, ord: u32, fwd: *mut c_char, fcap: c_int) -> u32 {
+    let n = if name.is_null() { None } else { Some(core::ffi::CStr::from_ptr(name).to_bytes()) };
+    match pe::find_export(in_slice(img, size), (exp_rva, exp_size), n, ord) {
+        Some(pe::Export::Rva(r)) => r,
+        Some(pe::Export::Forward(f)) => { put_cbytes(fwd, fcap, &f); 0xFFFF_FFFF }
+        None => 0,
+    }
+}
+
+/// A FindResource type or name: a number below 0x10000, else a C string ("#123" is a number).
+unsafe fn res_id(v: usize, wide: bool) -> pe::ResId {
+    if v < 0x10000 { return pe::ResId::Num(v as u32); }
+    let mut s: Vec<u16> = Vec::new();
+    for i in 0..256 {
+        let c = if wide { *(v as *const u16).add(i) } else { *(v as *const u8).add(i) as u16 };
+        if c == 0 { break; }
+        if s.try_reserve(1).is_err() { break; }
+        s.push(c);
+    }
+    if s.first() == Some(&(b'#' as u16)) {
+        let n = s[1..].iter().take_while(|&&c| (b'0' as u16..=b'9' as u16).contains(&c)).fold(0u32, |a, &c| a.wrapping_mul(10).wrapping_add((c - b'0' as u16) as u32));
+        return pe::ResId::Num(n);
+    }
+    pe::ResId::Name(s)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_find_resource(img: *const u8, size: u32, res_rva: u32, kind: usize, name: usize, wide: CBool, lang: c_int) -> u32 {
+    let (k, n) = (res_id(kind, wide != 0), res_id(name, wide != 0));
+    pe::find_resource(in_slice(img, size), res_rva, &k, &n, lang.max(0) as u32).unwrap_or(0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_resource_data(img: *const u8, size: u32, entry: u32, rva: *mut u32, len: *mut u32) -> CBool {
+    match pe::resource_data(in_slice(img, size), entry) {
+        Some((r, l)) => { if !rva.is_null() { *rva = r; } if !len.is_null() { *len = l; } 1 }
+        None => 0,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pe_tls(img: *const u8, size: u32, h: *const PeHdr, base: u64, out: *mut PeTls) -> CBool {
+    if h.is_null() { return 0; }
+    give(out, pe::tls(in_slice(img, size), &headers_of(&*h), base, ARCH).map(|t| PeTls {
+        callbacks: t.callbacks, data_off: t.data_off, data_len: t.data_len, zero_fill: t.zero_fill, index_off: t.index_off.unwrap_or(0xFFFF_FFFF),
+    }))
+}
