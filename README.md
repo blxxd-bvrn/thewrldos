@@ -176,7 +176,9 @@ You can also choose the emulated hardware:
 
 Boot `wrldos.iso` (in a VM set up for a 64-bit guest, for example VirtualBox's
 "Other/Unknown (64-bit)", it starts the 64-bit edition; in a 32-bit guest the 32-bit one) with **legacy BIOS** or **UEFI** boot and at least
-**64 MB RAM** (both editions start in 48 MB; 256 MB is comfortable for the browser). The ISO
+**96 MB RAM** for the 32-bit edition (a Pentium-class PC; it reaches the desktop in 64 MB,
+but programs may then fail to start) and **384 MB** for the 64-bit one, whose live CD carries the
+Linux programs and WebKit; 256 MB is comfortable for the 32-bit browser. The ISO
 is a hybrid image: a PC-BIOS core and an EFI System Partition with both `EFI/BOOT/BOOTX64.EFI` and
 `EFI/BOOT/BOOTIA32.EFI`, so 64-bit UEFI and 32-bit UEFI firmware (Bay Trail tablets and 2-in-1s,
 early Intel Macs) both boot it; Setup installs both loaders. See [real hardware](docs/HARDWARE.md)

@@ -21,6 +21,7 @@ extern "C" {
     fn kfree(p: *mut c_void);
     fn rtc_now(t: *mut RtcTime);
     fn klog(fmt: *const c_char, ...);
+    fn mm_initrd_consumed(upto: *const u8);
 }
 
 const VH_CREATE: c_int = 0;
@@ -402,19 +403,22 @@ pub unsafe extern "C" fn vfs_sort_children(d: *mut Vnode) {
     *pp = null_mut();
 }
 
-/// Unpacks the initrd (a ustar archive) under `dest`.
+/// Unpacks the initrd (a ustar archive) under `dest`. As each file is copied out, the part of
+/// the archive before it goes back to the heap (mm_initrd_consumed), so a 64 MB machine can
+/// unpack it.
 #[no_mangle]
 pub unsafe extern "C" fn tar_extract(data: *const u8, size: u32, dest: *mut Vnode) {
-    let a = if data.is_null() || size == 0 { &[][..] } else { core::slice::from_raw_parts(data, size as usize) };
+    let entries = if data.is_null() || size == 0 { Vec::new() } else { vp::tar_entries(core::slice::from_raw_parts(data, size as usize)) };
     let destpath = vp::lcpy(&path_of(dest), 256);
     let mut files: c_int = 0;
-    for e in vp::tar_entries(a) {
+    for e in entries {
         let mut full = vp::join(&destpath, &e.name, 512);
         vp::normalize(&mut full);
         if e.dir { mkdir_p(&full); continue; }
         mkdir_p(&vp::dirname(&full, 512));
-        vfs_write_file(cvec(&full).as_ptr() as *const c_char, e.data.as_ptr() as *const c_void, e.data.len() as u32);
+        vfs_write_file(cvec(&full).as_ptr() as *const c_char, data.add(e.data.start) as *const c_void, e.data.len() as u32);
         files += 1;
+        mm_initrd_consumed(data.add(e.data.end));
     }
     klog(c"initrd: extracted %d files".as_ptr(), files);
 }

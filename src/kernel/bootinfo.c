@@ -29,10 +29,21 @@ typedef struct PACKED { uint32_t type, size; uint64_t addr; uint32_t pitch, widt
 typedef struct PACKED { uint64_t addr, len; uint32_t type, zero; } mb2_mmap_t;
 typedef struct PACKED { uint32_t type, size, entry_size, version; } mb2_mmap_tag_t;
 
+/* Command lines and the loader name are copied out of the boot loader's memory, which the
+ * kernel heap may reuse once mm_init() runs */
+static char strpool[2048];
+static uint32_t strpool_used;
 static void copy_cmdline(const char **dst, const char *src) {
     if (!src) return;
     if ((uintptr_t)src >= 0xFFFFFFFFu) return;      /* not addressable in the identity map */
-    *dst = src;
+    uint32_t room = sizeof strpool - strpool_used;
+    if (room < 2) return;
+    char *d = strpool + strpool_used;
+    uint32_t n = 0;
+    while (src[n] && n < room - 1) { d[n] = src[n]; n++; }
+    d[n] = 0;
+    strpool_used += n + 1;
+    *dst = d;
 }
 static void framebuffer_rgb(const uint8_t *p) {
     bootinfo.fb_red_pos = p[0]; bootinfo.fb_red_bits = p[1];

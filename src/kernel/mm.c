@@ -37,6 +37,28 @@ static void heap_init(uintptr_t start, uintptr_t end) {
     heap_rover = heap_first;
 }
 
+/* Makes [p, p + n) of a freshly initialised heap one allocated block (memory already in
+ * use there, such as the initrd), with free blocks before and after it. */
+static void *heap_claim(uintptr_t p, uint32_t n) {
+    block_t *b = (block_t *)(p - HDR);
+    uintptr_t front = (uintptr_t)b - heap_start;
+    uint32_t need = (n + HDR + 15) & ~15u;
+    if (((uintptr_t)b & 15) || (uintptr_t)b < heap_start || (uintptr_t)b + need > heap_end || heap_first->next) return NULL;
+    if (front && front < HDR + 64) return NULL;
+    uintptr_t rest = heap_end - ((uintptr_t)b + need);
+    if (rest < HDR + 64) { need += rest; rest = 0; }
+    b->size = need; b->magic = MAGIC_USED; b->next = NULL; b->prev = NULL;
+    if (rest) {
+        block_t *t = (block_t *)((uint8_t *)b + need);
+        t->size = rest; t->magic = MAGIC_FREE; t->next = NULL; t->prev = b; b->next = t;
+    }
+    if (front) { heap_first->size = front; heap_first->next = b; b->prev = heap_first; }
+    else heap_first = b;
+    heap_rover = heap_first;
+    heap_used += need;
+    return (void *)p;
+}
+
 void *kmalloc(size_t n) {
     if (!n) n = 1;
     if (n > 0x7FFF0000u) { klog("kmalloc: refusing %u MB", (uint32_t)(n >> 20)); return NULL; }
@@ -338,14 +360,37 @@ static void paging_init(void) {
 #endif
 
 /* the initrd's files now live in the VFS: free the archive */
+uint8_t *initrd_data;
+uint32_t initrd_size;
+static uint32_t initrd_full_size;
 void mm_release_initrd(void) {
     if (!initrd_data) return;
-    klog("memory: %u KB initrd archive freed after unpacking", initrd_size / 1024);
+    klog("memory: %u KB initrd archive freed after unpacking", initrd_full_size / 1024);
     kfree(initrd_data);
     initrd_data = NULL; initrd_size = 0;
 }
-uint8_t *initrd_data;
-uint32_t initrd_size;
+/* Gives the part of the initrd before `upto` back to the heap while it is unpacked (its
+ * files have been copied out), so unpacking needs little more memory than the archive. The
+ * initrd's block shrinks from the front; its new header goes into the consumed bytes. */
+void mm_initrd_consumed(const uint8_t *upto) {
+    if (!initrd_data || upto <= initrd_data || upto > initrd_data + initrd_size) return;
+    uint32_t k = (uint32_t)(upto - initrd_data) & ~15u;
+    uintptr_t f = irq_save();
+    block_t *b = (block_t *)(initrd_data - HDR);
+    if (b->magic != MAGIC_USED || k < 2 * HDR + 64 || b->size < k + HDR + 64) { irq_restore(f); return; }
+    block_t *nb = (block_t *)((uint8_t *)b + k), *next = b->next;
+    nb->size = b->size - k; nb->magic = MAGIC_USED; nb->next = next; nb->prev = b;
+    if (next) next->prev = nb;
+    b->size = k; b->magic = MAGIC_FREE; b->next = nb;
+    heap_used -= k;
+    if (b->prev && b->prev->magic == MAGIC_FREE) {
+        block_t *pv = b->prev;
+        if (heap_rover == b) heap_rover = pv;
+        pv->size += b->size; pv->next = nb; nb->prev = pv;
+    }
+    initrd_data += k; initrd_size -= k;
+    irq_restore(f);
+}
 uintptr_t w32_dll_area; uint32_t w32_dll_area_size;
 bool boot_verbose, boot_safe_mode, boot_force_lapic;
 
@@ -370,6 +415,7 @@ void mm_init(void) {
     } else if (bootinfo.have_mem) top = (bootinfo.mem_upper + 1024) * 1024;
 
     /* initrd module: copy it above the reserved window */
+    uintptr_t kernel_top = lowest;
     uint32_t mod_start = 0, mod_end = 0;
     if (bootinfo.module_count) {
         uint64_t s = bootinfo.modules[0].start, e = bootinfo.modules[0].end;
@@ -415,12 +461,27 @@ void mm_init(void) {
     }
 #endif
     paging_init();
+    /* An initrd above the kernel (where GRUB normally puts it) is used in place: it moves to
+     * the top of the heap's range and becomes one allocated block there, so unpacking it
+     * needs no second copy (with 64 MB of RAM there is no room for one) and freeing it gives
+     * all of it back. One in low memory, where the ISA DMA buffer and the Win32 program
+     * window live, is copied into the heap instead. */
+    if (mod_end > mod_start && mod_start >= kernel_top && top > mod_end) {
+        uint32_t size = mod_end - mod_start;
+        uintptr_t dst = (top - size) & ~(uintptr_t)15;
+        if (dst >= (uintptr_t)mod_start + 2 * HDR + 64) {
+            memmove((void *)dst, (void *)(uintptr_t)mod_start, size);
+            heap_init(mod_start, top);
+            initrd_data = heap_claim(dst, size);
+            if (initrd_data) { initrd_size = initrd_full_size = size; (void)kernel_end; return; }
+            klog("initrd: could not be kept in place");
+            return;
+        }
+    }
     heap_init(lowest, top);
-    /* GRUB may load the initrd in low memory, where the ISA DMA buffer and the Win32
-     * program window also live: copy it to the heap now; mm_release_initrd() frees
-     * the copy once its files are unpacked */
     if (mod_end > mod_start) {
         initrd_size = mod_end - mod_start;
+        initrd_full_size = initrd_size;
         initrd_data = kmalloc(initrd_size);
         if (initrd_data) memcpy(initrd_data, (void *)(uintptr_t)mod_start, initrd_size);
     }

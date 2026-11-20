@@ -71,12 +71,13 @@ pub fn sort_order(items: &[(bool, &[u8])]) -> Vec<usize> {
 
 /// One member of a ustar archive.
 #[derive(Debug, PartialEq, Eq)]
-pub struct TarEntry<'a> { pub name: Vec<u8>, pub dir: bool, pub data: &'a [u8] }
+pub struct TarEntry { pub name: Vec<u8>, pub dir: bool, pub data: core::ops::Range<usize> }
 fn octal(s: &[u8]) -> u64 { s.iter().take_while(|c| (b'0'..=b'7').contains(c)).fold(0u64, |v, &c| v.wrapping_mul(8).wrapping_add((c - b'0') as u64)) }
 fn cstr_n(s: &[u8], n: usize) -> &[u8] { let s = &s[..n.min(s.len())]; &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())] }
 /// The folders and files of a ustar archive (other kinds are skipped), names without a
-/// leading "./" or trailing "/". A member whose data runs past the archive ends it.
-pub fn tar_entries(data: &[u8]) -> Vec<TarEntry<'_>> {
+/// leading "./" or trailing "/", and where each file's data is in the archive. A member
+/// whose data runs past the archive ends it.
+pub fn tar_entries(data: &[u8]) -> Vec<TarEntry> {
     let mut out = Vec::new();
     let mut off = 0usize;
     while off + 512 <= data.len() {
@@ -94,8 +95,8 @@ pub fn tar_entries(data: &[u8]) -> Vec<TarEntry<'_>> {
         let start = off + 512;
         let Some(end) = (start as u64).checked_add(fsize).filter(|&e| e <= data.len() as u64) else { break };
         if !nm.is_empty() {
-            if ty == b'5' { out.push(TarEntry { name: nm.to_vec(), dir: true, data: &[] }); }
-            else if ty == b'0' || ty == 0 { out.push(TarEntry { name: nm.to_vec(), dir: false, data: &data[start..end as usize] }); }
+            if ty == b'5' { out.push(TarEntry { name: nm.to_vec(), dir: true, data: start..start }); }
+            else if ty == b'0' || ty == 0 { out.push(TarEntry { name: nm.to_vec(), dir: false, data: start..end as usize }); }
         }
         let Some(next) = (start as u64).checked_add((fsize + 511) & !511) else { break };
         off = next as usize;
@@ -148,7 +149,7 @@ mod tests {
         let e = tar_entries(&a);
         assert_eq!(e.len(), 2);
         assert_eq!((e[0].name.as_slice(), e[0].dir), (&b"WRLD"[..], true));
-        assert_eq!((e[1].name.as_slice(), e[1].data), (&b"WRLD/x.txt"[..], &b"hello"[..]));
+        assert_eq!((e[1].name.as_slice(), &a[e[1].data.clone()]), (&b"WRLD/x.txt"[..], &b"hello"[..]));
         // a size beyond the archive ends it instead of reading past it
         let mut bad = a.clone(); bad[512 + 124..512 + 135].copy_from_slice(b"77777777777");
         assert_eq!(tar_entries(&bad).len(), 1);
