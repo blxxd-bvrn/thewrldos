@@ -32,9 +32,11 @@ static void task_trampoline(void) {
 }
 
 task_t *task_create(const char *name, void (*entry)(void *), void *arg, uint32_t stack_size) {
-    task_t *t = kzalloc(sizeof(task_t));
     if (!stack_size) stack_size = 64 * 1024;
-    t->stack = kmalloc(stack_size);
+    /* NULL when memory runs out (callers must check) */
+    task_t *t = kzalloc(sizeof(task_t));
+    if (t) t->stack = kmalloc(stack_size);
+    if (!t || !t->stack) { klog("task: not enough memory to start '%s'", name); kfree(t); return NULL; }
     t->stack_size = stack_size;
     t->pid = next_pid++;
     strlcpy(t->name, name, sizeof t->name);

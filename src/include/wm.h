@@ -13,6 +13,7 @@
 #define WF_MODAL     0x080
 #define WF_NOCLOSE   0x100
 #define WF_SKINNED   0x200   /* the app draws its own frame; pixels with alpha 0 are see-through */
+#define WF_NOMEM     0x4000  /* (set by the window manager) its surface could not be allocated: it closes */
 
 enum { WS_NORMAL, WS_MINIMIZED, WS_MAXIMIZED };
 enum { ME_MOVE, ME_DOWN, ME_UP, ME_DBLCLICK, ME_WHEEL, ME_LEAVE };

@@ -173,10 +173,16 @@ static HWND WINAPI WindowFromDC(HDC hdc) { dc_t *d = DC(hdc); return d && d->win
 static int WINAPI ReleaseDC(HWND h, HDC hdc) { dc_t *d = DC(hdc); if (!d) return 0; d->magic = 0; w32_free(P, d); wm_need_redraw = true; return 1; }
 static HDC WINAPI CreateCompatibleDC(HDC h) { dc_t *d = newdc(NULL); d->memdc = true; static canvas_t one; static uint32_t px; canvas_init(&one, &px, 1, 1); d->surf = &one; d->clip = R(0, 0, 1, 1); return (HDC)d; }
 static BOOL WINAPI DeleteDC(HDC h) { dc_t *d = DC(h); if (!d) return 0; d->magic = 0; w32_free(P, d); return 1; }
-static HGDIOBJ WINAPI CreateCompatibleBitmap(HDC h, int w, int ht) { gdiobj_t *o = newobj(OBJ_BITMAP); o->bmp = canvas_new(MAX(1, w), MAX(1, ht)); gfx_clear(o->bmp, BLACK); return (HGDIOBJ)o; }
+static HGDIOBJ WINAPI CreateCompatibleBitmap(HDC h, int w, int ht) {
+    gdiobj_t *o = newobj(OBJ_BITMAP);
+    o->bmp = canvas_new(MAX(1, w), MAX(1, ht));
+    if (!o->bmp) { o->magic = 0; w32_free(P, o); P->last_error = 8; return 0; }   /* ERROR_NOT_ENOUGH_MEMORY */
+    gfx_clear(o->bmp, BLACK);
+    return (HGDIOBJ)o;
+}
 static HGDIOBJ WINAPI CreateBitmap(int w, int h, UINT planes, UINT bpp, const void *bits) {
     gdiobj_t *o = (gdiobj_t *)CreateCompatibleBitmap(0, w, h);
-    if (bits && bpp == 32) memcpy(o->bmp->px, bits, w * h * 4);
+    if (o && bits && bpp == 32 && w > 0 && h > 0) memcpy(o->bmp->px, bits, (size_t)w * h * 4);
     return (HGDIOBJ)o;
 }
 static void dib_in(gdiobj_t *o);   /* user32_more.inc: a DIB section's bits to its canvas, and back */

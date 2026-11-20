@@ -94,12 +94,14 @@ static void lx_thread_start(void *arg) {
 
 static task_t *thread_new(lxproc_t *p, const char *name, const regs_t *regs, uint64_t fsbase) {
     lxthread_t *th = kzalloc(sizeof *th);
+    if (!th) return NULL;
     th->proc = p;
-    if (th) th->in_sys = -1;
+    th->in_sys = -1;
     strlcpy(th->comm, name, sizeof th->comm);
     th->start_regs = *regs;
     th->fsbase = fsbase;
     task_t *t = task_create(name, lx_thread_start, th, 64 * 1024);
+    if (!t) { kfree(th); return NULL; }
     t->lx = th; t->kind = 4;
     t->cr3 = uvm_cr3(p->vm);
     t->console = p->con;
@@ -135,6 +137,7 @@ int64_t lx_clone(regs_t *r, uint64_t flags, uint64_t stack, uint64_t ptid, uint6
     char name[48]; snprintf(name, sizeof name, "%s:thread", self->name);
     char *colon = strstr(self->name, ":thread"); if (colon) strlcpy(name, self->name, sizeof name);
     task_t *t = thread_new(p, name, &nr, (flags & CLONE_SETTLS) ? tls : th->fsbase);
+    if (!t) return -ENOMEM;
     lxthread_t *ct = LX(t);
     ct->sigmask = th->sigmask;
     if (flags & CLONE_CHILD_CLEARTID) ct->clear_child_tid = ctid;
@@ -271,6 +274,7 @@ int lx_spawn(const char *wrld_path, int argc, char **argv, char **envp, console_
     p->fds[0] = ci; ci->refs++;
     const char *base = path_basename(wrld_path);
     task_t *t = thread_new(p, base, &r, 0);
+    if (!t) { snprintf(err, ecap, "Not enough memory to start the program."); goto fail; }
     p->pid = t->pid;
     klog("linux: started %s as pid %d (entry %llx)", p->exe, p->pid, (unsigned long long)r.eip);
     return p->pid;
@@ -343,6 +347,12 @@ int64_t lx_fork_ex(regs_t *r, uint64_t stack, bool set_tls, uint64_t tls, uint64
     if (stack) nr.esp = stack;
     char name[48]; snprintf(name, sizeof name, "%s:fork", self->name);
     task_t *t = thread_new(c, name, &nr, set_tls ? tls : th->fsbase);
+    if (!t) {
+        for (int i = 0; i < LX_MAXFD; i++) if (c->fds[i]) lx_file_put(c->fds[i]);
+        if (!c->vm_borrowed) uvm_free(c->vm);
+        kfree(c);
+        return -ENOMEM;
+    }
     lxthread_t *ct = LX(t);
     ct->sigmask = th->sigmask;
     c->pid = t->pid;

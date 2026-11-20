@@ -70,9 +70,14 @@ rect_t wm_client_rect(window_t *w) {
 rect_t wm_work_area(void) { return R(0, 0, SCREEN_W, SCREEN_H - T.taskbar_h); }
 static void sync_surface(window_t *w) {
     rect_t c = wm_client_rect(w);
-    if (!w->surf) w->surf = canvas_new(MAX(1, c.w), MAX(1, c.h));
-    else if (w->surf->w != c.w || w->surf->h != c.h) {
+    if (!w->surf) {
+        w->surf = canvas_new(MAX(1, c.w), MAX(1, c.h));
+        /* out of memory: a 1x1 stand-in keeps the program's drawing harmless until the window
+         * closes (wm_run) and says why */
+        if (!w->surf) { w->surf = canvas_new(1, 1); w->flags |= WF_NOMEM; }
+    } else if (w->surf->w != c.w || w->surf->h != c.h) {
         canvas_resize(w->surf, MAX(1, c.w), MAX(1, c.h));
+        if (w->surf->w != MAX(1, c.w) || w->surf->h != MAX(1, c.h)) w->flags |= WF_NOMEM;
         if (w->resized) w->resized(w);
     }
     w->dirty = true;
@@ -466,7 +471,8 @@ static void paint_window_at(canvas_t *c, window_t *w, int x, int y) {
     cr.x += x - w->x; cr.y += y - w->y;
     if (!(w->flags & WF_SKINNED)) { blit(c, cr.x, cr.y, w->surf, 0, 0, cr.w, cr.h); return; }
     /* skinned: the app's pixels with alpha 0 (rounded corners, cut-outs) show what is behind */
-    rect_t r = rect_intersect(R(cr.x, cr.y, cr.w, cr.h), c->clip);
+    if (!w->surf) return;
+    rect_t r = rect_intersect(rect_intersect(R(cr.x, cr.y, cr.w, cr.h), R(cr.x, cr.y, w->surf->w, w->surf->h)), c->clip);
     for (int yy = r.y; yy < r.y + r.h; yy++) {
         const uint32_t *s = w->surf->px + (size_t)(yy - cr.y) * w->surf->stride + (r.x - cr.x);
         uint32_t *d = c->px + (size_t)yy * c->stride + r.x;
@@ -1068,6 +1074,18 @@ void wm_run(void) {
         for (int i = 0; i < nwin; i++) {
             window_t *w = wins[i];
             if (w->timer && (int32_t)(now - w->timer_next) >= 0) { w->timer_next = now + w->timer_ms; w->timer(w); }
+        }
+        for (int i = 0; i < nwin; i++) {
+            window_t *w = wins[i];
+            if (!(w->flags & WF_NOMEM)) continue;
+            w->flags &= ~WF_NOMEM;
+            char msg[220];
+            snprintf(msg, sizeof msg, "There is not enough memory to show \"%s\". Close some programs or windows and try again.", w->title);
+            klog("wm: not enough memory for window '%s'; closing it", w->title);
+            wm_close(w);
+            if (wm_alive(w)) wm_destroy(w);
+            msgbox("Not enough memory", msg, MBI_ERROR, MBX_OK, NULL, NULL);
+            break;
         }
         while (defn) { defer_t d = defq[0]; memmove(defq, defq + 1, (--defn) * sizeof(defer_t)); d.fn(d.arg); }
         now = timer_ticks();

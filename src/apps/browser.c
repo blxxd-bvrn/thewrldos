@@ -1712,6 +1712,7 @@ static void draw_img(canvas_t *c, pimg_t *im, int x, int y, int w, int h) {
         if (!im->scaled || im->scaled->w != w || im->scaled->h != h) {
             if (im->scaled) canvas_free(im->scaled);
             im->scaled = canvas_new(w, h);
+            if (!im->scaled) return;                      /* out of memory: the image is left out */
             for (int j = 0; j < h; j++) {
                 int sy = j * src->h / h;
                 for (int i = 0; i < w; i++) im->scaled->px[j * w + i] = src->px[sy * src->stride + i * src->w / w];

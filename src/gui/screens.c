@@ -111,10 +111,12 @@ static int dialog_loop(const char *title, int kind) {
     static canvas_t *saved;
     if (saved && (saved->w != SCREEN_W || saved->h != SCREEN_H)) { canvas_free(saved); saved = NULL; }
     if (!saved) saved = canvas_new(SCREEN_W, SCREEN_H);
-    memcpy(saved->px, screen.px, SCREEN_W * SCREEN_H * 4);
-    for (int k = 0; k < 6; k++) { memcpy(screen.px, saved->px, SCREEN_W * SCREEN_H * 4); for (int i = 0; i <= k; i++) {} desaturate_screen(); }
-    canvas_t *bg = canvas_new(SCREEN_W, SCREEN_H);
-    memcpy(bg->px, screen.px, SCREEN_W * SCREEN_H * 4);
+    if (saved) {
+        memcpy(saved->px, screen.px, SCREEN_W * SCREEN_H * 4);
+        for (int k = 0; k < 6; k++) { memcpy(screen.px, saved->px, SCREEN_W * SCREEN_H * 4); for (int i = 0; i <= k; i++) {} desaturate_screen(); }
+    } else desaturate_screen();
+    canvas_t *bg = canvas_new(SCREEN_W, SCREEN_H);       /* without memory, the dialog draws over the screen as it is */
+    if (bg) memcpy(bg->px, screen.px, SCREEN_W * SCREEN_H * 4);
     int W = 312, H = 198, x = (SCREEN_W - W) / 2, y = (SCREEN_H - H) / 2;
     int n = kind == 0 ? 3 : 2, hot = -1, prev = 1, result = -2;
     const char *labels0[3] = { "Stand By", "Turn Off", "Restart" }, *labels1[2] = { "Switch User", "Log Off" };
@@ -124,7 +126,7 @@ static int dialog_loop(const char *title, int kind) {
     while (result == -2) {
         gui_heartbeat = timer_ticks();               /* this loop is the desktop now */
         if (redraw) {
-            memcpy(screen.px, bg->px, SCREEN_W * SCREEN_H * 4);
+            if (bg) memcpy(screen.px, bg->px, SCREEN_W * SCREEN_H * 4);
             canvas_t *c = &screen;
             if (T.classic) {
                 fill_rect(c, x, y, W, H, T.face); bevel_deep(c, x, y, W, H, true);

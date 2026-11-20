@@ -84,7 +84,7 @@ void *kmalloc(size_t n) {
         b = b->next ? b->next : heap_first;
     } while (b != start);
     irq_restore(f);
-    klog("kmalloc: out of memory (%u bytes)", (uint32_t)n);
+    klog("kmalloc: out of memory (%u bytes, from %p)", (uint32_t)n, __builtin_return_address(0));
     return NULL;
 }
 void kfree(void *p) {

@@ -20,6 +20,7 @@ canvas_t *bmp_load(const uint8_t *d, uint32_t n) {
     uint32_t stride = ((w * bpp / 8) + 3) & ~3u;
     if (off + stride * h > n) return NULL;
     canvas_t *c = canvas_new(w, h);
+    if (!c) return NULL;
     for (int y = 0; y < h; y++) {
         const uint8_t *row = d + off + stride * (top ? y : h - 1 - y);
         for (int x = 0; x < w; x++) { const uint8_t *p = row + x * (bpp / 8); c->px[y * w + x] = RGB(p[2], p[1], p[0]); }
@@ -327,8 +328,10 @@ static bool paint_load(window_t *w, const char *path) {
     paint_t *p = w->data; vnode_t *n = vfs_resolve(path, NULL);
     if (!n) return false;
     canvas_t *c = bmp_load(n->data, n->size);
-    if (!c) { msgbox("Paint", "This is not a supported bitmap (24/32-bit uncompressed BMP).", MBI_ERROR, MBX_OK, NULL, NULL); return false; }
-    canvas_free(p->img); canvas_free(p->snap); p->img = c; p->snap = canvas_new(c->w, c->h);
+    if (!c) { msgbox("Paint", "This is not a supported bitmap (24/32-bit uncompressed BMP), or there is not enough memory to open it.", MBI_ERROR, MBX_OK, NULL, NULL); return false; }
+    canvas_t *snap = canvas_new(c->w, c->h);
+    if (!snap) { canvas_free(c); msgbox("Paint", "There is not enough memory to open this picture.", MBI_ERROR, MBX_OK, NULL, NULL); return false; }
+    canvas_free(p->img); canvas_free(p->snap); p->img = c; p->snap = snap;
     vfs_path(n, p->path, sizeof p->path);
     char t[300]; snprintf(t, sizeof t, "%s - Paint", n->name); wm_set_title(w, t);
     w->dirty = true; return true;
@@ -358,7 +361,14 @@ void paint_open(const char *path) {
     if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     window_t *w = wm_create("untitled - Paint", -1, -1, 680, 520, WF_RESIZABLE);
     paint_t *p = kzalloc(sizeof *p);
-    p->img = canvas_new(560, 400); p->snap = canvas_new(560, 400); p->fg = BLACK; p->bg = WHITE; p->size = 1;
+    if (p) { p->img = canvas_new(560, 400); p->snap = canvas_new(560, 400); }
+    if (!p || !p->img || !p->snap) {
+        if (p) { canvas_free(p->img); canvas_free(p->snap); kfree(p); }
+        wm_destroy(w);
+        msgbox("Paint", "There is not enough memory to start Paint. Close some programs or windows and try again.", MBI_ERROR, MBX_OK, NULL, NULL);
+        return;
+    }
+    p->fg = BLACK; p->bg = WHITE; p->size = 1;
     w->data = p; w->paint = paint_paint; w->mouse = paint_mouse; w->menu_cmd = paint_menu; w->destroy = paint_destroy; w->icon = ICON_PAINT;
     w->menus = kmalloc(sizeof paint_menus); memcpy(w->menus, paint_menus, sizeof paint_menus); w->nmenus = ARRAY_LEN(paint_menus);
     rect_t cr = wm_client_rect(w); wm_resize_client(w, cr.w, cr.h);

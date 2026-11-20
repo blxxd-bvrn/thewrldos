@@ -338,9 +338,12 @@ $(SYS)/boot/grub/BOOTX64.EFI: grub/efi.cfg Makefile
 $(SYS)/boot/grub/BOOTIA32.EFI: grub/efi.cfg Makefile
 	@mkdir -p $(dir $@)
 	$(GRUB_MKIMAGE) -O i386-efi -d $(GRUBIA32DIR) -o $@ -p /boot/grub -c grub/efi.cfg $(GRUB_EFI_MODS)
-$(SYS)/boot/wrld.elf: $(KERNEL)
+# the kernel Setup installs, as a parts file: its code and constants come from the running
+# kernel's memory (tools/kparts.py), so the live CD does not hold a second 8 MB copy in RAM
+$(SYS)/boot/wrld.kpt: $(KERNEL) tools/kparts.py
 	@mkdir -p $(dir $@)
-	cp $< $@
+	rm -f $(SYS)/boot/wrld.elf
+	python3 tools/kparts.py $< $@
 
 # Linux userland for the 64-bit edition (C:\Linux): the test programs in
 # samples/linux. With musl-gcc installed they are static PIE built against
@@ -515,7 +518,7 @@ endif
 	@touch $@
 
 # initrd = rootfs/ plus the boot files Setup copies to the disk
-$(BUILD)/initrd.tar: $(SYS)/boot/wrld.elf $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(EFI_IA32) $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
+$(BUILD)/initrd.tar: $(SYS)/boot/wrld.kpt $(SYS)/boot/grub/boot.img $(SYS)/boot/grub/BOOTX64.EFI $(EFI_IA32) $(CORES) $(if $(filter x86_64,$(ARCH)),$(LXROOT)/.stamp) FORCE
 	@mkdir -p $(BUILD)
 	tar --format=ustar -cf $@ -C rootfs . -C $(CURDIR)/$(SYS) boot $(if $(and $(filter x86_64,$(ARCH)),$(wildcard rootfs64)),-C $(CURDIR)/rootfs64 .) $(if $(filter x86_64,$(ARCH)),-C $(CURDIR)/$(LXROOT) Linux)
 

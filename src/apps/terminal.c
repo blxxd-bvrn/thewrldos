@@ -244,11 +244,19 @@ static void term_destroy(window_t *w) {
     t->nhist = 0;
 }
 
+/* NULL (and no window) when memory runs out */
 console_t *terminal_new_console(const char *title, window_t **out) {
-    window_t *w = wm_create(title, -1, -1, 80 * CELL_W + 25, 25 * CELL_H + 6, WF_RESIZABLE);
+    if (out) *out = NULL;
     term_t *t = kzalloc(sizeof(term_t));
+    if (t) t->cells = kmalloc(sizeof(cell_t) * TROWS * TCOLS);
+    if (!t || !t->cells) {
+        if (t) kfree(t);
+        msgbox("Not enough memory", "There is not enough memory to open a Command Prompt window. Close some programs or windows and try again.", MBI_ERROR, MBX_OK, NULL, NULL);
+        return NULL;
+    }
+    window_t *w = wm_create(title, -1, -1, 80 * CELL_W + 25, 25 * CELL_H + 6, WF_RESIZABLE);
+    if (!w) { kfree(t->cells); kfree(t); return NULL; }
     t->win = w; t->fg = 7; t->bg = 0;
-    t->cells = kmalloc(sizeof(cell_t) * TROWS * TCOLS);
     t->nrows = 1; clear_row(t, 0);
     t->con.write = t_write; t->con.readline = t_readline; t->con.getkey = t_getkey; t->con.clear = t_clear;
     t->con.set_title = t_set_title; t->con.set_color = t_set_color; t->con.alive = t_alive; t->con.impl = t;
@@ -301,11 +309,14 @@ void terminal_open(const char *path, const char *cwd) {
     char title[128];
     if (path) snprintf(title, sizeof title, "%s", path_basename(path)); else strcpy(title, "Command Prompt");
     console_t *con = terminal_new_console(title, &w);
+    if (!con) return;
     term_job_t *j = kzalloc(sizeof *j);
+    if (!j) { con->write(con, "Not enough memory.\n", 19); return; }
     j->con = con;
     if (path) strlcpy(j->path, path, sizeof j->path);
     strlcpy(j->cwd, cwd ? cwd : USER_HOME, sizeof j->cwd);
     task_t *t = task_create(path ? title : "cmd.exe", term_task, j, 128 * 1024);
+    if (!t) { kfree(j); con->write(con, "Not enough memory to start the command interpreter.\n", 52); return; }
     t->kind = 1;
     t->console = con;
     console_set_pid(con, t->pid);
@@ -315,11 +326,14 @@ void terminal_open(const char *path, const char *cwd) {
 void terminal_run(const char *cmdline, const char *cwd, const char *title) {
     window_t *w;
     console_t *con = terminal_new_console(title && *title ? title : "Command Prompt", &w);
+    if (!con) return;
     term_job_t *j = kzalloc(sizeof *j);
+    if (!j) { con->write(con, "Not enough memory.\n", 19); return; }
     j->con = con;
     strlcpy(j->cmd, cmdline, sizeof j->cmd);
     strlcpy(j->cwd, cwd ? cwd : USER_HOME, sizeof j->cwd);
     task_t *t = task_create(title && *title ? title : "cmd.exe", term_task, j, 128 * 1024);
+    if (!t) { kfree(j); con->write(con, "Not enough memory to start the command interpreter.\n", 52); return; }
     t->kind = 1;
     t->console = con;
     console_set_pid(con, t->pid);

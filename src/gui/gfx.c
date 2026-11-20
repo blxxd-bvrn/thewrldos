@@ -19,18 +19,23 @@ static void display_damage(void *unused, int x, int y, int w, int h) { (void)unu
 
 /* ---------------- canvas ---------------- */
 void canvas_init(canvas_t *c, uint32_t *px, int w, int h) { c->px = px; c->w = w; c->h = h; c->stride = w; c->clip = R(0, 0, w, h); }
+/* NULL when memory runs out (the drawing functions ignore a NULL canvas) */
 canvas_t *canvas_new(int w, int h) {
-    canvas_t *c = kzalloc(sizeof(canvas_t));
     if (w < 1) w = 1; if (h < 1) h = 1;
-    canvas_init(c, kmalloc(w * h * 4), w, h);
+    if ((uint64_t)w * h > 0x1FFFFFFFull / 4) return NULL;
+    canvas_t *c = kzalloc(sizeof(canvas_t));
+    uint32_t *px = c ? kmalloc((size_t)w * h * 4) : NULL;
+    if (!px) { kfree(c); return NULL; }
+    canvas_init(c, px, w, h);
     memset32(c->px, 0xFFFFFFFF, w * h);
     return c;
 }
 void canvas_free(canvas_t *c) { if (!c) return; kfree(c->px); kfree(c); }
 void canvas_resize(canvas_t *c, int w, int h) {
     if (w < 1) w = 1; if (h < 1) h = 1;
-    if (w == c->w && h == c->h) return;
-    uint32_t *n = kmalloc(w * h * 4);
+    if (!c || (w == c->w && h == c->h)) return;
+    uint32_t *n = (uint64_t)w * h <= 0x1FFFFFFFull / 4 ? kmalloc((size_t)w * h * 4) : NULL;
+    if (!n) return;                                   /* out of memory: the canvas keeps its old size */
     memset32(n, 0xFFFFFFFF, w * h);
     int cw = MIN(w, c->w), ch = MIN(h, c->h);
     for (int y = 0; y < ch; y++) memcpy(n + y * w, c->px + y * c->stride, cw * 4);
@@ -43,9 +48,9 @@ rect_t rect_intersect(rect_t a, rect_t b) {
     if (x1 <= x0 || y1 <= y0) return R(x0, y0, 0, 0);
     return R(x0, y0, x1 - x0, y1 - y0);
 }
-void canvas_set_clip(canvas_t *c, rect_t r) { c->clip = rect_intersect(r, R(0, 0, c->w, c->h)); }
-void canvas_reset_clip(canvas_t *c) { c->clip = R(0, 0, c->w, c->h); }
-rect_t canvas_push_clip(canvas_t *c, rect_t r) { rect_t old = c->clip; c->clip = rect_intersect(old, r); return old; }
+void canvas_set_clip(canvas_t *c, rect_t r) { if (!c) return; c->clip = rect_intersect(r, R(0, 0, c->w, c->h)); }
+void canvas_reset_clip(canvas_t *c) { if (!c) return; c->clip = R(0, 0, c->w, c->h); }
+rect_t canvas_push_clip(canvas_t *c, rect_t r) { if (!c) return r; rect_t old = c->clip; c->clip = rect_intersect(old, r); return old; }
 
 void gfx_init(void) {
     SCREEN_W = fb_info.width; SCREEN_H = fb_info.height;
@@ -140,45 +145,45 @@ uint32_t color_adjust(uint32_t c, int sat, int light) {
 }
 
 /* ---------------- primitives ---------------- */
-void gfx_clear(canvas_t *c, uint32_t col) { for (int y = 0; y < c->h; y++) memset32(c->px + y * c->stride, col, c->w); }
-void put_pixel(canvas_t *c, int x, int y, uint32_t col) { if (pt_in(c->clip, x, y)) c->px[y * c->stride + x] = col; }
-uint32_t get_pixel(canvas_t *c, int x, int y) { if (x < 0 || y < 0 || x >= c->w || y >= c->h) return 0; return c->px[y * c->stride + x]; }
+void gfx_clear(canvas_t *c, uint32_t col) { if (!c) return; for (int y = 0; y < c->h; y++) memset32(c->px + y * c->stride, col, c->w); }
+void put_pixel(canvas_t *c, int x, int y, uint32_t col) { if (!c) return; if (pt_in(c->clip, x, y)) c->px[y * c->stride + x] = col; }
+uint32_t get_pixel(canvas_t *c, int x, int y) { if (!c) return 0; if (x < 0 || y < 0 || x >= c->w || y >= c->h) return 0; return c->px[y * c->stride + x]; }
 static inline uint32_t blend(uint32_t d, uint32_t s, int a) {
     uint32_t rb = ((s & 0xFF00FF) * a + (d & 0xFF00FF) * (255 - a)) >> 8;
     uint32_t g = ((s & 0x00FF00) * a + (d & 0x00FF00) * (255 - a)) >> 8;
     return 0xFF000000u | (rb & 0xFF00FF) | (g & 0x00FF00);
 }
-void blend_pixel(canvas_t *c, int x, int y, uint32_t col, int a) {
+void blend_pixel(canvas_t *c, int x, int y, uint32_t col, int a) { if (!c) return;
     if (!pt_in(c->clip, x, y) || a <= 0) return;
     uint32_t *p = &c->px[y * c->stride + x];
     *p = a >= 255 ? (col | 0xFF000000u) : blend(*p, col, a);
 }
-void fill_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col) {
+void fill_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col) { if (!c) return;
     rect_t r = rect_intersect(R(x, y, w, h), c->clip);
     for (int j = 0; j < r.h; j++) memset32(c->px + (r.y + j) * c->stride + r.x, col, r.w);
 }
-void blend_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col, int a) {
+void blend_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col, int a) { if (!c) return;
     rect_t r = rect_intersect(R(x, y, w, h), c->clip);
     for (int j = 0; j < r.h; j++) { uint32_t *p = c->px + (r.y + j) * c->stride + r.x; for (int i = 0; i < r.w; i++) p[i] = blend(p[i], col, a); }
 }
 void hline(canvas_t *c, int x, int y, int w, uint32_t col) { fill_rect(c, x, y, w, 1, col); }
 void vline(canvas_t *c, int x, int y, int h, uint32_t col) { fill_rect(c, x, y, 1, h, col); }
-void draw_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col) {
+void draw_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col) { if (!c) return;
     hline(c, x, y, w, col); hline(c, x, y + h - 1, w, col); vline(c, x, y, h, col); vline(c, x + w - 1, y, h, col);
 }
-void dotted_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col) {
+void dotted_rect(canvas_t *c, int x, int y, int w, int h, uint32_t col) { if (!c) return;
     for (int i = 0; i < w; i += 2) { put_pixel(c, x + i, y, col); put_pixel(c, x + i, y + h - 1, col); }
     for (int i = 0; i < h; i += 2) { put_pixel(c, x, y + i, col); put_pixel(c, x + w - 1, y + i, col); }
 }
-void gradient_v(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2) {
+void gradient_v(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2) { if (!c) return;
     for (int j = 0; j < h; j++) hline(c, x, y + j, w, mix(c1, c2, h > 1 ? j * 255 / (h - 1) : 0));
 }
-void gradient_v3(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2, uint32_t c3, int mid) {
+void gradient_v3(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2, uint32_t c3, int mid) { if (!c) return;
     if (mid < 1) mid = 1; if (mid > h - 1) mid = h - 1;
     gradient_v(c, x, y, w, mid, c1, c2);
     gradient_v(c, x, y + mid, w, h - mid, c2, c3);
 }
-void gradient_h(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2) {
+void gradient_h(canvas_t *c, int x, int y, int w, int h, uint32_t c1, uint32_t c2) { if (!c) return;
     for (int i = 0; i < w; i++) vline(c, x + i, y, h, mix(c1, c2, w > 1 ? i * 255 / (w - 1) : 0));
 }
 /* rounded-corner coverage: returns horizontal inset for row j of an r-radius corner */
@@ -188,7 +193,7 @@ static int corner_inset(int j, int r) {
     int dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= r * r + r) dx++;
     return r - dx;
 }
-void fill_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col) {
+void fill_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col) { if (!c) return;
     if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
     for (int j = 0; j < h; j++) {
         int in = 0;
@@ -196,7 +201,7 @@ void fill_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t co
         hline(c, x + in, y + j, w - 2 * in, col);
     }
 }
-void fill_round_rect_blend(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col, int alpha) {
+void fill_round_rect_blend(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col, int alpha) { if (!c) return;
     if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
     for (int j = 0; j < h; j++) {
         int in = 0;
@@ -204,7 +209,7 @@ void fill_round_rect_blend(canvas_t *c, int x, int y, int w, int h, int r, uint3
         blend_rect(c, x + in, y + j, w - 2 * in, 1, col, alpha);
     }
 }
-void gradient_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t c1, uint32_t c2) {
+void gradient_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t c1, uint32_t c2) { if (!c) return;
     if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
     for (int j = 0; j < h; j++) {
         int in = 0;
@@ -218,7 +223,7 @@ static int rr_inset(int j, int h, int r) {
     if (j >= h - r) return corner_inset(h - 1 - j, r);
     return 0;
 }
-void draw_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col) {
+void draw_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t col) { if (!c) return;
     if (r * 2 > h) r = h / 2; if (r * 2 > w) r = w / 2;
     for (int j = 0; j < h; j++) {
         int in = rr_inset(j, h, r);
@@ -229,7 +234,7 @@ void draw_round_rect(canvas_t *c, int x, int y, int w, int h, int r, uint32_t co
         hline(c, x + w - in - span, y + j, span, col);
     }
 }
-void draw_line(canvas_t *c, int x0, int y0, int x1, int y1, uint32_t col) {
+void draw_line(canvas_t *c, int x0, int y0, int x1, int y1, uint32_t col) { if (!c) return;
     int dx = x1 > x0 ? x1 - x0 : x0 - x1, sx = x0 < x1 ? 1 : -1;
     int dy = -(y1 > y0 ? y1 - y0 : y0 - y1), sy = y0 < y1 ? 1 : -1;
     int err = dx + dy;
@@ -241,16 +246,16 @@ void draw_line(canvas_t *c, int x0, int y0, int x1, int y1, uint32_t col) {
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
 }
-void fill_circle(canvas_t *c, int cx, int cy, int r, uint32_t col) {
+void fill_circle(canvas_t *c, int cx, int cy, int r, uint32_t col) { if (!c) return;
     for (int y = -r; y <= r; y++) { int dx = 0; while ((dx + 1) * (dx + 1) + y * y <= r * r) dx++; hline(c, cx - dx, cy + y, dx * 2 + 1, col); }
 }
-void draw_thick_line(canvas_t *c, int x0, int y0, int x1, int y1, int t, uint32_t col) {
+void draw_thick_line(canvas_t *c, int x0, int y0, int x1, int y1, int t, uint32_t col) { if (!c) return;
     if (t <= 1) { draw_line(c, x0, y0, x1, y1, col); return; }
     int dx = x1 > x0 ? x1 - x0 : x0 - x1, dy = y1 > y0 ? y1 - y0 : y0 - y1;
     int n = MAX(dx, dy); if (!n) n = 1;
     for (int i = 0; i <= n; i++) fill_circle(c, x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, t / 2, col);
 }
-void draw_circle(canvas_t *c, int cx, int cy, int r, uint32_t col) {
+void draw_circle(canvas_t *c, int cx, int cy, int r, uint32_t col) { if (!c) return;
     int x = r, y = 0, e = 0;
     while (x >= y) {
         put_pixel(c, cx + x, cy + y, col); put_pixel(c, cx + y, cy + x, col); put_pixel(c, cx - y, cy + x, col); put_pixel(c, cx - x, cy + y, col);
@@ -258,12 +263,12 @@ void draw_circle(canvas_t *c, int cx, int cy, int r, uint32_t col) {
         y++; e += 1 + 2 * y; if (2 * (e - x) + 1 > 0) { x--; e += 1 - 2 * x; }
     }
 }
-void bevel(canvas_t *c, int x, int y, int w, int h, bool raised) {
+void bevel(canvas_t *c, int x, int y, int w, int h, bool raised) { if (!c) return;
     uint32_t hi = raised ? T.face_light : T.face_dark, lo = raised ? T.face_dark : T.face_light;
     hline(c, x, y, w, hi); vline(c, x, y, h, hi);
     hline(c, x, y + h - 1, w, lo); vline(c, x + w - 1, y, h, lo);
 }
-void bevel_deep(canvas_t *c, int x, int y, int w, int h, bool raised) {
+void bevel_deep(canvas_t *c, int x, int y, int w, int h, bool raised) { if (!c) return;
     uint32_t edge = mix(T.face_dark, BLACK, 128);
     if (raised) {
         hline(c, x, y, w - 1, T.face_light); vline(c, x, y, h - 1, T.face_light);
@@ -276,7 +281,7 @@ void bevel_deep(canvas_t *c, int x, int y, int w, int h, bool raised) {
         hline(c, x + 1, y + h - 2, w - 2, T.face); vline(c, x + w - 2, y + 1, h - 2, T.face);
     }
 }
-void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, int h) {
+void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, int h) { if (!dst || !src) return;
     rect_t r = rect_intersect(R(dx, dy, w, h), dst->clip);
     for (int j = 0; j < r.h; j++) {
         int syy = sy + (r.y - dy) + j, sxx = sx + (r.x - dx);
@@ -286,7 +291,7 @@ void blit(canvas_t *dst, int dx, int dy, canvas_t *src, int sx, int sy, int w, i
         memcpy(dst->px + (r.y + j) * dst->stride + r.x, src->px + syy * src->stride + sxx, n * 4);
     }
 }
-void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha) {
+void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha) { if (!dst || !src) return;
     if (alpha <= 0) return;
     if (alpha >= 255) { blit(dst, dx, dy, src, 0, 0, src->w, src->h); return; }
     rect_t r = rect_intersect(R(dx, dy, src->w, src->h), dst->clip);
@@ -296,7 +301,7 @@ void blit_alpha(canvas_t *dst, int dx, int dy, canvas_t *src, int alpha) {
         for (int i = 0; i < r.w; i++) d[i] = blend(d[i], s[i], alpha);
     }
 }
-void flood_fill(canvas_t *c, int x, int y, uint32_t col) {
+void flood_fill(canvas_t *c, int x, int y, uint32_t col) { if (!c) return;
     if (x < 0 || y < 0 || x >= c->w || y >= c->h) return;
     uint32_t target = c->px[y * c->stride + x];
     if (target == col) return;
@@ -848,7 +853,7 @@ int text_width_n(int font, const char *s, int n) {
     return bw;
 }
 int text_width(int font, const char *s) { return text_width_n(font, s, 0x7FFFFFFF); }
-int draw_text_n(canvas_t *c, int font, int x, int y, const char *s, int n, uint32_t col) {
+int draw_text_n(canvas_t *c, int font, int x, int y, const char *s, int n, uint32_t col) { if (!c) return 0;
     int w = ttf_draw(c, font, x, y, s, n, col);
     if (w >= 0) return w;
     font_t *f = F(font);
@@ -879,14 +884,14 @@ int text_fit_chars(int font, const char *s, int maxw) {
     for (; s[i]; i++) { int a = glyph(f, s[i])->adv; if (w + a > maxw) break; w += a; }
     return i;
 }
-void draw_text_ellipsis(canvas_t *c, int font, int x, int y, int maxw, const char *s, uint32_t col) {
+void draw_text_ellipsis(canvas_t *c, int font, int x, int y, int maxw, const char *s, uint32_t col) { if (!c) return;
     if (text_width(font, s) <= maxw) { draw_text(c, font, x, y, s, col); return; }
     int ew = text_width(font, "...");
     int n = text_fit_chars(font, s, maxw - ew);
     int w = draw_text_n(c, font, x, y, s, n, col);
     draw_text(c, font, x + w, y, "...", col);
 }
-void draw_text_centered(canvas_t *c, int font, rect_t r, const char *s, uint32_t col) {
+void draw_text_centered(canvas_t *c, int font, rect_t r, const char *s, uint32_t col) { if (!c) return;
     int w = text_width(font, s);
     draw_text(c, font, r.x + (r.w - w) / 2, r.y + (r.h - font_height(font)) / 2, s, col);
 }
@@ -949,7 +954,7 @@ const uint32_t *icon_pixels(int icon, int size) {
     if (icon < 0 || icon >= ICON_COUNT) icon = ICON_FILE;
     return icon_ptr[icon][size >= 48 ? 0 : size >= 32 ? 1 : 2];
 }
-static void icon_draw(canvas_t *c, int icon, int size, int x, int y, int alpha, uint32_t tint, int tamt) {
+static void icon_draw(canvas_t *c, int icon, int size, int x, int y, int alpha, uint32_t tint, int tamt) { if (!c) return;
     int base = size >= 48 ? 48 : size >= 32 ? 32 : 16;
     const uint32_t *px = icon_pixels(icon, size);
     for (int j = 0; j < size; j++)
@@ -1251,7 +1256,7 @@ static void globe_load(void) {
         globe_sizes[i].ov = p; p += s * s;
     }
 }
-void draw_globe(canvas_t *c, int x, int y, int size, int rot) {
+void draw_globe(canvas_t *c, int x, int y, int size, int rot) { if (!c) return;
     if (!globe_tex) globe_load();
     if (!globe_n) { draw_icon(c, ICON_LOGO, 48, x, y); return; }
     globe_size_t *g = &globe_sizes[0];
@@ -1286,7 +1291,7 @@ static const struct { int f_the, f_wrld, f_os, the_space, gap; } wm_styles[3] = 
 };
 static int spaced_width(int f, const char *s, int sp) { int w = 0; for (; *s; s++) { char b[2] = { *s, 0 }; w += text_width(f, b) + sp; } return w - sp; }
 int wordmark_width(int st) { return text_width(wm_styles[st].f_wrld, "WRLD") + wm_styles[st].gap + text_width(wm_styles[st].f_os, "OS"); }
-int draw_wordmark(canvas_t *c, int x, int y, int st, uint32_t col) {
+int draw_wordmark(canvas_t *c, int x, int y, int st, uint32_t col) { if (!c) return 0;
     int fw = wm_styles[st].f_wrld, fo = wm_styles[st].f_os, ft = wm_styles[st].f_the;
     int th = font_height(ft);
     /* "THE" letter-spaced over the left part of WRLD */
@@ -1304,7 +1309,7 @@ int draw_wordmark(canvas_t *c, int x, int y, int st, uint32_t col) {
 /* ---------------- blur (used for glass) ----------------
  * Box blur of a rectangle. Reads pixels up to `rad` outside the rectangle (so
  * strips blur smoothly into their surroundings) but only writes inside it. */
-void blur_rect(canvas_t *c, int x, int y, int w, int h, int rad) {
+void blur_rect(canvas_t *c, int x, int y, int w, int h, int rad) { if (!c) return;
     rect_t cl = c->clip;
     int x0 = MAX(x, cl.x), y0 = MAX(y, cl.y), x1 = MIN(x + w, cl.x + cl.w), y1 = MIN(y + h, cl.y + cl.h);
     if (rad <= 0 || x1 <= x0 || y1 <= y0) return;

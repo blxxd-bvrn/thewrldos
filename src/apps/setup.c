@@ -247,6 +247,41 @@ static bool delete_partition(item_t *it) {
 
 /* ---------------- copying ---------------- */
 typedef struct { vnode_t **v; int n, cap; uint64_t bytes; } flist_t;
+/* The live CD carries the kernel to install as a parts file (C:\boot\wrld.kpt, made by
+ * tools/kparts.py): the ELF without its read-only segments, which are taken from this running
+ * kernel's memory, where GRUB loaded them. The result must match the original's size and
+ * CRC-32, so a kernel whose code changed in memory is never installed. */
+static uint32_t kpt_crc32(const uint8_t *p, uint32_t n) {
+    uint32_t c = 0xFFFFFFFFu;
+    while (n--) { c ^= *p++; for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & -(c & 1)); }
+    return ~c;
+}
+static uint32_t kpt_le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
+static uint8_t *kernel_image(vnode_t *kpt, uint32_t *len, char *err, int ecap) {
+    const uint8_t *k = kpt->data; uint32_t ks = kpt->size;
+    if (!k || ks < 20 || memcmp(k, "WRLDKPT1", 8)) { snprintf(err, ecap, "The kernel parts file C:\\boot\\wrld.kpt is damaged."); return NULL; }
+    uint32_t total = kpt_le32(k + 8), crc = kpt_le32(k + 12), n = kpt_le32(k + 16);
+    if (n > 16 || 20 + 16 * n > ks || total > 64u * 1024 * 1024) { snprintf(err, ecap, "The kernel parts file C:\\boot\\wrld.kpt is damaged."); return NULL; }
+    uint8_t *out = kmalloc(total ? total : 1);
+    if (!out) { snprintf(err, ecap, "There is not enough memory to copy the kernel (%u KB).", total / 1024); return NULL; }
+    const uint8_t *rest = k + 20 + 16 * n, *rend = k + ks;
+    uint32_t pos = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *r = k + 20 + 16 * i;
+        uint32_t off = kpt_le32(r), ln = kpt_le32(r + 4);
+        uint64_t va = kpt_le32(r + 8) | (uint64_t)kpt_le32(r + 12) << 32;
+        if (off < pos || off - pos > (uint32_t)(rend - rest) || ln > total - off || va >= 0x100000000ull || va + ln > 0x100000000ull) { kfree(out); snprintf(err, ecap, "The kernel parts file C:\\boot\\wrld.kpt is damaged."); return NULL; }
+        memcpy(out + pos, rest, off - pos); rest += off - pos;
+        memcpy(out + off, (const void *)(uintptr_t)va, ln);
+        pos = off + ln;
+    }
+    if ((uint32_t)(rend - rest) != total - pos) { kfree(out); snprintf(err, ecap, "The kernel parts file C:\\boot\\wrld.kpt is damaged."); return NULL; }
+    memcpy(out + pos, rest, total - pos);
+    if (kpt_crc32(out, total) != crc) { kfree(out); snprintf(err, ecap, "The kernel in memory does not match the one on the installation media (C:\\boot\\wrld.kpt). Restart from the CD and run Setup again."); return NULL; }
+    *len = total;
+    return out;
+}
+
 static void collect(vnode_t *n, flist_t *l) {
     if (l->n == l->cap) { l->cap = l->cap ? l->cap * 2 : 256; l->v = krealloc(l->v, l->cap * sizeof *l->v); }
     l->v[l->n++] = n;
@@ -331,6 +366,8 @@ static bool do_install(int disk, int slot, int mode) {
     /* copy files */
     flist_t L = { 0 };
     collect(vfs_root('C'), &L);
+    vnode_t *kpt = vfs_resolve("C:\\boot\\wrld.kpt", NULL);
+    if (kpt && kpt->size >= 12) L.bytes += kpt_le32(kpt->data + 8);
     if ((uint64_t)L.bytes + 4 * 1024 * 1024 > vol_free_bytes(v)) {
         message_screen("The selected partition does not have enough free space for " OS_NAME ".\n\nPress ENTER to return.", "ENTER=Continue");
         vol_unmount(v); kfree(bootimg); kfree(core); return false;
@@ -338,7 +375,7 @@ static bool do_install(int disk, int slot, int mode) {
     uint64_t done = 0; uint32_t last = 0;
     for (int i = 0; i < L.n; i++) {
         vnode_t *n = L.v[i];
-        if (!n->parent) continue;
+        if (!n->parent || n == kpt) continue;
         char path[512]; rel(n, path, sizeof path);
         bool ok = n->dir ? vol_mkdir(v, path) : vol_write(v, path, n->data, n->size, n->readonly);
         if (!ok) {
@@ -361,6 +398,16 @@ static bool do_install(int disk, int slot, int mode) {
         }
     }
     kfree(L.v);
+    if (kpt) {
+        char m[400]; uint32_t kl = 0;
+        uint8_t *img = kernel_image(kpt, &kl, m, sizeof m);
+        bool ok = img && vol_write(v, "boot\\wrld.elf", img, kl, false);
+        kfree(img);
+        if (!ok) {
+            char mm[600]; snprintf(mm, sizeof mm, "Setup cannot copy the kernel (boot\\wrld.elf).\n\n%s\n\nPress ENTER to return.", img ? "The disk may be full or damaged." : m);
+            message_screen(mm, "ENTER=Continue"); vol_unmount(v); kfree(bootimg); kfree(core); return false;
+        }
+    }
     vol_delete(v, "Documents and Settings\\User\\Desktop\\Install " OS_NAME ".lnk");
     /* configuration */
     if (gui_setup) gui_setup_progress("Finishing the installation...", 40, "Installing the boot loader");
@@ -819,7 +866,7 @@ static void sg_ensure_visible(int listh) {
 static bool gui_confirm(const char *title, const char *msg, const char *yes, const char *no) {
     static canvas_t *base;
     if (!base || base->w != SCREEN_W || base->h != SCREEN_H) { if (base) canvas_free(base); base = canvas_new(SCREEN_W, SCREEN_H); }
-    memcpy(base->px, screen.px, SCREEN_W * SCREEN_H * 4);
+    if (base) memcpy(base->px, screen.px, SCREEN_W * SCREEN_H * 4);
     int w = MIN(460, SCREEN_W - 80);
     int h = MIN(120 + text_wrapped_height(FONT_UI, w - 40, msg, 5), SCREEN_H - 80);
     rect_t box = R((SCREEN_W - w) / 2, (SCREEN_H - h) / 2, w, h);
@@ -830,7 +877,7 @@ static bool gui_confirm(const char *title, const char *msg, const char *yes, con
     while (mouse_poll(&ms)) { wm_mouse_x = ms.x; wm_mouse_y = ms.y; prev = ms.buttons; }
     while (keyboard_poll(&ke)) {}
     for (;;) {
-        memcpy(screen.px, base->px, SCREEN_W * SCREEN_H * 4);
+        if (base) memcpy(screen.px, base->px, SCREEN_W * SCREEN_H * 4);
         canvas_reset_clip(&screen);
         blend_rect(&screen, 0, 0, SCREEN_W, SCREEN_H, BLACK, 120);
         fill_rect(&screen, box.x + 4, box.y + 4, box.w, box.h, HEX(0x303030));
@@ -867,7 +914,7 @@ static void gui_setup_progress(const char *caption, int pct, const char *detail)
     gui_heartbeat = timer_ticks();
     sg_bg();
     sg_sync();
-    memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4);
+    if (sbg) memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4); else gfx_clear(&screen, HEX(0x163EB0));
     canvas_reset_clip(&screen);
     sg_left(SG_INSTALL);
     rect_t r = sg_rect();
@@ -1090,7 +1137,7 @@ static void sg_page(window_t *w) {
 }
 static void sg_paint(void) {
     sg_bg(); sg_sync();
-    memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4);
+    if (sbg) memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4); else gfx_clear(&screen, HEX(0x163EB0));
     canvas_reset_clip(&screen);
     sg_left(SG.page);
     rect_t r = sg_rect();
@@ -1487,7 +1534,7 @@ static void oobe_paint(window_t *w) {
     O.finish = false;
 }
 static void oobe_compose(int step, int pct, const char *eta, bool show_wizard, int frame) {
-    memcpy(screen.px, obg->px, SCREEN_W * SCREEN_H * 4);
+    if (obg) memcpy(screen.px, obg->px, SCREEN_W * SCREEN_H * 4); else gfx_clear(&screen, HEX(0x163EB0));
     canvas_reset_clip(&screen);
     draw_globe(&screen, 18, 6, 64, -36 + frame);
     oobe_left(&screen, step, pct, eta);

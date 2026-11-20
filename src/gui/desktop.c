@@ -143,6 +143,7 @@ bool wallpaper_set_custom(const char *path, char *err, int cap) {
 bool wallpaper_custom_exists(void) { vnode_t *n = vfs_resolve(CUSTOM_WALLPAPER, NULL); return n && !n->dir && n->size; }
 void wallpaper_render(canvas_t *c, int id) {
     if (id < 0 || id >= wallpaper_count - 1) { gfx_clear(c, desktop_color); return; }
+    if (!c) return;
     if (wall_out && wall_out_id == id && wall_out_fit == wallpaper_fit && wall_out->w == c->w && wall_out->h == c->h) {
         memcpy(c->px, wall_out->px, (size_t)c->w * c->h * 4);
         return;
@@ -649,6 +650,7 @@ static void paint_sidebar_panel(canvas_t *c) {
             draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 18, bw - 12, side_memo[0] ? "Open memo" : "", dim);
         }
         if (side_alpha[t] < 255) {
+            if (!side_under) { by += tileh + SIDE_TILE_GAP; continue; }
             canvas_t under = *side_under; under.h = tileh + 2;
             blit_alpha(c, ix, by, &under, 255 - side_alpha[t]);
         }
@@ -1269,6 +1271,7 @@ static void paint_allprog(canvas_t *c) {
 static void paint_rotated_text(canvas_t *c, int x, int ybottom, const char *s, int font, uint32_t col) {
     int w = text_width(font, s), h = font_height(font);
     canvas_t *tmp = canvas_new(w, h);
+    if (!tmp) return;
     gfx_clear(tmp, 0xFF000000);
     draw_text(tmp, font, 0, 0, s, 0xFFFFFFFF);
     for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) {

@@ -14,7 +14,9 @@ int w32_console_write(w32_proc_t *p, int fd, const char *s, int n) {
     if (!p) return n;
     if (!p->con) {
         /* GUI program writing to stdout: allocate a console on demand */
-        window_t *w; p->con = terminal_new_console(path_basename(p->path), &w); p->own_console = true; p->in = p->con;
+        window_t *w; p->con = terminal_new_console(path_basename(p->path), &w);
+        if (!p->con) return n;                                /* out of memory: the output is dropped */
+        p->own_console = true; p->in = p->con;
         w->pid = p->pid;
     }
     if (fd == 2) p->con->write(p->con, "\x1b[91m", 5);
@@ -287,8 +289,11 @@ static void thread_main(void *a) {
 }
 static HANDLE WINAPI CreateThread(void *sa, DWORD stack, void *fn, void *arg, DWORD flags, DWORD *tid) {
     w32_proc_t *p = P;
-    thr_start_t *s = kmalloc(sizeof *s); s->fn = fn; s->arg = arg; s->p = p;
+    thr_start_t *s = kmalloc(sizeof *s);
+    if (!s) { set_err(8); return 0; }                         /* ERROR_NOT_ENOUGH_MEMORY */
+    s->fn = fn; s->arg = arg; s->p = p;
     task_t *t = task_create("thread", thread_main, s, MAX(stack, 128 * 1024u));
+    if (!t) { kfree(s); set_err(8); return 0; }
     snprintf(t->name, sizeof t->name, "%s:thread", path_basename(p->path));
     t->kind = 2; t->proc = p; t->cr3 = p->space; t->console = p->con;
     t->teb = (uintptr_t)w32_new_teb(p, t);

@@ -613,6 +613,7 @@ int pe_spawn(const char *path, const char *args, console_t *con, char *err, int 
     char tname[48]; strlcpy(tname, path_basename(p->path), sizeof tname);
     uint32_t stack = (uint32_t)MAX(MIN(pi.stack_reserve, 2ull * 1024 * 1024), 256ull * 1024);
     task_t *t = task_create(tname, pe_main, p, stack);
+    if (!t) { free_proc(p); snprintf(err, ecap, "Not enough memory to start the program."); return -1; }
     t->kind = 2; t->proc = p; t->cr3 = p->space; t->console = con;
     p->pid = t->pid;
     p->teb = w32_new_teb(p, t);
