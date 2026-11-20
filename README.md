@@ -459,6 +459,23 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     it claims (they are capped and checked against the volume), or recurse without end
     (loading and deleting trees no longer recurse). `rust/src/kernel/volk.rs` (was
     `src/kernel/vol.c`) puts the two drivers behind the one interface Setup and persistence use.
+  - **The shell (`rust/src/shell.rs` and `rust/src/kernel/shk.rs`, was `src/shell/sh.c`):**
+    the tokenizer, the parser, arithmetic, wildcard matching and every expansion are in
+    `shell.rs` with host tests; `shk.rs` runs the syntax trees (pipelines, redirection,
+    functions, loops, `case`), starts programs (Win32, Linux, scripts, disk images, GUI
+    applications) and has the built-in commands that work on text and files (echo, printf,
+    test, read, cd, ls, dir, cat, grep, sort, head, tail, wc, tr, cp, mv, rm, find, tree,
+    hexdump, unzip, xargs…). The commands that front other parts of the system (ipconfig,
+    ping, wget, js, display, play, ps, mount, theme, devices, dpkg, shutdown…) stay in C, in
+    `src/shell/shcmds.c`. Three test scripts (about 130 commands) gave the same output on
+    the old and new shells, and the terminal looked pixel-identical, except where C bugs are
+    fixed: `$((…))` skipped the character after it (`echo $((1+2))x` printed `3`), `printf`
+    with `%%` and more arguments, or a format ending in `%5`, looped for ever, a function
+    defined inside a loop lost its body the second time, `unzip` read past the end of a
+    damaged archive, `${v#pattern}` overran a 512-byte buffer on long values, and deep
+    nesting or long strings could overflow the task's stack (parsing, arithmetic and
+    wildcards no longer recurse without limit). Output to a pipe or `$(…)` is dropped
+    rather than crashing when memory runs out, and `seq` stops at Ctrl+C.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1459,7 +1476,7 @@ device manager's job is to say what the computer has and which driver runs it.
     `rootfs/Samples`) and `x86_64-w64-mingw32-gcc` (64-bit edition, `rootfs64/Samples`) and run
     unmodified.
   - A program that calls an unimplemented function is stopped with a message naming it.
-- **`.sh`: shell (`src/shell/sh.c`)**
+- **`.sh`: shell (in Rust: `rust/src/shell.rs` and `rust/src/kernel/shk.rs`)**
   - Tokenizer and recursive-descent parser to an AST.
   - Variables, `${…}` operators, `$(…)`, backticks, `$((…))`, globbing.
   - Pipes, `>`, `>>`, `<`, `2>&1`, `&&`/`||`.
@@ -1577,7 +1594,7 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    FAT image reader, DMG disk images, network packet parsers and network stack,
                    PE (Windows program) loader, the registry, the FAT32 and NTFS drivers, the in-memory
                    file system (kernel/vfsk.rs, paths and the initrd in vfspath.rs), the smaller Win32 API
-                   files (kernel/w32*.rs, their parsing in w32util.rs)
+                   files (kernel/w32*.rs, their parsing in w32util.rs), the shell (shell.rs, kernel/shk.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
@@ -1587,7 +1604,8 @@ src/apps           explorer, notepad, wordpad, terminal, control panel, accessor
                    browser (html.c, imgdec.c, dom.c, adblock.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
-src/shell          sh interpreter
+src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;
+                   the shell itself is rust/src/shell.rs and rust/src/kernel/shk.rs)
 src/win32          PE loader glue (the format: rust/src/pe.rs), kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 8/9/10, DirectInput, DirectSound
 src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 licence

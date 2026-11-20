@@ -24,6 +24,7 @@ pub mod net;
 pub mod netstack;
 pub mod ntfs;
 pub mod vfspath;
+pub mod shell;
 pub mod pe;
 pub mod registry;
 pub mod w32util;
