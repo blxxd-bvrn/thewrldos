@@ -19,6 +19,7 @@ extern crate alloc;
 pub mod dmg;
 pub mod fat;
 pub mod inflate;
+pub mod net;
 
 #[cfg(feature = "kernel")]
 pub mod kernel;

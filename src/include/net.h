@@ -11,6 +11,22 @@ static inline uint32_t ntohl(uint32_t v) { return __builtin_bswap32(v); }
 void ip_to_str(uint32_t ip, char *buf);                  /* buf >= 16 */
 bool str_to_ip(const char *s, uint32_t *ip);
 
+/* ---- packet parsers (rust/src/net.rs) ----
+ * Each checks a received packet and returns false (or -1) for one to drop. Offsets are into
+ * the bytes given. All fields are 32-bit so that C and Rust lay the structs out alike. */
+typedef struct { uint32_t op, spa, tpa; uint8_t sha[8]; } net_arp_t;
+typedef struct { uint32_t src, dst, proto, off, len; } net_ipv4_t;        /* payload: off..off+len */
+typedef struct { uint32_t sport, dport, off, len; } net_udp_t;
+typedef struct { uint32_t sport, dport, seq, ack, flags, win, mss, hl; } net_tcp_t;   /* mss 0: no option */
+typedef struct { uint32_t kind, yiaddr, mask, gw, dns, server, lease; } net_dhcp_t;  /* 0: option absent */
+bool net_parse_arp(const uint8_t *p, uint32_t len, net_arp_t *out);
+bool net_parse_ipv4(const uint8_t *p, uint32_t len, net_ipv4_t *out);   /* also checks the header checksum */
+bool net_parse_udp(const uint8_t *p, uint32_t len, net_udp_t *out);
+bool net_parse_tcp(const uint8_t *p, uint32_t len, net_tcp_t *out);
+bool net_parse_dhcp(const uint8_t *m, uint32_t len, uint32_t xid, net_dhcp_t *out);
+/* a DNS reply to query id: 1 with *ip its first A record, 0 with *rcode for none, -1 not ours */
+int net_parse_dns(const uint8_t *m, uint32_t len, uint16_t id, uint32_t *ip, int *rcode);
+
 /* ---- network interface ---- */
 typedef struct {
     bool present, link, configured;

@@ -309,41 +309,33 @@ static void rst_reply(uint32_t src, const uint8_t *s, uint32_t len) {
 /* A SYN arrived for a listening port: create the connection in SYN_RCVD and
  * answer with SYN-ACK.  The third handshake segment moves it to the listener's
  * accept queue. */
-static tcb_t *accept_syn(tcp_listener_t *l, uint32_t src, uint16_t sport, uint32_t seq,
-                         const uint8_t *s, uint32_t hl, uint16_t win) {
-    tcb_t *t = conn_new(src, sport, SYN_RCVD);
+static tcb_t *accept_syn(tcp_listener_t *l, uint32_t src, const net_tcp_t *h) {
+    tcb_t *t = conn_new(src, h->sport, SYN_RCVD);
     if (!t) return NULL;
     t->lport = l->port;
-    t->rcv_nxt = seq + 1;
-    t->snd_wnd = win;
-    for (uint32_t o = 20; o + 1 < hl;) {                      /* options: MSS */
-        uint8_t k = s[o];
-        if (k == 0) break;
-        if (k == 1) { o++; continue; }
-        if (k == 2 && s[o + 1] == 4 && o + 4 <= hl) t->mss = MIN(1460, get16(s + o + 2));
-        if (s[o + 1] < 2) break;
-        o += s[o + 1];
-    }
+    t->rcv_nxt = h->seq + 1;
+    t->snd_wnd = h->win;
+    if (h->mss) t->mss = MIN(1460, h->mss);
     send_seg(t, t->iss, F_SYN | F_ACK, NULL, 0);
     arm_timer(t);
     return t;
 }
 
 void tcp_input(uint32_t src, uint32_t dst, const uint8_t *s, uint32_t len) {
-    if (len < 20) return;
-    uint32_t hl = (s[12] >> 4) * 4;
-    if (hl < 20 || hl > len) return;
-    uint16_t sport = get16(s), dport = get16(s + 2);
-    uint32_t seq = get32(s + 4), ack = get32(s + 8);
-    uint8_t fl = s[13];
-    uint32_t win = get16(s + 14);
+    net_tcp_t h;
+    if (!net_parse_tcp(s, len, &h)) return;                  /* rust/src/net.rs */
+    uint32_t hl = h.hl;
+    uint16_t sport = h.sport, dport = h.dport;
+    uint32_t seq = h.seq, ack = h.ack;
+    uint8_t fl = h.flags;
+    uint32_t win = h.win;
     const uint8_t *data = s + hl; uint32_t dlen = len - hl;
     tcb_t *t = conns;
     while (t && !(t->rip == src && t->rport == sport && t->lport == dport)) t = t->next;
     if (!t || t->state == CLOSED) {
         if ((fl & F_SYN) && !(fl & F_ACK)) {
             tcp_listener_t *l = find_listener(dport);
-            if (l) { if (accept_syn(l, src, sport, seq, s, hl, win)) return; }
+            if (l) { if (accept_syn(l, src, &h)) return; }
         }
         if (!(fl & F_RST)) rst_reply(src, s, len);
         return;
@@ -354,14 +346,7 @@ void tcp_input(uint32_t src, uint32_t dst, const uint8_t *s, uint32_t len) {
         if (fl & F_RST) { if (fl & F_ACK) fail(t, 1); return; }
         if (!(fl & F_SYN)) return;
         t->rcv_nxt = seq + 1;
-        for (uint32_t o = 20; o + 1 < hl;) {                 /* options: MSS */
-            uint8_t k = s[o];
-            if (k == 0) break;
-            if (k == 1) { o++; continue; }
-            if (k == 2 && s[o + 1] == 4 && o + 4 <= hl) t->mss = MIN(1460, get16(s + o + 2));
-            if (s[o + 1] < 2) break;
-            o += s[o + 1];
-        }
+        if (h.mss) t->mss = MIN(1460, h.mss);
         if (fl & F_ACK) {
             t->snd_una = ack; t->snd_wnd = win; t->state = ESTABLISHED; t->rtx_at = 0; t->retries = 0;
             send_ack(t);

@@ -953,6 +953,12 @@ static int b_ipconfig(sh_t *s, int argc, char **argv, io_t *io) {
         dhcp_renew();
         if (!net_wait_ready(10000)) { err_f(io, "ipconfig: no DHCP server answered\n"); return 1; }
     }
+    if (argc > 1 && (!strcasecmp(argv[1], "/dns") || !strcmp(argv[1], "-dns"))) {
+        /* set the DNS server by hand (until the next DHCP renewal), like netsh's "set dns" */
+        uint32_t ip;
+        if (argc < 3 || !str_to_ip(argv[2], &ip)) { err_f(io, "usage: ipconfig /dns A.B.C.D\n"); return 1; }
+        netif.dns = ip;
+    }
     out_f(io, "\n" OS_NAME " IP Configuration\n\n   Host Name . . . . . . . . : %s\n\nEthernet adapter Local Area Connection:\n\n", computer_name);
     if (!netif.present) { out_s(io, "   Media State . . . . . . . : No supported network adapter was found\n"); return 1; }
     char a[16], m[16], g[16], d[16], sv[16];
@@ -1619,7 +1625,7 @@ static const builtin_t builtins[] = {
     { "clear", b_clear, "clear the screen" }, { "cls", b_clear, NULL }, { "exit", b_exit, "exit the shell" },
     { "true", b_true, NULL }, { "false", b_false, NULL }, { ":", b_true, NULL }, { "sleep", b_sleep, "wait N seconds" },
     { "date", b_date, "show date (+FORMAT)" }, { "uname", b_uname, "system name (-a)" }, { "ver", b_ver, "OS version" },
-    { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew)" }, { "ifconfig", b_ipconfig, NULL },
+    { "whoami", b_whoami, NULL }, { "hostname", b_hostname, NULL }, { "ipconfig", b_ipconfig, "network configuration (/renew, /dns A.B.C.D)" }, { "ifconfig", b_ipconfig, NULL },
     { "ping", b_ping, "send ICMP echo requests" }, { "nslookup", b_nslookup, "look up a host name" },
     { "wget", b_wget, "download a URL (http/https)" }, { "unzip", b_unzip, "extract a .zip archive (unzip FILE [-d DIR] [-l])" }, { "sha256sum", b_sha256sum, "SHA-256 of files" }, { "js", b_js, "run JavaScript (js FILE or js -e CODE)" }, { "display", b_display, "show or change the screen resolution" },
     { "play", b_play, "play a .wav file" }, { "volume", b_volume, "show or set the volume (0-100, mute)" }, { "sndinfo", b_sndinfo, "sound card diagnostics" }, { "curl", b_wget, "print a URL" }, { "ps", b_ps, "list processes" }, { "tasklist", b_ps, NULL },

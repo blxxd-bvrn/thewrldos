@@ -10,27 +10,9 @@ static task_t *net_task;
 static const uint8_t BCAST[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 void ip_to_str(uint32_t ip, char *b) { snprintf(b, 16, "%u.%u.%u.%u", ip >> 24, (ip >> 16) & 255, (ip >> 8) & 255, ip & 255); }
-bool str_to_ip(const char *s, uint32_t *ip) {
-    uint32_t v = 0; int parts = 0;
-    while (parts < 4) {
-        if (!isdigit(*s)) return false;
-        uint32_t p = 0; int digits = 0;
-        while (isdigit(*s) && digits < 4) { p = p * 10 + (*s++ - '0'); digits++; }
-        if (p > 255) return false;
-        v = (v << 8) | p; parts++;
-        if (parts < 4) { if (*s != '.') return false; s++; }
-    }
-    if (*s) return false;
-    *ip = v;
-    return true;
-}
-uint16_t ip_checksum(const void *data, uint32_t len, uint32_t sum) {
-    const uint8_t *p = data;
-    while (len > 1) { sum += (p[0] << 8) | p[1]; p += 2; len -= 2; }
-    if (len) sum += p[0] << 8;
-    while (sum >> 16) sum = (sum & 0xFFFF) + (sum >> 16);
-    return ~sum & 0xFFFF;
-}
+/* str_to_ip, ip_checksum and the packet parsers (net_parse_*) are in rust/src/net.rs */
+/* the parser structs' sizes, for rust_init's layout check */
+const uint32_t rust_net_layout[5] = { sizeof(net_arp_t), sizeof(net_ipv4_t), sizeof(net_udp_t), sizeof(net_tcp_t), sizeof(net_dhcp_t) };
 static void put16(uint8_t *p, uint16_t v) { p[0] = v >> 8; p[1] = v; }
 static void put32(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
 static uint16_t get16(const uint8_t *p) { return (p[0] << 8) | p[1]; }
@@ -70,11 +52,10 @@ static void arp_send(uint16_t op, const uint8_t *tmac, uint32_t tip) {
     eth_send(op == 1 ? BCAST : tmac, 0x0806, a, 28);
 }
 static void arp_input(const uint8_t *a, uint32_t len) {
-    if (len < 28 || get16(a) != 1 || get16(a + 2) != 0x0800) return;
-    uint16_t op = get16(a + 6);
-    uint32_t sip = get32(a + 14), tip = get32(a + 24);
-    arp_store(sip, a + 8);
-    if (op == 1 && netif.ip && tip == netif.ip) arp_send(2, a + 8, sip);
+    net_arp_t r;
+    if (!net_parse_arp(a, len, &r)) return;
+    arp_store(r.spa, r.sha);
+    if (r.op == 1 && netif.ip && r.tpa == netif.ip) arp_send(2, r.sha, r.spa);
 }
 static bool in_net_task(void) { return task_current() == net_task; }
 static bool arp_resolve(uint32_t ip, uint8_t *mac) {
@@ -155,10 +136,9 @@ bool udp_send(uint32_t dst, uint16_t sport, uint16_t dport, const void *data, ui
     return ip_send(dst, IPPROTO_UDP, u, 8 + len);
 }
 static void udp_input(uint32_t src, const uint8_t *p, uint32_t len) {
-    if (len < 8) return;
-    uint16_t sport = get16(p), dport = get16(p + 2), ulen = get16(p + 4);
-    if (ulen < 8 || ulen > len) return;
-    for (int i = 0; i < 16; i++) if (udps[i].port == dport && udps[i].h) { udps[i].h(src, sport, p + 8, ulen - 8, udps[i].ctx); return; }
+    net_udp_t u;
+    if (!net_parse_udp(p, len, &u)) return;
+    for (int i = 0; i < 16; i++) if (udps[i].port == u.dport && udps[i].h) { udps[i].h(src, u.sport, p + u.off, u.len, udps[i].ctx); return; }
 }
 static bool udp_is_bound(uint16_t port) { for (int i = 0; i < 16; i++) if (udps[i].port == port) return true; return false; }
 
@@ -192,26 +172,22 @@ const fw_event_t *fw_log_at(int i) { return i >= 0 && i < fw_log_n ? &fw_log[(fw
 
 /* ---------------- frame dispatch ---------------- */
 static void ip_input(const uint8_t *p, uint32_t len) {
-    if (len < 20 || (p[0] >> 4) != 4) return;
-    uint32_t hl = (p[0] & 15) * 4, tot = get16(p + 2);
-    if (hl < 20 || tot > len || tot < hl) return;
-    if (get16(p + 6) & 0x3FFF) return;                       /* fragments are not supported */
-    uint32_t src = get32(p + 12), dst = get32(p + 16);
+    net_ipv4_t ip;
+    if (!net_parse_ipv4(p, len, &ip)) return;                /* bad header, bad checksum, or a fragment */
+    uint32_t src = ip.src, dst = ip.dst, hl = ip.off, tot = ip.off + ip.len;
     bool mine = dst == netif.ip || dst == 0xFFFFFFFF || (netif.mask && (dst | netif.mask) == 0xFFFFFFFF) || !netif.ip;
     if (!mine) return;
     if (fw_enabled) {
-        uint8_t proto = p[9];
-        if (proto == IPPROTO_TCP && fw_block_tcp && tot >= hl + 20) {
-            uint16_t dport = get16(p + hl + 2); uint8_t flags = p[hl + 13];
+        net_tcp_t t; net_udp_t u;
+        if (ip.proto == IPPROTO_TCP && fw_block_tcp && net_parse_tcp(p + hl, ip.len, &t)) {
             /* a pure SYN is a new inbound connection; ACK/SYN-ACK belongs to
-             * an existing connection and is allowed */
-            if ((flags & 0x02) && !(flags & 0x10) && !fw_port_allowed(dport)) { fw_note(src, dport, IPPROTO_TCP); return; }
-        } else if (proto == IPPROTO_UDP && fw_block_udp && tot >= hl + 8) {
-            uint16_t dport = get16(p + hl + 2);
-            if (!udp_is_bound(dport) && !fw_port_allowed(dport) && dport != 68) { fw_note(src, dport, IPPROTO_UDP); return; }
+             * an existing connection and is allowed (a malformed segment: tcp_input drops it) */
+            if ((t.flags & 0x02) && !(t.flags & 0x10) && !fw_port_allowed(t.dport)) { fw_note(src, t.dport, IPPROTO_TCP); return; }
+        } else if (ip.proto == IPPROTO_UDP && fw_block_udp && net_parse_udp(p + hl, ip.len, &u)) {
+            if (!udp_is_bound(u.dport) && !fw_port_allowed(u.dport) && u.dport != 68) { fw_note(src, u.dport, IPPROTO_UDP); return; }
         }
     }
-    switch (p[9]) {
+    switch (ip.proto) {
     case IPPROTO_ICMP: icmp_input(src, p + hl, tot - hl); break;
     case IPPROTO_UDP: udp_input(src, p + hl, tot - hl); break;
     case IPPROTO_TCP: tcp_input(src, dst, p + hl, tot - hl); break;
@@ -251,26 +227,14 @@ static void dhcp_send(int type) {
     netif.ip = save;
 }
 static void dhcp_input(uint32_t src, uint16_t sport, const uint8_t *m, uint32_t len, void *ctx) {
-    if (len < 240 || m[0] != 2 || get32(m + 4) != dhcp_xid || get32(m + 236) != 0x63825363) return;
-    int type = 0; uint32_t mask = 0, gw = 0, dns = 0, server = 0, lease = 0;
-    for (uint32_t o = 240; o + 1 < len && m[o] != 255;) {
-        if (m[o] == 0) { o++; continue; }
-        uint8_t code = m[o], l = m[o + 1];
-        const uint8_t *v = m + o + 2;
-        if (o + 2 + l > len) break;
-        if (code == 53 && l >= 1) type = v[0];
-        else if (code == 1 && l >= 4) mask = get32(v);
-        else if (code == 3 && l >= 4) gw = get32(v);
-        else if (code == 6 && l >= 4) dns = get32(v);
-        else if (code == 54 && l >= 4) server = get32(v);
-        else if (code == 51 && l >= 4) lease = get32(v);
-        o += 2 + l;
-    }
+    net_dhcp_t r;
+    if (!net_parse_dhcp(m, len, dhcp_xid, &r)) return;
+    int type = r.kind; uint32_t mask = r.mask, gw = r.gw, dns = r.dns, server = r.server, lease = r.lease;
     if (type == 2 && dhcp_state == DHCP_DISCOVER) {           /* OFFER */
-        dhcp_offer = get32(m + 16); dhcp_server = server ? server : src;
+        dhcp_offer = r.yiaddr; dhcp_server = server ? server : src;
         dhcp_state = DHCP_REQUEST; dhcp_tries = 0; dhcp_next = 0;
     } else if (type == 5 && dhcp_state == DHCP_REQUEST) {    /* ACK */
-        netif.ip = get32(m + 16); netif.mask = mask ? mask : IP4(255, 255, 255, 0); netif.gw = gw; netif.dns = dns ? dns : gw;
+        netif.ip = r.yiaddr; netif.mask = mask ? mask : IP4(255, 255, 255, 0); netif.gw = gw; netif.dns = dns ? dns : gw;
         netif.dhcp_server = dhcp_server; netif.lease_s = lease;
         netif.configured = true; dhcp_state = DHCP_BOUND; dhcp_bound_at = timer_ticks();
         char a[16], g[16], d[16]; ip_to_str(netif.ip, a); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d);
@@ -303,20 +267,11 @@ static dns_cache_t dcache[32];
 typedef struct { uint16_t id; uint32_t ip; bool done, failed; int rcode; } dns_q_t;
 static void dns_input(uint32_t src, uint16_t sport, const uint8_t *m, uint32_t len, void *ctx) {
     dns_q_t *q = ctx;
-    if (len < 12 || get16(m) != q->id || !(m[2] & 0x80)) return;
-    q->rcode = m[3] & 15;
-    int qd = get16(m + 4), an = get16(m + 6);
-    uint32_t o = 12;
-    for (int i = 0; i < qd && o < len; i++) { while (o < len && m[o]) { if ((m[o] & 0xC0) == 0xC0) { o++; break; } o += m[o] + 1; } o += 5; }
-    for (int i = 0; i < an && o + 10 < len; i++) {
-        while (o < len && m[o]) { if ((m[o] & 0xC0) == 0xC0) { o++; break; } o += m[o] + 1; }
-        o++;
-        if (o + 10 > len) break;
-        uint16_t type = get16(m + o), rdlen = get16(m + o + 8);
-        if (type == 1 && rdlen == 4 && o + 14 <= len) { q->ip = get32(m + o + 10); q->done = true; return; }
-        o += 10 + rdlen;
-    }
-    q->failed = true;
+    uint32_t ip; int rcode = 0;
+    int r = net_parse_dns(m, len, q->id, &ip, &rcode);
+    if (r < 0) return;
+    q->rcode = rcode;
+    if (r > 0) { q->ip = ip; q->done = true; } else q->failed = true;
 }
 static bool hosts_lookup(const char *name, uint32_t *ip) {
     uint32_t len;

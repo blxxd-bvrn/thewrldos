@@ -7,7 +7,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{dmg, fat, inflate};
+use crate::{dmg, fat, inflate, net};
 
 extern "C" {
     fn kmalloc(n: usize) -> *mut c_void;
@@ -20,6 +20,7 @@ extern "C" {
     fn vfs_new_node(parent: *mut Vnode, name: *const c_char, dir: CBool) -> *mut Vnode;
     fn vfs_mount(root: *mut Vnode, label: *const c_char, kind: c_int) -> c_char;
     static rust_vnode_layout: [u32; 8];
+    static rust_net_layout: [u32; 5];
 }
 
 // ---------------------------------------------------------------- heap
@@ -104,10 +105,13 @@ pub extern "C" fn rust_init() {
     let mut v: Vec<u32> = Vec::new();
     for i in 0..1000u32 { v.push(i * 3); }
     let ok = v.iter().copied().sum::<u32>() == 3 * 999 * 1000 / 2;
+    if unsafe { rust_net_layout } != NET_LAYOUT {
+        unsafe { panic(c"Rust: the net_*_t structs in rust/src/kernel.rs do not match src/include/net.h".as_ptr()) }
+    }
     if !vnode_layout_ok() {
         unsafe { panic(c"Rust: vnode_t in rust/src/kernel.rs does not match src/include/fs.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, dmg)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, dmg, net)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)
@@ -310,4 +314,76 @@ pub unsafe extern "C" fn dmg_mount(file: *mut Vnode, msg: *mut c_char, mcap: c_i
     })();
     put_cstr(msg, mcap, &out);
     letter.unwrap_or(0)
+}
+
+// ---------------------------------------------------------------- network parsers (src/include/net.h)
+
+#[repr(C)] pub struct NetArp { op: u32, spa: u32, tpa: u32, sha: [u8; 8] }
+#[repr(C)] pub struct NetIpv4 { src: u32, dst: u32, proto: u32, off: u32, len: u32 }
+#[repr(C)] pub struct NetUdp { sport: u32, dport: u32, off: u32, len: u32 }
+#[repr(C)] pub struct NetTcp { sport: u32, dport: u32, seq: u32, ack: u32, flags: u32, win: u32, mss: u32, hl: u32 }
+#[repr(C)] pub struct NetDhcp { kind: u32, yiaddr: u32, mask: u32, gw: u32, dns: u32, server: u32, lease: u32 }
+const NET_LAYOUT: [u32; 5] = [core::mem::size_of::<NetArp>() as u32, core::mem::size_of::<NetIpv4>() as u32,
+    core::mem::size_of::<NetUdp>() as u32, core::mem::size_of::<NetTcp>() as u32, core::mem::size_of::<NetDhcp>() as u32];
+
+/// Stores `v` through `out` when both are there; the C bool result.
+unsafe fn give<T>(out: *mut T, v: Option<T>) -> CBool {
+    match v {
+        Some(v) if !out.is_null() => { out.write(v); 1 }
+        _ => 0,
+    }
+}
+
+/// uint16_t ip_checksum(const void *data, uint32_t len, uint32_t initial)
+#[no_mangle]
+pub unsafe extern "C" fn ip_checksum(data: *const u8, len: u32, initial: u32) -> u16 {
+    net::checksum(in_slice(data, len), initial)
+}
+
+/// bool str_to_ip(const char *s, uint32_t *ip)
+#[no_mangle]
+pub unsafe extern "C" fn str_to_ip(s: *const c_char, ip: *mut u32) -> CBool {
+    if s.is_null() { return 0; }
+    give(ip, net::parse_ipv4_addr(core::ffi::CStr::from_ptr(s).to_bytes()))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn net_parse_arp(p: *const u8, len: u32, out: *mut NetArp) -> CBool {
+    let mut sha = [0u8; 8];
+    give(out, net::arp(in_slice(p, len)).map(|a| { sha[..6].copy_from_slice(&a.sha); NetArp { op: a.op as u32, spa: a.spa, tpa: a.tpa, sha } }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn net_parse_ipv4(p: *const u8, len: u32, out: *mut NetIpv4) -> CBool {
+    give(out, net::ipv4(in_slice(p, len)).map(|i| NetIpv4 { src: i.src, dst: i.dst, proto: i.proto as u32, off: i.off as u32, len: i.len as u32 }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn net_parse_udp(p: *const u8, len: u32, out: *mut NetUdp) -> CBool {
+    give(out, net::udp(in_slice(p, len)).map(|u| NetUdp { sport: u.sport as u32, dport: u.dport as u32, off: u.off as u32, len: u.len as u32 }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn net_parse_tcp(p: *const u8, len: u32, out: *mut NetTcp) -> CBool {
+    give(out, net::tcp(in_slice(p, len)).map(|t| NetTcp {
+        sport: t.sport as u32, dport: t.dport as u32, seq: t.seq, ack: t.ack, flags: t.flags as u32,
+        win: t.win as u32, mss: t.mss as u32, hl: t.hl as u32,
+    }))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn net_parse_dhcp(m: *const u8, len: u32, xid: u32, out: *mut NetDhcp) -> CBool {
+    give(out, net::dhcp(in_slice(m, len), xid).map(|d| NetDhcp {
+        kind: d.kind as u32, yiaddr: d.yiaddr, mask: d.mask, gw: d.gw, dns: d.dns, server: d.server, lease: d.lease,
+    }))
+}
+
+/// int net_parse_dns(const uint8_t *m, uint32_t len, uint16_t id, uint32_t *ip, int *rcode)
+#[no_mangle]
+pub unsafe extern "C" fn net_parse_dns(m: *const u8, len: u32, id: u16, ip: *mut u32, rcode: *mut c_int) -> c_int {
+    match net::dns(in_slice(m, len), id) {
+        net::Dns::NotOurs => -1,
+        net::Dns::Address(a) => { if !ip.is_null() { *ip = a; } 1 }
+        net::Dns::NoAddress { rcode: r } => { if !rcode.is_null() { *rcode = r as c_int; } 0 }
+    }
 }

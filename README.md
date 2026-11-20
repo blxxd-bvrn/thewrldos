@@ -363,6 +363,16 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     mtools (long names, a 200-entry directory, a deleted entry, a fragmented file, dates) and
     DMGs with zlib, raw and zero chunks, MBR and GPT maps, HFS+ and an unsupported codec
     (`tools/gen_diskimage_testdata.py`).
+  - **Network packet parsing (`rust/src/net.rs`, from `src/net/net.c` and `tcp.c`):** every
+    received ARP packet, IPv4 header, UDP datagram, TCP header (with its MSS option), DHCP
+    reply and DNS answer is checked and read in Rust; the C code keeps the protocol state
+    (ARP cache, connections, the DHCP and DNS clients) and acts on what the parsers return.
+    The Internet checksum and `str_to_ip` moved too. One addition: IPv4 headers with a wrong
+    checksum are now dropped (the C code never checked). Over 400,000 mutated packets the old
+    and new parsers agreed on every one, apart from those checksum drops. Tested live on both
+    editions with e1000 and virtio-net: DHCP, ping, a download with its SHA-256 checked, DNS
+    through a CNAME and a non-existent name (`ipconfig /dns A.B.C.D` sets the DNS server by
+    hand), and inbound connections to a Winsock server.
 
 ### Kernel (`src/kernel`)
 - **CPU and interrupts:**
@@ -1446,7 +1456,7 @@ src/arch           boot stub, interrupt/context-switch assembly, linker script: 
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, VFS, ATA, FAT32 and NTFS (r/w),
                    persistence
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
-                   FAT image reader, DMG disk images
+                   FAT image reader, DMG disk images, network packet parsers
 src/net            network card drivers, ARP/IP/ICMP/UDP/DHCP/DNS, TCP, TLS glue, HTTP
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
