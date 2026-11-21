@@ -517,6 +517,28 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     sheets, rules, variables and selector lists use fallible allocation, so running out of
     memory drops style rules instead of crashing (the tree's nodes still come from the
     page arena, as before).
+  - **Persistence (`rust/src/kernel/persistk.rs` and `rust/src/persist.rs`, was
+    `src/kernel/persist.c`):** finding the system partition at boot (and upgrading systems
+    installed by older versions: `C:\Windows` to `C:\WRLD`, the old classic style and browser
+    shortcut), writing every change on C: back to the disk (folders, deletes and renames at
+    once, file contents from the background `persistd` task and on shutdown), the settings
+    store behind `settings_get`/`settings_set`, reading and writing `C:\WRLD\wrld.ini`, and
+    the account password. `persist.rs` (settings store, ini format, password digest, the
+    upgrade's style rewrite) has host tests; the digest matches the C one. Copying the
+    settings to and from the desktop's variables stays in C (`settings_apply` and
+    `settings_capture` in `persist.c`). The dirty-file list was shared by the VFS hook and
+    the write-back task with no locking, so a file deleted during a flush could stay in it
+    and a file changed just as a flush ended could be dropped; it is now changed with
+    interrupts off, a flush takes it as one batch, a delete also clears the batch being
+    written, and two flushes (the background task and shutdown) take turns. Folder trees
+    that arrive on C: are walked without recursion. The same session (folders, files,
+    appends, deletes before and after a flush, renames, copying and moving a folder of 15
+    fonts, a style, the volume and a password, then a reboot and logon with that password)
+    left the same files, contents and `wrld.ini` on FAT32 disks installed with the old and
+    new kernels and on an NTFS disk, and both kernels upgraded an old-style install the same
+    way. (The VM test also caught a Rust pitfall: in inline assembly a bare `pushf` assembles
+    to the 16-bit `pushfw`, which left the stack two bytes off; it is spelled `pushfd` /
+    `pushfq`.)
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -695,8 +717,8 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
   - Read-only FAT12/16/32 reader for disk images.
   - DEFLATE/zlib decompressor and UDIF `.dmg` parser.
 - **Files:** in-memory VFS with drive letters (in Rust: `rust/src/kernel/vfsk.rs`), filled from a tar initrd (live CD) or from the
-  system partition (installed). `persist.c` writes changes back to the disk and keeps the
-  settings file.
+  system partition (installed). `rust/src/kernel/persistk.rs` writes changes back to the disk
+  and keeps the settings file.
 
 ### Linux programs (`src/linux`, 64-bit edition)
 The first step towards running WPE WebKit as a browser on THE WRLD OS: unmodified x86-64 Linux
@@ -1629,15 +1651,16 @@ used to test every screen above, including a full install from a blank disk.
 ```
 Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
-src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, ATA, persistence (the VFS, FAT32
-                   and NTFS are in rust/)
+src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, ATA, applying the settings (the
+                   VFS, FAT32, NTFS and persistence are in rust/)
 rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLATE decoder,
                    FAT image reader, DMG disk images, network packet parsers and network stack,
                    PE (Windows program) loader, the registry, the FAT32 and NTFS drivers, the in-memory
                    file system (kernel/vfsk.rs, paths and the initrd in vfspath.rs), the smaller Win32 API
                    files (kernel/w32*.rs, their parsing in w32util.rs), the shell (shell.rs, kernel/shk.rs),
                    the PNG/GIF/JPEG/BMP decoders (imgdec.rs, kernel/imgk.rs), the browser's
-                   document tree, CSS parsing and cascade (html.rs, css.rs)
+                   document tree, CSS parsing and cascade (html.rs, css.rs), persistence and
+                   the settings file (persist.rs, kernel/persistk.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and

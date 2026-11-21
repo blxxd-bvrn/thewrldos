@@ -12,6 +12,8 @@
 //! - C structs that Rust reads or writes are mirrored with `#[repr(C)]`, and C exports
 //!   their real layout so `rust_init` can check it at boot. The kernel's `bool` is an `int`:
 //!   use `kernel::CBool` for it, never Rust's `bool`.
+//! - Inline assembly that pushes or pops the flags names the operand size (`pushfd`/`popfd`,
+//!   `pushfq`/`popfq`): a bare `pushf` assembles to the 16-bit form and unbalances the stack.
 #![cfg_attr(feature = "kernel", no_std)]
 
 extern crate alloc;
@@ -27,6 +29,7 @@ pub mod vfspath;
 pub mod shell;
 pub mod imgdec;
 pub mod css;
+pub mod persist;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 pub mod pe;
