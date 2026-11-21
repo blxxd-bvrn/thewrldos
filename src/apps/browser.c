@@ -1,5 +1,5 @@
 /* The WRLD Browser - web browser.
- * Pages load on a worker task (DNS, TCP, TLS, HTTP), are parsed by html.c and
+ * Pages load on a worker task (DNS, TCP, TLS, HTTP), are parsed by rust/src/html.rs and
  * laid out here into a display list (text runs, boxes, images, form
  * controls). Images load after the text and the page is laid out again.
  * Ads and trackers are filtered by adblock.c. */

@@ -493,6 +493,30 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     JPEG headers: a table segment shorter than it claims now reads as zeros instead of the
     next segment's bytes, a zero sampling factor is refused, and the 3 where the C decoder had
     overwritten its own state.
+  - **The browser's document parser (`rust/src/html.rs` and `rust/src/css.rs`, was
+    `src/apps/html.c`):** everything between Lexbor and the layout engine. `html.rs` builds
+    the tree from Lexbor's parse events (title, `<base>`, refresh, body colours, linked and
+    `<style>` sheets, depth capped at 512), runs the cascade with Lexbor's selector matcher
+    on that tree, and serves `innerHTML` fragments and `querySelector()`; `css.rs`, with host
+    tests, parses declarations (colours, gradients, lengths, the box model, positioning,
+    flexbox and grid, `calc()`/`min()`/`max()`/`clamp()`, `var()` with fallbacks),
+    `@media` queries, sheets into rules and custom properties, and the charset and UTF-8
+    clean-up. Nodes stay C `node_t`s in the page arena (`html.c` now holds only the arena)
+    and `doc_t` keeps its fields; the sheets, rules and variables are Rust's, and `rust_init`
+    checks the three structures' layout. To compare, the old and new code were built on the
+    build machine with the real Lexbor into two programs that print the whole tree, every
+    element's computed style and 17 selector matches per element, after linked sheets
+    arrive and after an `innerHTML` fragment. They printed the same for 278 real pages
+    (documentation found on the build machine, paired with 56 real style sheets), 1,500
+    generated pages using every property the parser knows, 4,000 damaged ones and 11 stress
+    pages (3,000-deep nesting, a 20 KB `style=""`, self-referencing variables, 5,000 rules,
+    50 `@media` levels, 50 links), and ten pages looked pixel-identical in the 32-bit
+    edition's browser on the old and new kernels. Nothing is shared between documents any
+    more (the C code sent every declaration through one static 8 KB buffer and `strtok`,
+    and `var()` read whichever page was styled last, even one already freed), and the
+    sheets, rules, variables and selector lists use fallible allocation, so running out of
+    memory drops style rules instead of crashing (the tree's nodes still come from the
+    page arena, as before).
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -913,7 +937,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Mbed TLS's random generator is seeded from RDRAND and timing jitter, conditioned with SHA-256.
 - **HTTP/1.1 client:** GET and POST, redirects, chunked transfer, gzip/deflate.
 
-### The WRLD Browser (`src/apps/browser.c`, `html.c`; images: `rust/src/imgdec.rs`)
+### The WRLD Browser (`src/apps/browser.c`; documents: `rust/src/html.rs`, `css.rs`; images: `rust/src/imgdec.rs`)
 - **Window:** up to 12 tabs per window, each with its own page, history and loading task, in
   the same 2007 look as the WebKit browser: round blue Back and Forward buttons, the address
   field with Refresh and Stop at its end (the lock shows on secure pages; focusing it selects
@@ -950,7 +974,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   in document order before the first layout, filtered by the ad blocker, and cascaded with the
   page's `<style>` sheets.
 - **Parsing:** Lexbor 3.0's HTML5 parser (`third_party/lexbor`, glue in `src/lexbor/lexglue.c`)
-  builds the tree, so misnested tags, tables and entities come out as in other browsers;
+  parses the page and `rust/src/html.rs` builds the browser's tree from it, so misnested tags, tables and entities come out as in other browsers;
   `innerHTML` parses fragments in the context of their element.
 - **CSS:** full selectors (combinators, attribute selectors, `:not()`, `:is()`, `:nth-child()`
   and the other structural pseudo-classes), parsed by Lexbor and matched on the browser's own tree,
@@ -1612,14 +1636,15 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    PE (Windows program) loader, the registry, the FAT32 and NTFS drivers, the in-memory
                    file system (kernel/vfsk.rs, paths and the initrd in vfspath.rs), the smaller Win32 API
                    files (kernel/w32*.rs, their parsing in w32util.rs), the shell (shell.rs, kernel/shk.rs),
-                   the PNG/GIF/JPEG/BMP decoders (imgdec.rs, kernel/imgk.rs)
+                   the PNG/GIF/JPEG/BMP decoders (imgdec.rs, kernel/imgk.rs), the browser's
+                   document tree, CSS parsing and cascade (html.rs, css.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
-                   browser (html.c, dom.c, adblock.c), image format dispatch and SVG (imgdec.c, svg.c)
+                   browser (dom.c, adblock.c, the page arena in html.c), image format dispatch and SVG (imgdec.c, svg.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;

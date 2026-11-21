@@ -1,4 +1,4 @@
-/* The WRLD Browser - internal interfaces shared by html.c and browser.c */
+/* The WRLD Browser - internal interfaces shared by browser.c, dom.c, svg.c and the documents (rust/src/html.rs) */
 #ifndef BROWSER_H
 #define BROWSER_H
 #include "kernel.h"
@@ -80,11 +80,8 @@ typedef struct node {
     struct node *parent, *first, *last, *next;
 } node_t;
 
-/* one complex selector of a style rule (selectors are parsed by Lexbor, see lexglue.h) */
-typedef struct { void *sel; uint32_t spec, order; css_t css; } css_rule_t;
-typedef struct css_bucket { uint32_t hash; int kind; char *key; int *idx; int n, cap; struct css_bucket *next; } css_bucket_t;
-#define CSS_BUCKETS 256
 #define MAX_LINKED_SHEETS 12
+/* A parsed page (rust/src/html.rs builds it; the layout is checked at boot). */
 typedef struct {
     arena_t arena;
     node_t *root;                 /* stands in for <body>, whose attributes it carries */
@@ -93,16 +90,10 @@ typedef struct {
     char refresh[1024]; int refresh_s;
     uint32_t bgcolor, text, link, vlink;
     bool rtl;                          /* <html dir=rtl> or <body dir=rtl>: right-to-left by default */
-    css_rule_t *rules; int nrules, caprules;
-    css_bucket_t *buckets[CSS_BUCKETS];
-    void *selpool;
     int nsheets;                  /* <style> and <link> sheets seen, in document order */
     struct { char *href; int sheet; } links[MAX_LINKED_SHEETS]; int nlinks;
-    /* every sheet's text, so the rules can be parsed again when a linked sheet arrives */
-    struct { char *text; int len, sheet; } *sheets; int nsheet_text, capsheet_text;
-    /* CSS custom properties (--name: value), document-wide */
-    char **vnames, **vvals; uint8_t *vprio; int nvars, capvars;
-    bool var_filter;                   /* the tree is complete: a rule's variables count only if it matches an element */
+    void *css;                    /* Rust's: every sheet's text, the rules and the custom properties */
+    int nrules;                   /* style rules (selectors) the sheets gave */
 } doc_t;
 
 doc_t *html_parse(const char *src, uint32_t len, const char *charset, const char *url);
@@ -156,13 +147,13 @@ typedef struct page {
 extern bool js_enabled;
 void page_rebuild(page_t *p);
 uint64_t page_memory(page_t *p);
-void html_restyle(doc_t *d, node_t *n);                 /* html.c: re-apply CSS to n and its subtree */
+void html_restyle(doc_t *d, node_t *n);                 /* re-apply CSS to n and its subtree */
 void html_restyle_all(doc_t *d);
 void html_add_stylesheet(doc_t *d, const char *css, uint32_t len, int sheet);   /* a downloaded <link> sheet */
 int html_matches(node_t *n, const char *sel_utf8);      /* 1 match, 0 no, -1 invalid selector */
 int html_selector_valid(const char *sel_utf8);
 const char *html_parser_version(void);
-void css_parse_decls(const char *s, int n, css_t *out); /* html.c */
+void css_parse_decls(const char *s, int n, css_t *out); /* rust/src/html.rs */
 bool html_is_void(const char *tag);
 
 /* ad blocker (adblock.c) */

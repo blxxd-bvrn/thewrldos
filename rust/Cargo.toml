@@ -20,6 +20,8 @@ crate-type = ["staticlib", "rlib"]
 
 [features]
 kernel = []
+# the browser documents (html.rs) for a host test program that links Lexbor and the arena from C
+htmldoc = []
 
 [profile.dev]
 panic = "abort"

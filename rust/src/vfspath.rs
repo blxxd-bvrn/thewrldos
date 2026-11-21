@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn tar() {
         let mut a = Vec::new();
-        let mut hdr = |name: &str, ty: u8, data: &[u8], a: &mut Vec<u8>| {
+        let hdr = |name: &str, ty: u8, data: &[u8], a: &mut Vec<u8>| {
             let mut h = [0u8; 512];
             h[..name.len()].copy_from_slice(name.as_bytes());
             let sz = alloc::format!("{:011o}", data.len());

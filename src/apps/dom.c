@@ -114,7 +114,7 @@ int dom_attr_count(void *n) { return ND(n)->type ? 0 : ND(n)->nattr; }
 char *dom_attr_name(void *n, int i) { return i >= 0 && i < ND(n)->nattr ? to_utf8(ND(n)->attr[i * 2], -1) : NULL; }
 
 /* ---------------- selectors ---------------- */
-/* Selectors are parsed by Lexbor and matched on this tree by html.c (the same
+/* Selectors are parsed by Lexbor and matched on this tree by rust/src/html.rs (the same
  * matcher the style sheets use). sel is UTF-8. */
 int dom_matches(void *n, const char *sel) {
     if (ND(n)->type) return 0;

@@ -26,6 +26,9 @@ pub mod ntfs;
 pub mod vfspath;
 pub mod shell;
 pub mod imgdec;
+pub mod css;
+#[cfg(any(feature = "kernel", feature = "htmldoc"))]
+pub mod html;
 pub mod pe;
 pub mod registry;
 pub mod w32util;
