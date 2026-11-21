@@ -621,9 +621,11 @@ bench-shaders: build64/shadertest
 build64/basicfbtest: tools/basicfbtest.c src/gui/basicfb.c src/kernel/bootinfo.c src/include/basicfb.h src/include/fbmap.h src/include/bootinfo.h
 	@mkdir -p build64
 	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/basicfbtest.c src/gui/basicfb.c
-build64/gfxpresenttest: tools/gfxpresenttest.c tools/gfxpresent_assets.c src/gui/gfx.c src/gui/basicfb.c src/gui/ttf.c src/gui/text.c $(wildcard src/include/*.h)
+# the font engine is Rust (rust/src/ttf.rs): the host build of the library provides it
+build64/gfxpresenttest: tools/gfxpresenttest.c tools/gfxpresent_assets.c src/gui/gfx.c src/gui/basicfb.c src/gui/text.c rust/src/ttf.rs $(wildcard src/include/*.h)
 	@mkdir -p build64
-	$(HOSTCC) $(SHADER_HOST_FLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tools/gfxpresenttest.c tools/gfxpresent_assets.c src/gui/basicfb.c src/gui/ttf.c src/gui/text.c
+	cd rust && cargo build --release --quiet
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -ffunction-sections -fdata-sections -Wl,--gc-sections -o $@ tools/gfxpresenttest.c tools/gfxpresent_assets.c src/gui/basicfb.c src/gui/text.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
 check-display: build64/basicfbtest build64/gfxpresenttest
 	./build64/basicfbtest
 	./build64/gfxpresenttest

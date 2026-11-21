@@ -1,5 +1,6 @@
 /* A small TrueType engine: sfnt tables, Unicode cmaps, outlines with
- * composites, quadratic rasterisation with 8x8 anti-aliasing.
+ * composites, quadratic rasterisation with 8x8 anti-aliasing. It is written in
+ * Rust (rust/src/ttf.rs); this is its C interface.
  *
  * It has no library dependencies and no global state: the caller supplies the
  * font file and an allocator, which is what lets the kernel and a host test

@@ -539,6 +539,22 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     way. (The VM test also caught a Rust pitfall: in inline assembly a bare `pushf` assembles
     to the 16-bit `pushfw`, which left the stack two bytes off; it is spelled `pushfd` /
     `pushfq`.)
+  - **The font engine (`rust/src/ttf.rs`, was `src/gui/ttf.c`):** TrueType tables, Unicode
+    cmaps, `kern` pairs, OpenType shaping (GSUB substitutions and ligatures, contextual and
+    chaining lookups, Arabic joining forms, GPOS kerning and mark attachment) and the
+    anti-aliased rasteriser. Its C interface (`src/include/ttf.h`) needs only the caller's
+    allocator, so the kernel and the `check-display` host test link the same code. Built on
+    the build machine next to the old C engine, it gave identical metrics, cmaps, advances,
+    kerning, shaping and pixels for the 13 bundled fonts and all 107 TrueType fonts found on
+    the build machine (about 1.3 million glyph renders at four sizes, upright and slanted, and
+    shaping of Latin, Arabic, Hebrew and combining-mark text plus random strings); the 49
+    CFF fonts are refused by both. On 3,000 damaged fonts the C engine overflowed its buffer
+    on 13 (lookup subtable offsets it read without checking); the Rust one reads 0 past the
+    file and matched the C results on all the others. One C bug is fixed: GPOS pair
+    positioning (format 1) stepped through each pair set 2 bytes too far per record, so only
+    the first pair of a set ever matched; "Te", "Ta" and similar pairs in Liberation Sans now
+    kern as the font intends, which moves text after them by a pixel or so. Rendering is as
+    fast as before; shaping Arabic is up to about a third slower, and lines are cached.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1238,7 +1254,7 @@ device manager's job is to say what the computer has and which driver runs it.
       `/dev/wrld/window`).
 - **Rendering:**
   - Double-buffered framebuffer renderer (1024×768×32).
-  - **TrueType text** (`src/gui/ttf.c`): a small engine with no library dependencies that reads
+  - **TrueType text** (`rust/src/ttf.rs`): a small engine with no library dependencies that reads
     the sfnt tables, Unicode cmaps (formats 4 and 12), composite glyphs and `kern` pairs, and
     fills each glyph with 8 horizontal scanlines per pixel. Faces come from `C:\WRLD\Fonts`
     (Liberation Sans, Serif and Mono, SIL OFL) and can be drawn at any pixel size; rasterisations are
@@ -1660,10 +1676,11 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    files (kernel/w32*.rs, their parsing in w32util.rs), the shell (shell.rs, kernel/shk.rs),
                    the PNG/GIF/JPEG/BMP decoders (imgdec.rs, kernel/imgk.rs), the browser's
                    document tree, CSS parsing and cascade (html.rs, css.rs), persistence and
-                   the settings file (persist.rs, kernel/persistk.rs)
+                   the settings file (persist.rs, kernel/persistk.rs), the TrueType engine with
+                   OpenType shaping (ttf.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
-src/gui            graphics, the TrueType text engine with OpenType shaping (ttf.c), bidi and
+src/gui            graphics, text layout with bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
