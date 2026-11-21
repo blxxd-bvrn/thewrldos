@@ -1,6 +1,7 @@
 /* Linux software packages (.deb and .rpm) on the 64-bit edition: reading them,
  * checking what they need, installing them into C:\Linux and removing them.
- * src/apps/pkg.c (the work and the dpkg/rpm/apt commands), src/apps/pkgui.c
+ * rust/src/pkgfmt.rs and rust/src/kernel/pkgk.rs (reading and checking), src/apps/pkg.c
+ * (installing, removing, the records and the dpkg/rpm/apt commands), src/apps/pkgui.c
  * (the installer window). */
 #ifndef PKG_H
 #define PKG_H
@@ -54,6 +55,7 @@ bool pkg_load(const char *wrld_path, pkg_t *p);          /* false: p->err says w
 void pkg_free(pkg_t *p);
 bool pkg_arch_ok(const pkg_t *p);                         /* amd64/x86_64/all/noarch */
 void pkg_check(const pkg_t *p, pkg_check_t *c);
+const pkg_entry_t *pkg_find_entry(const pkg_t *p, const char *path);   /* by Linux path */
 /* install / remove; progress lines go to out (may be NULL); *pct (may be NULL) follows the work */
 bool pkg_install(pkg_t *p, pkg_out_fn out, void *ctx, volatile int *pct, char *msg, int mcap);
 bool pkg_remove(const char *name, pkg_out_fn out, void *ctx, char *msg, int mcap);

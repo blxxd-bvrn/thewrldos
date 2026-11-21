@@ -2,7 +2,7 @@
  * an .rpm are gzip, xz, LZMA ("lzma_alone", old .debs) or Zstandard streams.
  * xz and LZMA go through XZ Embedded (third_party/xz-embedded), Zstandard through
  * the zstd reference decoder (third_party/zstd-dec), gzip through the kernel's
- * inflate. Built against the C library shim, whose malloc is the kernel heap. */
+ * inflate (rust/src/pkgfmt.rs). Built against the C library shim, whose malloc is the kernel heap. */
 #include <stdint.h>
 #include <stdbool.h>
 #include <stdlib.h>
@@ -12,8 +12,6 @@
 #include "zstd_decompress.h"
 #include "unpack.h"
 
-int inflate_raw(const uint8_t *src, uint32_t srclen, uint8_t *dst, uint32_t dstcap, uint32_t *outlen);
-extern uint32_t inflate_used;
 
 int unpack_kind(const uint8_t *s, uint32_t n) {
     if (n >= 3 && s[0] == 0x1F && s[1] == 0x8B && s[2] == 8) return UNPACK_GZIP;
@@ -30,38 +28,9 @@ const char *unpack_kind_name(int k) {
 
 static void say(char *err, int ecap, const char *m) { if (err && ecap) snprintf(err, ecap, "%s", m); }
 
-/* gzip: one or more members (RFC 1952), each a raw deflate stream */
-static uint8_t *gunzip(const uint8_t *s, uint32_t n, uint32_t max_out, uint32_t *outlen, char *err, int ecap) {
-    /* the size of the last member is in its trailer; with several members, grow */
-    uint32_t want = n >= 4 ? (uint32_t)s[n - 4] | (uint32_t)s[n - 3] << 8 | (uint32_t)s[n - 2] << 16 | (uint32_t)s[n - 1] << 24 : 0;
-    uint32_t cap = want > n ? want : n * 4;
-    for (int tries = 0; tries < 6; tries++) {
-        if (cap > max_out) cap = max_out;
-        uint8_t *out = malloc(cap ? cap : 1);
-        if (!out) { say(err, ecap, "not enough memory to unpack"); return NULL; }
-        uint32_t at = 0, pos = 0; int bad = 0;
-        while (pos + 18 <= n && s[pos] == 0x1F && s[pos + 1] == 0x8B) {
-            uint8_t flg = s[pos + 3];
-            uint32_t p = pos + 10;
-            if (flg & 4) { if (p + 2 > n) { bad = 1; break; } p += 2 + (s[p] | s[p + 1] << 8); }   /* FEXTRA */
-            if (flg & 8) { while (p < n && s[p]) p++; p++; }                                     /* FNAME */
-            if (flg & 16) { while (p < n && s[p]) p++; p++; }                                    /* FCOMMENT */
-            if (flg & 2) p += 2;                                                                 /* FHCRC */
-            if (p >= n) { bad = 1; break; }
-            uint32_t got = 0;
-            int r = inflate_raw(s + p, n - p, out + at, cap - at, &got);
-            if (r < 0) { bad = 2; break; }
-            at += got;
-            pos = p + inflate_used + 8;                 /* past the member's CRC and size */
-        }
-        if (!bad) { *outlen = at; return out; }
-        free(out);
-        if (bad == 1 || cap >= max_out) break;
-        cap *= 2;
-    }
-    say(err, ecap, "the gzip data is damaged or too large");
-    return NULL;
-}
+/* gzip: one or more members (RFC 1952), each a raw deflate stream (rust/src/pkgfmt.rs) */
+uint8_t *unpack_gunzip(const uint8_t *s, uint32_t n, uint32_t max_out, uint32_t *outlen, char *err, int ecap);
+static uint8_t *gunzip(const uint8_t *s, uint32_t n, uint32_t max_out, uint32_t *outlen, char *err, int ecap) { return unpack_gunzip(s, n, max_out, outlen, err, ecap); }
 
 /* xz and LZMA ("lzma_alone"), in pieces, into a growing buffer */
 static uint8_t *unxz(const uint8_t *s, uint32_t n, uint32_t max_out, uint32_t *outlen, char *err, int ecap) {

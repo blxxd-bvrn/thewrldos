@@ -555,6 +555,25 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     the first pair of a set ever matched; "Te", "Ta" and similar pairs in Liberation Sans now
     kern as the font intends, which moves text after them by a pixel or so. Rendering is as
     fast as before; shaping Arabic is up to about a third slower, and lines are cached.
+  - **Reading and checking software packages (`rust/src/pkgfmt.rs` and
+    `rust/src/kernel/pkgk.rs`, were in `src/apps/pkg.c` and `src/pkg/unpack.c`):** ar, tar
+    (GNU long names, pax) and cpio archives, Debian control files, RPM headers, gzip members,
+    the pre-install check (dependencies, and the loader, `NEEDED` libraries, `RUNPATH` and
+    symbol versions of every ELF program, and script interpreters), and the `.desktop`
+    entries and `update-alternatives` lines the installer reads. `pkg.c` keeps installing,
+    removing, the records, the menus and the dpkg/rpm/apt commands; xz and Zstandard stay
+    C libraries. The check sees the installed system through a small interface, so it was
+    compared on the build machine with the old C against the machine's real Ubuntu
+    libraries: the same package fields, file lists, payloads and check results for 782
+    Debian packages (Ubuntu 24.04) and 106 CentOS Stream 9 RPMs, and for 2,997 of 3,000
+    damaged ones; on the other 3 (damaged RPM tag counts) the C code spun for minutes and
+    the Rust one answers in under a tenth of a second. Installing hello, figlet (with its
+    update-alternatives lines), cowsay, a package with a menu entry and two RPMs printed the
+    same in the 64-bit edition with the old and new kernels. Fixed on the way: a pax record
+    shorter than its key gave a negative copy length, cpio names and pax lengths were read
+    past the end of the archive, 32-bit size checks in ar and cpio and the 64-bit ELF
+    program header check could wrap, an empty item hung `list_add`, and an RPM tag claiming
+    billions of entries looped for as long.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -833,7 +852,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   crashed the compositor under programs that resize while starting).
 - **Software packages (.deb and .rpm).** Double-clicking a `.deb` (Debian, Ubuntu, Mint) or an
   `.rpm` (Fedora, openSUSE, Red Hat) opens the Linux Package Installer (`src/apps/pkg.c`,
-  `pkgui.c`): it shows what the package is and checks what it needs before installing:
+  `pkgui.c`, reading packages in `rust/src/pkgfmt.rs`): it shows what the package is and checks what it needs before installing:
   the packages it depends on (those installed and those the image carries, listed at build time
   in `C:\Linux\var\lib\wrld\base-packages`), the shared libraries its programs load, the
   library versions they were built against (`GLIBC_2.39`...) and their script interpreters.
@@ -1677,7 +1696,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    the PNG/GIF/JPEG/BMP decoders (imgdec.rs, kernel/imgk.rs), the browser's
                    document tree, CSS parsing and cascade (html.rs, css.rs), persistence and
                    the settings file (persist.rs, kernel/persistk.rs), the TrueType engine with
-                   OpenType shaping (ttf.rs)
+                   OpenType shaping (ttf.rs), reading and checking .deb/.rpm packages (pkgfmt.rs,
+                   kernel/pkgk.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
 src/gui            graphics, text layout with bidi and

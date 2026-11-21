@@ -1,7 +1,9 @@
 /* Linux software packages: .deb (Debian, Ubuntu, Mint...) and .rpm (Fedora, openSUSE,
- * RHEL...). A package is read whole: its metadata (control file or RPM header) and its
- * files (a tar or cpio archive compressed with gzip, xz or Zstandard, unpacked by
- * src/pkg/unpack.c). Installing writes the files under C:\Linux (/ for Linux programs,
+ * RHEL...). Reading a package (its control file or RPM header, and its files: a tar or
+ * cpio archive compressed with gzip, xz or Zstandard) and checking it are in Rust:
+ * rust/src/pkgfmt.rs, with pkg_load and pkg_check in rust/src/kernel/pkgk.rs. This file
+ * installs and removes packages, keeps their records and menu entries, and has the
+ * dpkg/rpm/apt commands. Installing writes the files under C:\Linux (/ for Linux programs,
  * with /bin, /lib and /sbin folded into /usr as the Linux layer does) and records them
  * in C:\Linux\var\lib\wrld\packages\NAME.list, so the package can be removed again.
  *
@@ -24,7 +26,6 @@
 int pkg_db_generation = 1;
 
 /* ------------------------------------------------------------------ text helpers */
-static uint32_t be32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 static void trim(char *s) {
     char *a = s; while (*a == ' ' || *a == '\t') a++;
     if (a != s) memmove(s, a, strlen(a) + 1);
@@ -69,405 +70,24 @@ static void field_to(const char *text, const char *name, char *dst, int cap) {
     if (v) { char *nl = strchr(v, '\n'); if (nl) *nl = 0; strlcpy(dst, v, cap); kfree(v); }
 }
 
-static void canon(char *p, int cap);
-/* a path from an archive as an absolute, normalised Linux path; false for ".." */
-static bool norm_path(const char *in, char *out, int cap) {
-    char tmp[512]; int o = 0;
-    tmp[o++] = '/';
-    for (const char *p = in; *p; ) {
-        while (*p == '/') p++;
-        if (!*p) break;
-        const char *e = strchr(p, '/'); int l = e ? (int)(e - p) : (int)strlen(p);
-        if (l == 1 && p[0] == '.') { p += l; continue; }
-        if (l == 2 && p[0] == '.' && p[1] == '.') return false;
-        if (o > 1) tmp[o++] = '/';
-        if (o + l >= (int)sizeof tmp - 1) return false;
-        memcpy(tmp + o, p, l); o += l; p += l;
-    }
-    tmp[o] = 0;
-    canon(tmp, sizeof tmp);
-    if ((int)strlen(tmp) >= cap) return false;
-    strlcpy(out, tmp, cap);
-    return true;
-}
-/* /bin, /sbin, /lib and /lib64 are /usr/bin ... (merged /usr, as the Linux layer has it) */
-static void canon(char *p, int cap) {
-    static const char *merged[] = { "/lib", "/lib64", "/bin", "/sbin" };
-    for (unsigned i = 0; i < ARRAY_LEN(merged); i++) {
-        int l = strlen(merged[i]);
-        if (!strncmp(p, merged[i], l) && (p[l] == '/' || !p[l])) {
-            if ((int)strlen(p) + 4 >= cap) return;
-            memmove(p + 4, p, strlen(p) + 1); memcpy(p, "/usr", 4);
-            return;
-        }
-    }
-}
-/* resolve "target" seen from the directory of "linkpath" ('..' allowed, stops at /) */
-static void join_link(const char *linkpath, const char *target, char *out, int cap) {
-    char buf[600];
-    if (target[0] == '/') strlcpy(buf, target, sizeof buf);
-    else { char dir[512]; strlcpy(dir, linkpath, sizeof dir); char *sl = strrchr(dir, '/'); if (sl) *sl = 0; snprintf(buf, sizeof buf, "%s/%s", dir, target); }
-    char parts[64][96]; int np = 0;
-    for (char *p = buf; *p; ) {
-        while (*p == '/') p++;
-        if (!*p) break;
-        char *e = strchr(p, '/'); int l = e ? (int)(e - p) : (int)strlen(p);
-        if (l == 2 && p[0] == '.' && p[1] == '.') { if (np) np--; }
-        else if (!(l == 1 && p[0] == '.') && np < 64) { int k = MIN(l, 95); memcpy(parts[np], p, k); parts[np][k] = 0; np++; }
-        p += l;
-    }
-    out[0] = 0;
-    for (int i = 0; i < np; i++) { strlcat(out, "/", cap); strlcat(out, parts[i], cap); }
-    if (!out[0]) strlcpy(out, "/", cap);
-}
-/* Linux path -> WRLD path: / is C:\Linux and /bin, /sbin, /lib, /lib64 live under /usr */
-static void lx_to_wrld(const char *lp, char *out, int cap) {
-    static const char *merged[] = { "/lib", "/lib64", "/bin", "/sbin" };
-    char tmp[600]; strlcpy(tmp, lp, sizeof tmp);
-    for (unsigned i = 0; i < ARRAY_LEN(merged); i++) {
-        int l = strlen(merged[i]);
-        if (!strncmp(lp, merged[i], l) && (lp[l] == '/' || !lp[l])) { snprintf(tmp, sizeof tmp, "/usr%s", lp); break; }
-    }
-    snprintf(out, cap, "C:\\Linux%s", strcmp(tmp, "/") ? tmp : "");
-    for (char *c = out; *c; c++) if (*c == '/') *c = '\\';
-}
+/* paths and the parts of a package the installer reads: Rust (rust/src/pkgfmt.rs) */
+void pkg_canon(char *p, int cap);
+void pkg_join_link(const char *linkpath, const char *target, char *out, int cap);
+void pkg_lx_to_wrld(const char *lpath, char *out, int cap);
+bool pkg_desktop_entry(const uint8_t *data, uint32_t size, char *name, int ncap, char *cmd, int ccap, bool *terminal);
+void pkg_alternatives(const char *script, void (*fn)(void *ctx, const char *link, const char *path), void *ctx);
+#define canon pkg_canon
+#define join_link pkg_join_link
+#define lx_to_wrld pkg_lx_to_wrld
 static vnode_t *lx_resolve(const char *lp) { char w[600]; lx_to_wrld(lp, w, sizeof w); return vfs_resolve(w, NULL); }
 
-/* ------------------------------------------------------------------ archives */
-static pkg_entry_t *add_entry(pkg_t *p) {
-    if (p->nents == p->cap) {
-        int nc = p->cap ? p->cap * 2 : 256;
-        pkg_entry_t *n = krealloc(p->ents, (size_t)nc * sizeof *n);
-        if (!n) return NULL;
-        p->ents = n; p->cap = nc;
-    }
-    pkg_entry_t *e = &p->ents[p->nents++];
-    memset(e, 0, sizeof *e);
-    return e;
-}
-static uint64_t tar_num(const char *f, int n) {
-    if ((uint8_t)f[0] & 0x80) {                              /* GNU base-256 */
-        uint64_t v = 0; for (int i = 1; i < n; i++) v = v << 8 | (uint8_t)f[i]; return v;
-    }
-    uint64_t v = 0;
-    for (int i = 0; i < n && f[i]; i++) { if (f[i] >= '0' && f[i] <= '7') v = v * 8 + (f[i] - '0'); else if (f[i] != ' ') break; }
-    return v;
-}
-/* walk a tar archive (ustar, GNU long names, pax). Calls fn for each member. */
-typedef void (*tar_fn)(void *ctx, const char *name, char type, const uint8_t *data, uint32_t size, const char *link);
-static bool tar_walk(const uint8_t *d, uint32_t n, tar_fn fn, void *ctx) {
-    char longname[512] = "", longlink[512] = "";
-    uint32_t off = 0;
-    while (off + 512 <= n) {
-        const char *h = (const char *)d + off;
-        if (!h[0]) break;
-        uint64_t size = tar_num(h + 124, 12);
-        char type = h[156];
-        if (off + 512 + size > n) return false;
-        const uint8_t *data = d + off + 512;
-        if (type == 'L' || type == 'K') {                       /* GNU long name / link for the next member */
-            char *dst = type == 'L' ? longname : longlink;
-            uint32_t l = MIN((uint32_t)size, 511u); memcpy(dst, data, l); dst[l] = 0;
-        } else if (type == 'x') {                               /* pax: "LEN key=value\n" records */
-            const char *p = (const char *)data, *end = p + size;
-            while (p < end) {
-                char *sp; unsigned long len = strtoul(p, &sp, 10);
-                if (!len || p + len > end || *sp != ' ') break;
-                const char *kv = sp + 1, *rec_end = p + len - 1;
-                if (!strncmp(kv, "path=", 5)) { int l = MIN((int)(rec_end - kv - 5), 511); memcpy(longname, kv + 5, l); longname[l] = 0; }
-                else if (!strncmp(kv, "linkpath=", 9)) { int l = MIN((int)(rec_end - kv - 9), 511); memcpy(longlink, kv + 9, l); longlink[l] = 0; }
-                p += len;
-            }
-        } else if (type != 'g') {
-            char name[512], link[512];
-            if (longname[0]) strlcpy(name, longname, sizeof name);
-            /* POSIX ustar has a name prefix at 345; old GNU tar ("ustar  ", what dpkg writes) keeps times there */
-            else if (!memcmp(h + 257, "ustar\0", 6) && h[345]) snprintf(name, sizeof name, "%.155s/%.100s", h + 345, h);
-            else snprintf(name, sizeof name, "%.100s", h);
-            if (longlink[0]) strlcpy(link, longlink, sizeof link); else snprintf(link, sizeof link, "%.100s", h + 157);
-            fn(ctx, name, type ? type : '0', data, (uint32_t)size, link);
-            longname[0] = longlink[0] = 0;
-        }
-        off += 512 + (uint32_t)((size + 511) & ~511ull);
-    }
-    return true;
-}
-static void collect_tar(void *ctx, const char *name, char type, const uint8_t *data, uint32_t size, const char *link) {
-    pkg_t *p = ctx;
-    char path[256];
-    if (!norm_path(name, path, sizeof path) || !strcmp(path, "/")) return;
-    pkg_entry_t *e = add_entry(p); if (!e) return;
-    strlcpy(e->path, path, sizeof e->path);
-    switch (type) {
-    case '5': e->type = PE_DIR; break;
-    case '2': e->type = PE_SYMLINK; strlcpy(e->link, link, sizeof e->link); break;
-    case '1': e->type = PE_HARDLINK; norm_path(link, e->link, sizeof e->link); break;
-    case '0': case '7': e->type = PE_FILE; e->data = data; e->size = size; p->nfiles++; break;
-    default: p->nents--; break;                                  /* devices, fifos */
-    }
-}
-/* cpio "newc" (070701/070702), the payload of an .rpm */
-static uint32_t hex8(const uint8_t *s) { uint32_t v = 0; for (int i = 0; i < 8; i++) { int c = s[i]; v = v << 4 | (c >= 'a' ? c - 'a' + 10 : c >= 'A' ? c - 'A' + 10 : c - '0'); } return v; }
-static bool cpio_walk(pkg_t *p, const uint8_t *d, uint32_t n) {
-    uint32_t off = 0;
-    while (off + 110 <= n) {
-        if (memcmp(d + off, "07070", 5)) return false;
-        uint32_t mode = hex8(d + off + 14), size = hex8(d + off + 54), namesize = hex8(d + off + 94), nlink = hex8(d + off + 38);
-        uint32_t ino = hex8(d + off + 6);
-        const char *name = (const char *)d + off + 110;
-        if (off + 110 + namesize > n) return false;
-        uint32_t data_off = (off + 110 + namesize + 3) & ~3u;
-        if (data_off + size > n) return false;
-        if (!strcmp(name, "TRAILER!!!")) break;
-        char path[256];
-        if (norm_path(name, path, sizeof path) && strcmp(path, "/")) {
-            pkg_entry_t *e = add_entry(p);
-            if (e) {
-                strlcpy(e->path, path, sizeof e->path);
-                uint32_t fmt = mode & 0170000;
-                if (fmt == 0040000) e->type = PE_DIR;
-                else if (fmt == 0120000) { e->type = PE_SYMLINK; int l = MIN(size, 255u); memcpy(e->link, d + data_off, l); e->link[l] = 0; }
-                else if (fmt == 0100000) {
-                    e->type = PE_FILE; e->data = d + data_off; e->size = size; p->nfiles++;
-                    /* hard links: the data comes with the last name of the group; earlier ones are empty */
-                    if (nlink > 1 && !size) { e->type = PE_HARDLINK; snprintf(e->link, sizeof e->link, "#ino:%u", ino); p->nfiles--; }
-                    else if (nlink > 1) snprintf(e->link, sizeof e->link, "#ino:%u", ino);
-                } else p->nents--;
-            }
-        }
-        off = (data_off + size + 3) & ~3u;
-    }
-    return true;
-}
-
-/* ------------------------------------------------------------------ .deb */
-typedef struct { const uint8_t *data; uint32_t size; char name[17]; } armember_t;
-static int ar_members(const uint8_t *d, uint32_t n, armember_t *m, int max) {
-    if (n < 8 || memcmp(d, "!<arch>\n", 8)) return -1;
-    uint32_t off = 8; int k = 0;
-    while (off + 60 <= n && k < max) {
-        const char *h = (const char *)d + off;
-        char sz[11]; memcpy(sz, h + 48, 10); sz[10] = 0;
-        uint32_t size = strtoul(sz, NULL, 10);
-        if (off + 60 + size > n) return -1;
-        memcpy(m[k].name, h, 16); m[k].name[16] = 0;
-        for (int i = 15; i >= 0 && (m[k].name[i] == ' ' || m[k].name[i] == '/'); i--) m[k].name[i] = 0;
-        m[k].data = d + off + 60; m[k].size = size; k++;
-        off += 60 + size + (size & 1);
-    }
-    return k;
-}
-typedef struct { char *control, *postinst; char scripts[96]; } debctl_t;
-static void collect_control(void *ctx, const char *name, char type, const uint8_t *data, uint32_t size, const char *link) {
-    debctl_t *c = ctx;
-    const char *b = strrchr(name, '/'); b = b ? b + 1 : name;
-    if (!strcmp(b, "control") && !c->control) { c->control = kmalloc(size + 1); if (c->control) { memcpy(c->control, data, size); c->control[size] = 0; } }
-    else if (!strcmp(b, "preinst") || !strcmp(b, "postinst") || !strcmp(b, "prerm") || !strcmp(b, "postrm")) {
-        list_add(c->scripts, sizeof c->scripts, b);
-        if (!strcmp(b, "postinst") && !c->postinst && size < (1u << 20)) { c->postinst = kmalloc(size + 1); if (c->postinst) { memcpy(c->postinst, data, size); c->postinst[size] = 0; } }
-    }
-}
-static uint32_t unpack_limit(void) {
-    uint64_t free_mb = mm_total() > mm_used() ? mm_total() - mm_used() : 0;
-    uint64_t lim = free_mb * 1024 * 1024 / 2;                    /* leave room for the installed copies */
-    if (lim > 0x60000000ull) lim = 0x60000000ull;
-    return (uint32_t)lim;
-}
-static bool load_deb(pkg_t *p, const uint8_t *d, uint32_t n) {
-    armember_t m[8];
-    int k = ar_members(d, n, m, 8);
-    if (k < 3 || strcmp(m[0].name, "debian-binary")) { snprintf(p->err, sizeof p->err, "This is not a Debian package (the ar archive is not valid)."); return false; }
-    if (m[0].size < 3 || m[0].data[0] != '2') { snprintf(p->err, sizeof p->err, "This Debian package uses format %.4s, which is not supported (2.0 is).", (const char *)m[0].data); return false; }
-    const armember_t *ctl = NULL, *dat = NULL;
-    for (int i = 1; i < k; i++) {
-        if (!strncmp(m[i].name, "control.tar", 11)) ctl = &m[i];
-        else if (!strncmp(m[i].name, "data.tar", 8)) dat = &m[i];
-    }
-    if (!ctl || !dat) { snprintf(p->err, sizeof p->err, "The package has no control or data archive."); return false; }
-    uint32_t cl; char err[120];
-    uint8_t *ct = unpack_all(ctl->data, ctl->size, 16u << 20, &cl, err, sizeof err);
-    if (!ct) { snprintf(p->err, sizeof p->err, "Could not read the package information: %s.", err); return false; }
-    debctl_t c = { 0 };
-    tar_walk(ct, cl, collect_control, &c);
-    kfree(ct);
-    if (!c.control) { snprintf(p->err, sizeof p->err, "The package has no control file."); return false; }
-    strlcpy(p->scripts, c.scripts, sizeof p->scripts);
-    p->postinst = c.postinst;
-    field_to(c.control, "Package", p->name, sizeof p->name);
-    field_to(c.control, "Version", p->version, sizeof p->version);
-    field_to(c.control, "Architecture", p->arch, sizeof p->arch);
-    field_to(c.control, "Maintainer", p->maint, sizeof p->maint);
-    field_to(c.control, "Homepage", p->homepage, sizeof p->homepage);
-    field_to(c.control, "Section", p->section, sizeof p->section);
-    char isz[24] = ""; field_to(c.control, "Installed-Size", isz, sizeof isz); p->inst_kb = strtoul(isz, NULL, 10);
-    char *desc = field(c.control, "Description", ':');
-    if (desc) {
-        char *nl = strchr(desc, '\n');
-        if (nl) { *nl = 0; strlcpy(p->summary, desc, sizeof p->summary); }
-        else strlcpy(p->summary, desc, sizeof p->summary);
-        /* the long description: one space of indent; " ." is an empty line */
-        const char *body = nl ? nl + 1 : "";
-        char *o = kmalloc(strlen(body) + 2); int w = 0;
-        for (const char *q = body; *q; ) {
-            const char *e = strchr(q, '\n'); int l = e ? (int)(e - q) : (int)strlen(q);
-            const char *s = q; while (l && (*s == ' ' || *s == '\t')) { s++; l--; }
-            if (l == 1 && s[0] == '.') l = 0;
-            memcpy(o + w, s, l); w += l; o[w++] = '\n';
-            q += (e ? (int)(e - q) + 1 : (int)strlen(q));
-        }
-        o[w] = 0; p->desc = o;
-        kfree(desc);
-    }
-    char *dep = field(c.control, "Depends", ':'), *pre = field(c.control, "Pre-Depends", ':');
-    int dl = (dep ? strlen(dep) : 0) + (pre ? strlen(pre) : 0) + 4;
-    p->depends = kzalloc(dl);
-    if (pre) strlcat(p->depends, pre, dl);
-    if (dep) { if (pre) strlcat(p->depends, ", ", dl); strlcat(p->depends, dep, dl); }
-    for (char *q = p->depends; *q; q++) if (*q == '\n') *q = ' ';
-    kfree(dep); kfree(pre);
-    p->provides = field(c.control, "Provides", ':');
-    kfree(c.control);
-    if (!p->name[0]) { snprintf(p->err, sizeof p->err, "The package has no name."); return false; }
-    strlcpy(p->comp, unpack_kind_name(unpack_kind(dat->data, dat->size)), sizeof p->comp);
-    p->payload = unpack_all(dat->data, dat->size, unpack_limit(), &p->payload_len, err, sizeof err);
-    if (!p->payload) { snprintf(p->err, sizeof p->err, "Could not unpack the files: %s.", err); return false; }
-    if (!tar_walk(p->payload, p->payload_len, collect_tar, p)) { snprintf(p->err, sizeof p->err, "The file archive in the package is damaged."); return false; }
-    return true;
-}
-
-/* ------------------------------------------------------------------ .rpm */
-typedef struct { const uint8_t *idx; uint32_t n; const uint8_t *store; uint32_t slen; } rpmhdr_t;
-static bool rpm_header(const uint8_t *d, uint32_t avail, rpmhdr_t *h, uint32_t *total) {
-    if (avail < 16 || d[0] != 0x8E || d[1] != 0xAD || d[2] != 0xE8) return false;
-    uint32_t n = be32(d + 8), sl = be32(d + 12);
-    if (n > 100000 || 16 + (uint64_t)n * 16 + sl > avail) return false;
-    h->idx = d + 16; h->n = n; h->store = d + 16 + n * 16; h->slen = sl;
-    *total = 16 + n * 16 + sl;
-    return true;
-}
-static bool rpm_find(const rpmhdr_t *h, uint32_t tag, uint32_t *type, uint32_t *off, uint32_t *count) {
-    for (uint32_t i = 0; i < h->n; i++) {
-        const uint8_t *e = h->idx + i * 16;
-        if (be32(e) == tag) { *type = be32(e + 4); *off = be32(e + 8); *count = be32(e + 12); return *off < h->slen; }
-    }
-    return false;
-}
-/* the k-th string of a STRING / STRING_ARRAY / I18NSTRING tag */
-static const char *rpm_str(const rpmhdr_t *h, uint32_t tag, uint32_t k) {
-    uint32_t type, off, count;
-    if (!rpm_find(h, tag, &type, &off, &count) || (type != 6 && type != 8 && type != 9) || k >= count) return NULL;
-    const char *s = (const char *)h->store + off, *end = (const char *)h->store + h->slen;
-    for (uint32_t i = 0; i < k; i++) { const char *z = memchr(s, 0, end - s); if (!z) return NULL; s = z + 1; }
-    return memchr(s, 0, end - s) ? s : NULL;
-}
-static uint32_t rpm_count(const rpmhdr_t *h, uint32_t tag) { uint32_t t, o, c; return rpm_find(h, tag, &t, &o, &c) ? c : 0; }
-static uint64_t rpm_int(const rpmhdr_t *h, uint32_t tag, uint32_t k) {
-    uint32_t type, off, count;
-    if (!rpm_find(h, tag, &type, &off, &count) || k >= count) return 0;
-    const uint8_t *p = h->store + off;
-    if (type == 4 && off + (k + 1) * 4 <= h->slen) return be32(p + k * 4);
-    if (type == 5 && off + (k + 1) * 8 <= h->slen) return (uint64_t)be32(p + k * 8) << 32 | be32(p + k * 8 + 4);
-    if (type == 3 && off + (k + 1) * 2 <= h->slen) return (uint32_t)p[k * 2] << 8 | p[k * 2 + 1];
-    return 0;
-}
-enum { RPMTAG_NAME = 1000, RPMTAG_VERSION = 1001, RPMTAG_RELEASE = 1002, RPMTAG_EPOCH = 1003, RPMTAG_SUMMARY = 1004,
-       RPMTAG_DESCRIPTION = 1005, RPMTAG_SIZE = 1009, RPMTAG_VENDOR = 1011, RPMTAG_LICENSE = 1014, RPMTAG_PACKAGER = 1015,
-       RPMTAG_GROUP = 1016, RPMTAG_URL = 1020, RPMTAG_ARCH = 1022, RPMTAG_PREIN = 1023, RPMTAG_POSTIN = 1024,
-       RPMTAG_PREUN = 1025, RPMTAG_POSTUN = 1026, RPMTAG_PROVIDENAME = 1047, RPMTAG_REQUIREFLAGS = 1048,
-       RPMTAG_REQUIRENAME = 1049, RPMTAG_PAYLOADFORMAT = 1124, RPMTAG_PAYLOADCOMPRESSOR = 1125, RPMTAG_LONGSIZE = 5009 };
-static bool load_rpm(pkg_t *p, const uint8_t *d, uint32_t n) {
-    if (n < 96 + 16 || be32(d) != 0xEDABEEDB) { snprintf(p->err, sizeof p->err, "This is not an RPM package."); return false; }
-    if (d[6] == 0 && d[7] == 1) { snprintf(p->err, sizeof p->err, "This is a source RPM (.src.rpm): it holds source code to build, not a program to install."); return false; }
-    rpmhdr_t sig, h; uint32_t sl, hl;
-    if (!rpm_header(d + 96, n - 96, &sig, &sl)) { snprintf(p->err, sizeof p->err, "The RPM signature header is damaged."); return false; }
-    uint32_t hoff = 96 + ((sl + 7) & ~7u);
-    if (hoff >= n || !rpm_header(d + hoff, n - hoff, &h, &hl)) { snprintf(p->err, sizeof p->err, "The RPM header is damaged."); return false; }
-    const char *s;
-    if ((s = rpm_str(&h, RPMTAG_NAME, 0))) strlcpy(p->name, s, sizeof p->name);
-    const char *ver = rpm_str(&h, RPMTAG_VERSION, 0), *rel = rpm_str(&h, RPMTAG_RELEASE, 0);
-    uint64_t epoch = rpm_int(&h, RPMTAG_EPOCH, 0);
-    if (epoch) snprintf(p->version, sizeof p->version, "%u:%s-%s", (unsigned)epoch, ver ? ver : "?", rel ? rel : "?");
-    else snprintf(p->version, sizeof p->version, "%s-%s", ver ? ver : "?", rel ? rel : "?");
-    if ((s = rpm_str(&h, RPMTAG_ARCH, 0))) strlcpy(p->arch, s, sizeof p->arch);
-    if ((s = rpm_str(&h, RPMTAG_SUMMARY, 0))) strlcpy(p->summary, s, sizeof p->summary);
-    if ((s = rpm_str(&h, RPMTAG_DESCRIPTION, 0))) p->desc = strdup(s);
-    if ((s = rpm_str(&h, RPMTAG_PACKAGER, 0)) || (s = rpm_str(&h, RPMTAG_VENDOR, 0))) strlcpy(p->maint, s, sizeof p->maint);
-    if ((s = rpm_str(&h, RPMTAG_URL, 0))) strlcpy(p->homepage, s, sizeof p->homepage);
-    if ((s = rpm_str(&h, RPMTAG_GROUP, 0))) strlcpy(p->section, s, sizeof p->section);
-    if ((s = rpm_str(&h, RPMTAG_LICENSE, 0))) strlcpy(p->license, s, sizeof p->license);
-    uint64_t size = rpm_int(&h, RPMTAG_LONGSIZE, 0); if (!size) size = rpm_int(&h, RPMTAG_SIZE, 0);
-    p->inst_kb = (uint32_t)((size + 1023) / 1024);
-    static const struct { uint32_t tag; const char *name; } scr[] = { { RPMTAG_PREIN, "%pre" }, { RPMTAG_POSTIN, "%post" }, { RPMTAG_PREUN, "%preun" }, { RPMTAG_POSTUN, "%postun" } };
-    for (unsigned i = 0; i < ARRAY_LEN(scr); i++) if (rpm_count(&h, scr[i].tag)) list_add(p->scripts, sizeof p->scripts, scr[i].name);
-    if ((s = rpm_str(&h, RPMTAG_POSTIN, 0))) p->postinst = strdup(s);
-    /* requirements, without rpm's own (rpmlib(...)) and those the loader meets (rtld(...)) */
-    uint32_t nreq = rpm_count(&h, RPMTAG_REQUIRENAME);
-    int cap = 64; for (uint32_t i = 0; i < nreq; i++) { const char *r = rpm_str(&h, RPMTAG_REQUIRENAME, i); if (r) cap += strlen(r) + 2; }
-    p->depends = kzalloc(cap);
-    for (uint32_t i = 0; i < nreq; i++) {
-        const char *r = rpm_str(&h, RPMTAG_REQUIRENAME, i);
-        if (!r || !strncmp(r, "rpmlib(", 7) || !strncmp(r, "rtld(", 5) || !strncmp(r, "config(", 7)) continue;
-        if (rpm_int(&h, RPMTAG_REQUIREFLAGS, i) & (1u << 24)) continue;      /* RPMSENSE_RPMLIB */
-        list_add(p->depends, cap, r);
-    }
-    uint32_t nprov = rpm_count(&h, RPMTAG_PROVIDENAME);
-    cap = 16; for (uint32_t i = 0; i < nprov; i++) { const char *r = rpm_str(&h, RPMTAG_PROVIDENAME, i); if (r) cap += strlen(r) + 2; }
-    p->provides = kzalloc(cap);
-    for (uint32_t i = 0; i < nprov; i++) { const char *r = rpm_str(&h, RPMTAG_PROVIDENAME, i); if (r) list_add(p->provides, cap, r); }
-    if (!p->name[0]) { snprintf(p->err, sizeof p->err, "The package has no name."); return false; }
-    const char *pf = rpm_str(&h, RPMTAG_PAYLOADFORMAT, 0);
-    if (pf && strcmp(pf, "cpio")) { snprintf(p->err, sizeof p->err, "The files are in a %s archive, which is not supported (cpio is).", pf); return false; }
-    uint32_t poff = hoff + hl;
-    const uint8_t *pay = d + poff; uint32_t plen = n - poff;
-    strlcpy(p->comp, unpack_kind_name(unpack_kind(pay, plen)), sizeof p->comp);
-    char err[120];
-    p->payload = unpack_all(pay, plen, unpack_limit(), &p->payload_len, err, sizeof err);
-    if (!p->payload) { snprintf(p->err, sizeof p->err, "Could not unpack the files: %s.", err); return false; }
-    if (p->payload_len >= 6 && !memcmp(p->payload, "07070", 5)) {
-        if (!cpio_walk(p, p->payload, p->payload_len)) { snprintf(p->err, sizeof p->err, "The file archive in the package is damaged."); return false; }
-    } else { snprintf(p->err, sizeof p->err, "The files are not in a cpio archive this installer can read."); return false; }
-    /* hard links in cpio: point each empty name at the member that carries the data */
-    for (int i = 0; i < p->nents; i++) {
-        pkg_entry_t *e = &p->ents[i];
-        if (e->type != PE_HARDLINK || strncmp(e->link, "#ino:", 5)) continue;
-        for (int j = 0; j < p->nents; j++)
-            if (p->ents[j].type == PE_FILE && !strcmp(p->ents[j].link, e->link)) { strlcpy(e->link, p->ents[j].path, sizeof e->link); break; }
-    }
-    for (int i = 0; i < p->nents; i++) if (p->ents[i].type == PE_FILE) p->ents[i].link[0] = 0;
-    return true;
-}
-
+/* The layout of pkg_t, pkg_entry_t and pkg_check_t for the Rust copies in
+ * rust/src/kernel/pkgk.rs, which rust_init checks at boot. */
+const uint32_t rust_pkg_layout[11] = {
+    sizeof(pkg_t), offsetof(pkg_t, desc), offsetof(pkg_t, payload), offsetof(pkg_t, ents), offsetof(pkg_t, nfiles), offsetof(pkg_t, err),
+    sizeof(pkg_entry_t), offsetof(pkg_entry_t, data), offsetof(pkg_entry_t, type), sizeof(pkg_check_t), offsetof(pkg_check_t, foreign_elf),
+};
 static uint32_t hstr(const char *s) { uint32_t h = 2166136261u; while (*s) h = (h ^ (uint8_t)*s++) * 16777619u; return h; }
-static const char *base_of(const char *path) { const char *b = strrchr(path, '/'); return b ? b + 1 : path; }
-/* index the entries by path and by base name (-1 = empty slot) */
-static void build_index(pkg_t *p) {
-    int cap = 64; while (cap < p->nents * 2 + 2) cap *= 2;
-    p->pidx = kmalloc(sizeof(int) * cap); p->bidx = kmalloc(sizeof(int) * cap);
-    if (!p->pidx || !p->bidx) { kfree(p->pidx); kfree(p->bidx); p->pidx = p->bidx = NULL; return; }
-    for (int i = 0; i < cap; i++) p->pidx[i] = p->bidx[i] = -1;
-    p->icap = cap;
-    for (int i = 0; i < p->nents; i++) {
-        uint32_t h = hstr(p->ents[i].path) & (cap - 1);
-        while (p->pidx[h] >= 0) h = (h + 1) & (cap - 1);
-        p->pidx[h] = i;
-        if (p->ents[i].type == PE_DIR) continue;
-        h = hstr(base_of(p->ents[i].path)) & (cap - 1);
-        while (p->bidx[h] >= 0) h = (h + 1) & (cap - 1);
-        p->bidx[h] = i;
-    }
-}
-bool pkg_load(const char *wrld_path, pkg_t *p) {
-    memset(p, 0, sizeof *p);
-    strlcpy(p->file, wrld_path, sizeof p->file);
-    vnode_t *n = vfs_resolve(wrld_path, NULL);
-    if (!n || n->dir) { snprintf(p->err, sizeof p->err, "The file %s was not found.", wrld_path); return false; }
-    bool ok;
-    if (n->size >= 8 && !memcmp(n->data, "!<arch>\n", 8)) { p->fmt = 'd'; ok = load_deb(p, n->data, n->size); }
-    else if (n->size >= 4 && be32(n->data) == 0xEDABEEDB) { p->fmt = 'r'; ok = load_rpm(p, n->data, n->size); }
-    else { snprintf(p->err, sizeof p->err, "%s is not a .deb or .rpm package.", path_basename(wrld_path)); return false; }
-    if (ok) build_index(p);
-    return ok;
-}
 void pkg_free(pkg_t *p) {
     kfree(p->desc); kfree(p->depends); kfree(p->provides); kfree(p->payload); kfree(p->ents); kfree(p->pidx); kfree(p->bidx); kfree(p->postinst);
     p->desc = p->depends = p->provides = p->postinst = NULL; p->payload = NULL; p->ents = NULL; p->nents = p->cap = 0;
@@ -557,8 +177,9 @@ static bool in_list(const char *list, const char *name) {   /* "a, b (= 1), c" *
     }
     return false;
 }
-/* a dependency is met by an installed package, something one provides, or the OS image */
-static bool dep_met(const char *name) {
+/* a dependency is met by an installed package, something one provides, or the OS image
+ * (pkg_check in Rust asks) */
+bool pkg_dep_met(const char *name) {
     db_load();
     char n[96]; strlcpy(n, name, sizeof n);
     char *colon = strchr(n, ':'); if (colon) *colon = 0;                 /* libc6:any */
@@ -605,186 +226,6 @@ static bool set_has(const pathset_t *s, const char *p) {
     return false;
 }
 static void set_free(pathset_t *s) { for (int i = 0; i < s->cap; i++) kfree(s->v[i]); kfree(s->v); memset(s, 0, sizeof *s); }
-/* ------------------------------------------------------------------ checking a package */
-/* the basenames the package itself installs, to find its own libraries */
-static bool pkg_has_basename(const pkg_t *p, const char *base) {
-    if (!p->icap) return false;
-    for (uint32_t h = hstr(base) & (p->icap - 1); p->bidx[h] >= 0; h = (h + 1) & (p->icap - 1))
-        if (!strcmp(base_of(p->ents[p->bidx[h]].path), base)) return true;
-    return false;
-}
-static const pkg_entry_t *pkg_find_entry(const pkg_t *p, const char *path) {
-    if (!p->icap) return NULL;
-    char c[300]; strlcpy(c, path, sizeof c); canon(c, sizeof c);
-    for (uint32_t h = hstr(c) & (p->icap - 1); p->pidx[h] >= 0; h = (h + 1) & (p->icap - 1))
-        if (!strcmp(p->ents[p->pidx[h]].path, c)) return &p->ents[p->pidx[h]];
-    return NULL;
-}
-static const char *lib_dirs[] = { "/usr/lib/x86_64-linux-gnu", "/usr/lib64", "/usr/lib", "/usr/local/lib", "/usr/lib/x86_64-linux-gnu/pulseaudio" };
-/* the data of a library: in the package, or installed */
-static const uint8_t *find_lib(const pkg_t *p, const char *name, const char *runpath, const char *origin, uint32_t *size) {
-    char lp[512];
-    /* RUNPATH / RPATH, with $ORIGIN */
-    if (runpath && runpath[0]) {
-        char rp[512]; strlcpy(rp, runpath, sizeof rp);
-        for (char *d = rp; d && *d; ) {
-            char *e = strchr(d, ':'); if (e) *e = 0;
-            char dir[512];
-            if (!strncmp(d, "$ORIGIN", 7)) snprintf(dir, sizeof dir, "%s%s", origin, d + 7);
-            else if (!strncmp(d, "${ORIGIN}", 9)) snprintf(dir, sizeof dir, "%s%s", origin, d + 9);
-            else strlcpy(dir, d, sizeof dir);
-            char full[600]; snprintf(full, sizeof full, "%s/%s", dir, name);
-            join_link("/x", full, lp, sizeof lp);
-            const pkg_entry_t *e2 = pkg_find_entry(p, lp);
-            if (e2 && e2->type == PE_FILE) { *size = e2->size; return e2->data; }
-            vnode_t *n = lx_resolve(lp); if (n && !n->dir) { *size = n->size; return n->data; }
-            d = e ? e + 1 : NULL;
-        }
-    }
-    for (unsigned i = 0; i < ARRAY_LEN(lib_dirs); i++) {
-        snprintf(lp, sizeof lp, "%s/%s", lib_dirs[i], name);
-        const pkg_entry_t *e = pkg_find_entry(p, lp);
-        if (!e) { char alt[520]; snprintf(alt, sizeof alt, "/lib%s", lp + 8); e = !strncmp(lp, "/usr/lib", 8) ? pkg_find_entry(p, alt) : NULL; }
-        if (e && e->type == PE_FILE) { *size = e->size; return e->data; }
-        if (e) { *size = 0; return (const uint8_t *)""; }            /* a link in the package: present */
-        vnode_t *n = lx_resolve(lp); if (n && !n->dir) { *size = n->size; return n->data; }
-    }
-    if (pkg_has_basename(p, name)) { *size = 0; return (const uint8_t *)""; }
-    return NULL;
-}
-static bool mem_has(const uint8_t *d, uint32_t n, const char *s) {
-    int l = strlen(s) + 1;                                       /* with its NUL: "GLIBC_2.3" is not "GLIBC_2.34" */
-    for (uint32_t i = 0; i + l <= n; i++) if (d[i] == s[0] && !memcmp(d + i, s, l)) return true;
-    return false;
-}
-/* look at one ELF file: its loader, the libraries it needs and their versions */
-static void check_elf(const pkg_t *p, const char *path, const uint8_t *d, uint32_t n, pkg_check_t *c, pathset_t *seen) {
-    if (n < 64 || memcmp(d, "\x7F" "ELF", 4)) return;
-    if (d[4] != 2 || d[5] != 1 || (d[18] | d[19] << 8) != 62) { c->foreign_elf = true; return; }   /* not x86-64 */
-    uint64_t phoff; memcpy(&phoff, d + 32, 8);
-    uint16_t phentsize = d[54] | d[55] << 8, phnum = d[56] | d[57] << 8;
-    if (phoff + (uint64_t)phnum * phentsize > n || phentsize < 56) return;
-    uint64_t dyn_off = 0, dyn_sz = 0;
-    struct { uint64_t va, off, sz; } loads[16]; int nl = 0;
-    for (int i = 0; i < phnum; i++) {
-        const uint8_t *ph = d + phoff + i * phentsize;
-        uint32_t type; memcpy(&type, ph, 4);
-        uint64_t off, va, fsz; memcpy(&off, ph + 8, 8); memcpy(&va, ph + 16, 8); memcpy(&fsz, ph + 32, 8);
-        if (type == 1 && nl < 16) { loads[nl].va = va; loads[nl].off = off; loads[nl].sz = fsz; nl++; }
-        else if (type == 2) { dyn_off = off; dyn_sz = fsz; }
-        else if (type == 3 && off + fsz <= n && fsz > 1 && fsz < 256) {   /* PT_INTERP */
-            char ip[256]; memcpy(ip, d + off, fsz); ip[fsz - 1] = 0;
-            if (!pkg_find_entry(p, ip) && !lx_resolve(ip)) list_add(c->missing_interp, sizeof c->missing_interp, ip);
-        }
-    }
-    if (!dyn_off || dyn_off + dyn_sz > n) return;
-    #define VA2OFF(a) ({ uint64_t r_ = 0; for (int k_ = 0; k_ < nl; k_++) if ((a) >= loads[k_].va && (a) < loads[k_].va + loads[k_].sz) { r_ = (a) - loads[k_].va + loads[k_].off; break; } r_; })
-    uint64_t strtab = 0, strsz = 0, runpath = 0, verneed = 0, verneednum = 0; bool has_rp = false;
-    uint64_t needed[64]; int nn = 0;
-    for (uint64_t o = dyn_off; o + 16 <= dyn_off + dyn_sz; o += 16) {
-        int64_t tag; uint64_t val; memcpy(&tag, d + o, 8); memcpy(&val, d + o + 8, 8);
-        if (tag == 0) break;
-        if (tag == 1 && nn < 64) needed[nn++] = val;
-        else if (tag == 5) strtab = val;
-        else if (tag == 10) strsz = val;
-        else if (tag == 29 || tag == 15) { runpath = val; has_rp = true; }
-        else if (tag == 0x6ffffffe) verneed = val;
-        else if (tag == 0x6fffffff) verneednum = val;
-    }
-    uint64_t so = VA2OFF(strtab);
-    if (!so || so + strsz > n) return;
-    const char *str = (const char *)d + so;
-    #define STR(i) ((i) < strsz && memchr(str + (i), 0, strsz - (i)) ? str + (i) : "")
-    char origin[256]; strlcpy(origin, path, sizeof origin); char *sl = strrchr(origin, '/'); if (sl) *sl = 0;
-    const char *rp = has_rp ? STR(runpath) : NULL;
-    for (int i = 0; i < nn; i++) {
-        const char *lib = STR(needed[i]);
-        uint32_t sz;
-        if (lib[0] && !find_lib(p, lib, rp, origin, &sz)) list_add(c->missing_libs, sizeof c->missing_libs, lib);
-    }
-    /* symbol versions: each library must define the versions the program asks for */
-    uint64_t vo = verneed ? VA2OFF(verneed) : 0;
-    for (uint64_t k = 0; vo && k < verneednum && vo + 16 <= n; k++) {
-        uint16_t cnt = d[vo + 2] | d[vo + 3] << 8; uint32_t file, aux, next;
-        memcpy(&file, d + vo + 4, 4); memcpy(&aux, d + vo + 8, 4); memcpy(&next, d + vo + 12, 4);
-        const char *lib = STR(file); uint32_t lsz = 0;
-        const uint8_t *ld = lib[0] ? find_lib(p, lib, rp, origin, &lsz) : NULL;
-        uint64_t ao = vo + aux;
-        for (int a = 0; a < cnt && ld && lsz && ao + 16 <= n; a++) {
-            uint32_t name, anext; memcpy(&name, d + ao + 8, 4); memcpy(&anext, d + ao + 12, 4);
-            const char *v = STR(name);
-            char key[160]; snprintf(key, sizeof key, "%s|%s", lib, v);
-            if (v[0] && !set_has(seen, key)) {
-                set_add(seen, key);
-                if (!mem_has(ld, lsz, v)) { char b[96]; snprintf(b, sizeof b, "%s (%s)", v, lib); list_add(c->missing_vers, sizeof c->missing_vers, b); }
-            }
-            if (!anext) break;
-            ao += anext;
-        }
-        if (!next) break;
-        vo += next;
-    }
-    #undef STR
-    #undef VA2OFF
-}
-static bool is_bin_dir(const char *path) {
-    static const char *dirs[] = { "/usr/bin/", "/usr/games/", "/usr/sbin/", "/usr/local/bin/", "/bin/", "/sbin/" };
-    for (unsigned i = 0; i < ARRAY_LEN(dirs); i++) { int l = strlen(dirs[i]); if (!strncmp(path, dirs[i], l) && !strchr(path + l, '/')) return true; }
-    return false;
-}
-void pkg_check(const pkg_t *p, pkg_check_t *c) {
-    memset(c, 0, sizeof *c);
-    /* package dependencies (Debian names; an .rpm's are mostly libraries and paths) */
-    if (p->depends && p->depends[0]) {
-        char *deps = strdup(p->depends);
-        for (char *g = deps; g && *g; ) {
-            char *e = strchr(g, ','); if (e) *e = 0;
-            bool met = false; char first[96] = "";
-            char alt[256]; strlcpy(alt, g, sizeof alt);
-            for (char *a = alt; a && *a; ) {
-                char *bar = strchr(a, '|'); if (bar) *bar = 0;
-                char nm[96]; strlcpy(nm, a, sizeof nm); trim(nm);
-                char *paren = strchr(nm, '('); if (paren) { *paren = 0; trim(nm); }
-                char *sp = strchr(nm, ' '); if (sp) *sp = 0;
-                if (!first[0]) strlcpy(first, nm, sizeof first);
-                if (p->fmt == 'r') {
-                    if (nm[0] == '/') met = pkg_find_entry(p, nm) || lx_resolve(nm);
-                    else if (strstr(nm, ".so")) { char so[96]; strlcpy(so, nm, sizeof so); char *q = strchr(so, '('); if (q) *q = 0; uint32_t sz; met = find_lib(p, so, NULL, "/", &sz) != NULL; }
-                    else met = true;                                     /* package names differ between distributions */
-                } else met = nm[0] && dep_met(nm);
-                if (met) break;
-                a = bar ? bar + 1 : NULL;
-            }
-            if (!met && first[0]) list_add(c->missing_pkgs, sizeof c->missing_pkgs, first);
-            g = e ? e + 1 : NULL;
-        }
-        kfree(deps);
-    }
-    /* the programs: libraries, versions, interpreters */
-    int checked = 0;
-    pathset_t seen = { 0 };
-    for (int i = 0; i < p->nents && checked < 400; i++) {
-        const pkg_entry_t *e = &p->ents[i];
-        if (e->type != PE_FILE && e->type != PE_SYMLINK) continue;
-        bool bin = is_bin_dir(e->path);
-        if (bin) { const char *b = strrchr(e->path, '/') + 1; list_add(c->programs, sizeof c->programs, b); }
-        if (e->type != PE_FILE || e->size < 4) continue;
-        if (!memcmp(e->data, "\x7F" "ELF", 4)) { check_elf(p, e->path, e->data, e->size, c, &seen); checked++; if (!(checked & 15)) unpack_yield(); }
-        else if (bin && e->data[0] == '#' && e->data[1] == '!') {          /* a script: is its interpreter here? */
-            char line[128]; int l = 0;
-            for (uint32_t k = 2; k < e->size && l < 127 && e->data[k] != '\n'; k++) line[l++] = e->data[k];
-            line[l] = 0; trim(line);
-            char *sp = strchr(line, ' '); char *arg = sp ? sp + 1 : NULL; if (sp) *sp = 0;
-            char interp[160];
-            if (!strcmp(line, "/usr/bin/env") && arg) { char *s2 = strchr(arg, ' '); if (s2) *s2 = 0; snprintf(interp, sizeof interp, "/usr/bin/%s", arg); }
-            else strlcpy(interp, line, sizeof interp);
-            if (interp[0] == '/' && !pkg_find_entry(p, interp) && !lx_resolve(interp)) list_add(c->missing_interp, sizeof c->missing_interp, interp);
-        }
-    }
-    set_free(&seen);
-    c->ok = !c->missing_pkgs[0] && !c->missing_libs[0] && !c->missing_vers[0] && !c->missing_interp[0] && !c->foreign_elf;
-}
-
 /* ------------------------------------------------------------------ installing */
 static int split_words(char *s, char **argv, int max);
 /* the "File:" lines of a record into a set */
@@ -863,60 +304,28 @@ static void desktop_entries(inst_t *s) {
     for (int i = 0; i < s->p->nents; i++) {
         pkg_entry_t *e = &s->p->ents[i];
         if (e->type != PE_FILE || strncmp(e->path, "/usr/share/applications/", 24) || !str_ends_with_ci(e->path, ".desktop")) continue;
-        char *t = kmalloc(e->size + 1); if (!t) continue;
-        memcpy(t, e->data, e->size); t[e->size] = 0;
-        /* only the [Desktop Entry] group */
-        char *grp = strstr(t, "[Desktop Entry]"); char *body = grp ? grp : t;
-        char *next = strstr(body + 1, "\n["); if (next) next[1] = 0;
-        char *name = field(body, "Name", '='), *exec = field(body, "Exec", '='), *term = field(body, "Terminal", '=');
-        char *nod = field(body, "NoDisplay", '='), *type = field(body, "Type", '=');
-        if (name && exec && (!nod || strcasecmp(nod, "true")) && (!type || !strcmp(type, "Application"))) {
-            /* drop the field codes (%f %u %F %U %i %c %k) */
-            char cmd[256]; int o = 0;
-            for (const char *q = exec; *q && o < 255; q++) {
-                if (q[0] == '%' && q[1]) { q++; if (*q == '%') cmd[o++] = '%'; continue; }
-                cmd[o++] = *q;
-            }
-            cmd[o] = 0; trim(cmd);
-            sb_addf(&s->hdr, "Desktop: %s\t%s\t%d\n", name, cmd, term && !strcasecmp(term, "true"));
-        }
-        kfree(name); kfree(exec); kfree(term); kfree(nod); kfree(type); kfree(t);
+        char name[700], cmd[256]; bool term = false;
+        if (pkg_desktop_entry(e->data, e->size, name, sizeof name, cmd, sizeof cmd, &term)) sb_addf(&s->hdr, "Desktop: %s\t%s\t%d\n", name, cmd, term);
     }
 }
 /* What setup scripts most often do for a command-line program is choose its command
  * name: "update-alternatives --install /usr/bin/figlet figlet /usr/bin/figlet-figlet 50"
  * (with --slave pairs for its manual pages). Those lines are carried out here, as copies,
  * when the name is still free; the rest of the scripts is not run. */
+typedef struct { inst_t *s; int made; } altctx_t;
+static void alternative(void *ctx, const char *lc, const char *pc) {
+    altctx_t *a = ctx;
+    if (lx_resolve(lc)) return;                                     /* that name is taken */
+    vnode_t *t = lx_resolve(pc);
+    if (!t || t->dir) return;
+    put_file(a->s, lc, t->data, t->size);
+    if (lx_resolve(lc)) a->made++;
+}
 static int alternatives(inst_t *s) {
-    const char *sc = s->p->postinst;
-    if (!sc) return 0;
-    int made = 0;
-    for (const char *q = sc; (q = strstr(q, "update-alternatives")); ) {
-        /* the whole command: continuation lines joined */
-        char cmd[1024]; int o = 0;
-        const char *r = q + 19;                                     /* past "update-alternatives" */
-        for (; *r && o < (int)sizeof cmd - 1; r++) {
-            if (r[0] == '\\' && r[1] == '\n') { r++; cmd[o++] = ' '; continue; }
-            if (*r == '\n' || *r == ';' || *r == '|' || *r == '&') break;
-            cmd[o++] = *r;
-        }
-        cmd[o] = 0; q = r;
-        char *w[48]; int n = split_words(cmd, w, 48);
-        for (int i = 0; i < n; i++) {
-            int args = !strcmp(w[i], "--install") ? 4 : !strcmp(w[i], "--slave") ? 3 : 0;
-            if (!args || i + 3 >= n) continue;
-            const char *link = w[i + 1], *path = w[i + 3];
-            i += args;
-            if (link[0] != '/' || path[0] != '/' || strchr(link, '$') || strchr(path, '$')) continue;
-            char lc[300], pc[300]; strlcpy(lc, link, sizeof lc); canon(lc, sizeof lc); strlcpy(pc, path, sizeof pc); canon(pc, sizeof pc);
-            if (lx_resolve(lc)) continue;                                  /* that name is taken */
-            vnode_t *t = lx_resolve(pc);
-            if (!t || t->dir) continue;
-            put_file(s, lc, t->data, t->size);
-            if (lx_resolve(lc)) made++;
-        }
-    }
-    return made;
+    if (!s->p->postinst) return 0;
+    altctx_t a = { s, 0 };
+    pkg_alternatives(s->p->postinst, alternative, &a);
+    return a.made;
 }
 static bool installing;
 bool pkg_install(pkg_t *p, pkg_out_fn out, void *ctx, volatile int *pct, char *msg, int mcap) {

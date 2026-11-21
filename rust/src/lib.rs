@@ -31,6 +31,7 @@ pub mod imgdec;
 pub mod css;
 pub mod persist;
 pub mod ttf;
+pub mod pkgfmt;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 pub mod pe;
