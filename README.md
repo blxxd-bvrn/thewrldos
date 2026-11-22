@@ -586,6 +586,28 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     (the old C read a third byte from two-byte descriptors). `make check-hid` and `make check-audio` now run against the Rust
     code. A USB keyboard, mouse and memory stick on xHCI and EHCI were found the same way, and
     the keyboard and mouse worked, in both editions with the old and new kernels.
+  - **Direct3D shader bytecode (`rust/src/dxbc.rs` and `rust/src/dxil.rs`, were
+    `src/win32/dxbc.c` and `dxil.c`):** the DXBC container and its signatures, Shader Model
+    4/5 program tokens, the DXIL (LLVM 3.7 bitcode) reader for the SM6.0 subset, the checks
+    every program passes before it runs, and the interpreter that runs vertex and pixel
+    shaders for Direct3D 10. The instruction list stays the C structures in
+    `src/win32/shader_priv.h` (the SVGA3D lowering in `shader_gpu.c` reads them; `rust_init`
+    checks their layout at boot), allocated with kmalloc. The 64-bit kernel's Rust code is
+    soft-float, so no float passes by value between Rust and C: the C library's sqrt, sin,
+    cos, exp2 and log2 and the texture-sampling callback go through `src/win32/shader_abi.c`.
+    Compared with the old C (built with the kernel's flags) over the 102 fixture shaders,
+    mutated copies of them and random SM4/SM5 programs from a generator, for each of the
+    host, 64-bit kernel and 32-bit kernel builds of the Rust code: about 96,000 programs per
+    build, 35,000 of them loaded and run with random inputs (106,000 runs), gave the same
+    errors, instruction lists and output bits, NaN bits included. The 64-bit kernel build
+    applies SSE's NaN rules to its soft-float results to get there. In the 32-bit build one
+    run in 108,000 gave a different NaN: the two compilers keep x87 intermediate results in
+    registers at different points; with NaNs counted as equal, no value differed.
+    `make check-shaders` runs against the Rust code and passes unchanged, and `d3d10test`
+    prints exactly what it did. Speed: the cube pixel-shader benchmark runs about 1.5x faster
+    than the C one on a host build with SSE; the 64-bit kernel's soft-float build runs at 0.75
+    to 1x the C speed. In QEMU, `d3d10cube --bench` took 0.93 to 1.11 times as long as with
+    the old kernel, and `shaderprobe` passes.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1188,7 +1210,7 @@ device manager's job is to say what the computer has and which driver runs it.
       notifications. 3D-buffer and listener interfaces are accepted but sound unpositioned;
       capture answers `DSERR_NODRIVER`, as does everything without a sound card.
     - **Direct3D 10 and staged shader extensions** (`d3d10.dll`, `dxgi.dll`,
-      `src/win32/d3d10.c`, `dxbc.c`, `dxil.c`): vertex/pixel shaders use a native CPU
+      `src/win32/d3d10.c`, `rust/src/dxbc.rs`, `dxil.rs`): vertex/pixel shaders use a native CPU
       interpreter or eligible **VMware SVGA3D GPU** offload. SM4.0/4.1 DXBC is joined by
       tested **SM5.0 DXBC** and **SM6.0 / DXIL 1.0**
       subsets. These are WRLD shader-upload extensions, **not D3D11/12 compatibility or a
@@ -1709,7 +1731,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    document tree, CSS parsing and cascade (html.rs, css.rs), persistence and
                    the settings file (persist.rs, kernel/persistk.rs), the TrueType engine with
                    OpenType shaping (ttf.rs), reading and checking .deb/.rpm packages (pkgfmt.rs,
-                   kernel/pkgk.rs), USB descriptors and reports (usbdesc.rs)
+                   kernel/pkgk.rs), USB descriptors and reports (usbdesc.rs), Direct3D shader
+                   bytecode and the shader interpreter (dxbc.rs, dxil.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
                    (descriptors and reports are read in rust/src/usbdesc.rs)
@@ -1722,7 +1745,8 @@ src/js             JavaScript glue (engine.c) and the browser environment (prelu
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;
                    the shell itself is rust/src/shell.rs and rust/src/kernel/shk.rs)
-src/win32          PE loader glue (the format: rust/src/pe.rs), kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 8/9/10, DirectInput, DirectSound
+src/win32          PE loader glue (the format: rust/src/pe.rs), kernel32, msvcrt, user32/gdi32, OpenGL, Direct3D 8/9/10
+                   (shader bytecode: rust/src/dxbc.rs, dxil.rs), DirectInput, DirectSound
 src/include        headers (disk.h: disks/FAT32/NTFS volumes/setup; net.h: network stack)
 third_party/mbedtls  Mbed TLS 4.1.0 with TF-PSA-Crypto 1.1 (TLS), Apache-2.0 licence
 third_party/mbedtls-config  the Mbed TLS / TF-PSA-Crypto configuration for this OS

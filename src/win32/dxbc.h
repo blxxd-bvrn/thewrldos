@@ -1,5 +1,6 @@
 /* Native vertex/pixel shader engine: SM4/5 DXBC and an SM6.0 DXIL subset.
- * Higher models are extensions of this CPU engine, not D3D11/12 feature levels. */
+ * Higher models are extensions of this CPU engine, not D3D11/12 feature levels.
+ * Written in Rust (rust/src/dxbc.rs, dxil.rs); this is its C interface. */
 #ifndef DXBC_H
 #define DXBC_H
 #include "kernel.h"

@@ -1,5 +1,7 @@
 /* Shared native shader IR. DXBC tokens and DXIL bitcode are frontend formats;
- * neither is executed as host machine code or requires a compiler at run time. */
+ * neither is executed as host machine code or requires a compiler at run time.
+ * The loaders and interpreter are Rust (rust/src/dxbc.rs, dxil.rs), which mirrors
+ * these structures; rust_shader_layout (shader_abi.c) is checked against it at boot. */
 #ifndef SHADER_PRIV_H
 #define SHADER_PRIV_H
 #include "dxbc.h"

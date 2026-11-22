@@ -38,6 +38,7 @@ extern "C" {
     static rust_vnode_layout: [u32; 13];
     static rust_net_layout: [u32; 12];
     static rust_pe_layout: [u32; 4];
+    static rust_shader_layout: [u32; 24];
 }
 
 // ---------------------------------------------------------------- heap
@@ -134,10 +135,13 @@ pub extern "C" fn rust_init() {
     if !pkgk::layout_ok() {
         unsafe { panic(c"Rust: pkg_t/pkg_entry_t/pkg_check_t in rust/src/kernel/pkgk.rs do not match src/include/pkg.h".as_ptr()) }
     }
+    if unsafe { rust_shader_layout } != crate::dxbc::layout() {
+        unsafe { panic(c"Rust: the shader structures in rust/src/dxbc.rs do not match src/win32/shader_priv.h".as_ptr()) }
+    }
     if !crate::html::layout_ok() {
         unsafe { panic(c"Rust: css_t/node_t/doc_t in rust/src/html.rs and css.rs do not match src/apps/browser.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)

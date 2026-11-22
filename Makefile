@@ -570,14 +570,14 @@ check-tools:
 check-hid:
 	@mkdir -p build64
 	cd rust && cargo build --release --quiet
-	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/hidtest tools/hidtest.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
+	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -Wl,--gc-sections -o build64/hidtest tools/hidtest.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
 	./build64/hidtest
 
 # the USB audio descriptor parser touches no hardware either
 check-audio:
 	@mkdir -p build64
 	cd rust && cargo build --release --quiet
-	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/uactest tools/uactest.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
+	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -Wl,--gc-sections -o build64/uactest tools/uactest.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
 	./build64/uactest
 
 # Timing/easing code is shared by all shell effects and has no hardware access.
@@ -597,19 +597,22 @@ HOSTCC ?= cc
 SHADER_HOST_FLAGS := -std=gnu11 -O2 -fno-builtin -Wall -Wextra -Wno-unused-function \
                      -Wno-unused-parameter -Wno-sign-compare -Wno-missing-field-initializers -Wno-misleading-indentation \
                      -Isrc/include -Isrc/win32
-SHADER_CORE := src/win32/dxbc.c src/win32/dxil.c src/win32/shader_gpu.c
+# the DXBC/DXIL loaders and the interpreter are Rust (rust/src/dxbc.rs, dxil.rs): the host
+# build of the library provides them, allocating with the test programs' kmalloc
+SHADER_CORE := src/win32/shader_gpu.c src/win32/shader_abi.c rust/target/release/libwrldrs.a
 SHADER_HEADERS := src/win32/dxbc.h src/win32/shader_priv.h src/win32/shader_gpu.h src/include/gpu3d.h samples/d3d10cube_shaders.h samples/d3d10cube_modern_shaders.h
-$(BUILD)/win32/dxbc.o $(BUILD)/win32/dxil.o: src/win32/shader_priv.h src/win32/dxbc.h
 $(BUILD)/win32/d3d10.o: src/win32/dxbc.h
+rust/target/release/libwrldrs.a: FORCE
+	cd rust && cargo build --release --quiet
 build64/shadertest: tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
 	@mkdir -p build64
-	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/shadertest.c $(SHADER_CORE) -lm
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -Wl,--gc-sections -o $@ tools/shadertest.c $(SHADER_CORE) -lpthread -ldl -lm
 build64/d3d10test: tools/d3d10test.c tools/shadertest.c src/win32/d3d10.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
 	@mkdir -p build64
-	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/d3d10test.c $(SHADER_CORE) -lm
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -Wl,--gc-sections -o $@ tools/d3d10test.c $(SHADER_CORE) -lpthread -ldl -lm
 build64/shadergputest: tools/shadergputest.c tools/shadertest.c $(SHADER_CORE) $(SHADER_HEADERS) $(wildcard tools/shaders/*)
 	@mkdir -p build64
-	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/shadergputest.c $(SHADER_CORE) -lm
+	$(HOSTCC) $(SHADER_HOST_FLAGS) -Wl,--gc-sections -o $@ tools/shadergputest.c $(SHADER_CORE) -lpthread -ldl -lm
 build64/svgatest: tools/svgatest.c src/kernel/video.c src/kernel/pci_resource.c src/gui/basicfb.c $(wildcard src/include/*.h)
 	@mkdir -p build64
 	$(HOSTCC) $(SHADER_HOST_FLAGS) -o $@ tools/svgatest.c src/kernel/pci_resource.c src/gui/basicfb.c
