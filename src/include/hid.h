@@ -1,7 +1,8 @@
 /* HID report formats. A HID device describes its input reports in a report
  * descriptor: which bits are the buttons, the axes and the keys, and whether
  * each report starts with a report ID. This is the part of the USB stack that
- * reads that description and takes a report apart; it touches no hardware. */
+ * reads that description and takes a report apart; it touches no hardware.
+ * Written in Rust (rust/src/usbdesc.rs); this is its C interface. */
 #ifndef HID_H
 #define HID_H
 #include "types.h"

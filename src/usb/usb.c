@@ -1,8 +1,9 @@
 /* USB core: root-port enumeration, standard requests, and the class drivers
  * this system needs. HID keyboards and mice are translated into the PS/2
- * scancodes and packets the rest of the system already understands (hid.c
- * reads their report formats); mass storage becomes an ordinary SCSI disk in
- * the block layer. */
+ * scancodes and packets the rest of the system already understands; mass
+ * storage becomes an ordinary SCSI disk in the block layer. What devices send
+ * (descriptors, HID report formats and reports, audio formats, storage answers)
+ * is read in Rust: rust/src/usbdesc.rs. */
 #ifndef WRLD_NO_USB                    /* both editions; -DWRLD_NO_USB leaves USB out */
 #include "usb.h"
 #include "disk.h"
@@ -530,11 +531,9 @@ static int stor_cmd_once(usb_dev_t *d, uint8_t lun, const uint8_t *cdb, int cdbl
     csw_t csw;
     int r = usb_in(d, d->ep_in, d->maxpkt_in, &d->toggle_in, &csw, sizeof csw, 5000);
     if (r < (int)sizeof csw) return -1;
-    if (csw.sig != 0x53425355 || csw.tag != tag || csw.status) {
-        klog("usb-storage: command %02x failed (status %d)", cdb[0], csw.status);
-        return csw.sig == 0x53425355 && csw.tag == tag ? -2 : -1;
-    }
-    return 0;
+    int st = usb_csw_check((const uint8_t *)&csw, r, tag);
+    if (st) klog("usb-storage: command %02x failed (status %d)", cdb[0], csw.status);
+    return st;
 }
 
 /* A device that has just been plugged in (or just appeared behind a hub) can
@@ -597,14 +596,13 @@ static void stor_attach(usb_dev_t *d, int iface)
     uint8_t cap[8];
     uint8_t rc[10] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0 };             /* READ CAPACITY(10) */
     if (stor_cmd(d, 0, rc, 10, cap, 8, true) < 0) { klog("usb-storage: READ CAPACITY failed"); return; }
-    uint32_t last = ((uint32_t)cap[0] << 24) | ((uint32_t)cap[1] << 16) | ((uint32_t)cap[2] << 8) | cap[3];
-    uint32_t bsize = ((uint32_t)cap[4] << 24) | ((uint32_t)cap[5] << 16) | ((uint32_t)cap[6] << 8) | cap[7];
-    if (bsize != 512 && bsize != 1024 && bsize != 2048 && bsize != 4096) { klog("usb-storage: %u-byte blocks unsupported", bsize); return; }
+    uint32_t blocks, bsize;
+    if (!usb_read_capacity(cap, &blocks, &bsize)) { klog("usb-storage: %u-byte blocks unsupported", bsize); return; }
 
     stor_t *s = kzalloc(sizeof *s);
     blkdev_t *b = blk_register();
     if (!s || !b) { kfree(s); return; }
-    s->dev = d; s->lun = lun; s->blocks = last + 1; s->bsize = bsize;
+    s->dev = d; s->lun = lun; s->blocks = blocks; s->bsize = bsize;
     b->ops = &stor_ops;
     b->priv = s;
     b->bsize = bsize;
@@ -612,7 +610,7 @@ static void stor_attach(usb_dev_t *d, int iface)
     b->sectors = (uint32_t)MIN((uint64_t)s->blocks * bsize / 512, 0xFFFFFFFFull);
     b->kind = "USB";
     b->driver = "usbstor";
-    snprintf(b->model, sizeof b->model, "%.8s%.16s", (const char *)inquiry + 8, (const char *)inquiry + 16);
+    usb_inquiry_model(inquiry, b->model, sizeof b->model);
     d->kind = USB_KIND_STORAGE;
     d->disk = b;
     blk_commit(b);
@@ -626,27 +624,16 @@ static void hub_port_scan(usb_dev_t *hub, int p);
 static void drop_addr(usb_hcd_t *h, int addr);
 static bool root_in_use(usb_hcd_t *h, int port);
 /* The class, and the bulk and interrupt endpoints, of the interface a storage
- * or hub driver will use: the first one of the device's class. */
+ * or hub driver will use: the first one of the device's class (read in Rust). */
 static void parse_config(usb_dev_t *d, const uint8_t *cfg, int len, int *iface_out)
 {
-    int i = 0;
-    bool mine = false, have = false;
-    while (i + 2 <= len && cfg[i] >= 2 && i + cfg[i] <= len) {
-        const uint8_t *p = cfg + i;
-        if (p[1] == 4 && p[0] >= 9) {
-            if (!d->cls) { d->cls = p[5]; d->subcls = p[6]; d->proto = p[7]; }
-            mine = !have && p[5] == d->cls && p[3] == 0;
-            if (mine) { *iface_out = p[2]; have = true; }
-        } else if (p[1] == 5 && p[0] >= 7 && mine) {
-            int ep = p[2] & 0x0F, attr = p[3] & 3, maxpkt = (p[4] | (p[5] << 8)) & 0x7FF;
-            if (attr == 3 && (p[2] & 0x80) && !d->ep_int) { d->ep_int = ep; d->maxpkt_int = (uint16_t)maxpkt; }
-            else if (attr == 2) {
-                if (p[2] & 0x80) { d->ep_in = ep; d->maxpkt_in = (uint16_t)maxpkt; }
-                else { d->ep_out = ep; d->maxpkt_out = (uint16_t)maxpkt; }
-            }
-        }
-        i += p[0];
-    }
+    usb_cfg_t c = { .cls = d->cls, .subcls = d->subcls, .proto = d->proto, .iface = *iface_out,
+                    .ep_int = d->ep_int, .ep_in = d->ep_in, .ep_out = d->ep_out,
+                    .maxpkt_int = d->maxpkt_int, .maxpkt_in = d->maxpkt_in, .maxpkt_out = d->maxpkt_out };
+    usb_parse_config(&c, cfg, len);
+    d->cls = c.cls; d->subcls = c.subcls; d->proto = c.proto; *iface_out = c.iface;
+    d->ep_int = c.ep_int; d->ep_in = c.ep_in; d->ep_out = c.ep_out;
+    d->maxpkt_int = c.maxpkt_int; d->maxpkt_in = c.maxpkt_in; d->maxpkt_out = c.maxpkt_out;
 }
 
 /* One HID interface becomes one keyboard or mouse. A device can have several

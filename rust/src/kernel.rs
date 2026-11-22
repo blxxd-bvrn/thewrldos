@@ -137,7 +137,7 @@ pub extern "C" fn rust_init() {
     if !crate::html::layout_ok() {
         unsafe { panic(c"Rust: css_t/node_t/doc_t in rust/src/html.rs and css.rs do not match src/apps/browser.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)

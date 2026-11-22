@@ -1,6 +1,6 @@
 /* USB audio: read a device's configuration descriptor to find the playback
  * path it offers. This is only the descriptor work (no hardware), so the same
- * code is checked on the build machine.
+ * code is checked on the build machine. Written in Rust (rust/src/usbdesc.rs).
  *
  * A class 1 device lists its sample rates in the streaming interface's format
  * type I descriptor, and the rate is set on the endpoint. A class 2 device has

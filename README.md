@@ -574,6 +574,18 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     past the end of the archive, 32-bit size checks in ar and cpio and the 64-bit ELF
     program header check could wrap, an empty item hung `list_add`, and an RPM tag claiming
     billions of entries looped for as long.
+  - **What USB devices send (`rust/src/usbdesc.rs`, was `src/usb/hid.c`,
+    `src/usb/audioclass.c` and parts of `src/usb/usb.c`):** configuration descriptors (the
+    interface and endpoints a storage or hub driver uses, and every HID interface), HID report
+    descriptors and the mouse and keyboard reports read with them, the USB audio class 1 and 2
+    formats, sample rates and clock sources, and mass storage's command status, capacity and
+    model name. The controller drivers, enumeration and the class drivers stay C. Compared on
+    the build machine with the old C over two million generated report and configuration
+    descriptors (with damaged ones among them): the same formats, decoded reports, interfaces,
+    endpoints and audio formats, with no panics; each read is checked against the buffer
+    (the old C read a third byte from two-byte descriptors). `make check-hid` and `make check-audio` now run against the Rust
+    code. A USB keyboard, mouse and memory stick on xHCI and EHCI were found the same way, and
+    the keyboard and mouse worked, in both editions with the old and new kernels.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -910,7 +922,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   that still holds it fails its reads instead of reading freed memory. Waits for a controller are
   spent halted rather than polling, so a transfer that is slow or never answered does not burn the
   CPU.
-- **HID** (`hid.c`): every HID interface of a device becomes its own keyboard or mouse, so a
+- **HID** (`usb.c`, report formats in `rust/src/usbdesc.rs`): every HID interface of a device becomes its own keyboard or mouse, so a
   keyboard with a media-key interface, or a wireless receiver that carries both a keyboard and a
   mouse, works. The report descriptor is read to find the buttons, X, Y and wheel (any width,
   with or without a report ID), and a mouse is read in that format; a keyboard uses the boot
@@ -1697,9 +1709,10 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    document tree, CSS parsing and cascade (html.rs, css.rs), persistence and
                    the settings file (persist.rs, kernel/persistk.rs), the TrueType engine with
                    OpenType shaping (ttf.rs), reading and checking .deb/.rpm packages (pkgfmt.rs,
-                   kernel/pkgk.rs)
+                   kernel/pkgk.rs), USB descriptors and reports (usbdesc.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
+                   (descriptors and reports are read in rust/src/usbdesc.rs)
 src/gui            graphics, text layout with bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens

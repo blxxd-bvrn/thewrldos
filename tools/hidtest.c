@@ -1,9 +1,9 @@
-/* Checks for src/usb/hid.c, run on the build machine: `make check-hid`.
+/* Checks for the HID code (rust/src/usbdesc.rs), run on the build machine: `make check-hid`.
  *
  * QEMU only has a boot keyboard and a plain three-button mouse, so the report
  * formats of real devices (report IDs, 16-bit and packed 12-bit axes, N-key
  * rollover keyboards, several HID interfaces in one device) are checked here
- * against descriptors of that shape instead. hid.c touches no hardware, so it
+ * against descriptors of that shape instead. The code touches no hardware, so it
  * is compiled as it is. */
 #include "hid.h"
 int printf(const char *fmt, ...);

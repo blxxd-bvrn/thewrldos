@@ -566,16 +566,18 @@ check-tools:
 	@for t in x86_64-unknown-none i586-unknown-linux-gnu; do \
 	  if rustup target list --installed 2>/dev/null | grep -qx $$t; then echo "  ok       Rust target $$t"; else echo "  MISSING  Rust target $$t (rustup target add $$t)"; fi; done
 
-# the HID report-format code touches no hardware: check it on this machine
+# the HID report-format code (rust/src/usbdesc.rs) touches no hardware: check it on this machine
 check-hid:
 	@mkdir -p build64
-	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/hidtest tools/hidtest.c src/usb/hid.c
+	cd rust && cargo build --release --quiet
+	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/hidtest tools/hidtest.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
 	./build64/hidtest
 
 # the USB audio descriptor parser touches no hardware either
 check-audio:
 	@mkdir -p build64
-	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/uactest tools/uactest.c src/usb/audioclass.c
+	cd rust && cargo build --release --quiet
+	$(CC) -std=gnu11 -O1 -Wall -Wextra -D__x86_64__ -Isrc/include -o build64/uactest tools/uactest.c rust/target/release/libwrldrs.a -lpthread -ldl -lm
 	./build64/uactest
 
 # Timing/easing code is shared by all shell effects and has no hardware access.

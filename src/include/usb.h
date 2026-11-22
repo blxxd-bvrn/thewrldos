@@ -132,6 +132,15 @@ int usb_control_t(usb_dev_t *d, uint8_t type, uint8_t req, uint16_t value, uint1
 int usb_in(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, void *buf, int len, int timeout_ms);
 int usb_out(usb_dev_t *d, int ep, uint16_t maxpkt, uint8_t *toggle, const void *buf, int len, int timeout_ms);
 
+/* What a device sends, read in Rust (rust/src/usbdesc.rs, with hid.h and uac.h): the
+ * interface a storage or hub driver uses, and mass storage's answers. */
+typedef struct { uint8_t cls, subcls, proto; int iface, ep_int, ep_in, ep_out; uint16_t maxpkt_int, maxpkt_in, maxpkt_out; } usb_cfg_t;
+/* c->cls comes in as the device descriptor's class (0: the first interface's) */
+void usb_parse_config(usb_cfg_t *c, const uint8_t *cfg, int len);
+int usb_csw_check(const uint8_t *csw, int n, uint32_t tag);      /* 0 passed, -2 refused (retry), -1 no valid status */
+bool usb_read_capacity(const uint8_t cap[8], uint32_t *blocks, uint32_t *bsize);   /* false: a block size we cannot use */
+void usb_inquiry_model(const uint8_t inq[36], char *out, int cap);
+
 /* usb audio: a UAC1 playback device, found while a configuration is parsed */
 bool usb_audio_attach(usb_hcd_t *h, usb_dev_t *tmpl, const uint8_t *cfg, int len);
 void usb_audio_detach(usb_dev_t *d);
