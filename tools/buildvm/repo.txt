@@ -1,0 +1,3 @@
+# The GitHub repository (OWNER/NAME) whose releases "Build to ISO.bat" downloads the ISOs and
+# the build-VM kit from, when the sources are not a git checkout (a downloaded zip).
+blxxd-bvrn/XPLikeTest

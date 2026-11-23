@@ -1,0 +1,135 @@
+# Builds the portable build VM that "Build to ISO.bat" uses on Windows without WSL or Docker, and
+# publishes it as the "build-vm-kit" release:
+#   - wrld-build-vm.qcow2 (in parts if it is over GitHub's 2 GB file limit) and vmlinuz: Ubuntu
+#     24.04 with every build tool, Rust and the 64-bit edition's WebKit packages
+#   - wrld-build-vm-qemu-win64.zip: QEMU for Windows (from MSYS2), unpacked without installing
+#   - kit.txt: the kit's version and each file's SHA-256
+# Each part is tested first: the image builds the real ISOs under KVM on Linux, and the Windows
+# QEMU runs build-iso.ps1 against the image.
+name: Build VM kit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 1 * *'          # monthly, for Ubuntu's updates
+  push:
+    paths:
+      - 'tools/buildvm/**'
+      - 'tools/build-iso.sh'
+      - '.github/workflows/build-vm-kit.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make room (the runner's unused SDKs)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+
+      - name: Tools
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq debootstrap qemu-utils qemu-system-x86
+      - name: Make the image
+        run: sudo tools/buildvm/make-image.sh "$PWD/kit"
+      - name: Build the ISOs inside it (the kit's own test)
+        run: |
+          sudo chmod 666 /dev/kvm 2>/dev/null || true
+          sudo chown -R "$(id -u):$(id -g)" kit
+          cp kit/wrld-build-vm.qcow2 kit/test-base.qcow2
+          mkdir test && cp kit/vmlinuz test/ && mv kit/test-base.qcow2 test/wrld-build-vm.qcow2
+          tools/buildvm/run-vm.sh test .
+          ls -la wrldos.iso wrldos64.iso
+          rm -rf test
+      - name: Split for GitHub's 2 GB file limit
+        run: |
+          cd kit
+          if [ "$(stat -c %s wrld-build-vm.qcow2)" -gt 2000000000 ]; then
+            split -b 1900M -d -a 2 wrld-build-vm.qcow2 wrld-build-vm.qcow2.part && rm wrld-build-vm.qcow2
+          fi
+          ls -la
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vm-image
+          path: |
+            kit/vmlinuz
+            kit/wrld-build-vm.qcow2*
+          retention-days: 7
+          compression-level: 0
+
+  qemu:
+    needs: image
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-qemu zip
+      - name: Package QEMU
+        shell: msys2 {0}
+        run: |
+          mkdir -p qemu/share
+          cp /ucrt64/bin/qemu-system-x86_64.exe /ucrt64/bin/qemu-img.exe qemu/
+          for exe in qemu/*.exe; do ldd "$exe"; done | awk '$3 ~ /^\/ucrt64\// { print $3 }' | sort -u | xargs -r -I{} cp {} qemu/
+          for f in bios-256k.bin bios.bin linuxboot_dma.bin linuxboot.bin kvmvapic.bin multiboot_dma.bin vgabios-stdvga.bin; do
+            [ -f /ucrt64/share/qemu/$f ] && cp /ucrt64/share/qemu/$f qemu/share/
+          done
+          # accelerators and devices built as modules, where this build has them
+          if [ -d /ucrt64/lib/qemu ]; then mkdir -p qemu/lib && cp -r /ucrt64/lib/qemu qemu/lib/; fi
+          ./qemu/qemu-system-x86_64.exe --version
+          (cd qemu && zip -qr ../wrld-build-vm-qemu-win64.zip .)
+          ls -la wrld-build-vm-qemu-win64.zip
+      - uses: actions/download-artifact@v4
+        with:
+          name: vm-image
+          path: testkit
+      - name: Test build-iso.ps1 with this QEMU and the new image
+        shell: pwsh
+        run: |
+          $kit = "$env:RUNNER_TEMP\kit"
+          New-Item -ItemType Directory -Force $kit | Out-Null
+          Copy-Item testkit\vmlinuz $kit
+          $parts = Get-ChildItem testkit -Filter 'wrld-build-vm.qcow2*' | Sort-Object Name
+          $out = [IO.File]::Create("$kit\wrld-build-vm.qcow2"); foreach ($p in $parts) { $in = [IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }; $out.Close()
+          tar -xf wrld-build-vm-qemu-win64.zip -C (New-Item -ItemType Directory -Force "$kit\qemu")
+          "version test" | Set-Content "$kit\kit.txt"
+          # a stand-in for the build: the VM boots, reads the sources, checks its tools, writes two files back
+          $src = "$env:RUNNER_TEMP\src"
+          New-Item -ItemType Directory -Force "$src\tools" | Out-Null
+          Set-Content -NoNewline "$src\tools\build-iso.sh" "#!/bin/bash`nset -e`nuname -a`ncommand -v gcc nasm grub-mkrescue xorriso cargo`npkg-config --modversion webkitgtk-6.0`necho fake > /root/src/wrldos.iso`necho fake > /root/src/wrldos64.iso`n"
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\buildvm\build-iso.ps1 -Mode vm -Src $src -KitDir $kit -NoDownload
+          if ($LASTEXITCODE -ne 0) { throw "build-iso.ps1 failed" }
+          Get-Content "$src\build-vm.log"
+          if ((Get-Content "$src\wrldos.iso") -ne 'fake') { throw "no result came back from the VM" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vm-qemu
+          path: wrld-build-vm-qemu-win64.zip
+          retention-days: 7
+
+  publish:
+    needs: [image, qemu]
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: kit
+          merge-multiple: true
+      - name: Publish the "build-vm-kit" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd kit
+          { echo "version $(date -u +%Y-%m-%dT%H:%MZ)-${GITHUB_SHA::8}"; sha256sum vmlinuz wrld-build-vm.qcow2* wrld-build-vm-qemu-win64.zip | sed 's/ \*/ /; s/  / /'; } > kit.txt
+          cat kit.txt
+          gh release delete build-vm-kit --yes --cleanup-tag 2>/dev/null || true
+          gh release create build-vm-kit --target "$GITHUB_SHA" --title "Build VM kit" \
+            --notes "The portable Linux build VM that Build to ISO.bat downloads when a PC has neither WSL nor Docker. Built from $GITHUB_SHA." \
+            kit.txt vmlinuz wrld-build-vm.qcow2* wrld-build-vm-qemu-win64.zip

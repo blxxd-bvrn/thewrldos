@@ -1,0 +1,57 @@
+# Builds wrldos.iso (both editions) and wrldos64.iso on every push to the main branch and publishes
+# them as the "latest-iso" release, which "Build to ISO.bat" downloads on a PC without WSL or
+# Docker. Pushes to other branches and pull requests get the ISOs as a downloadable artifact.
+name: Build ISO
+
+on:
+  push:
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-iso-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make room (the runner's unused SDKs)
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL && df -h /
+
+      - name: Build both editions
+        run: bash tools/build-iso.sh .
+
+      - name: Checksums
+        run: |
+          sha256sum -b wrldos.iso wrldos64.iso > SHA256SUMS
+          printf 'Commit %s (%s)\nBuilt %s by GitHub Actions run %s\n' "$GITHUB_SHA" "$GITHUB_REF_NAME" "$(date -u '+%Y-%m-%d %H:%M UTC')" "$GITHUB_RUN_ID" > built-from.txt
+          cat built-from.txt SHA256SUMS
+
+      - name: Keep the ISOs as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrldos-iso
+          path: |
+            wrldos.iso
+            wrldos64.iso
+            SHA256SUMS
+            built-from.txt
+          retention-days: 14
+
+      - name: Publish the "latest-iso" release
+        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest-iso --yes --cleanup-tag 2>/dev/null || true
+          gh release create latest-iso --target "$GITHUB_SHA" --title "THE WRLD OS (latest build)" \
+            --notes "Built automatically from $GITHUB_SHA. wrldos.iso has both editions (64-bit with the WebKit browser where the processor can run it, else 32-bit); wrldos64.iso is the 64-bit edition alone. Boot with legacy BIOS, at least 256 MB of RAM." \
+            wrldos.iso wrldos64.iso SHA256SUMS built-from.txt

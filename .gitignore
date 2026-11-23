@@ -9,3 +9,5 @@ disk.img
 build64/
 disk64.img
 rust/target/
+build-vm/
+build-vm.log

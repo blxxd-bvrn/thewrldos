@@ -93,9 +93,30 @@ Double-click **`Build to ISO.bat`** in the source folder. It:
 3. writes **`wrldos.iso`** (the CD with both editions) and **`wrldos64.iso`** (the 64-bit edition alone) next to
    the .bat file.
 
-If neither WSL nor Docker is available, it explains why and offers to install WSL with Ubuntu.
-After that you restart Windows, open *Ubuntu* once to create a Linux user, and run the .bat
-again.
+If neither WSL nor Docker is available, it offers three ways out, none of which needs anything
+installed beforehand:
+
+- **Download ready-made ISOs.** GitHub Actions builds both ISOs on every push to the main branch
+  (`.github/workflows/build-iso.yml`) and publishes them as the `latest-iso` release; the .bat
+  fetches them with Windows' own `curl.exe` and checks their SHA-256. A few minutes, but your
+  own changes to the sources are not in them.
+- **Build in a portable Linux VM.** The first time, it downloads the build kit (about 1 GB, the
+  `build-vm-kit` release made by `.github/workflows/build-vm-kit.yml`) into
+  `%LOCALAPPDATA%\WRLD OS build VM`: an Ubuntu 24.04 disk with every build tool, Rust and the
+  WebKit packages already installed, the kernel that boots it, and QEMU for Windows. Your sources
+  go into the VM as a tar archive on a second virtual disk, the build runs, and the ISOs come back
+  on a third disk, unpacked with Windows' own `tar.exe`. No administrator rights and no network
+  inside the build. With *Windows Hypervisor Platform* turned on (Windows Features) QEMU runs at
+  close to full speed; without it the computer is emulated and a build takes one to a few hours.
+  The VM's disk keeps the object files, so later builds are quicker. `build-vm.log` next to the
+  .bat holds the build's messages. (`tools/buildvm/`: `make-image.sh` makes the disk,
+  `build-iso.ps1` runs it on Windows, `run-vm.sh` on Linux.)
+- **Install WSL with Ubuntu** (an administrator prompt and a restart; then open *Ubuntu* once to
+  create a Linux user, and run the .bat again). After that, builds are quick.
+
+`Build to ISO.bat download` and `Build to ISO.bat vm` choose the first two directly, also on a
+PC that has WSL. A copy of the sources that is not a git checkout (a downloaded zip) reads the
+GitHub repository to download from in `tools/buildvm/repo.txt`.
 
 > MSYS2, MinGW and Cygwin cannot build the kernel. Their `gcc` makes Windows PE files, not the
 > ELF kernel that GRUB loads, and they have no BIOS GRUB tools. `make` stops with an
@@ -1802,7 +1823,7 @@ used to test every screen above, including a full install from a blank disk.
 ## Project layout
 
 ```
-Build to ISO.bat   one-click ISO build on Windows (WSL or Docker), both editions
+Build to ISO.bat   one-click ISO build on Windows (WSL, Docker, ready-made ISOs or the portable build VM)
 src/arch           boot stub, interrupt/context-switch assembly, linker script: i686/, x86_64/
 src/kernel         boot, cpu, ACPI, drivers, memory, scheduler, ATA, applying the settings (the
                    VFS, FAT32, NTFS and persistence are in rust/)
@@ -1852,7 +1873,9 @@ rootfs/            live C: drive (initrd), including WRLD/Resources/Themes/*.wrl
                    the build adds boot/ (kernel and GRUB images)
 grub/grub.cfg      CD boot menu
 grub/efi.cfg       early config embedded in the installed EFI loader
-tools/             asset/globe/root-certificate generators, DMG builder, build-iso.sh, QEMU harness
+tools/             asset/globe/root-certificate generators, DMG builder, build-iso.sh, QEMU harness,
+                   buildvm/ (the portable build VM for Windows PCs without WSL or Docker)
+.github/workflows  build-iso.yml (ISOs as the "latest-iso" release), build-vm-kit.yml (the build VM kit)
 docs/screenshots/  the screenshots in this README
 ```
 
