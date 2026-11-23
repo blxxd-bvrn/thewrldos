@@ -9,6 +9,7 @@ use super::proc_::{resolve_w, basename};
 use crate::lxpath::{self as lp, kind as K};
 use alloc::vec::Vec;
 use core::ptr::{self, null_mut};
+use core::fmt::Write as _;
 
 #[allow(clashing_extern_declarations)]
 extern "C" {
@@ -56,6 +57,32 @@ unsafe fn lx_path2(p: *mut LxProc, dirfd: c_int, upath: &[u8]) -> (c_int, Vec<u8
     let a = linux_abs(p, dirfd, upath);
     (lp::classify(&a), lp::to_wrld(&a, 512), a)
 }
+
+/// What readlink("/proc/self/fd/N") gives, as Linux names it: the path the file was opened
+/// as, or "pipe:[ino]", "socket:[ino]", "anon_inode:[eventfd]" and so on.
+unsafe fn fd_link_name(f: *mut LxFile) -> Vec<u8> {
+    let p = cstr(&(*f).path);
+    if !p.is_empty() { return p.to_vec(); }
+    let ino = ((if (*f).obj.is_null() { f as usize } else { (*f).obj as usize }) >> 4) & 0xFF_FFFF;
+    let mut v = Vec::new();
+    let _ = match (*f).ty {
+        FD_PIPE => write!(Wv(&mut v), "pipe:[{}]", ino),
+        FD_SOCKET => write!(Wv(&mut v), "socket:[{}]", ino),
+        FD_EPOLL => write!(Wv(&mut v), "anon_inode:[eventpoll]"),
+        FD_EVENTFD => write!(Wv(&mut v), "anon_inode:[eventfd]"),
+        FD_TIMERFD => write!(Wv(&mut v), "anon_inode:[timerfd]"),
+        FD_CONSOLE => write!(Wv(&mut v), "/dev/tty"),
+        FD_NULL => write!(Wv(&mut v), "/dev/null"),
+        FD_ZERO => write!(Wv(&mut v), "/dev/zero"),
+        FD_RANDOM => write!(Wv(&mut v), "/dev/urandom"),
+        FD_DSP => write!(Wv(&mut v), "/dev/dsp"),
+        FD_WINDOW => write!(Wv(&mut v), "/dev/wrld/window"),
+        _ => write!(Wv(&mut v), "anon_inode:[{}]", (*f).ty),
+    };
+    v
+}
+struct Wv<'a>(&'a mut Vec<u8>);
+impl core::fmt::Write for Wv<'_> { fn write_str(&mut self, s: &str) -> core::fmt::Result { self.0.extend_from_slice(s.as_bytes()); Ok(()) } }
 
 /// A path argument: Err(-EFAULT / -ENAMETOOLONG).
 unsafe fn ustr(src: u64, cap: usize) -> Result<Vec<u8>, i64> {
@@ -617,8 +644,9 @@ pub unsafe fn lx_sys_file(t: *mut LxThread, nr: i64, r: *mut Regs, handled: &mut
             if nr == 5 || (nr == 262 && a3 & 0x1000 != 0) {
                 let mut empty = true;
                 if nr == 262 {
-                    let s = tryr!(ustr(a1, 2));                    /* as the C code read it: a longer path is ENAMETOOLONG */
-                    empty = s.is_empty();
+                    /* AT_EMPTY_PATH only matters for an empty path; any other path is looked up
+                       as usual (the C code read at most one byte, so it failed with ENAMETOOLONG) */
+                    empty = tryr!(ustr(a1, 512)).is_empty();
                 }
                 if nr == 5 || empty {
                     let f = fdg(a0); if f.is_null() { return -EBADF; }
@@ -668,14 +696,13 @@ pub unsafe fn lx_sys_file(t: *mut LxThread, nr: i64, r: *mut Regs, handled: &mut
         89 | 267 => {                                                          /* readlink, readlinkat */
             let path = tryr!(ustr(if nr == 89 { a0 } else { a1 }, 512));
             let (buf, cap) = if nr == 89 { (a1, a2) } else { (a2, a3) };
-            /* The C code passed one buffer for both of lx_path2's outputs, so it held the WRLD
-             * path and the /proc/self/fd branch never matched: readlink of a descriptor link
-             * fails with EINVAL, and still does here. */
-            let (kind, labs, _) = lx_path2(p, if nr == 89 { AT_FDCWD } else { a0 as c_int }, &path);
+            /* /proc/self/fd/N names what descriptor N is open on (the C code compared the
+             * WRLD path here, so this always failed with EINVAL) */
+            let (kind, _, labs) = lx_path2(p, if nr == 89 { AT_FDCWD } else { a0 as c_int }, &path);
             if kind != K::PROC_SELF_EXE {
-                if labs.starts_with(b"/proc/self/fd/") {
+                if labs.starts_with(b"/proc/self/fd/") && labs.len() > 14 && labs[14..].iter().all(u8::is_ascii_digit) {
                     let f = lx_fd_get(p, atoi(&labs[14..]) as i64); if f.is_null() { return -ENOENT; }
-                    let s = cstr(&(*f).path); let l = (s.len() as u64).min(cap);
+                    let s = fd_link_name(f); let l = (s.len() as u64).min(cap);
                     return if uout(vm, buf, s.as_ptr(), l) { l as i64 } else { -EFAULT };
                 }
                 return -EINVAL;                                                 /* not a symbolic link */

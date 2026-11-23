@@ -623,10 +623,12 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     sample, DNS over UDP, /dev/dsp and the WebKit browser (compositor, GTK, threads, shared
     memory and sockets) behave as before. `madvise(MADV_DONTNEED)` now visits only the
     mappings in its range instead of every page: WebKit drops a 64 GiB reservation that way,
-    which took the C code 3 seconds in QEMU, close to the desktop watchdog's limit. Kept as it
-    was: readlink of a /proc/self/fd link fails with EINVAL (the C code passed one buffer for
-    two results), and newfstatat with AT_EMPTY_PATH and a path of two or more characters
-    returns ENAMETOOLONG.
+    which took the C code 3 seconds in QEMU, close to the desktop watchdog's limit. Two C bugs
+    that the port first kept are fixed: readlink of a /proc/self/fd link failed with EINVAL
+    (the C code passed one buffer for two results) and now gives the file's path, or
+    `pipe:[N]`, `socket:[N]` and so on as Linux does; and newfstatat with AT_EMPTY_PATH
+    returned ENAMETOOLONG for any path of two or more characters, where it now looks the path
+    up. A test program gives the same answers as on a Linux kernel.
   - **The browser's SVG renderer and document interface (`rust/src/svg.rs`, `rust/src/dom.rs`;
     were `src/apps/svg.c` and `src/apps/dom.c`):** inline `<svg>` and `.svg` pictures, and the
     `dom_*` calls the JavaScript engine uses to read and change the page (nodes, attributes,
