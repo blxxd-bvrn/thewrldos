@@ -321,3 +321,49 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------- the C interface (src/include/fs.h)
+
+#[cfg(any(feature = "kernel", feature = "htmldoc"))]
+pub mod ffi {
+    use core::ffi::c_int;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use crate::inflate;
+
+    /// Input bytes the last inflate_raw() consumed: src/pkg/unpack.c steps over gzip members
+    /// with it. Same layout as the C `uint32_t inflate_used`.
+    #[no_mangle]
+    pub static inflate_used: AtomicU32 = AtomicU32::new(0);
+
+    /// Slices for a C buffer; a null pointer is an empty buffer.
+    unsafe fn in_slice<'a>(p: *const u8, n: u32) -> &'a [u8] {
+        if p.is_null() || n == 0 { &[] } else { core::slice::from_raw_parts(p, n as usize) }
+    }
+    unsafe fn out_slice<'a>(p: *mut u8, n: u32) -> &'a mut [u8] {
+        if p.is_null() || n == 0 { &mut [] } else { core::slice::from_raw_parts_mut(p, n as usize) }
+    }
+
+    unsafe fn finish(r: Result<inflate::Done, inflate::Error>, outlen: *mut u32) -> c_int {
+        match r {
+            Ok(d) => {
+                if !outlen.is_null() { *outlen = d.written as u32; }
+                inflate_used.store(d.consumed as u32, Ordering::Relaxed);
+                0
+            }
+            Err(_) => -1,
+        }
+    }
+
+    /// int inflate_raw(const uint8_t *src, uint32_t srclen, uint8_t *dst, uint32_t cap, uint32_t *outlen):
+    /// a raw DEFLATE stream into dst; 0, or -1 on bad data or a full buffer.
+    #[no_mangle]
+    pub unsafe extern "C" fn inflate_raw(src: *const u8, srclen: u32, dst: *mut u8, cap: u32, outlen: *mut u32) -> c_int {
+        finish(inflate::inflate_raw(in_slice(src, srclen), out_slice(dst, cap)), outlen)
+    }
+
+    /// int inflate_zlib(...): the same for a zlib stream (RFC 1950 header, no checksum check).
+    #[no_mangle]
+    pub unsafe extern "C" fn inflate_zlib(src: *const u8, srclen: u32, dst: *mut u8, cap: u32, outlen: *mut u32) -> c_int {
+        finish(inflate::inflate_zlib(in_slice(src, srclen), out_slice(dst, cap)), outlen)
+    }
+}

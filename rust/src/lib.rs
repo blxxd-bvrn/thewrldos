@@ -38,6 +38,7 @@ pub mod dxil;
 pub mod lxpath;
 pub mod pcm;
 pub mod adblock;
+pub mod http;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]

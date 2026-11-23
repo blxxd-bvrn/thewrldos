@@ -662,6 +662,24 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     surround files keep their centre channel. Plain PCM WAVs give the same samples as before.
     The old loader froze the desktop on a WAV with a chunk size near 4 GB (its offset wrapped
     round) and read past the end of a file cut off in its format chunk.
+  - **The HTTP client (`rust/src/http.rs`, was `src/net/http.c`):** URL parsing and
+    resolving, GET/POST over TCP or TLS, redirects, chunked transfer encoding and gzip/deflate
+    content encoding, for the browser, scripts' `fetch`, `wget`/`curl` and package downloads.
+    `http_response_t` is checked at boot. A host harness ran the old and new clients against
+    the same simulated network (DNS, TCP and TLS stand-ins serving 10,001 generated server
+    responses in random pieces: damaged headers, bad chunk sizes, broken gzip, resets and
+    timeouts, redirect chains): both sent the same bytes and returned the same results. In
+    QEMU both editions sent the same requests, byte for byte, as before to a local test
+    server (redirects, POST from `fetch`, chunked gzip, deflate) and showed the same pages.
+    Fixed: a script calling `fetch` with a method longer than about 2,800 characters
+    overflowed the C code's 3,072-byte request buffer on the kernel stack; and relative links
+    now resolve as RFC 3986 says. The C code left "." and ".." in paths that start with "/"
+    (`/../g`) and in `//host/..` references, turned a trailing "." into "//", collapsed "//"
+    inside paths, took any reference with "://" in its first ten characters for an absolute
+    one, and knew only a few schemes, so `tel:` and `sms:` links were taken as relative paths.
+    On 24,550 generated base/link pairs the new code matches RFC 3986 (with a one-letter
+    "scheme" read as a drive letter, and an empty http path written as "/" as browsers do);
+    the C code differed on 6,022, and every pair the C code got right is unchanged.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1789,8 +1807,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    bytecode and the shader interpreter (dxbc.rs, dxil.rs), the Linux layer
                    (kernel/lx/, its paths and ELF headers in lxpath.rs), the browser's SVG
                    renderer and the document interface for scripts (svg.rs, dom.rs), WAV, AIFF
-                   and .au files (pcm.rs), the ad blocker (adblock.rs)
-src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
+                   and .au files (pcm.rs), the ad blocker (adblock.rs), the HTTP client (http.rs)
+src/net            network card drivers, TLS glue (the stack is rust/src/netstack.rs, HTTP rust/src/http.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
                    (descriptors and reports are read in rust/src/usbdesc.rs)
 src/gui            graphics, text layout with bidi and

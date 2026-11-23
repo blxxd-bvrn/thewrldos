@@ -5,9 +5,8 @@ use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ffi::{c_char, c_int, c_void};
 use core::fmt::{self, Write};
-use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::{dmg, fat, inflate, net, netstack, pe};
+use crate::{dmg, fat, net, netstack, pe};
 
 #[macro_use]
 mod w32;
@@ -42,6 +41,7 @@ extern "C" {
     static rust_vnode_layout: [u32; 13];
     static rust_mdec_layout: [u32; 4];
     static rust_net_layout: [u32; 12];
+    static rust_http_layout: [u32; 6];
     static rust_pe_layout: [u32; 4];
     static rust_shader_layout: [u32; 24];
 }
@@ -150,6 +150,9 @@ pub extern "C" fn rust_init() {
     if !crate::html::layout_ok() {
         unsafe { panic(c"Rust: css_t/node_t/doc_t in rust/src/html.rs and css.rs do not match src/apps/browser.h".as_ptr()) }
     }
+    if unsafe { rust_http_layout } != crate::http::layout() {
+        unsafe { panic(c"Rust: http_response_t in rust/src/http.rs does not match src/include/net.h".as_ptr()) }
+    }
     if unsafe { rust_mdec_layout } != crate::pcm::layout() {
         unsafe { panic(c"Rust: mdec_info_t in rust/src/pcm.rs does not match src/include/mediadec.h".as_ptr()) }
     }
@@ -163,46 +166,18 @@ pub extern "C" fn rust_init() {
     if !crate::dom::layout_ok() {
         unsafe { panic(c"Rust: ctrl_t/page_t in rust/src/dom.rs do not match src/apps/browser.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux, svg, dom, audio files, ad blocker)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux, svg, dom, audio files, ad blocker, http)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
-// ---------------------------------------------------------------- inflate (src/include/fs.h)
-
-/// Input bytes the last inflate_raw() consumed: src/pkg/unpack.c steps over gzip members
-/// with it. Same layout as the C `uint32_t inflate_used`.
-#[no_mangle]
-pub static inflate_used: AtomicU32 = AtomicU32::new(0);
+// ---------------------------------------------------------------- inflate: crate::inflate::ffi
 
 /// Slices for a C buffer; a null pointer is an empty buffer.
 unsafe fn in_slice<'a>(p: *const u8, n: u32) -> &'a [u8] {
     if p.is_null() || n == 0 { &[] } else { core::slice::from_raw_parts(p, n as usize) }
 }
+#[allow(dead_code)]
 unsafe fn out_slice<'a>(p: *mut u8, n: u32) -> &'a mut [u8] {
     if p.is_null() || n == 0 { &mut [] } else { core::slice::from_raw_parts_mut(p, n as usize) }
-}
-
-unsafe fn finish(r: Result<inflate::Done, inflate::Error>, outlen: *mut u32) -> c_int {
-    match r {
-        Ok(d) => {
-            if !outlen.is_null() { *outlen = d.written as u32; }
-            inflate_used.store(d.consumed as u32, Ordering::Relaxed);
-            0
-        }
-        Err(_) => -1,
-    }
-}
-
-/// int inflate_raw(const uint8_t *src, uint32_t srclen, uint8_t *dst, uint32_t cap, uint32_t *outlen):
-/// a raw DEFLATE stream into dst; 0, or -1 on bad data or a full buffer.
-#[no_mangle]
-pub unsafe extern "C" fn inflate_raw(src: *const u8, srclen: u32, dst: *mut u8, cap: u32, outlen: *mut u32) -> c_int {
-    finish(inflate::inflate_raw(in_slice(src, srclen), out_slice(dst, cap)), outlen)
-}
-
-/// int inflate_zlib(...): the same for a zlib stream (RFC 1950 header, no checksum check).
-#[no_mangle]
-pub unsafe extern "C" fn inflate_zlib(src: *const u8, srclen: u32, dst: *mut u8, cap: u32, outlen: *mut u32) -> c_int {
-    finish(inflate::inflate_zlib(in_slice(src, srclen), out_slice(dst, cap)), outlen)
 }
 
 // ---------------------------------------------------------------- unwinding stubs
