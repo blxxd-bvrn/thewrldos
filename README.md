@@ -656,7 +656,12 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     sound data offset ran past the end of the file made the C code read outside the file
     (its 32-bit sums wrapped); such a file now has no samples. An ADPCM block smaller than its
     own header, which the C code accepted by asking for a 2 GB buffer, is refused as a bad
-    header.
+    header. The sound system's own WAV loader (in `src/kernel/audio.c`, used by `play`,
+    system sounds and Win32 `PlaySound`) is gone: every sound file goes through the same
+    decoders, so those places also play ADPCM, A-law, mu-law, float and AIFF/.au files, and
+    surround files keep their centre channel. Plain PCM WAVs give the same samples as before.
+    The old loader froze the desktop on a WAV with a chunk size near 4 GB (its offset wrapped
+    round) and read past the end of a file cut off in its format chunk.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code

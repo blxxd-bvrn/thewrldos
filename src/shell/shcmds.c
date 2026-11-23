@@ -229,7 +229,7 @@ static int b_display(const char *cwd, int argc, char **argv, io_t *io) {
     return 0;
 }
 static int b_play(const char *cwd, int argc, char **argv, io_t *io) {
-    if (argc < 2) { err_f(io, "usage: play FILE.wav [-w]   (-w waits until it has finished)\n"); return 1; }
+    if (argc < 2) { err_f(io, "usage: play FILE [-w]   (WAV, AIFF, .au, FLAC, MP3, Ogg; -w waits until it has finished)\n"); return 1; }
     char full[512]; vnode_t *n = vfs_resolve(argv[1], cwd);
     if (!n) { err_f(io, "play: %s: not found\n", argv[1]); return 1; }
     vfs_path(n, full, sizeof full);

@@ -1499,46 +1499,14 @@ void audio_voice_stop(int v, const sound_t *s) {
     uint32_t f = irq_save(); voices[v].active = false; voices[v].paused = false; irq_restore(f);
 }
 
-/* ======================= WAV ======================= */
-static uint32_t le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
-static uint16_t le16(const uint8_t *p) { return p[0] | (p[1] << 8); }
-sound_t *sound_load_wav(const uint8_t *d, uint32_t n, char *err, int errcap) {
-    if (n < 12 || memcmp(d, "RIFF", 4) || memcmp(d + 8, "WAVE", 4)) { snprintf(err, errcap, "not a WAV file"); return NULL; }
-    int fmt = 0, ch = 0, bits = 0; uint32_t rate = 0; const uint8_t *data = NULL; uint32_t dlen = 0;
-    for (uint32_t o = 12; o + 8 <= n;) {
-        uint32_t cl = le32(d + o + 4);
-        if (!memcmp(d + o, "fmt ", 4) && cl >= 16) { fmt = le16(d + o + 8); ch = le16(d + o + 10); rate = le32(d + o + 12); bits = le16(d + o + 22); if (fmt == 0xFFFE && cl >= 40) fmt = le16(d + o + 32); }
-        else if (!memcmp(d + o, "data", 4)) { data = d + o + 8; dlen = MIN(cl, n - o - 8); }
-        o += 8 + cl + (cl & 1);
-    }
-    if (fmt != 1 || !data || (bits != 8 && bits != 16 && bits != 24) || ch < 1 || ch > 8 || rate < 4000 || rate > 192000) {
-        snprintf(err, errcap, "unsupported WAV format (need PCM 8/16/24-bit)"); return NULL;
-    }
-    int bps = bits / 8, stride = bps * ch;
-    uint32_t in_frames = dlen / stride;
-    uint32_t out_frames = (uint32_t)((uint64_t)in_frames * RATE / rate);
-    sound_t *s = kzalloc(sizeof *s);
-    s->pcm = kmalloc(out_frames * 4 + 4); s->frames = out_frames;
-    uint64_t step = ((uint64_t)rate << 16) / RATE, pos = 0;     /* 16.16 fixed point */
-    #define SMP(f, c) (bps == 2 ? (int16_t)le16(data + (f) * stride + (c) * 2) : bps == 1 ? (int16_t)((data[(f) * stride + (c)] - 128) << 8) \
-                       : (int16_t)le16(data + (f) * stride + (c) * 3 + 1))
-    for (uint32_t i = 0; i < out_frames; i++, pos += step) {
-        uint32_t f = pos >> 16, fr = pos & 0xFFFF, f2 = f + 1 < in_frames ? f + 1 : f;
-        for (int c = 0; c < 2; c++) {
-            int sc = ch == 1 ? 0 : c;
-            int a = SMP(f, sc), b = SMP(f2, sc);
-            s->pcm[i * 2 + c] = a + (int)(((int64_t)(b - a) * fr) >> 16);
-        }
-    }
-    #undef SMP
-    return s;
-}
+/* ======================= sound files ======================= */
 void sound_free(sound_t *s) { if (s) { kfree(s->pcm); kfree(s); } }
 
-/* Any other format the media decoders read (the system sounds are FLAC, a sixth of the WAV
- * size): decoded whole, then resampled to the mixer's rate like a WAV. */
+/* A sound file in any format the media decoders read (WAV, AIFF and .au through
+ * rust/src/pcm.rs; the system sounds are FLAC, a sixth of the WAV size): decoded whole,
+ * then resampled to the mixer's rate. */
 #include "mediadec.h"
-static sound_t *sound_load_media(const uint8_t *d, uint32_t n, const char *ext, char *err, int errcap) {
+sound_t *sound_load(const uint8_t *d, uint32_t n, const char *ext, char *err, int errcap) {
     mdec_info_t info;
     mdec_t *m = mdec_open(d, n, ext, &info, err, errcap);
     if (!m) return NULL;
@@ -1588,8 +1556,7 @@ bool audio_play_file(const char *path, char *err, int errcap) {
     cache_t *c = NULL;
     for (int i = 0; i < 4; i++) if (cache[i].s && !strcasecmp(cache[i].path, full) && cache[i].size == n->size) c = &cache[i];
     if (!c) {
-        sound_t *s = sound_load_wav(n->data, n->size, err, errcap);
-        if (!s) s = sound_load_media(n->data, n->size, vfs_ext(n->name), err, errcap);
+        sound_t *s = sound_load(n->data, n->size, vfs_ext(n->name), err, errcap);
         if (!s) { klog("audio: %s: %s", full, err); return false; }
         int lru = 0; for (int i = 1; i < 4; i++) if (cache[i].used < cache[lru].used) lru = i;
         c = &cache[lru];

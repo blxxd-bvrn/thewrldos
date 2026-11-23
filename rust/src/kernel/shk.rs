@@ -597,7 +597,7 @@ static BUILTINS_A: &[Bi] = &[
     c(b"whoami", None), c(b"hostname", None), c(b"ipconfig", Some("network configuration (/renew, /dns A.B.C.D)")), c(b"ifconfig", None),
     c(b"ping", Some("send ICMP echo requests")), c(b"nslookup", Some("look up a host name")),
     c(b"wget", Some("download a URL (http/https)")), r(b"unzip", b_unzip, Some("extract a .zip archive (unzip FILE [-d DIR] [-l])")), c(b"sha256sum", Some("SHA-256 of files")), c(b"js", Some("run JavaScript (js FILE or js -e CODE)")), c(b"display", Some("show or change the screen resolution")),
-    c(b"play", Some("play a .wav file")), c(b"volume", Some("show or set the volume (0-100, mute)")), c(b"sndinfo", Some("sound card diagnostics")), c(b"curl", Some("print a URL")), c(b"ps", Some("list processes")), c(b"tasklist", None),
+    c(b"play", Some("play a sound file (WAV, FLAC, MP3...)")), c(b"volume", Some("show or set the volume (0-100, mute)")), c(b"sndinfo", Some("sound card diagnostics")), c(b"curl", Some("print a URL")), c(b"ps", Some("list processes")), c(b"tasklist", None),
     c(b"kill", Some("terminate a process")), c(b"taskkill", None), c(b"free", Some("memory usage")), c(b"sync", Some("write changes to the system disk now")), c(b"mem", None),
     c(b"uptime", None), c(b"dmesg", Some("kernel log")), r(b"export", b_export, Some("set variables")), r(b"set", b_env, None),
     r(b"unset", b_unset, None), r(b"env", b_env, Some("list variables")), r(b"read", b_read, Some("read a line into variables")),

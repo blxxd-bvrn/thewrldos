@@ -43,7 +43,7 @@ extern "C" {
     fn audio_stream_room(id: c_int) -> c_int;
     fn audio_stream_queued(id: c_int) -> c_int;
     fn audio_stream_close(id: c_int);
-    fn sound_load_wav(data: *const u8, len: u32, err: *mut c_char, cap: c_int) -> *mut c_void;
+    fn sound_load(data: *const u8, len: u32, ext: *const c_char, err: *mut c_char, cap: c_int) -> *mut c_void;
     fn speaker_beep(freq: u32, ms: u32);
 }
 
@@ -321,8 +321,8 @@ unsafe fn play(name: Option<&[u8]>, mem: *const u8, memlen: u32, fl: u32) -> i32
     let mut err = [0u8; 120];
     if name.is_none() && mem.is_null() { audio_stop_all(); return 1; }
     if !mem.is_null() {
-        let len = if memlen != 0 { memlen } else if *mem == b'R' { *(mem.add(4) as *const u32) + 8 } else { 0 };
-        let s = sound_load_wav(mem, len, err.as_mut_ptr() as *mut c_char, 120);
+        let len = if memlen != 0 { memlen } else if *mem == b'R' { (mem.add(4) as *const u32).read_unaligned().wrapping_add(8) } else { 0 };
+        let s = sound_load(mem, len, c"wav".as_ptr(), err.as_mut_ptr() as *mut c_char, 120);
         if s.is_null() { return 0; }
         audio_play(s);
         return 1;                                          // the voice keeps its sound; it stays loaded

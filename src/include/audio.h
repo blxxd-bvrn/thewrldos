@@ -33,7 +33,9 @@ bool audio_busy(void);
 extern int audio_volume;                    /* 0..100 */
 extern bool audio_muted;
 
-sound_t *sound_load_wav(const uint8_t *data, uint32_t len, char *err, int errcap);
+/* a sound file in memory (WAV, AIFF, .au, FLAC, MP3, Ogg Vorbis), resampled for audio_play;
+ * ext is a hint for formats without a signature and may be NULL */
+sound_t *sound_load(const uint8_t *data, uint32_t len, const char *ext, char *err, int errcap);
 void sound_free(sound_t *s);
 
 /* files and system sounds */
