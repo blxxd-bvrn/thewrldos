@@ -39,6 +39,7 @@ pub mod lxpath;
 pub mod pcm;
 pub mod adblock;
 pub mod http;
+pub mod wpdoc;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]

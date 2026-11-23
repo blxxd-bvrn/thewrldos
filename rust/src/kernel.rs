@@ -42,6 +42,7 @@ extern "C" {
     static rust_mdec_layout: [u32; 4];
     static rust_net_layout: [u32; 12];
     static rust_http_layout: [u32; 6];
+    static rust_wp_layout: [u32; 6];
     static rust_pe_layout: [u32; 4];
     static rust_shader_layout: [u32; 24];
 }
@@ -153,6 +154,9 @@ pub extern "C" fn rust_init() {
     if unsafe { rust_http_layout } != crate::http::layout() {
         unsafe { panic(c"Rust: http_response_t in rust/src/http.rs does not match src/include/net.h".as_ptr()) }
     }
+    if unsafe { rust_wp_layout } != crate::wpdoc::layout() {
+        unsafe { panic(c"Rust: cst_t/wpr_para_t in rust/src/wpdoc.rs do not match src/apps/wordpad.c".as_ptr()) }
+    }
     if unsafe { rust_mdec_layout } != crate::pcm::layout() {
         unsafe { panic(c"Rust: mdec_info_t in rust/src/pcm.rs does not match src/include/mediadec.h".as_ptr()) }
     }
@@ -166,7 +170,7 @@ pub extern "C" fn rust_init() {
     if !crate::dom::layout_ok() {
         unsafe { panic(c"Rust: ctrl_t/page_t in rust/src/dom.rs do not match src/apps/browser.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux, svg, dom, audio files, ad blocker, http)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux, svg, dom, audio files, ad blocker, http, wordpad documents)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate: crate::inflate::ffi

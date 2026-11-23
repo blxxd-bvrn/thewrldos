@@ -680,6 +680,18 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     On 24,550 generated base/link pairs the new code matches RFC 3986 (with a one-letter
     "scheme" read as a drive letter, and an empty http path written as "/" as browsers do);
     the C code differed on 6,022, and every pair the C code got right is unchanged.
+  - **WordPad's document readers (`rust/src/wpdoc.rs`, were in `src/apps/wordpad.c`):** Rich
+    Text (files, the undo snapshots and the rich clipboard), and the zip and XML of `.docx` and
+    `.odt`. They build a list of paragraphs (text, a character style per byte, alignment,
+    bullet, spacing, indents) that WordPad copies into its own document; the editor, the
+    writers and plain text stay in C, and the shared structures are checked at boot. 324 real
+    documents (made by LibreOffice, pandoc and python-docx from varied formatting) and 7,000
+    generated and damaged ones gave the same paragraphs, text and styles as the C readers. In
+    QEMU a `.docx`, an `.odt` and an `.rtf`, then copy, paste and undo, look the same as
+    before on both editions. Fixed: an "&" in a document's text that is not an entity (a bare
+    "&" as in "AT&T", "&#0;", "&nbsp;") made the C reader go round forever, and a zip whose
+    sizes point outside the file made it read past its end (a stored member was copied by
+    the size it claimed); such members are now refused.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1525,7 +1537,7 @@ device manager's job is to say what the computer has and which driver runs it.
 - **File Explorer:** task pane, Icons/Tiles/Details views, history, copy/cut/paste, rename,
   Recycle Bin, eject.
 - **Notepad:** selection, clipboard, word wrap, Open/Save dialog.
-- **WordPad** (`wordpad.c`): a word processor after the one in Windows 7, with a ribbon (the
+- **WordPad** (`wordpad.c`; its document readers are `rust/src/wpdoc.rs`): a word processor after the one in Windows 7, with a ribbon (the
   File menu button, Home and View tabs, undo/redo on the title row), a ruler with indent
   markers, a page view and a status bar with a zoom slider. Text can be any size in Liberation
   Sans, Serif or Mono, bold, italic, underlined, struck through, subscript or superscript,
@@ -1807,7 +1819,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    bytecode and the shader interpreter (dxbc.rs, dxil.rs), the Linux layer
                    (kernel/lx/, its paths and ELF headers in lxpath.rs), the browser's SVG
                    renderer and the document interface for scripts (svg.rs, dom.rs), WAV, AIFF
-                   and .au files (pcm.rs), the ad blocker (adblock.rs), the HTTP client (http.rs)
+                   and .au files (pcm.rs), the ad blocker (adblock.rs), the HTTP client (http.rs),
+                   WordPad's Rich Text, .docx and .odt readers (wpdoc.rs)
 src/net            network card drivers, TLS glue (the stack is rust/src/netstack.rs, HTTP rust/src/http.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
                    (descriptors and reports are read in rust/src/usbdesc.rs)

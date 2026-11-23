@@ -46,18 +46,7 @@ static int st_id(const cst_t *c) {
     return nst++;
 }
 static cst_t default_style(void) { cst_t c; memset(&c, 0, sizeof c); c.fam = FAM_SERIF; c.hp = 22; c.fg = 0xFF000000; return c; }   /* 11 pt, as WordPad */
-static bool strcasestr_k(const char *h, const char *n) {
-    int nl = strlen(n);
-    for (; *h; h++) if (!strncasecmp(h, n, nl)) return true;
-    return false;
-}
 static const char *fam_name[3] = { "Liberation Sans", "Liberation Serif", "Liberation Mono" };
-static int fam_from_name(const char *n) {
-    if (strcasestr_k(n, "mono") || strcasestr_k(n, "courier") || strcasestr_k(n, "consol") || strcasestr_k(n, "lucida console")) return FAM_MONO;
-    if (strcasestr_k(n, "serif") && !strcasestr_k(n, "sans")) return FAM_SERIF;
-    if (strcasestr_k(n, "times") || strcasestr_k(n, "georgia") || strcasestr_k(n, "cambria") || strcasestr_k(n, "garamond") || strcasestr_k(n, "roman") || strcasestr_k(n, "book")) return FAM_SERIF;
-    return FAM_SANS;
-}
 
 /* ---------------------------------------------------------------- the document */
 typedef struct {
@@ -258,14 +247,6 @@ static uint32_t utf8_cp(const char *s, int *len) {
     if (u[0] < 0xF0) { *len = 3; return ((u[0] & 15) << 12) | ((u[1] & 63) << 6) | (u[2] & 63); }
     *len = 4; return ((u[0] & 7) << 18) | ((u[1] & 63) << 12) | ((u[2] & 63) << 6) | (u[3] & 63);
 }
-static void put_utf8(sb_t *s, uint32_t c) {
-    char b[4]; int n;
-    if (c < 0x80) { b[0] = c; n = 1; }
-    else if (c < 0x800) { b[0] = 0xC0 | (c >> 6); b[1] = 0x80 | (c & 63); n = 2; }
-    else if (c < 0x10000) { b[0] = 0xE0 | (c >> 12); b[1] = 0x80 | ((c >> 6) & 63); b[2] = 0x80 | (c & 63); n = 3; }
-    else { b[0] = 0xF0 | (c >> 18); b[1] = 0x80 | ((c >> 12) & 63); b[2] = 0x80 | ((c >> 6) & 63); b[3] = 0x80 | (c & 63); n = 4; }
-    sb_put(s, b, n);
-}
 /* colours: the table is built from what the document uses */
 static int col_index(uint32_t *tab, int *n, uint32_t c) {
     c &= 0xFFFFFF;
@@ -320,157 +301,47 @@ static char *rtf_write(wp_t *d, pos_t a, pos_t b) {
     return out.b;
 }
 
-/* ---------------------------------------------------------------- RTF: reading */
-typedef struct { cst_t c; int fnum, cf, cb; bool skip; int uc; } rstate_t;
+/* ---------------------------------------------------------------- reading (rust/src/wpdoc.rs) */
+/* The readers for Rich Text, .docx and .odt are in Rust: they build a list of paragraphs (text,
+ * a character style per byte, the paragraph's settings) that load_doc copies in. */
+typedef struct { const uint8_t *text; const cst_t *st; int n; cst_t endst; uint8_t align, bullet, lsp; int16_t lind, first, rind; } wpr_para_t;
+void *wpr_read(int kind, const uint8_t *data, uint32_t n, int *fmt);   /* kind 0 Rich Text, 1 zip; NULL: nothing read */
+int wpr_count(void *h);
+void wpr_para(void *h, int i, wpr_para_t *out);
+void wpr_free(void *h);
+/* the layout of cst_t and wpr_para_t for rust/src/wpdoc.rs, which rust_init checks at boot */
+const uint32_t rust_wp_layout[6] = { sizeof(cst_t), offsetof(cst_t, hp), offsetof(cst_t, bg), sizeof(wpr_para_t), offsetof(wpr_para_t, endst), offsetof(wpr_para_t, lind) };
 static void ins_text(wp_t *d, para_t *p, const char *t, int n, int st) {
     para_room(p, n);
     memcpy(p->t + p->n, t, n);
     for (int i = 0; i < n; i++) p->a[p->n + i] = st;
     p->n += n; p->dirty = true;
 }
-static void ins_cp(wp_t *d, para_t *p, uint32_t cp, int st) { sb_t s = { 0 }; put_utf8(&s, cp); ins_text(d, p, s.b, s.n, st); kfree(s.b); }
-static const uint16_t cp1252[32] = { 0x20AC, 0x81, 0x201A, 0x192, 0x201E, 0x2026, 0x2020, 0x2021, 0x2C6, 0x2030, 0x160, 0x2039, 0x152, 0x8D, 0x17D, 0x8F,
-                                     0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x2DC, 0x2122, 0x161, 0x203A, 0x153, 0x9D, 0x17E, 0x178 };
-static uint32_t from1252(int c) { return c >= 0x80 && c < 0xA0 ? cp1252[c - 0x80] : (uint32_t)c; }
-/* appends the RTF's content to the document, from the end of paragraph `start` */
-static void rtf_read(wp_t *d, const char *s, int n) {
-    rstate_t stack[64]; int sp = 0;
-    rstate_t st; memset(&st, 0, sizeof st); st.c = default_style(); st.uc = 1; st.cf = -1; st.cb = -1;
-    int fam_of_font[64]; for (int i = 0; i < 64; i++) fam_of_font[i] = FAM_SANS;
-    uint32_t cols[64] = { 0 }; int ncol = 0;           /* cols[0]: the "automatic" entry before the first ';' */ bool in_colortbl = false, in_fonttbl = false; int cur_font = 0; char fname[64]; int fnl = 0;
-    int cr = 0, cg = 0, cbl = 0;
-    para_t *p = &d->p[d->np - 1];
-    uint8_t palign = 0, pbullet = 0, plsp = 20; int16_t pl = 0, pf = 0, pr = 0;
-    int skip_chars = 0;
-    /* a bulleted paragraph in RTF: the bullet at li+fi (fi negative), the text at li; here the bullet sits at lind and the text a quarter inch after */
-    #define APPLY_PARA() do { p->align = palign; p->bullet = pbullet; p->lsp = plsp; p->rind = pr; \
-        if (pbullet) { int b0 = pf < 0 ? pl + pf : pl; p->lind = b0 < 0 ? 0 : b0; p->first = 0; } else { p->lind = pl; p->first = pf; } } while (0)
-    for (int i = 0; i < n; ) {
-        char c = s[i];
-        if (c == '{') { if (sp < 64) stack[sp++] = st; i++; continue; }
-        if (c == '}') {
-            if (in_fonttbl && fnl) { fname[fnl] = 0; if (cur_font >= 0 && cur_font < 64) fam_of_font[cur_font] = fam_from_name(fname); fnl = 0; }
-            if (sp) { bool was_tbl = st.skip; st = stack[--sp]; if (was_tbl && !st.skip) { in_colortbl = false; in_fonttbl = false; } }
-            i++; continue;
+/* replaces the document's paragraphs with what a reader built */
+static void load_doc(wp_t *d, void *h) {
+    doc_clear(d);
+    int np = wpr_count(h);
+    for (int i = 0; i < np; i++) {
+        wpr_para_t w; wpr_para(h, i, &w);
+        para_t *p = doc_add(d, i, st_id(&w.endst));
+        p->align = w.align; p->bullet = w.bullet; p->lsp = w.lsp; p->lind = w.lind; p->first = w.first; p->rind = w.rind;
+        for (int k = 0; k < w.n; ) {
+            int j = k; while (j < w.n && !memcmp(&w.st[j], &w.st[k], sizeof(cst_t))) j++;
+            ins_text(d, p, (const char *)w.text + k, j - k, st_id(&w.st[k]));
+            k = j;
         }
-        if (c == '\r' || c == '\n') { i++; continue; }
-        if (c == '\\') {
-            i++;
-            if (i >= n) break;
-            char e = s[i];
-            if (e == '\\' || e == '{' || e == '}') { if (!st.skip) { if (skip_chars) skip_chars--; else { APPLY_PARA(); ins_text(d, p, &e, 1, st_id(&st.c)); } } i++; continue; }
-            if (e == '\'') {
-                int v = 0; for (int k = 1; k <= 2 && i + k < n; k++) { char h = s[i + k]; v = v * 16 + (h >= 'a' ? h - 'a' + 10 : h >= 'A' ? h - 'A' + 10 : h - '0'); }
-                i += 3;
-                if (in_fonttbl) continue;
-                if (!st.skip) { if (skip_chars) skip_chars--; else { APPLY_PARA(); ins_cp(d, p, from1252(v), st_id(&st.c)); } }
-                continue;
-            }
-            if (e == '*') { st.skip = true; i++; continue; }
-            if (e == '~') { if (!st.skip) ins_cp(d, p, 0xA0, st_id(&st.c)); i++; continue; }
-            if (e == '-' || e == '_') { i++; continue; }
-            if (e == '\n' || e == '\r') { if (!st.skip) { APPLY_PARA(); p = doc_add(d, d->np, st_id(&st.c)); } i++; continue; }
-            char word[32]; int wl = 0;
-            while (i < n && isalpha((unsigned char)s[i]) && wl < 31) word[wl++] = s[i++];
-            word[wl] = 0;
-            bool hasnum = false; int num = 0, neg = 0;
-            if (i < n && s[i] == '-') { neg = 1; i++; }
-            while (i < n && isdigit((unsigned char)s[i])) { num = num * 10 + (s[i] - '0'); hasnum = true; i++; }
-            if (neg) num = -num;
-            if (i < n && s[i] == ' ') i++;
-            #define W(x) (!strcmp(word, x))
-            if (W("fonttbl")) { in_fonttbl = true; st.skip = true; continue; }
-            if (W("colortbl")) { in_colortbl = true; st.skip = true; ncol = 0; cr = cg = cbl = 0; continue; }
-            if (W("stylesheet") || W("info") || W("pict") || W("header") || W("footer") || W("headerl") || W("headerr") || W("footerl") || W("footerr") ||
-                W("object") || W("listtable") || W("listoverridetable") || W("rsidtbl") || W("generator") || W("themedata") || W("colorschememapping") ||
-                W("latentstyles") || W("datastore") || W("xmlnstbl") || W("fldinst") || W("pntext") || W("bkmkstart") || W("bkmkend")) { st.skip = true; continue; }
-            if (W("pn") || W("pnlvlblt")) { pbullet = 1; st.skip = true; continue; }
-            if (in_fonttbl) { if (W("f")) { cur_font = num; fnl = 0; } continue; }
-            if (in_colortbl) { if (W("red")) cr = num; else if (W("green")) cg = num; else if (W("blue")) cbl = num; continue; }
-            if (W("par") || W("sect") || W("page")) { if (!st.skip) { APPLY_PARA(); p->endst = st_id(&st.c); p = doc_add(d, d->np, st_id(&st.c)); } continue; }
-            if (W("line")) { if (!st.skip) { APPLY_PARA(); p = doc_add(d, d->np, st_id(&st.c)); } continue; }
-            if (W("pard")) { palign = 0; pbullet = 0; plsp = 20; pl = pf = pr = 0; continue; }
-            if (W("plain")) { st.c = default_style(); st.c.fam = fam_of_font[cur_font & 63]; continue; }
-            if (W("ql")) { palign = 0; continue; }
-            if (W("qc")) { palign = 1; continue; }
-            if (W("qr")) { palign = 2; continue; }
-            if (W("qj")) { palign = 3; continue; }
-            if (W("li")) { pl = num / 15; continue; }
-            if (W("fi")) { pf = num / 15; continue; }
-            if (W("ri")) { pr = num / 15; continue; }
-            if (W("sl")) { if (num > 0) { int v = num / 12; plsp = v < 20 ? 20 : v > 60 ? 60 : v; } continue; }
-            if (W("b")) { st.c.b = !hasnum || num; continue; }
-            if (W("i")) { st.c.i = !hasnum || num; continue; }
-            if (W("ul")) { st.c.u = !hasnum || num; continue; }
-            if (W("ulnone")) { st.c.u = 0; continue; }
-            if (W("strike")) { st.c.s = !hasnum || num; continue; }
-            if (W("sub")) { st.c.script = 1; continue; }
-            if (W("super")) { st.c.script = 2; continue; }
-            if (W("nosupersub")) { st.c.script = 0; continue; }
-            if (W("fs")) { if (num > 0) st.c.hp = num; continue; }
-            if (W("f")) { st.fnum = num; st.c.fam = fam_of_font[num & 63]; continue; }
-            if (W("cf")) { st.c.fg = num > 0 && num < ncol ? cols[num] | 0xFF000000 : 0xFF000000; continue; }
-            if (W("highlight") || W("cb") || W("chcbpat")) { st.c.bg = num > 0 && num < ncol ? cols[num] | 0xFF000000 : 0; continue; }
-            if (W("uc")) { st.uc = num; continue; }
-            if (W("u")) { if (!st.skip) { APPLY_PARA(); ins_cp(d, p, (uint32_t)(num < 0 ? num + 65536 : num), st_id(&st.c)); } skip_chars = st.uc; continue; }
-            if (W("tab")) { if (!st.skip) { APPLY_PARA(); ins_text(d, p, "\t", 1, st_id(&st.c)); } continue; }
-            if (W("bullet")) { if (!st.skip) ins_cp(d, p, 0x2022, st_id(&st.c)); continue; }
-            if (W("emdash")) { if (!st.skip) ins_cp(d, p, 0x2014, st_id(&st.c)); continue; }
-            if (W("endash")) { if (!st.skip) ins_cp(d, p, 0x2013, st_id(&st.c)); continue; }
-            if (W("lquote")) { if (!st.skip) ins_cp(d, p, 0x2018, st_id(&st.c)); continue; }
-            if (W("rquote")) { if (!st.skip) ins_cp(d, p, 0x2019, st_id(&st.c)); continue; }
-            if (W("ldblquote")) { if (!st.skip) ins_cp(d, p, 0x201C, st_id(&st.c)); continue; }
-            if (W("rdblquote")) { if (!st.skip) ins_cp(d, p, 0x201D, st_id(&st.c)); continue; }
-            #undef W
-            continue;
-        }
-        if (in_colortbl) { if (c == ';') { if (ncol < 64) cols[ncol++] = ((uint32_t)cr << 16) | (cg << 8) | cbl; cr = cg = cbl = 0; } i++; continue; }
-        if (in_fonttbl) { if (c == ';') { fname[fnl] = 0; if (cur_font >= 0 && cur_font < 64) fam_of_font[cur_font] = fam_from_name(fname); fnl = 0; } else if (fnl < 63) fname[fnl++] = c; i++; continue; }
-        if (st.skip) { i++; continue; }
-        if (skip_chars) { skip_chars--; i++; continue; }
-        /* plain text up to the next control character */
-        int j = i; while (j < n && s[j] != '\\' && s[j] != '{' && s[j] != '}' && s[j] != '\r' && s[j] != '\n') j++;
-        APPLY_PARA();
-        for (int k = i; k < j; k++) { unsigned char u = s[k]; if (u < 0x80) ins_text(d, p, (const char *)&s[k], 1, st_id(&st.c)); else ins_cp(d, p, from1252(u), st_id(&st.c)); }
-        i = j;
     }
-    #undef APPLY_PARA
 }
+/* Rich Text (a file, an undo snapshot or the rich clipboard) into an empty document */
+static void rtf_load(wp_t *d, const char *s, uint32_t n) { void *h = wpr_read(0, (const uint8_t *)s, n, NULL); load_doc(d, h); wpr_free(h); }
 
-/* ---------------------------------------------------------------- zip (.docx, .odt) */
+/* ---------------------------------------------------------------- zip (writing .docx) */
 static uint32_t crc_tab[256];
 static uint32_t crc32_buf(const uint8_t *p, uint32_t n) {
     if (!crc_tab[1]) for (uint32_t i = 0; i < 256; i++) { uint32_t c = i; for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; crc_tab[i] = c; }
     uint32_t c = 0xFFFFFFFFu;
     for (uint32_t i = 0; i < n; i++) c = crc_tab[(c ^ p[i]) & 255] ^ (c >> 8);
     return c ^ 0xFFFFFFFFu;
-}
-static uint32_t rd32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
-static uint16_t rd16(const uint8_t *p) { return p[0] | (p[1] << 8); }
-/* one member of a zip archive, decompressed (NUL-terminated); NULL if absent */
-static char *zip_get(const uint8_t *z, uint32_t n, const char *name, uint32_t *outlen) {
-    if (n < 22) return NULL;
-    uint32_t e = n - 22;
-    while (e > 0 && rd32(z + e) != 0x06054b50) e--;
-    if (rd32(z + e) != 0x06054b50) return NULL;
-    uint32_t cnt = rd16(z + e + 10), cd = rd32(z + e + 16);
-    for (uint32_t k = 0; k < cnt && cd + 46 <= n; k++) {
-        if (rd32(z + cd) != 0x02014b50) break;
-        uint16_t method = rd16(z + cd + 10), nl = rd16(z + cd + 28), xl = rd16(z + cd + 30), cl = rd16(z + cd + 32);
-        uint32_t csize = rd32(z + cd + 20), usize = rd32(z + cd + 24), lho = rd32(z + cd + 42);
-        if ((int)strlen(name) == nl && !memcmp(z + cd + 46, name, nl) && lho + 30 <= n) {
-            uint32_t data = lho + 30 + rd16(z + lho + 26) + rd16(z + lho + 28);
-            if (data + csize > n || usize > 64u * 1024 * 1024) return NULL;
-            char *out = kmalloc(usize + 1); uint32_t got = 0;
-            if (method == 0) { memcpy(out, z + data, usize); got = usize; }
-            else if (method == 8) { if (inflate_raw(z + data, csize, (uint8_t *)out, usize, &got) < 0) { kfree(out); return NULL; } }
-            else { kfree(out); return NULL; }
-            out[got] = 0; if (outlen) *outlen = got;
-            return out;
-        }
-        cd += 46 + nl + xl + cl;
-    }
-    return NULL;
 }
 typedef struct { sb_t b; int n; sb_t cd; } zw_t;
 static void zip_add(zw_t *z, const char *name, const char *data, uint32_t len) {
@@ -496,159 +367,7 @@ static void zip_end(zw_t *z) {
     #undef P16
 }
 
-/* ---------------------------------------------------------------- XML (enough for .docx and .odt) */
-/* the value of attribute `name` in a tag's text (up to its '>'); "" when absent */
-static void xattr(const char *tag, const char *name, char *out, int cap) {
-    out[0] = 0;
-    int nl = strlen(name);
-    for (const char *p = tag; *p && *p != '>'; p++) {
-        if ((p == tag || p[-1] == ' ' || p[-1] == '\t' || p[-1] == '\n') && !strncmp(p, name, nl) && p[nl] == '=' && (p[nl + 1] == '"' || p[nl + 1] == '\'')) {
-            char q = p[nl + 1]; const char *v = p + nl + 2; int k = 0;
-            while (*v && *v != q && k < cap - 1) out[k++] = *v++;
-            out[k] = 0; return;
-        }
-    }
-}
-static bool tag_is(const char *p, const char *name) { int n = strlen(name); return !strncmp(p, name, n) && (p[n] == ' ' || p[n] == '>' || p[n] == '/' || p[n] == '\t' || p[n] == '\n'); }
-static void xml_text(wp_t *d, para_t *p, const char *s, int n, int st) {
-    for (int i = 0; i < n; ) {
-        if (s[i] == '&') {
-            const char *e = memchr(s + i, ';', n - i);
-            if (e) {
-                int l = e - (s + i);
-                uint32_t cp = 0;
-                if (!strncmp(s + i, "&amp;", 5)) cp = '&'; else if (!strncmp(s + i, "&lt;", 4)) cp = '<'; else if (!strncmp(s + i, "&gt;", 4)) cp = '>';
-                else if (!strncmp(s + i, "&quot;", 6)) cp = '"'; else if (!strncmp(s + i, "&apos;", 6)) cp = '\'';
-                else if (s[i + 1] == '#') cp = s[i + 2] == 'x' ? strtoul(s + i + 3, NULL, 16) : strtoul(s + i + 2, NULL, 10);
-                if (cp) { ins_cp(d, p, cp, st); i += l + 1; continue; }
-            }
-        }
-        int j = i; while (j < n && s[j] != '&') j++;
-        ins_text(d, p, s + i, j - i, st);
-        i = j;
-    }
-}
-static uint32_t hexcol(const char *v) { return v[0] && strcasecmp(v, "auto") ? (0xFF000000u | strtoul(v[0] == '#' ? v + 1 : v, NULL, 16)) : 0xFF000000u; }
-static uint32_t named_highlight(const char *v) {
-    static const struct { const char *n; uint32_t c; } h[] = { { "yellow", 0xFFFF00 }, { "green", 0x00FF00 }, { "cyan", 0x00FFFF }, { "magenta", 0xFF00FF },
-        { "blue", 0x0000FF }, { "red", 0xFF0000 }, { "darkBlue", 0x000080 }, { "darkCyan", 0x008080 }, { "darkGreen", 0x008000 }, { "darkMagenta", 0x800080 },
-        { "darkRed", 0x800000 }, { "darkYellow", 0x808000 }, { "darkGray", 0x808080 }, { "lightGray", 0xC0C0C0 }, { "black", 0x000000 } };
-    for (unsigned i = 0; i < ARRAY_LEN(h); i++) if (!strcmp(v, h[i].n)) return 0xFF000000u | h[i].c;
-    return 0;
-}
-static void docx_read(wp_t *d, const char *x) {
-    para_t *p = &d->p[d->np - 1];
-    cst_t run = default_style(), prun = default_style();
-    bool in_rpr = false, in_t = false, first_para = true, in_ppr = false;
-    for (const char *q = x; *q; ) {
-        if (*q != '<') {
-            const char *e = strchr(q, '<'); if (!e) break;
-            if (in_t) xml_text(d, p, q, e - q, st_id(&run));
-            q = e; continue;
-        }
-        const char *t = q + 1;
-        const char *end = strchr(q, '>'); if (!end) break;
-        char v[64];
-        if (tag_is(t, "w:p")) {
-            if (!first_para) p = doc_add(d, d->np, st_id(&prun)); first_para = false;
-            if (end[-1] == '/') { q = end + 1; continue; }
-        }
-        else if (tag_is(t, "w:pPr")) in_ppr = true;
-        else if (tag_is(t, "/w:pPr")) in_ppr = false;
-        else if (tag_is(t, "w:jc") && in_ppr) { xattr(t, "w:val", v, sizeof v); p->align = !strcmp(v, "center") ? 1 : !strcmp(v, "right") || !strcmp(v, "end") ? 2 : !strcmp(v, "both") ? 3 : 0; }
-        else if (tag_is(t, "w:numPr") && in_ppr) p->bullet = 1;
-        else if (tag_is(t, "w:ind") && in_ppr) {
-            xattr(t, "w:left", v, sizeof v); if (!v[0]) xattr(t, "w:start", v, sizeof v); if (v[0]) p->lind = atoi(v) / 15;
-            xattr(t, "w:firstLine", v, sizeof v); if (v[0]) p->first = atoi(v) / 15;
-            xattr(t, "w:hanging", v, sizeof v); if (v[0]) p->first = -atoi(v) / 15;
-            xattr(t, "w:right", v, sizeof v); if (v[0]) p->rind = atoi(v) / 15;
-        }
-        else if (tag_is(t, "w:spacing") && in_ppr) { xattr(t, "w:line", v, sizeof v); if (v[0]) { int l = atoi(v) * 20 / 240; p->lsp = l < 20 ? 20 : l > 60 ? 60 : l; } }
-        else if (tag_is(t, "w:r")) { run = default_style(); }
-        else if (tag_is(t, "w:rPr")) in_rpr = true;
-        else if (tag_is(t, "/w:rPr")) in_rpr = false;
-        else if (in_rpr && (tag_is(t, "w:b") || tag_is(t, "w:i") || tag_is(t, "w:strike"))) {
-            xattr(t, "w:val", v, sizeof v); bool on = !v[0] || (strcmp(v, "0") && strcmp(v, "false"));
-            if (tag_is(t, "w:b")) run.b = on; else if (tag_is(t, "w:i")) run.i = on; else run.s = on;
-        }
-        else if (in_rpr && tag_is(t, "w:u")) { xattr(t, "w:val", v, sizeof v); run.u = strcmp(v, "none") != 0; }
-        else if (in_rpr && tag_is(t, "w:sz")) { xattr(t, "w:val", v, sizeof v); if (atoi(v) > 0) run.hp = atoi(v); }
-        else if (in_rpr && tag_is(t, "w:color")) { xattr(t, "w:val", v, sizeof v); run.fg = hexcol(v); }
-        else if (in_rpr && tag_is(t, "w:highlight")) { xattr(t, "w:val", v, sizeof v); run.bg = named_highlight(v); }
-        else if (in_rpr && tag_is(t, "w:shd")) { xattr(t, "w:fill", v, sizeof v); if (v[0] && strcasecmp(v, "auto")) run.bg = hexcol(v); }
-        else if (in_rpr && tag_is(t, "w:vertAlign")) { xattr(t, "w:val", v, sizeof v); run.script = !strcmp(v, "subscript") ? 1 : !strcmp(v, "superscript") ? 2 : 0; }
-        else if (in_rpr && tag_is(t, "w:rFonts")) { xattr(t, "w:ascii", v, sizeof v); if (!v[0]) xattr(t, "w:hAnsi", v, sizeof v); if (v[0]) run.fam = fam_from_name(v); }
-        else if (tag_is(t, "w:t")) in_t = end[-1] != '/';
-        else if (tag_is(t, "/w:t")) in_t = false;
-        else if (tag_is(t, "w:tab") && !in_ppr) ins_text(d, p, "\t", 1, st_id(&run));
-        else if (tag_is(t, "w:br") || tag_is(t, "w:cr")) p = doc_add(d, d->np, st_id(&run));
-        if (in_rpr) prun = run;
-        q = end + 1;
-    }
-    /* WordPad writes a bullet as a "\u2022 " run (no numbering part): read it back as a bullet */
-    for (int i = 0; i < d->np; i++) {
-        para_t *b = &d->p[i];
-        if (b->n >= 4 && !memcmp(b->t, "\xe2\x80\xa2 ", 4)) {
-            memmove(b->t, b->t + 4, b->n - 4); memmove(b->a, b->a + 4, (b->n - 4) * 2); b->n -= 4;
-            b->bullet = 1; b->lind = b->lind > DPI / 4 ? b->lind - DPI / 4 : 0; b->first = 0;
-        }
-    }
-}
-/* .odt: content.xml with its automatic styles (bold, italic, underline, size, colour, alignment) */
-typedef struct { char name[40]; cst_t c; int align; bool text; } ostyle_t;
-static void odt_read(wp_t *d, const char *x) {
-    static ostyle_t os[128]; int nos = 0;
-    para_t *p = &d->p[d->np - 1];
-    cst_t stack[16]; int sp = 0; cst_t cur = default_style();
-    bool first = true;
-    ostyle_t *defining = NULL;
-    for (const char *q = x; *q; ) {
-        if (*q != '<') {
-            const char *e = strchr(q, '<'); if (!e) break;
-            if (!defining && sp > 0) xml_text(d, p, q, e - q, st_id(&cur));
-            q = e; continue;
-        }
-        const char *t = q + 1, *end = strchr(q, '>'); if (!end) break;
-        bool selfclose = end[-1] == '/';
-        char v[64];
-        if (tag_is(t, "style:style") && nos < 128) { defining = &os[nos++]; memset(defining, 0, sizeof *defining); defining->c = default_style(); xattr(t, "style:name", defining->name, sizeof defining->name); if (selfclose) defining = NULL; }
-        else if (tag_is(t, "/style:style")) defining = NULL;
-        else if (defining && tag_is(t, "style:text-properties")) {
-            xattr(t, "fo:font-weight", v, sizeof v); if (!strcmp(v, "bold")) defining->c.b = 1;
-            xattr(t, "fo:font-style", v, sizeof v); if (!strcmp(v, "italic")) defining->c.i = 1;
-            xattr(t, "style:text-underline-style", v, sizeof v); if (v[0] && strcmp(v, "none")) defining->c.u = 1;
-            xattr(t, "style:text-line-through-style", v, sizeof v); if (v[0] && strcmp(v, "none")) defining->c.s = 1;
-            xattr(t, "fo:font-size", v, sizeof v); if (atoi(v) > 0) defining->c.hp = atoi(v) * 2;
-            xattr(t, "fo:color", v, sizeof v); if (v[0]) defining->c.fg = hexcol(v);
-            xattr(t, "fo:background-color", v, sizeof v); if (v[0] == '#') defining->c.bg = hexcol(v);
-            xattr(t, "style:font-name", v, sizeof v); if (v[0]) defining->c.fam = fam_from_name(v);
-            xattr(t, "style:text-position", v, sizeof v); if (!strncmp(v, "super", 5)) defining->c.script = 2; else if (!strncmp(v, "sub", 3)) defining->c.script = 1;
-            defining->text = true;
-        }
-        else if (defining && tag_is(t, "style:paragraph-properties")) { xattr(t, "fo:text-align", v, sizeof v); defining->align = !strcmp(v, "center") ? 1 : !strcmp(v, "end") || !strcmp(v, "right") ? 2 : !strcmp(v, "justify") ? 3 : 0; }
-        else if (tag_is(t, "text:p") || tag_is(t, "text:h")) {
-            if (!first) p = doc_add(d, d->np, st_id(&cur)); first = false;
-            xattr(t, "text:style-name", v, sizeof v);
-            cst_t c = default_style(); if (tag_is(t, "text:h")) { c.b = 1; c.hp = 28; }
-            for (int k = 0; k < nos; k++) if (!strcmp(os[k].name, v)) { if (os[k].text) c = os[k].c; p->align = os[k].align; }
-            if (sp < 16) stack[sp++] = cur;
-            cur = c;
-            if (selfclose) cur = stack[--sp];
-        }
-        else if (tag_is(t, "/text:p") || tag_is(t, "/text:h")) { if (sp) cur = stack[--sp]; }
-        else if (tag_is(t, "text:span")) {
-            xattr(t, "text:style-name", v, sizeof v);
-            if (sp < 16) stack[sp++] = cur;
-            for (int k = 0; k < nos; k++) if (!strcmp(os[k].name, v) && os[k].text) cur = os[k].c;
-            if (selfclose) cur = stack[--sp];
-        }
-        else if (tag_is(t, "/text:span")) { if (sp) cur = stack[--sp]; }
-        else if (tag_is(t, "text:s") && sp) { xattr(t, "text:c", v, sizeof v); int c = v[0] ? atoi(v) : 1; for (int k = 0; k < c && k < 200; k++) ins_text(d, p, " ", 1, st_id(&cur)); }
-        else if (tag_is(t, "text:tab") && sp) ins_text(d, p, "\t", 1, st_id(&cur));
-        else if (tag_is(t, "text:line-break") && sp) p = doc_add(d, d->np, st_id(&cur));
-        q = end + 1;
-    }
-}
+/* ---------------------------------------------------------------- XML (writing .docx) */
 static void xml_esc(sb_t *s, const char *t, int n) {
     for (int i = 0; i < n; i++) {
         char c = t[i];
@@ -713,11 +432,10 @@ static bool wp_load(wp_t *d, const char *path) {
     doc_add(d, 0, d->typing);
     const char *e = ext_of(path);
     bool ok = true;
-    if (n >= 5 && !memcmp(data, "{\\rtf", 5)) { rtf_read(d, (const char *)data, n); d->fmt = 0; }
+    if (n >= 5 && !memcmp(data, "{\\rtf", 5)) { rtf_load(d, (const char *)data, n); d->fmt = 0; }
     else if (n >= 4 && !memcmp(data, "PK\3\4", 4)) {
-        char *x = zip_get(data, n, "word/document.xml", NULL);
-        if (x) { docx_read(d, x); kfree(x); d->fmt = 1; }
-        else if ((x = zip_get(data, n, "content.xml", NULL))) { odt_read(d, x); kfree(x); d->fmt = 3; }
+        int fmt = 0; void *h = wpr_read(1, data, n, &fmt);          /* .docx (1) or .odt (3) */
+        if (h) { load_doc(d, h); wpr_free(h); d->fmt = fmt; }
         else ok = false;
     } else {                                              /* plain text: a paragraph per line */
         cst_t pc = default_style(); pc.fam = FAM_MONO; pc.hp = 20;
@@ -806,7 +524,7 @@ static void restore(wp_t *d, const char *rtf) {
     pos_t keep = d->cur;
     doc_clear(d);
     cst_t c = default_style(); doc_add(d, 0, st_id(&c));
-    rtf_read(d, rtf, strlen(rtf));
+    rtf_load(d, rtf, strlen(rtf));
     if (d->np > 1 && d->p[d->np - 1].n == 0) { para_free(&d->p[d->np - 1]); d->np--; }
     if (keep.p >= d->np) keep.p = d->np - 1;
     if (keep.o > d->p[keep.p].n) keep.o = d->p[keep.p].n;
@@ -963,7 +681,7 @@ static void wp_paste(wp_t *d) {
         /* parse the copy into a scratch document, then splice its paragraphs in */
         wp_t tmp; memset(&tmp, 0, sizeof tmp); tmp.zoom = 100;
         cst_t c = default_style(); doc_add(&tmp, 0, st_id(&c));
-        rtf_read(&tmp, rich_clip, strlen(rich_clip));
+        rtf_load(&tmp, rich_clip, strlen(rich_clip));
         if (tmp.np > 1 && tmp.p[tmp.np - 1].n == 0) { para_free(&tmp.p[tmp.np - 1]); tmp.np--; }
         delete_sel(d);
         for (int pi = 0; pi < tmp.np; pi++) {
