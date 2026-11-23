@@ -608,6 +608,25 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     than the C one on a host build with SSE; the 64-bit kernel's soft-float build runs at 0.75
     to 1x the C speed. In QEMU, `d3d10cube --bench` took 0.93 to 1.11 times as long as with
     the old kernel, and `shaderprobe` passes.
+  - **The Linux layer (`rust/src/kernel/lx/`, with paths, "#!" lines and ELF headers in
+    `rust/src/lxpath.rs`; was `src/linux`):** address spaces and demand paging, shared memory,
+    processes, threads, fork/vfork/execve/wait, signals and their x86-64 frames, the file,
+    pipe, socket (AF_UNIX and AF_INET), epoll, eventfd and timerfd calls, /proc and /sys,
+    /dev/dsp and /dev/wrld/window. Its structures are now the Rust code's own (C holds only a
+    task's `lx` pointer); the C structures it reads (`task_t`, `regs_t`, `console_t`,
+    `window_t`) are checked at boot. The path, "#!" and ELF code gave the same results as the
+    old C for 900,000 generated paths, script lines and damaged headers. With `lxtrace on`,
+    the sample programs (hello, sysinfo, procs, threads, signals, ipc, shm, socket, the C++
+    runtime test) and a BusyBox session made the same system calls with the same results on
+    the old and new kernels, and printed the same; only futex calls and thread order in
+    multi-threaded programs, times and random values differ between runs. The Cairo window
+    sample, DNS over UDP, /dev/dsp and the WebKit browser (compositor, GTK, threads, shared
+    memory and sockets) behave as before. `madvise(MADV_DONTNEED)` now visits only the
+    mappings in its range instead of every page: WebKit drops a 64 GiB reservation that way,
+    which took the C code 3 seconds in QEMU, close to the desktop watchdog's limit. Kept as it
+    was: readlink of a /proc/self/fd link fails with EINVAL (the C code passed one buffer for
+    two results), and newfstatat with AT_EMPTY_PATH and a path of two or more characters
+    returns ENAMETOOLONG.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -789,7 +808,7 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
   system partition (installed). `rust/src/kernel/persistk.rs` writes changes back to the disk
   and keeps the settings file.
 
-### Linux programs (`src/linux`, 64-bit edition)
+### Linux programs (`rust/src/kernel/lx`, 64-bit edition)
 The first step towards running WPE WebKit as a browser on THE WRLD OS: unmodified x86-64 Linux
 programs run in ring 3 and call the kernel with Linux's system call numbers.
 - **Address space:** programs live above 512 GiB, so the kernel's identity map of the low
@@ -1732,7 +1751,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    the settings file (persist.rs, kernel/persistk.rs), the TrueType engine with
                    OpenType shaping (ttf.rs), reading and checking .deb/.rpm packages (pkgfmt.rs,
                    kernel/pkgk.rs), USB descriptors and reports (usbdesc.rs), Direct3D shader
-                   bytecode and the shader interpreter (dxbc.rs, dxil.rs)
+                   bytecode and the shader interpreter (dxbc.rs, dxil.rs), the Linux layer
+                   (kernel/lx/, its paths and ELF headers in lxpath.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
                    (descriptors and reports are read in rust/src/usbdesc.rs)

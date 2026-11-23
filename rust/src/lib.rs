@@ -35,6 +35,7 @@ pub mod pkgfmt;
 pub mod usbdesc;
 pub mod dxbc;
 pub mod dxil;
+pub mod lxpath;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 pub mod pe;

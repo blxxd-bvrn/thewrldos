@@ -94,7 +94,7 @@ else
 RUST_TARGET := i586-unknown-linux-gnu
 endif
 RUST_LIB := $(BUILD)/rust/$(RUST_TARGET)/release/libwrldrs.a
-RUST_SRC := rust/Cargo.toml $(wildcard rust/src/*.rs rust/src/*/*.rs)
+RUST_SRC := rust/Cargo.toml $(wildcard rust/src/*.rs rust/src/*/*.rs rust/src/*/*/*.rs)
 MINGW   := i686-w64-mingw32-gcc
 # The 32-bit kernel enables x87, not SSE. Use an x87-compatible MinGW CRT too;
 # per-source flags cannot remove SSE2 already built into a toolchain's startup.

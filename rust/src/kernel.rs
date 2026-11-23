@@ -23,6 +23,10 @@ mod w32misc;
 mod w32k32;
 mod w32shell;
 mod winreg;
+#[cfg(target_arch = "x86_64")]
+pub mod lx;
+#[cfg(target_arch = "x86")]
+mod lx32;
 use crate::netstack::{Netif, Stack, Tcb, St, DnsState, FwConfig, FwEvent, UdpFn};
 
 extern "C" {
@@ -138,10 +142,14 @@ pub extern "C" fn rust_init() {
     if unsafe { rust_shader_layout } != crate::dxbc::layout() {
         unsafe { panic(c"Rust: the shader structures in rust/src/dxbc.rs do not match src/win32/shader_priv.h".as_ptr()) }
     }
+    #[cfg(target_arch = "x86_64")]
+    if !lx::layout_ok() {
+        unsafe { panic(c"Rust: task_t/regs_t/console_t/window_t in rust/src/kernel/lx do not match the C headers".as_ptr()) }
+    }
     if !crate::html::layout_ok() {
         unsafe { panic(c"Rust: css_t/node_t/doc_t in rust/src/html.rs and css.rs do not match src/apps/browser.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)
@@ -220,6 +228,18 @@ pub struct Vnode {
     mtime: RtcTime,
     drive: c_int,
     dirty: CBool,
+}
+/// What the Linux layer (kernel/lx) reads of a node; the VFS (kernel/vfsk.rs) owns them.
+#[allow(dead_code)]
+impl Vnode {
+    pub fn name_bytes(&self) -> &[u8] { unsafe { core::slice::from_raw_parts(self.name.as_ptr() as *const u8, 96) } }
+    pub fn is_dir(&self) -> bool { self.dir != 0 }
+    pub fn data(&self) -> *mut u8 { self.data }
+    pub fn size(&self) -> u32 { self.size }
+    pub fn parent(&self) -> *mut Vnode { self.parent }
+    pub fn child(&self) -> *mut Vnode { self.child }
+    pub fn next(&self) -> *mut Vnode { self.next }
+    pub fn mtime6(&self) -> [c_int; 6] { let m = &self.mtime; [m.year, m.month, m.day, m.hour, m.minute, m.second] }
 }
 
 fn vnode_layout_ok() -> bool {
