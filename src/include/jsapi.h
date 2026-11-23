@@ -27,7 +27,7 @@ void js_page_abort(jspage_t *j);                   /* stop all scripts on this p
 int js_page_aborted(jspage_t *j);
 void js_free_str(char *s);
 
-/* ---- implemented by the browser (src/apps/dom.c), called from the glue ---- */
+/* ---- implemented by the browser (rust/src/dom.rs, src/apps/domnet.c), called from the glue ---- */
 /* nodes */
 void *dom_root(void *page);
 void *dom_by_id(void *page, const char *id);

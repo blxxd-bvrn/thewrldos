@@ -1,4 +1,4 @@
-/* SVG rendering for The WRLD Browser (svg.c) */
+/* SVG rendering for The WRLD Browser (rust/src/svg.rs) */
 #ifndef SVG_H
 #define SVG_H
 #include "browser.h"

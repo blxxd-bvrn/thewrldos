@@ -1,4 +1,4 @@
-/* The WRLD Browser - internal interfaces shared by browser.c, dom.c, svg.c and the documents (rust/src/html.rs) */
+/* The WRLD Browser - internal interfaces shared by browser.c and the Rust documents, SVG and DOM (rust/src/html.rs, svg.rs, dom.rs) */
 #ifndef BROWSER_H
 #define BROWSER_H
 #include "kernel.h"
@@ -104,7 +104,7 @@ bool parse_color(const char *s, uint32_t *out);
 int utf8_normalise(const uint8_t *s, uint32_t n, char *out);   /* returns length */
 
 
-/* ---------------- page model (shared by browser.c and dom.c) ---------------- */
+/* ---------------- page model (shared by browser.c and rust/src/dom.rs) ---------------- */
 enum { IT_TEXT, IT_RECT, IT_IMG, IT_BULLET, IT_FRAME, IT_CTRL, IT_HLINE, IT_GROUP, IT_SVG };
 typedef struct { uint8_t kind; uint8_t under; int16_t font; int x, y, w, h, asc; uint32_t color; const char *text; int len; int link, idx; node_t *node;
                  int16_t radius; uint32_t color2; uint8_t grad, grad_dir; int16_t border; uint32_t border_color;
@@ -143,7 +143,7 @@ typedef struct page {
     int gen;                                  /* browser generation that loaded this page */
 } page_t;
 
-/* browser.c services used by dom.c */
+/* browser.c services used by rust/src/dom.rs */
 extern bool js_enabled;
 void page_rebuild(page_t *p);
 uint64_t page_memory(page_t *p);

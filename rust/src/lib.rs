@@ -38,6 +38,10 @@ pub mod dxil;
 pub mod lxpath;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
+#[cfg(any(feature = "kernel", feature = "htmldoc"))]
+pub mod svg;
+#[cfg(any(feature = "kernel", feature = "htmldoc"))]
+pub mod dom;
 pub mod pe;
 pub mod registry;
 pub mod w32util;

@@ -1,6 +1,6 @@
 /* Images for the browser, wallpapers, the sign-in screen and Image Viewer: the format is
  * recognised here; PNG, GIF, JPEG and BMP are decoded in Rust (rust/src/imgdec.rs), SVG in
- * svg.c. Output canvases hold 0xAARRGGBB pixels; alpha is kept for blending. */
+ * rust/src/svg.rs. Output canvases hold 0xAARRGGBB pixels; alpha is kept for blending. */
 #include "kernel.h"
 #include "gfx.h"
 #include "fs.h"

@@ -54,6 +54,7 @@ pub fn wlayout() -> [u32; 5] {
      size_of::<Canvas>() as u32, size_of::<KeyEvent>() as u32]
 }
 
+#[allow(clashing_extern_declarations)]
 extern "C" {
     fn wm_create(title: *const c_char, x: c_int, y: c_int, cw: c_int, ch: c_int, flags: c_int) -> *mut Window;
     fn wm_destroy(w: *mut Window);

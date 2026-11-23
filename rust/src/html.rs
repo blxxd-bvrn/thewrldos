@@ -5,7 +5,7 @@
 //! and matched by Lexbor on this tree. The text parsing (CSS, media queries, charsets) is
 //! `crate::css`.
 //!
-//! The tree's nodes stay C `node_t`s in the page's arena (browser.c, dom.c and svg.c walk
+//! The tree's nodes stay C `node_t`s in the page's arena (browser.c, dom.rs and svg.rs walk
 //! them directly) and `doc_t` keeps its public fields; its style sheets, rules and custom
 //! properties are Rust's, behind `doc_t.css`. Built into the kernel, and with the `htmldoc`
 //! feature into a host test program that links Lexbor and the arena from C.
@@ -651,6 +651,12 @@ pub unsafe extern "C" fn node_attr(n: *mut Node, name: *const c_char) -> *const 
     }
     null()
 }
+/// The document's root node (doc_t.root), for svg.rs and dom.rs.
+pub unsafe fn doc_root(d: *mut Doc) -> *mut Node { (*d).root }
+/// The document's arena, base URL (doc_t.base) and style rule count, for dom.rs.
+pub unsafe fn doc_arena(d: *mut Doc) -> *mut Arena { &mut (*d).arena }
+pub unsafe fn doc_base(d: *mut Doc) -> *const c_char { (*d).base.as_ptr() as *const c_char }
+pub unsafe fn doc_nrules(d: *mut Doc) -> c_int { (*d).nrules }
 /// bool parse_color(const char *s, uint32_t *out)
 #[no_mangle]
 pub unsafe extern "C" fn parse_color(s: *const c_char, out: *mut u32) -> CBool {

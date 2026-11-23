@@ -627,6 +627,20 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     was: readlink of a /proc/self/fd link fails with EINVAL (the C code passed one buffer for
     two results), and newfstatat with AT_EMPTY_PATH and a path of two or more characters
     returns ENAMETOOLONG.
+  - **The browser's SVG renderer and document interface (`rust/src/svg.rs`, `rust/src/dom.rs`;
+    were `src/apps/svg.c` and `src/apps/dom.c`):** inline `<svg>` and `.svg` pictures, and the
+    `dom_*` calls the JavaScript engine uses to read and change the page (nodes, attributes,
+    text, `innerHTML`, inline styles, form controls, title, cookies and storage). Fetching for
+    scripts and the wall clock as a double stay in C (`src/apps/domnet.c`); the page and form
+    control structures (`page_t`, `ctrl_t`) are checked at boot. A host harness ran the old C
+    and the Rust code side by side: 5,615 SVG icons from freely licensed icon themes and 3,000
+    generated SVGs (odd numbers, every path command, arcs, transforms, paints, `<use>`) gave
+    the same rasteriser calls; 1,144 runs of 800 random DOM operations on the parser's test
+    pages and a form page gave the same results and the same trees, styles and controls after
+    every step. In QEMU the SVG and JavaScript sample pages, clicked, typed into and added to,
+    look the same pixel for pixel on both editions. Fixed: a path with numbers after `Z`
+    (`M0 0Z 5 5`) and a huge or infinite angle (`rotate(1e10)`) froze the browser in endless
+    loops, and an exponent such as `1e-12147483647` took seconds.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1076,7 +1090,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   nearest positioned ancestor; `relative` shifts a box. Visually hidden helpers (`left: -9999px`,
   1x1 screen-reader text) are not drawn.
 - **SVG:** inline `<svg>` and `.svg` pictures (also `data:image/svg+xml`) are drawn through the
-  path rasteriser (`src/apps/svg.c`): paths with every command including arcs, rects, circles,
+  path rasteriser (`rust/src/svg.rs`): paths with every command including arcs, rects, circles,
   ellipses, lines, polylines, polygons, groups, `<use>`/`<symbol>`, transforms, fill and stroke
   (from attributes, `style` or CSS `fill`), `currentColor` and opacity; a gradient fill uses its
   first colour. Text, filters, masks and clip paths are not drawn.
@@ -1102,7 +1116,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   - Tables: column widths from min/max content, `colspan`, cell colours, borders, `valign`.
   - Images, form controls and in-page `#anchors`.
 - **Forms:** text, password, checkbox, radio, select, textarea and submit, sent by GET or POST.
-- **JavaScript** (`src/js`, `src/apps/dom.c`):
+- **JavaScript** (`src/js`, the document interface in `rust/src/dom.rs`):
   - [QuickJS-ng](https://github.com/quickjs-ng/quickjs) 0.18 (`third_party/quickjs`), a
     complete modern JavaScript engine, built inside the kernel against a small C library and an
     x87 math library (`third_party/quickjs-shim`).
@@ -1752,7 +1766,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    OpenType shaping (ttf.rs), reading and checking .deb/.rpm packages (pkgfmt.rs,
                    kernel/pkgk.rs), USB descriptors and reports (usbdesc.rs), Direct3D shader
                    bytecode and the shader interpreter (dxbc.rs, dxil.rs), the Linux layer
-                   (kernel/lx/, its paths and ELF headers in lxpath.rs)
+                   (kernel/lx/, its paths and ELF headers in lxpath.rs), the browser's SVG
+                   renderer and the document interface for scripts (svg.rs, dom.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
                    (descriptors and reports are read in rust/src/usbdesc.rs)
@@ -1760,7 +1775,7 @@ src/gui            graphics, text layout with bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
-                   browser (dom.c, adblock.c, the page arena in html.c), image format dispatch and SVG (imgdec.c, svg.c)
+                   browser (adblock.c, fetching for scripts in domnet.c, the page arena in html.c), image format dispatch (imgdec.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;
