@@ -7,7 +7,7 @@
 #                    kit (an Ubuntu disk with every build tool, and QEMU for Windows) into
 #                    %LOCALAPPDATA%\WRLD OS build VM, then it builds there. With "Windows Hypervisor
 #                    Platform" turned on (Windows Features) QEMU runs at full speed; without it the
-#                    whole computer is emulated and a build takes an hour or more.
+#                    whole computer is emulated (a full build took 25 minutes on four processors).
 #
 # Both use only what Windows has: PowerShell, curl.exe and tar.exe.
 param(

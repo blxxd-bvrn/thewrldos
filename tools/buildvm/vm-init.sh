@@ -29,4 +29,5 @@ tar -cf /dev/vdc -C /tmp/out . && sync
 cd /; sync; mount -o remount,ro / 2>/dev/null
 echo "Build VM finished (status $status), powering off."
 echo o > /proc/sysrq-trigger
-sleep 30
+# wait for the power to go without touching the disk again (no external command)
+while :; do :; done

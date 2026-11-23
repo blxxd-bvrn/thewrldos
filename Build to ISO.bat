@@ -105,8 +105,9 @@ echo     1  Download ready-made ISOs. A few minutes; nothing is installed. GitHu
 echo        from the newest version of the project, so your own changes are NOT in them.
 echo.
 echo     2  Build your sources in a portable Linux VM. Nothing is installed and no administrator
-echo        rights are needed. The first time it downloads the build kit (about 1 GB). It takes
-echo        an hour or more unless "Windows Hypervisor Platform" is turned on in Windows Features.
+echo        rights are needed. The first time it downloads the build kit (about 1 GB). A build
+echo        takes half an hour or more, less with "Windows Hypervisor Platform" turned on in
+echo        Windows Features.
 echo.
 echo     3  Install WSL with Ubuntu (an administrator prompt, then a restart). After that, builds
 echo        are quick and use your own changes.

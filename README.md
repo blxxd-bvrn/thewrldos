@@ -107,7 +107,8 @@ installed beforehand:
   go into the VM as a tar archive on a second virtual disk, the build runs, and the ISOs come back
   on a third disk, unpacked with Windows' own `tar.exe`. No administrator rights and no network
   inside the build. With *Windows Hypervisor Platform* turned on (Windows Features) QEMU runs at
-  close to full speed; without it the computer is emulated and a build takes one to a few hours.
+  close to full speed; without it the computer is emulated: a full build took 25 minutes with four
+  processors in a test, longer on slower PCs.
   The VM's disk keeps the object files, so later builds are quicker. `build-vm.log` next to the
   .bat holds the build's messages. (`tools/buildvm/`: `make-image.sh` makes the disk,
   `build-iso.ps1` runs it on Windows, `run-vm.sh` on Linux.)
