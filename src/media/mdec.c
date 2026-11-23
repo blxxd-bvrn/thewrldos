@@ -5,6 +5,11 @@
 #include <stdio.h>
 #include "mediadec.h"
 #include "mp3glue.h"
+#include <stddef.h>
+
+/* The layout of mdec_info_t for the Rust copy in rust/src/pcm.rs (WAV, AIFF and .au),
+ * which rust_init checks at boot. */
+const uint32_t rust_mdec_layout[4] = { offsetof(mdec_info_t, ms), offsetof(mdec_info_t, kbps), offsetof(mdec_info_t, format), sizeof ((mdec_info_t *)0)->format };
 
 enum { K_MP3, K_VORBIS, K_FLAC, K_MPEG, K_PCM };
 struct mdec { int kind; void *h; int16_t buf[1152 * 2]; int buf_n, buf_at; };

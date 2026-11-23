@@ -40,6 +40,7 @@ extern "C" {
     fn vfs_new_node(parent: *mut Vnode, name: *const c_char, dir: CBool) -> *mut Vnode;
     fn vfs_mount(root: *mut Vnode, label: *const c_char, kind: c_int) -> c_char;
     static rust_vnode_layout: [u32; 13];
+    static rust_mdec_layout: [u32; 4];
     static rust_net_layout: [u32; 12];
     static rust_pe_layout: [u32; 4];
     static rust_shader_layout: [u32; 24];
@@ -149,10 +150,20 @@ pub extern "C" fn rust_init() {
     if !crate::html::layout_ok() {
         unsafe { panic(c"Rust: css_t/node_t/doc_t in rust/src/html.rs and css.rs do not match src/apps/browser.h".as_ptr()) }
     }
+    if unsafe { rust_mdec_layout } != crate::pcm::layout() {
+        unsafe { panic(c"Rust: mdec_info_t in rust/src/pcm.rs does not match src/include/mediadec.h".as_ptr()) }
+    }
+    {
+        use core::mem::offset_of;
+        let v = [offset_of!(Vnode, dir), offset_of!(Vnode, readonly), offset_of!(Vnode, data), offset_of!(Vnode, size)];
+        if v != crate::adblock::node_head_offsets() {
+            unsafe { panic(c"Rust: the vnode_t start in rust/src/adblock.rs does not match rust/src/kernel.rs".as_ptr()) }
+        }
+    }
     if !crate::dom::layout_ok() {
         unsafe { panic(c"Rust: ctrl_t/page_t in rust/src/dom.rs do not match src/apps/browser.h".as_ptr()) }
     }
-    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux, svg, dom)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
+    klog!("rust: wrldrs {} ready (heap {}; modules: inflate, fat, fat32, ntfs, vfs, dmg, net, netstack, pe, registry, win32 api, shell, images, html, persistence, fonts, packages, usb, shaders, linux, svg, dom, audio files, ad blocker)", env!("CARGO_PKG_VERSION"), if ok { "ok" } else { "FAILED" });
 }
 
 // ---------------------------------------------------------------- inflate (src/include/fs.h)

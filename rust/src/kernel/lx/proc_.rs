@@ -11,6 +11,7 @@ use crate::lxpath::{self as lp, ElfError};
 use alloc::vec::Vec;
 use core::ptr::{self, null_mut};
 
+#[allow(clashing_extern_declarations)]
 extern "C" {
     fn vfs_resolve(path: *const c_char, cwd: *const c_char) -> *mut Vnode;
     fn vfs_path(n: *mut Vnode, buf: *mut c_char, cap: c_int);

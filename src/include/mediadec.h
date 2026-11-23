@@ -5,7 +5,7 @@
  *
  * Audio: MP3, MP2 and MP1 (minimp3), Ogg Vorbis (stb_vorbis), FLAC and Ogg FLAC
  * (dr_flac), WAV (PCM 8/16/24/32-bit, 32/64-bit float, A-law, mu-law, IMA and
- * Microsoft ADPCM, WAVE_FORMAT_EXTENSIBLE), AIFF/AIFC and Sun .au (src/media/pcm.c).
+ * Microsoft ADPCM, WAVE_FORMAT_EXTENSIBLE), AIFF/AIFC and Sun .au (rust/src/pcm.rs).
  * Video: MPEG-1 program streams with MP2 audio (.mpg, .mpeg; pl_mpeg). */
 #include <stdint.h>
 

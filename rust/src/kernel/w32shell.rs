@@ -13,6 +13,7 @@ use super::w32::{a2w, alloc, astr, free, lookup, set_err, wstr};
 use super::Vnode;
 use crate::w32util::{self as u, is_sep, wlow, MAXP};
 
+#[allow(clashing_extern_declarations)]
 extern "C" {
     fn w32_cur() -> *mut c_void;
     fn w32_realloc(p: *mut c_void, ptr: *mut c_void, n: u32) -> *mut c_void;

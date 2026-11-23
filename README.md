@@ -641,6 +641,20 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     look the same pixel for pixel on both editions. Fixed: a path with numbers after `Z`
     (`M0 0Z 5 5`) and a huge or infinite angle (`rotate(1e10)`) froze the browser in endless
     loops, and an exponent such as `1e-12147483647` took seconds.
+  - **Audio files and the ad blocker (`rust/src/pcm.rs`, `rust/src/adblock.rs`; were
+    `src/media/pcm.c` and `src/apps/adblock.c`):** the media player's WAV (PCM, float, A-law,
+    mu-law, IMA and Microsoft ADPCM), AIFF/AIFC and Sun .au reader, and the browser's ad
+    blocker with its list file. The C structures they share (`mdec_info_t`, the start of
+    `vnode_t`) are checked at boot. 197 files made with FFmpeg in every encoding and channel
+    count, and 6,010 damaged copies, gave the same errors, lengths and samples as the C code,
+    read in random chunk sizes; 1,000,000 random checks (list files, addresses, classes and
+    ids) gave the same answers from both ad blockers. In QEMU, files of each format downloaded
+    with `wget` play in the media player as before on both editions (recorded through an
+    emulated AC97 card), and a fresh `C:\WRLD\adblock.txt` is the same. Fixed: an AIFF whose
+    sound data offset ran past the end of the file made the C code read outside the file
+    (its 32-bit sums wrapped); such a file now has no samples. An ADPCM block smaller than its
+    own header, which the C code accepted by asking for a 2 GB buffer, is refused as a bad
+    header.
   - **The in-memory file system (`rust/src/kernel/vfsk.rs`, with paths and the initrd's tar
     reader in `rust/src/vfspath.rs`, was `src/kernel/vfs.c`):** every drive, folder and file
     the desktop, the shell, the Win32 and Linux layers see. Nodes stay C `vnode_t`s (C code
@@ -1136,7 +1150,7 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     **500 MB**, the page is paused and you're asked whether to continue (asked again every
     further 500 MB) or stop it. Allocations are refused before the OS itself runs short.
   - Tools menu: Enable JavaScript, Script Messages (errors and `console` output).
-- **Ad blocker** (`src/apps/adblock.c`):
+- **Ad blocker** (`rust/src/adblock.rs`):
   - Pictures, scripts and frames from about 140 ad and tracking servers, and ad-server URL
     paths, are never requested.
   - Elements whose class or id marks an ad slot (`ad-banner`, `adsbygoogle`, `div-gpt-ad-…`)
@@ -1767,7 +1781,8 @@ rust/              the kernel's Rust part (wrldrs): heap/log/panic bridge, DEFLA
                    kernel/pkgk.rs), USB descriptors and reports (usbdesc.rs), Direct3D shader
                    bytecode and the shader interpreter (dxbc.rs, dxil.rs), the Linux layer
                    (kernel/lx/, its paths and ELF headers in lxpath.rs), the browser's SVG
-                   renderer and the document interface for scripts (svg.rs, dom.rs)
+                   renderer and the document interface for scripts (svg.rs, dom.rs), WAV, AIFF
+                   and .au files (pcm.rs), the ad blocker (adblock.rs)
 src/net            network card drivers, TLS glue, HTTP (the stack itself is rust/src/netstack.rs)
 src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, HID, mass storage
                    (descriptors and reports are read in rust/src/usbdesc.rs)
@@ -1775,7 +1790,7 @@ src/gui            graphics, text layout with bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
 src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
-                   browser (adblock.c, fetching for scripts in domnet.c, the page arena in html.c), image format dispatch (imgdec.c)
+                   browser (fetching for scripts in domnet.c, the page arena in html.c), image format dispatch (imgdec.c)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;
@@ -1791,7 +1806,7 @@ third_party/minimp3  minimp3 (MP3 decoding for the media player), public domain 
 third_party/stb_vorbis  stb_vorbis (Ogg Vorbis), public domain or MIT
 third_party/dr_flac  dr_flac (FLAC), public domain or MIT-0
 third_party/pl_mpeg  PL_MPEG (MPEG-1 video, MP2), MIT
-src/media          decoder glue: one interface (mdec.c), WAV/AIFF/AU (pcm.c), MP3, Vorbis, FLAC, MPEG-1
+src/media          decoder glue: one interface (mdec.c; WAV/AIFF/AU are read in rust/src/pcm.rs), MP3, Vorbis, FLAC, MPEG-1
 samples/           Win32 sample sources (hello.c, winhello.c, glcube.c, d3dcube.c, d3d10cube.c, dxdemo.c)
 dmgroot/           contents of Sample.dmg
 rootfs64/          files that replace rootfs/ ones in the 64-bit edition (x64 samples)

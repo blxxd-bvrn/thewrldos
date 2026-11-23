@@ -36,6 +36,8 @@ pub mod usbdesc;
 pub mod dxbc;
 pub mod dxil;
 pub mod lxpath;
+pub mod pcm;
+pub mod adblock;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]

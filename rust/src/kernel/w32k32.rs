@@ -11,6 +11,7 @@ use super::w32::{a2w, alloc, astr, free, lookup, set_err, wstr};
 use super::Vnode;
 use crate::w32util as u;
 
+#[allow(clashing_extern_declarations)]
 extern "C" {
     fn w32_env_lookup(n: *const c_char) -> *const c_char;
     fn w32_env_store(n: *const c_char, v: *const c_char);

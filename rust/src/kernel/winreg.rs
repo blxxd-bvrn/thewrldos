@@ -12,6 +12,7 @@ use core::ffi::{c_char, c_void};
 
 use crate::registry::{self as reg, Registry, E_ACCESS, E_NOTFOUND, E_OK};
 
+#[allow(clashing_extern_declarations)]
 extern "C" {
     fn vfs_read_file(path: *const c_char, size: *mut u32) -> *mut u8;
     fn vfs_write_file(path: *const c_char, data: *const c_void, len: u32) -> *mut c_void;
