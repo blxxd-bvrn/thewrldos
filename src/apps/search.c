@@ -157,7 +157,33 @@ static void do_action(const char *a) {
 /* ---------------- the look ---------------- */
 static const uint32_t C_TITLE = 0xFF0F3A78, C_LINK = 0xFF2A5DB0, C_TEXT = 0xFF203040, C_DIM = 0xFF5A6B80, C_ORANGE = 0xFFE07B39;
 /* the sky: a blue gradient with soft clouds and light falling from the upper right */
+/* the background picture (C:\WRLD\Search\Background.jpg), scaled to cover the page and kept at
+ * that size until the window changes; the drawn sky below stands in if the file is missing */
+#define SEARCH_BG "C:\\WRLD\\Search\\Background.jpg"
+static canvas_t *bg_src, *bg_fit; static bool bg_tried;
+static bool picture(canvas_t *c, rect_t r) {
+    if (!bg_tried) {
+        bg_tried = true;
+        uint32_t len; uint8_t *d = vfs_read_file(SEARCH_BG, &len);
+        char err[64];
+        if (d) { bg_src = image_decode(d, len, err, sizeof err); kfree(d); }
+    }
+    if (!bg_src || r.w <= 0 || r.h <= 0) return false;
+    if (!bg_fit || bg_fit->w != r.w || bg_fit->h != r.h) {
+        if (bg_fit) canvas_free(bg_fit);
+        bg_fit = canvas_new(r.w, r.h);
+        if (!bg_fit) return false;
+        /* cover: the larger of the two scales, centred, the overflow cut off */
+        int64_t sw = bg_src->w, sh = bg_src->h;
+        int w = r.w, h = (int)(sh * r.w / sw);
+        if (h < r.h) { h = r.h; w = (int)(sw * r.h / sh); }
+        blit_scaled_alpha(bg_fit, R((r.w - w) / 2, (r.h - h) / 2, w, h), bg_src, 255);
+    }
+    blit(c, r.x, r.y, bg_fit, 0, 0, r.w, r.h);
+    return true;
+}
 static void sky(canvas_t *c, rect_t r) {
+    if (picture(c, r)) return;
     gradient_v3(c, r.x, r.y, r.w, r.h, HEX(0xA9CEF2), HEX(0xD6EAFB), HEX(0xF1F8FF), r.h / 3);
     static const struct { int x, y, w, h, a; } clouds[] = {
         { 8, 4, 30, 10, 70 }, { 22, 2, 26, 8, 60 }, { 40, 10, 36, 14, 55 }, { 60, 3, 30, 12, 70 }, { 2, 28, 40, 12, 40 },
