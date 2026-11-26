@@ -1241,6 +1241,10 @@ static const struct { const char *file, *target; } sm_seed[] = {
     { "Programs\\The WRLD Browser.lnk", "xplorer" },
     { "Programs\\The WRLD Search.lnk", "search" },
     { "Programs\\WRLD 3D.lnk", "wrld3d" },
+    /* added later: appended, so they reach existing Start menus once (sm_seeded) */
+    { "Programs\\Games\\Solitaire.lnk", "solitaire" },
+    { "Programs\\Games\\Orbit Pinball.lnk", "pinball" },
+    { "Programs\\Games\\WRLD Sentinel.lnk", "sentinel" },
 };
 /* the folders, with the shortcuts above, on first use; later additions (a newer version's
  * games) are added once each, recorded in sm_seeded, so a shortcut the user deleted stays gone */
@@ -1292,7 +1296,7 @@ static void mfu_load(void) {
     const char *v = settings_get("sm_mfu");
     if (!v || !*v) {                                     /* a new user: what XP showed first */
         static const struct { const char *l, *a; } def[] = { { "THE WRLD Media Player", "wmplayer" }, { "Notepad", "notepad" },
-            { "Paint", "paint" }, { "Task Manager", "taskmgr" }, { "Minesweeper", "minesweeper" }, { "Snake", "snake" } };
+            { "Paint", "paint" }, { "Solitaire", "solitaire" }, { "Minesweeper", "minesweeper" }, { "Orbit Pinball", "pinball" } };
         for (unsigned i = 0; i < ARRAY_LEN(def); i++) { strlcpy(mfu[nmfu].label, def[i].l, 64); strlcpy(mfu[nmfu].action, def[i].a, 200); mfu[nmfu++].count = 6 - i; }
         return;
     }

@@ -33,6 +33,9 @@ void about_open(void);
 void snake_open(void);
 void minesweeper_open(void);
 void pong_open(void);
+void solitaire_open(void);
+void pinball_open(void);
+void sentinel_open(void);
 void security_open(void);
 void inetopts_open(int tab);
 void netconn_open(void);                         /* Network Connections (ncpa.cpl) */

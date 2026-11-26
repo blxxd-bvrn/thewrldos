@@ -1689,6 +1689,18 @@ device manager's job is to say what the computer has and which driver runs it.
     tracks (synthesised by `tools/gen_music.py`) and My Videos a short MPEG-1 clip.
 - **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
   Minesweeper, Pong, WRLD Security Center, Administrative Tools, Properties, Run, About, Setup.
+- **Games** (Start > All Programs > Games), all original, mouse or keyboard:
+  - **Solitaire**: Klondike with cards drawn by the OS (draw one or three, undo, scoring, a
+    clock, best score, double-click to a foundation; arrows + Space to play without a mouse).
+  - **Orbit Pinball**: a table of its own - a planet whose three moons are the bumpers,
+    slingshots, a bank of drop targets, rollover lanes that raise the bonus multiplier, a
+    plunger (hold Space). Z / Left Shift and / / Right Shift are the flippers.
+  - **WRLD Sentinel**: a first-person maze shooter. Each level is a maze generated for the game,
+    guarded by security drones that fire energy bolts; health and energy cells lie about and a
+    portal leads on. WASD or the arrows, Space or a click to fire, M for the map.
+  - **Minesweeper** now has Beginner, Intermediate and Expert, a first click that is never a mine,
+    opening around a number whose flags are placed, a clock with best times, and keyboard play;
+    **Snake** keeps its best score.
 
 ### Compatibility
 - **`.exe`: Win32 subsystem (`src/win32`)**

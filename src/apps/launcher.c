@@ -21,6 +21,9 @@ const app_info_t app_table[] = {
     { "snake", "Snake", "A small arcade game", ICON_GAME },
     { "minesweeper", "Minesweeper", "Clear the minefield", ICON_GAME },
     { "pong", "Pong", "Two-paddle arcade game", ICON_GAME },
+    { "solitaire", "Solitaire", "Klondike patience", ICON_CARDS },
+    { "pinball", "Orbit Pinball", "A pinball table among the moons", ICON_PINBALL },
+    { "sentinel", "WRLD Sentinel", "A first-person maze shooter", ICON_FPS },
     { "wmplayer", "THE WRLD Media Player", "Play music and sounds", ICON_MEDIA_PLAYER },
     { "wrld3d", "WRLD 3D", "Test the 3D engine", ICON_CP_DISPLAY },
     { "logonthemer", "Logon Skin Themer", "Choose the look of the welcome screen", ICON_CP_APPEARANCE },
@@ -50,6 +53,9 @@ void app_launch(const char *name, const char *arg) {
     else if (!strcasecmp(name, "snake")) snake_open();
     else if (!strcasecmp(name, "minesweeper") || !strcasecmp(name, "mine")) minesweeper_open();
     else if (!strcasecmp(name, "pong")) pong_open();
+    else if (!strcasecmp(name, "solitaire") || !strcasecmp(name, "sol") || !strcasecmp(name, "sol.exe")) solitaire_open();
+    else if (!strcasecmp(name, "pinball")) pinball_open();
+    else if (!strcasecmp(name, "sentinel")) sentinel_open();
     else if (!strcasecmp(name, "wmplayer") || !strcasecmp(name, "mediaplayer") || !strcasecmp(name, "wmplayer.exe")) mediaplayer_open(arg);
     else if (!strcasecmp(name, "wrld3d") || !strcasecmp(name, "3d")) demo3d_open();
     else if (!strcasecmp(name, "logonthemer") || !strcasecmp(name, "logonskins")) logonthemer_open();
