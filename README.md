@@ -1047,14 +1047,20 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   page appears about twice as fast). The clocks have sub-millisecond resolution (the time-stamp
   counter since the last 1 ms tick), and finding room for a new mapping is one pass over the
   memory regions.
-  Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, AV1, H.264, Opus and AAC
-  (YouTube's formats among them; FFmpeg is left out for size). There is no GPU driver for Linux
+  Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, H.264 (baseline profile),
+  Opus, AAC, Vorbis, FLAC and MP3, both as plain `<video>`/`<audio>` and through Media Source
+  Extensions, which is how YouTube plays. YouTube sends VP9 video with Opus sound. AV1 is left
+  out on purpose: the only AV1 decoder available (libaom) is too slow in software, and YouTube
+  picks AV1 whenever the browser offers it, which left videos stalled and the computer busy
+  (FFmpeg is left out for size). There is no GPU driver for Linux
   programs, so pages are drawn on the CPU, and composited ones (videos, some animations) reach the
   window through shared memory. Sound plays through `/dev/dsp` (the Open Sound System interface),
   which feeds the OS mixer alongside the desktop's own sounds; `dsptone` in /usr/local/bin is a
   short test tone. On processors with AVX, the OS saves the full AVX state (XSAVE) for programs.
 - **Wayland, GTK 4 and WebKit.** `wrldcomp` is a Wayland compositor that shows each Linux
-  program's window on the desktop. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
+  program's window on the desktop. It tells programs the desktop's real size (and the new one
+  after a change in Display settings) and when their window is maximized, so a maximized
+  browser fills the whole screen at any resolution. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
   `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser
   (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
   `lxtrace on` in the Command Prompt logs every Linux system call to the serial port (with

@@ -67,6 +67,8 @@ extern "C" {
     fn wm_minimize(w: *mut Window);
     fn wm_maximize(w: *mut Window, on: CBool);
     fn gfx_clear(c: *mut Canvas, color: u32);
+    static SCREEN_W: c_int;
+    static SCREEN_H: c_int;
 }
 
 const WIN_CREATE: u64 = 0x57A1;      /* struct { int32 width, height; uint32 flags; char title[100]; } */
@@ -76,6 +78,8 @@ const WIN_TITLE: u64 = 0x57A4;       /* char title[100] */
 const WIN_INFO: u64 = 0x57A5;        /* struct { int32 width, height, buf_width, buf_height; } */
 const WIN_SETSIZE: u64 = 0x57A6;     /* struct { int32 width, height; }: resize the window and its buffer */
 const WIN_ACTION: u64 = 0x57A7;      /* 1 move, 2 | edges << 8 resize, 3 minimise, 4 maximise, 5 restore */
+const WIN_SCREEN: u64 = 0x57A8;      /* struct { int32 screen_w, screen_h, maximized, minimized; }: works before CREATE too */
+const WS_MINIMIZED: c_int = 1; const WS_MAXIMIZED: c_int = 2;
 const WINF_RESIZABLE: u32 = 1;
 const WINF_FRAMELESS: u32 = 2;       /* the program draws its own frame; pixels with alpha 0 are see-through */
 const WF_RESIZABLE: c_int = 0x001;
@@ -284,6 +288,14 @@ pub unsafe fn lxwin_ioctl(o: *mut c_void, cmd: u64, arg: u64, vm: *mut Uvm) -> i
             t[99] = 0;
             if !(*lw).w.is_null() { wm_set_title((*lw).w, t.as_ptr() as *const c_char); }
             if !(*lw).w.is_null() { 0 } else { -ENODEV }
+        }
+        WIN_SCREEN => {
+            /* the desktop's size now (it changes with the display settings) and the window's state,
+             * so a compositor can tell its programs the real output size and that they are maximized */
+            let w = (*lw).w;
+            let st = if w.is_null() { 0 } else { (*w).state };
+            let s: [i32; 4] = [SCREEN_W, SCREEN_H, (st == WS_MAXIMIZED) as i32, (st == WS_MINIMIZED) as i32];
+            if uput(vm, arg, &s) { 0 } else { -EFAULT }
         }
         WIN_INFO => {
             let w = (*lw).w;

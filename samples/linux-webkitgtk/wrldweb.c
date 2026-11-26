@@ -765,8 +765,9 @@ static void activate(GtkApplication *app, gpointer d) {
         guint limit = (guint)MIN(MAX(total_mb / 3, 384), 1536);
         WebKitMemoryPressureSettings *mp = webkit_memory_pressure_settings_new();
         webkit_memory_pressure_settings_set_memory_limit(mp, limit);
-        webkit_memory_pressure_settings_set_conservative_threshold(mp, 0.5);
+        /* strict first: the conservative threshold must stay below it, and the default strict one is lower */
         webkit_memory_pressure_settings_set_strict_threshold(mp, 0.75);
+        webkit_memory_pressure_settings_set_conservative_threshold(mp, 0.5);
         webkit_memory_pressure_settings_set_poll_interval(mp, 5.0);
         webkit_network_session_set_memory_pressure_settings(mp);
         wctx = WEBKIT_WEB_CONTEXT(g_object_new(WEBKIT_TYPE_WEB_CONTEXT, "memory-pressure-settings", mp, NULL));

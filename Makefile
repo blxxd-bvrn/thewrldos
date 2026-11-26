@@ -485,9 +485,10 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	elif [ -f /etc/ssl/certs/ca-certificates.crt ]; then cp -L /etc/ssl/certs/ca-certificates.crt $(LXROOT)/Linux/etc/ssl/certs/; fi
 	@# testing only: LX_CA_BUNDLE=file adds certificates (say, a TLS-inspecting proxy's) to that list
 	@if [ -n "$(LX_CA_BUNDLE)" ]; then cat "$(LX_CA_BUNDLE)" >> $(LXROOT)/Linux/etc/ssl/certs/ca-certificates.crt; echo "added $(LX_CA_BUNDLE) to the CA list"; fi
-	@# video and audio: GStreamer plugins for WebM/MP4 with VP8, VP9, AV1, H.264, Opus and AAC
-	@# (YouTube's formats among them), about 15 MB; FFmpeg (gst-libav) is left out, at 200 MB.
-	@# There is no Linux sound device on THE WRLD OS: playback runs without an audio sink.
+	@# video and audio: GStreamer plugins for WebM/MP4 with VP8, VP9, H.264 (baseline), Opus, AAC, Vorbis, FLAC
+	@# and MP3. No AV1: libaom decodes it far too slowly in software, and YouTube picks AV1 when it is
+	@# offered, so leaving it out makes YouTube send VP9. The Opus parser is what MSE needs for Opus.
+	@# About 15 MB; FFmpeg (gst-libav) is left out, at 200 MB. Sound goes to /dev/dsp (ossaudio).
 	@mkdir -p $(LXROOT)/Linux$(GST_DIR) $(LXROOT)/Linux$(GST_SCANNER_DIR)
 	@for p in $(GST_PLUGINS); do [ -f $(GST_DIR)/libgst$$p.so ] && cp -L $(GST_DIR)/libgst$$p.so $(LXROOT)/Linux$(GST_DIR)/ || echo "GStreamer plugin $$p not on this machine (gstreamer1.0-plugins-base/good/bad)"; done
 	@if [ -x $(GST_SCANNER_DIR)/gst-plugin-scanner ]; then cp -L $(GST_SCANNER_DIR)/gst-plugin-scanner $(LXROOT)/Linux$(GST_SCANNER_DIR)/; fi
@@ -496,7 +497,8 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 GST_DIR := /usr/lib/x86_64-linux-gnu/gstreamer-1.0
 GST_SCANNER_DIR := /usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0
 GST_PLUGINS := coreelements typefindfunctions playback app audioconvert audioresample videoconvertscale volume autodetect \
-               audiofx isomp4 matroska vpx opus aom openh264 faad videoparsersbad audioparsers codecalpha ossaudio
+               audiofx isomp4 matroska vpx opus opusparse openh264 faad videoparsersbad audioparsers codecalpha ossaudio \
+               vorbis flac mpg123 ogg
 # the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
 # replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
 LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)
@@ -507,7 +509,7 @@ $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub: samples/linux-webkitgtk/stub
 # "busybox-static" is linked at a fixed address in the low 4 GiB, which the kernel keeps for itself)
 LXBUSYBOX := $(firstword $(foreach b,/usr/bin/busybox /bin/busybox,$(if $(wildcard $(b)),$(if $(shell readelf -h $(b) 2>/dev/null | grep -q DYN && echo pie),$(b)))))
 $(LXROOT)/.stamp: $(LXBUSYBOX) tools/gen_busybox_links.py $(LXBINS) $(LXCXX) $(LXGNOME) $(LXMEDIA) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK) $(LXWEBKITGTK) $(LXEGL)
-	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
+	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/var/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"
 else

@@ -21,6 +21,7 @@
 #define WRLDWIN_INFO    0x57A5
 #define WRLDWIN_SETSIZE 0x57A6   /* struct wrldwin_size: resize the window itself (and the buffer; mmap again) */
 #define WRLDWIN_ACTION  0x57A7   /* WRLDWIN_DO_*: start a move or resize while the mouse button is held, ... */
+#define WRLDWIN_SCREEN  0x57A8   /* struct wrldwin_screen: the desktop's size and the window's state (any fd) */
 #define WRLDWIN_RESIZABLE 1
 #define WRLDWIN_FRAMELESS 2      /* no system frame: the program draws its own, alpha 0 pixels are see-through */
 #define WRLDWIN_DO_MOVE 1
@@ -32,6 +33,7 @@
 struct wrldwin_create { int32_t width, height; uint32_t flags; char title[100]; };
 struct wrldwin_size { int32_t width, height; };
 struct wrldwin_info { int32_t width, height, buf_width, buf_height; };
+struct wrldwin_screen { int32_t width, height, maximized, minimized; };
 
 enum { WRLDWIN_EV_MOTION = 1, WRLDWIN_EV_BUTTON_DOWN, WRLDWIN_EV_BUTTON_UP, WRLDWIN_EV_WHEEL,
        WRLDWIN_EV_KEY_DOWN, WRLDWIN_EV_KEY_UP, WRLDWIN_EV_RESIZE, WRLDWIN_EV_CLOSE, WRLDWIN_EV_LEAVE,

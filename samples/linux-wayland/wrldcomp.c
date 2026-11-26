@@ -350,9 +350,15 @@ static void bind_subcompositor(struct wl_client *c, void *d, uint32_t v, uint32_
 }
 
 /* ---------------- xdg_wm_base ---------------- */
+static void outputs_update(int fd);
 static void xdg_send_configure(struct xdg *x, int w, int h) {
     struct wl_array states; wl_array_init(&states);
     uint32_t *st = wl_array_add(&states, sizeof *st); if (st) *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+    /* maximized: say so, or GTK keeps its own idea of the size (and its frame's rounded corners) */
+    struct wrldwin_screen sc = { 0 };
+    if (x->win && x->win->fd >= 0 && ioctl(x->win->fd, WRLDWIN_SCREEN, &sc) == 0 && sc.maximized) {
+        st = wl_array_add(&states, sizeof *st); if (st) *st = XDG_TOPLEVEL_STATE_MAXIMIZED;
+    }
     xdg_toplevel_send_configure(x->toplevel, w, h, &states);
     wl_array_release(&states);
     x->serial = next_serial();
@@ -584,12 +590,34 @@ static void bind_seat(struct wl_client *c, void *d, uint32_t v, uint32_t id) {
 /* ---------------- wl_output ---------------- */
 static void out_release(struct wl_client *c, struct wl_resource *r) { (void)c; wl_resource_destroy(r); }
 static const struct wl_output_interface output_impl = { out_release };
+/* The output is the desktop at its real size, which the display settings can change while the
+ * programs run (it was a fixed 1024x768, so GTK kept maximized windows to that size). */
+static int screen_w = 1024, screen_h = 768;
+static struct wl_list outputs;
+static void output_send(struct wl_resource *r) {
+    wl_output_send_geometry(r, 0, 0, screen_w * 254 / 960, screen_h * 254 / 960, WL_OUTPUT_SUBPIXEL_UNKNOWN, "THE WRLD OS", "Desktop", WL_OUTPUT_TRANSFORM_NORMAL);
+    wl_output_send_mode(r, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, screen_w, screen_h, 60000);
+    if (wl_resource_get_version(r) >= 2) { wl_output_send_scale(r, 1); wl_output_send_done(r); }
+}
+static void output_gone(struct wl_resource *r) { wl_list_remove(wl_resource_get_link(r)); }
 static void bind_output(struct wl_client *c, void *d, uint32_t v, uint32_t id) {
     (void)d; struct wl_resource *r = wl_resource_create(c, &wl_output_interface, v, id);
-    wl_resource_set_implementation(r, &output_impl, NULL, NULL);
-    wl_output_send_geometry(r, 0, 0, 340, 270, WL_OUTPUT_SUBPIXEL_UNKNOWN, "THE WRLD OS", "Desktop", WL_OUTPUT_TRANSFORM_NORMAL);
-    wl_output_send_mode(r, WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED, 1024, 768, 60000);
-    if (v >= 2) { wl_output_send_scale(r, 1); wl_output_send_done(r); }
+    wl_resource_set_implementation(r, &output_impl, NULL, output_gone);
+    wl_list_insert(&outputs, wl_resource_get_link(r));
+    output_send(r);
+}
+/* the desktop's size from any window device; the outputs hear of a change */
+static void outputs_update(int fd) {
+    struct wrldwin_screen sc = { 0 };
+    int own = fd < 0;
+    if (own) fd = open("/dev/wrld/window", O_RDWR | O_CLOEXEC);
+    if (fd >= 0 && ioctl(fd, WRLDWIN_SCREEN, &sc) == 0 && sc.width > 0 && sc.height > 0 && (sc.width != screen_w || sc.height != screen_h)) {
+        screen_w = sc.width; screen_h = sc.height;
+        LOG("output: %dx%d", screen_w, screen_h);
+        struct wl_resource *r;
+        wl_resource_for_each(r, &outputs) output_send(r);
+    }
+    if (own && fd >= 0) close(fd);
 }
 
 /* ---------------- wl_data_device_manager (no clipboard contents yet) ---------------- */
@@ -741,6 +769,7 @@ static void window_events(struct window *w) {
             if (w->top && w->top->toplevel) {
                 int cw = e->x - 2 * w->mx, ch = e->y - 2 * w->my;
                 if (cw < 1 || ch < 1) break;
+                outputs_update(w->fd);                          /* maximized after a change of resolution */
                 w->w = e->x; w->h = e->y;                       /* the window already has the new size */
                 struct wrldwin_size sz = { e->x, e->y };
                 ioctl(w->fd, WRLDWIN_RESIZE, &sz);
@@ -793,6 +822,8 @@ int main(int argc, char **argv) {
     wl_global_create(display, &wl_subcompositor_interface, 1, NULL, bind_subcompositor);
     wl_global_create(display, &xdg_wm_base_interface, 3, NULL, bind_wm_base);
     wl_global_create(display, &wl_seat_interface, 7, NULL, bind_seat);
+    wl_list_init(&outputs);
+    outputs_update(-1);
     wl_global_create(display, &wl_output_interface, 3, NULL, bind_output);
     wl_global_create(display, &wl_data_device_manager_interface, 3, NULL, bind_data_manager);
     loop = wl_display_get_event_loop(display);
