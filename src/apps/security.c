@@ -152,7 +152,7 @@ static void pane(window_t *w, sec_t *s, int worst, int problems) {
     for (unsigned i = 0; i < ARRAY_LEN(links); i++, yy += 22) {
         if (!ui_link(w, bx + 12, yy, FONT_UI, links[i], T.pane_link)) continue;
         if (i == 0) control_open("devices");
-        else if (i == 1) control_open("network");
+        else if (i == 1) netconn_open();
         else if (i == 2) control_open("admin");
         else if (i == 3) { vfs_write_file("C:\\tmp\\dmesg.log", klog_buffer(), strlen(klog_buffer())); notepad_open("C:\\tmp\\dmesg.log"); }
         else shellmanager_restart();

@@ -40,15 +40,20 @@ static int b_ipconfig(const char *cwd, int argc, char **argv, io_t *io) {
         if (argc < 3 || !str_to_ip(argv[2], &ip)) { err_f(io, "usage: ipconfig /dns A.B.C.D\n"); return 1; }
         netif.dns = ip;
     }
-    out_f(io, "\n" OS_NAME " IP Configuration\n\n   Host Name . . . . . . . . : %s\n\nEthernet adapter Local Area Connection:\n\n", computer_name);
+    const char *cn = settings_get("net_name"); if (!cn || !*cn) cn = "Local Area Connection";
+    out_f(io, "\n" OS_NAME " IP Configuration\n\n   Host Name . . . . . . . . : %s\n\nEthernet adapter %s:\n\n", computer_name, cn);
     if (!netif.present) { out_s(io, "   Media State . . . . . . . : No supported network adapter was found\n"); return 1; }
     char a[16], m[16], g[16], d[16], sv[16];
     ip_to_str(netif.ip, a); ip_to_str(netif.mask, m); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d); ip_to_str(netif.dhcp_server, sv);
     out_f(io, "   Description . . . . . . . : %s\n", netif.driver);
     out_f(io, "   Physical Address. . . . . : %02X-%02X-%02X-%02X-%02X-%02X\n", netif.mac[0], netif.mac[1], netif.mac[2], netif.mac[3], netif.mac[4], netif.mac[5]);
+    if (!net_enabled()) { out_s(io, "   Media State . . . . . . . : Disabled\n"); return 0; }
     if (!netif.link) { out_s(io, "   Media State . . . . . . . : Media disconnected\n"); return 0; }
-    out_f(io, "   DHCP Enabled. . . . . . . : Yes\n   IP Address. . . . . . . . : %s\n   Subnet Mask . . . . . . . : %s\n   Default Gateway . . . . . : %s\n   DHCP Server . . . . . . . : %s\n   DNS Server. . . . . . . . : %s\n",
-          netif.configured ? a : "(acquiring...)", m, g, sv, d);
+    bool st = net_is_static();
+    out_f(io, "   DHCP Enabled. . . . . . . : %s\n   IP Address. . . . . . . . : %s\n   Subnet Mask . . . . . . . : %s\n   Default Gateway . . . . . : %s\n",
+          st ? "No" : "Yes", netif.configured ? a : "(acquiring...)", m, g);
+    if (!st) out_f(io, "   DHCP Server . . . . . . . : %s\n", sv);
+    out_f(io, "   DNS Server. . . . . . . . : %s\n", d);
     out_f(io, "   Packets sent/received . . : %u / %u (%u KB / %u KB)\n", netif.tx_packets, netif.rx_packets, netif.tx_bytes / 1024, netif.rx_bytes / 1024);
     return 0;
 }

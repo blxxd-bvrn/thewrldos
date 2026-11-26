@@ -174,6 +174,7 @@ static void page_connections(window_t *w, io_t *o, rect_t b) {
     char t[160]; snprintf(t, sizeof t, "Local Area Connection: %s", net_status_text());
     draw_text_ellipsis(s, FONT_UI, x + 54, y + 24, wd - 66, t, T.text);
     if (ui_link(w, x + 54, y + 46, FONT_UI, "Network and Sharing Center", T.link)) control_open("network");
+    if (ui_link(w, x + 54 + text_width(FONT_UI, "Network and Sharing Center") + 16, y + 46, FONT_UI, "Network Connections", T.link)) netconn_open();
     y += 92;
     draw_group(s, R(x, y, wd, 128), "Proxy server");
     check(w, o, x + 14, y + 24, "Use a proxy server for your LAN", &o->proxy_on);

@@ -16,7 +16,7 @@ typedef struct { const char *id, *name, *desc; int icon; int cat; } applet_t;
 enum { CAT_SYSTEM, CAT_NETWORK, CAT_HARDWARE, CAT_PROGRAMS, CAT_USERS, CAT_APPEARANCE, CAT_CLOCK, CAT_EASE, CAT_N };
 static const struct { const char *name; int icon; const char *links[3]; const char *targets[3]; } cats[CAT_N] = {
     { "System and Security", ICON_CP_SYSTEM, { "Review your computer's status", "View system information", "Open Task Manager" }, { "system", "system", "::taskmgr" } },
-    { "Network and Internet", ICON_CP_NETWORK, { "View network status and tasks", "Change Internet options" }, { "network", "::inetopts" } },
+    { "Network and Internet", ICON_CP_NETWORK, { "View network status and tasks", "View network connections", "Change Internet options" }, { "network", "::ncpa", "::inetopts" } },
     { "Hardware and Sound", ICON_CP_HARDWARE, { "View devices", "Mouse", "Sound" }, { "devices", "mouse", "sound" } },
     { "Programs", ICON_CP_PROGRAMS, { "Uninstall a program", "Default programs" }, { "programs", "defaults" } },
     { "User Accounts", ICON_CP_USERS, { "Change account name", "Change your picture" }, { "users", "users" } },
@@ -30,6 +30,7 @@ static const applet_t applets[] = {
     { "devices", "Device Manager", "See every device and the driver that runs it", ICON_CP_DEVICES, CAT_HARDWARE },
     { "::taskmgr", "Task Manager", "See running programs and performance", ICON_TASKMGR, CAT_SYSTEM },
     { "network", "Network and Sharing Center", "View network status", ICON_CP_NETWORK, CAT_NETWORK },
+    { "::ncpa", "Network Connections", "Adapters: status, disable, rename, IP address", ICON_CP_NETWORK, CAT_NETWORK },
     { "::inetopts", "Internet Options", "Home page, browsing history, privacy, connections", ICON_BROWSER, CAT_NETWORK },
     { "mouse", "Mouse", "Change mouse settings", ICON_CP_MOUSE, CAT_HARDWARE },
     { "keyboard", "Keyboard", "Test and change keyboard settings", ICON_CP_KEYBOARD, CAT_HARDWARE },
@@ -71,6 +72,7 @@ static const applet_t *find_applet(const char *id) { for (int i = 0; i < NAPPLET
 static void cp_go(cp_t *c, const char *page, bool push) {
     if (!strcmp(page, "::taskmgr")) { taskmgr_open(); return; }
     if (!strcmp(page, "::inetopts")) { inetopts_open(0); return; }
+    if (!strcmp(page, "::ncpa")) { netconn_open(); return; }
     if (push) {
         if (c->hlen) c->hpos++;
         if (c->hpos >= 20) { memmove(c->hist, c->hist + 1, 19 * 32); c->hpos = 19; }
@@ -158,6 +160,12 @@ static void nav_pane(window_t *w, cp_t *c, int cat) {
     int y = TOP_H + 16;
     if (ui_link(w, 16, y, FONT_UI, "Control Panel Home", W7_LINK)) { cp_go(c, "", true); return; }
     y += 30;
+    if (!strcmp(c->page, "network")) {                 /* as in Windows 7's Network and Sharing Center */
+        if (ui_link(w, 16, y - 8, FONT_UI, "Change adapter settings", W7_LINK)) netconn_open();
+        y += 14;
+        if (ui_link(w, 16, y - 8, FONT_UI, "Internet Options", W7_LINK)) inetopts_open(0);
+        y += 30;
+    }
     for (int i = 0; i < CAT_N; i++) {
         bool cur = i == cat;
         int f = cur ? FONT_UI_BOLD : FONT_UI;
@@ -976,7 +984,12 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     else { for (int x = ox + 100; x < ox + 240; x += 8) hline(s, x, oy + 104, 4, HEX(0xC03030)); draw_icon(s, ICON_ERROR, 16, ox + 162, oy + 96); }
     draw_icon(s, ICON_CP_NETWORK, 48, ox + 250, oy + 80); draw_text(s, FONT_UI, ox + 254, oy + 134, "Internet", T.text);
     int y = oy + 170;
-    draw_text(s, FONT_UI_BOLD, ox + 20, y, "Local Area Connection", T.link_head); hline(s, ox + 160, y + 8, s->w - ox - 190, T.face_dark); y += 24;
+    {   /* the connection's name opens its Status dialog, as in Windows 7 */
+        const char *cn = settings_get("net_name"); if (!cn || !*cn) cn = "Local Area Connection";
+        if (ui_link(w, ox + 20, y, FONT_UI_BOLD, cn, T.link_head)) netstatus_open();
+        int tw = text_width(FONT_UI_BOLD, cn);
+        hline(s, ox + 30 + tw, y + 8, s->w - ox - 60 - tw, T.face_dark); y += 24;
+    }
     char a[16], m[16], g[16], d[16], b[160];
     ip_to_str(netif.ip, a); ip_to_str(netif.mask, m); ip_to_str(netif.gw, g); ip_to_str(netif.dns, d);
     const char *lab[] = { "Status:", "Adapter:", "Physical address:", "IPv4 address:", "Subnet mask:", "Default gateway:", "DNS server:", "Activity:" };
@@ -1306,6 +1319,7 @@ static void cp_destroy(window_t *w) { kfree(w->data); }
 void control_open(const char *page) {
     /* "control inetcpl.cpl", as in Windows: the Internet Options dialog alone */
     if (page && (!strcasecmp(page, "inetcpl.cpl") || !strcmp(page, "::inetopts"))) { inetopts_open(0); return; }
+    if (page && (!strcasecmp(page, "ncpa.cpl") || !strcmp(page, "::ncpa"))) { netconn_open(); return; }
     window_t *w = wm_create("Control Panel", -1, -1, MIN(840, SCREEN_W - 40), MIN(660, SCREEN_H - 70), WF_RESIZABLE);
     cp_t *c = kzalloc(sizeof *c);
     c->win = w; c->prog_sel = -1;

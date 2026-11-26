@@ -453,6 +453,9 @@ impl Stack {
 
     pub fn dhcp_start(&mut self) -> bool { self.bind(68, UdpHandler::Dhcp) }
 
+    /// Stops asking for addresses (a fixed address was set, or the adapter is disabled).
+    pub fn dhcp_stop(&mut self) { self.dhcp = DhcpState::Idle; }
+
     fn dhcp_send(&mut self, io: &mut Io, kind: u8) {
         let mut m = [0u8; 400];
         m[0] = 1; m[1] = 1; m[2] = 6; put32(&mut m, 4, self.dhcp_xid); put16(&mut m, 10, 0x8000);

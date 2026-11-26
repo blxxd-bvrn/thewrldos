@@ -61,6 +61,12 @@ bool net_ready(void);                                     /* link up and address
 bool net_wait_ready(uint32_t timeout_ms);
 void dhcp_renew(void);
 const char *net_status_text(void);                        /* one line for the UI */
+void net_set_enabled(bool on);                            /* Network Connections: Disable / Enable */
+bool net_enabled(void);
+void net_set_static(uint32_t ip, uint32_t mask, uint32_t gw, uint32_t dns);   /* ip 0: DHCP */
+bool net_is_static(void);
+uint32_t net_up_ms(void);                                 /* how long the connection has been up */
+void net_apply_saved(void);                               /* the saved adapter settings (persist.c) */
 
 /* ---- IP / ICMP / UDP ---- */
 enum { IPPROTO_ICMP = 1, IPPROTO_TCP = 6, IPPROTO_UDP = 17 };

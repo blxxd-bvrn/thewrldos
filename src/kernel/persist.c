@@ -48,6 +48,7 @@ void settings_apply(void) {
     if ((s = settings_get("computer")) && *s) strlcpy(computer_name, s, sizeof computer_name);
     strlcpy(user_password, settings_get("password") ? settings_get("password") : "", sizeof user_password);
     { extern bool adblock_enabled; adblock_enabled = geti("adblock", 1) != 0; }
+    net_apply_saved();                                   /* Network Connections: disabled, fixed address */
     { extern bool js_enabled, browser_show_images; js_enabled = geti("javascript", 1) != 0; browser_show_images = geti("images", 1) != 0; }
     fw_enabled = geti("fw_on", 0) != 0; fw_block_tcp = geti("fw_tcp", 1) != 0; fw_block_udp = geti("fw_udp", 1) != 0;
     fw_clear_ports(); { const char *fp = settings_get("fw_ports"); while (fp && *fp) { char *e; unsigned long v = strtoul(fp, &e, 10); if (v) fw_allow_port((uint16_t)v); fp = (*e == 0) ? e : e + 1; } }

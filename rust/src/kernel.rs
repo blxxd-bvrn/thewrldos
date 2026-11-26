@@ -549,21 +549,42 @@ pub unsafe extern "C" fn net_rx(frame: *const u8, len: u32) {
     }
 }
 
+/// Network Connections: the adapter switched off by the user, a fixed address in place of DHCP
+/// (ip 0: DHCP), and when the connection last came up (for the status dialog's Duration).
+static mut NET_DISABLED: bool = false;
+static mut NET_STATIC: [u32; 4] = [0; 4];
+static mut NET_UP_SINCE: u32 = 0;
+static mut NET_RECHECK: bool = false;
+
+/// Gives the interface its address once the link is up: the fixed one, or DHCP.
+unsafe fn configure(st: &mut Stack, io: &mut netstack::Io) {
+    let s = *core::ptr::addr_of!(NET_STATIC);
+    if s[0] != 0 {
+        st.dhcp_stop();
+        io.nif.ip = s[0]; io.nif.mask = if s[1] != 0 { s[1] } else { 0xFFFF_FF00 }; io.nif.gw = s[2];
+        io.nif.dns = if s[3] != 0 { s[3] } else { s[2] };
+        io.nif.dhcp_server = 0; io.nif.lease_s = 0; io.nif.configured = 1;
+        NET_UP_SINCE = now();
+    } else { st.dhcp_renew(io); }
+}
+
 extern "C" fn net_loop(_arg: *mut c_void) {
     let mut was_up = false;
     loop {
         unsafe {
             if let Some(p) = NIC.poll { p(); }
-            let up = NIC.link_up.is_some_and(|f| f() != 0);
-            if up != was_up {
+            let up = !NET_DISABLED && NIC.link_up.is_some_and(|f| f() != 0);
+            if up != was_up || core::mem::take(&mut *core::ptr::addr_of_mut!(NET_RECHECK)) {
+                if up != was_up { klog!("net: link {}", if up { "up" } else if NET_DISABLED { "down (disabled)" } else { "down" }); }
                 was_up = up;
                 (*core::ptr::addr_of_mut!(netif)).link = up as CBool;
-                klog!("net: link {}", if up { "up" } else { "down" });
-                if up { with_stack(|st, io| st.dhcp_renew(io)); } else { (*core::ptr::addr_of_mut!(netif)).configured = 0; }
+                if up { with_stack(|st, io| configure(st, io)); }
+                else { with_stack(|st, io| { st.dhcp_stop(); io.nif.configured = 0; io.nif.ip = 0; }); }
             }
         }
         let (bound, conns) = with_stack(|st, io| { st.tick(io); (core::mem::take(&mut st.dhcp_bound_event), st.tcp.count()) });
         if bound {
+            unsafe { NET_UP_SINCE = now(); }
             let n = nif();
             klog!("dhcp: address {}, gateway {}, DNS {}, lease {}s", Ip(n.ip), Ip(n.gw), Ip(n.dns), n.lease_s);
         }
@@ -614,7 +635,27 @@ fn wait_ready(ms: u32) -> bool {
 pub extern "C" fn net_wait_ready(ms: u32) -> CBool { wait_ready(ms) as CBool }
 
 #[no_mangle]
-pub extern "C" fn dhcp_renew() { with_stack(|st, io| st.dhcp_renew(io)); }
+pub extern "C" fn dhcp_renew() {
+    if unsafe { NET_DISABLED } { return; }
+    with_stack(|st, io| unsafe { configure(st, io) });
+}
+
+/// void net_set_enabled(bool on): Network Connections' Disable / Enable.
+#[no_mangle]
+pub unsafe extern "C" fn net_set_enabled(on: CBool) { NET_DISABLED = on == 0; NET_RECHECK = true; }
+#[no_mangle]
+pub unsafe extern "C" fn net_enabled() -> CBool { (!NET_DISABLED) as CBool }
+/// void net_set_static(ip, mask, gw, dns): a fixed address; ip 0 goes back to DHCP.
+#[no_mangle]
+pub unsafe extern "C" fn net_set_static(ip: u32, mask: u32, gw: u32, dns: u32) {
+    *core::ptr::addr_of_mut!(NET_STATIC) = [ip, mask, gw, dns];
+    NET_RECHECK = true;
+}
+#[no_mangle]
+pub unsafe extern "C" fn net_is_static() -> CBool { (NET_STATIC[0] != 0) as CBool }
+/// uint32_t net_up_ms(void): milliseconds since the address was configured (0 when not connected).
+#[no_mangle]
+pub unsafe extern "C" fn net_up_ms() -> u32 { if nif().ready() { now().wrapping_sub(NET_UP_SINCE) } else { 0 } }
 
 static mut STATUS: [u8; 96] = [0; 96];
 /// const char *net_status_text(void): one line for the UI.
@@ -622,6 +663,7 @@ static mut STATUS: [u8; 96] = [0; 96];
 pub unsafe extern "C" fn net_status_text() -> *const c_char {
     let n = nif();
     if n.present == 0 { return c"No network adapter".as_ptr(); }
+    if NET_DISABLED { return c"Disabled".as_ptr(); }
     if n.link == 0 { return c"Network cable unplugged".as_ptr(); }
     if n.configured == 0 { return c"Acquiring network address...".as_ptr(); }
     let buf = core::ptr::addr_of_mut!(STATUS) as *mut c_char;

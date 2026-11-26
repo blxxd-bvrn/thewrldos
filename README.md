@@ -978,6 +978,15 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   a zoom menu; icons are drawn by the browser itself. Find (Ctrl+F), zoom, Delete Browsing
   History, downloads into My Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
   edition, on smaller machines, or when the Classic engine is chosen in Internet Options.
+- **Network Connections** (Control Panel > Network and Internet > View network connections, the
+  Network and Sharing Center's "Change adapter settings", or `control ncpa.cpl`) is Windows 7's
+  window: the adapter as a tile with its state and device name, and the command bar (Disable or
+  Enable, Diagnose, Rename, View status, Change settings). Double-click (or Enter) opens the
+  **Local Area Connection Status** dialog: IPv4/IPv6 connectivity, media state, duration, speed,
+  bytes sent and received, with Details... (address, mask, gateway, DHCP server and lease, DNS),
+  Properties, Disable and Diagnose. Properties lists the items the connection uses; Internet
+  Protocol Version 4 (TCP/IPv4) Properties sets DHCP or a fixed address and DNS server. Disable,
+  the fixed address and the name are saved; `ipconfig` shows them.
 - **Internet Options** (Control Panel > Network and Internet, the browser's Tools menu, or
   `control inetcpl.cpl`) is the Windows dialog with its seven tabs, each wired to a real setting:
   General (home page with Use current/default/blank, Delete Browsing History), Security
