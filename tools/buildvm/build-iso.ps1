@@ -177,7 +177,8 @@ $qargs = @('-L', (Join-Path $qemuDir 'share'), '-machine', 'q35', '-m', "$mem", 
 # The VM's console goes to a file that is shown here as it grows: QEMU's own console on standard
 # input and output stays silent when nothing is typing at it (GitHub's runners, a redirected log).
 function Quote($a) { if ($a -match '[\s"]') { '"' + ($a -replace '"', '\"') + '"' } else { $a } }
-$qp = Start-Process -FilePath $qemu -ArgumentList (($qargs | ForEach-Object { Quote $_ }) -join ' ') -NoNewWindow -PassThru
+$qerr = Join-Path $kit 'qemu-errors.txt'
+$qp = Start-Process -FilePath $qemu -ArgumentList (($qargs | ForEach-Object { Quote $_ }) -join ' ') -NoNewWindow -PassThru -RedirectStandardError $qerr
 $null = $qp.Handle                     # keeps the exit code readable once it has stopped
 $shown = 0L; $started = Get-Date
 function Show-Console {
@@ -199,11 +200,13 @@ while (-not $qp.HasExited) {
     if ($TimeoutMinutes -gt 0 -and ((Get-Date) - $started).TotalMinutes -ge $TimeoutMinutes) {
         Stop-Process -Id $qp.Id -Force -ErrorAction SilentlyContinue
         Show-Console
+        if ((Test-Path $qerr) -and (Get-Item $qerr).Length) { Write-Host "QEMU's own messages:"; Get-Content $qerr }
         Fail "the build VM was still running after $TimeoutMinutes minutes; its console is above."
     }
 }
 Show-Console
 Write-Host ""
+if ((Test-Path $qerr) -and (Get-Item $qerr).Length) { Write-Host "QEMU's own messages:"; Get-Content $qerr }
 if ($qp.ExitCode -ne 0) { Fail "QEMU stopped with an error ($($qp.ExitCode))." }
 
 Say "Collecting the result"

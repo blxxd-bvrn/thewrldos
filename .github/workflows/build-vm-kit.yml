@@ -98,6 +98,15 @@ jobs:
           $out = [IO.File]::Create("$kit\wrld-build-vm.qcow2"); foreach ($p in $parts) { $in = [IO.File]::OpenRead($p.FullName); $in.CopyTo($out); $in.Close() }; $out.Close()
           tar -xf wrld-build-vm-qemu-win64.zip -C (New-Item -ItemType Directory -Force "$kit\qemu")
           "version test" | Set-Content "$kit\kit.txt"
+          # first, does this QEMU boot the kernel at all? two minutes, no disks, the console to a file
+          $q = "$kit\qemu\qemu-system-x86_64.exe"
+          $smoke = Start-Process -FilePath $q -PassThru -NoNewWindow -RedirectStandardError "$kit\smoke-err.txt" -RedirectStandardOutput "$kit\smoke-out.txt" -ArgumentList @('-L', "`"$kit\qemu\share`"", '-machine', 'q35', '-m', '1024', '-accel', 'tcg', '-kernel', "`"$kit\vmlinuz`"", '-append', '"console=ttyS0 panic=-1"', '-serial', "`"file:$kit\smoke.log`"", '-display', 'none', '-monitor', 'none', '-no-reboot')
+          Start-Sleep -Seconds 120
+          if (-not $smoke.HasExited) { Stop-Process -Id $smoke.Id -Force }
+          Write-Host "---- kernel console in two minutes (first 60 lines) ----"
+          if (Test-Path "$kit\smoke.log") { Get-Content "$kit\smoke.log" -TotalCount 60 } else { Write-Host "(no console file)" }
+          Write-Host "---- QEMU's own messages ----"
+          Get-Content "$kit\smoke-err.txt", "$kit\smoke-out.txt" -ErrorAction SilentlyContinue
           # a stand-in for the build: the VM boots, reads the sources, checks its tools, writes two files back
           $src = "$env:RUNNER_TEMP\src"
           New-Item -ItemType Directory -Force "$src\tools" | Out-Null
