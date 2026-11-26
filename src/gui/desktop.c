@@ -6,6 +6,7 @@
 #include "pkg.h"
 #include "wm.h"
 #include "apps.h"
+#include "disk.h"
 #include "fs.h"
 #include "net.h"
 #include "usb.h"
@@ -22,8 +23,8 @@ int user_picture_count = 71;                  /* the photographs in C:\WRLD\Avat
 bool show_clock = true, show_seconds = false, clock_24h = false;
 static canvas_t *wallpaper;
 static int tb_y(void);
-static bool startmenu_open, allprog_open;
-static int sm_hot = -1, ap_hot = -1, tb_hot = -1;
+static bool startmenu_open;
+static int sm_hot = -1, tb_hot = -1;
 int startmenu_animation = MENU_ANIM_SLIDE;
 bool sidebar_slide = true, sidebar_tile_fade = true;
 static animation_t sm_motion;
@@ -1113,73 +1114,238 @@ static void paint_balloon(canvas_t *c) {
 
 /* ---------------- start menu ---------------- */
 typedef struct { const char *label, *sub; int icon; const char *action; bool bold; } sm_item_t;
-static const sm_item_t sm_left[] = {
-    { "Internet", "The WRLD Browser", ICON_BROWSER, "xplorer", true },
-    { "Command Prompt", "Shell & scripts", ICON_TERMINAL, "cmd", true },
-    { "File Explorer", "Browse files", ICON_EXPLORER, "explorer", true },
-    { NULL },
-    { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer", false },
-    { "Notepad", NULL, ICON_NOTEPAD, "notepad", false },
-    { "Paint", NULL, ICON_PAINT, "paint", false },
-    { "Task Manager", NULL, ICON_TASKMGR, "taskmgr", false },
-    { "Snake", NULL, ICON_GAME, "snake", false },
-    { "Minesweeper", NULL, ICON_GAME, "minesweeper", false },
+/* The Start menu is built from folders, as in Windows XP, so a program that adds a shortcut
+ * shows up in it:
+ *   Start Menu\Pinned\*.lnk     the pinned programs at the top left (first line: what to run,
+ *                               an optional second line: the grey line under the name)
+ *   Start Menu\Programs\...     All Programs, folders as cascading menus
+ * and below the pinned programs, the ones started most often from the menu (sm_mfu in the
+ * settings). A .lnk file holds a command: an application name ("notepad"), a path, or an
+ * application and its argument ("control ncpa.cpl"). */
+#define SM_DIR "C:\\Documents and Settings\\User\\Start Menu"
+#define SM_PROGRAMS SM_DIR "\\Programs"
+#define SM_PINNED SM_DIR "\\Pinned"
+static const struct { const char *file, *target; } sm_seed[] = {
+    { "Pinned\\Internet.lnk", "xplorer\nThe WRLD Browser" },
+    { "Pinned\\Command Prompt.lnk", "cmd\nShell & scripts" },
+    { "Pinned\\File Explorer.lnk", "explorer\nBrowse files" },
+    { "Programs\\Accessories\\Calculator.lnk", "calc" },
+    { "Programs\\Accessories\\Command Prompt.lnk", "cmd" },
+    { "Programs\\Accessories\\File Explorer.lnk", "explorer" },
+    { "Programs\\Accessories\\Notepad.lnk", "notepad" },
+    { "Programs\\Accessories\\Paint.lnk", "paint" },
+    { "Programs\\Accessories\\WordPad.lnk", "wordpad" },
+    { "Programs\\Accessories\\Logon Skins\\Logon Skin Maker.lnk", "logonmaker" },
+    { "Programs\\Accessories\\Logon Skins\\Logon Skin Themer.lnk", "logonthemer" },
+    { "Programs\\Accessories\\System Tools\\Control Panel.lnk", "control" },
+    { "Programs\\Accessories\\System Tools\\Internet Options.lnk", "control inetcpl.cpl" },
+    { "Programs\\Accessories\\System Tools\\Network Connections.lnk", "control ncpa.cpl" },
+    { "Programs\\Accessories\\System Tools\\Task Manager.lnk", "taskmgr" },
+    { "Programs\\Accessories\\System Tools\\WRLD Security Center.lnk", "security" },
+    { "Programs\\Games\\Minesweeper.lnk", "minesweeper" },
+    { "Programs\\Games\\Pong.lnk", "pong" },
+    { "Programs\\Games\\Snake.lnk", "snake" },
+    { "Programs\\Samples\\Hello Console (hello.exe).lnk", "C:\\Samples\\hello.exe" },
+    { "Programs\\Samples\\Hello Win32 (winhello.exe).lnk", "C:\\Samples\\winhello.exe" },
+    { "Programs\\Samples\\Mount Sample.dmg.lnk", "C:\\Samples\\Sample.dmg" },
+    { "Programs\\Samples\\Samples folder.lnk", "C:\\Samples" },
+    { "Programs\\Samples\\Shell demo (demo.sh).lnk", "C:\\Samples\\demo.sh" },
+    { "Programs\\About " OS_NAME ".lnk", "about" },
+    { "Programs\\THE WRLD Media Player.lnk", "wmplayer" },
+    { "Programs\\The WRLD Browser.lnk", "xplorer" },
+    { "Programs\\The WRLD Search.lnk", "search" },
+    { "Programs\\WRLD 3D.lnk", "wrld3d" },
 };
+/* the folders, with the shortcuts above, on first use; later additions (a newer version's
+ * games) are added once each, recorded in sm_seeded, so a shortcut the user deleted stays gone */
+static void sm_ensure(void) {
+    static bool done;
+    if (done) return;
+    done = true;
+    const char *v = settings_get("sm_seeded");
+    int seeded = v ? atoi(v) : 0;
+    bool fresh = !vfs_resolve(SM_PROGRAMS, NULL);
+    for (int i = fresh ? 0 : seeded; i < (int)ARRAY_LEN(sm_seed); i++) {
+        char p[300], dir[300];
+        snprintf(p, sizeof p, SM_DIR "\\%s", sm_seed[i].file);
+        if (vfs_resolve(p, NULL)) continue;
+        strlcpy(dir, p, sizeof dir); char *bs = strrchr(dir, '\\'); if (bs) *bs = 0;
+        vfs_mkdir_p(dir);
+        vfs_write_file(p, sm_seed[i].target, strlen(sm_seed[i].target));
+    }
+    char b[16]; snprintf(b, sizeof b, "%d", (int)ARRAY_LEN(sm_seed));
+    if (seeded != (int)ARRAY_LEN(sm_seed)) { settings_set("sm_seeded", b); settings_save(); }
+}
+/* a shortcut's name without ".lnk", its icon, and its second line */
+static void lnk_label(vnode_t *n, char *out, int cap) {
+    strlcpy(out, n->name, cap);
+    char *dot = strrchr(out, '.');
+    if (dot && !strcasecmp(dot, ".lnk")) *dot = 0;
+}
+static void lnk_line(vnode_t *n, int line, char *out, int cap) {
+    out[0] = 0;
+    if (!n->data || !n->size) return;
+    const char *p = (const char *)n->data, *end = p + n->size;
+    for (int i = 0; i < line && p < end; i++) { const char *nl = memchr(p, '\n', end - p); if (!nl) return; p = nl + 1; }
+    int k = 0;
+    while (p < end && *p != '\n' && *p != '\r' && k < cap - 1) out[k++] = *p++;
+    out[k] = 0;
+}
+
+/* ---- the left column: pinned, then the most used ---- */
+#define SM_LEFT_MAX 14
+#define MFU_SHOW 6
+static sm_item_t sm_left[SM_LEFT_MAX];
+static int sm_left_n, sm_pinned_n;
+static char sm_left_text[SM_LEFT_MAX][3][160];          /* label, sub, action */
+typedef struct { char label[64], action[200]; int count; } mfu_t;
+static mfu_t mfu[16]; static int nmfu; static bool mfu_loaded;
+static void mfu_load(void) {
+    if (mfu_loaded) return;
+    mfu_loaded = true; nmfu = 0;
+    const char *v = settings_get("sm_mfu");
+    if (!v || !*v) {                                     /* a new user: what XP showed first */
+        static const struct { const char *l, *a; } def[] = { { "THE WRLD Media Player", "wmplayer" }, { "Notepad", "notepad" },
+            { "Paint", "paint" }, { "Task Manager", "taskmgr" }, { "Minesweeper", "minesweeper" }, { "Snake", "snake" } };
+        for (unsigned i = 0; i < ARRAY_LEN(def); i++) { strlcpy(mfu[nmfu].label, def[i].l, 64); strlcpy(mfu[nmfu].action, def[i].a, 200); mfu[nmfu++].count = 6 - i; }
+        return;
+    }
+    /* count|label|action;... */
+    while (*v && nmfu < (int)ARRAY_LEN(mfu)) {
+        const char *e = strchr(v, ';'); if (!e) e = v + strlen(v);
+        char f[300]; int l = MIN((int)(e - v), 299); memcpy(f, v, l); f[l] = 0;
+        char *a = strchr(f, '|'), *b = a ? strchr(a + 1, '|') : NULL;
+        if (a && b) { *a = *b = 0; mfu[nmfu].count = atoi(f); strlcpy(mfu[nmfu].label, a + 1, 64); strlcpy(mfu[nmfu].action, b + 1, 200); nmfu++; }
+        v = *e ? e + 1 : e;
+    }
+}
+static void mfu_save(void) {
+    char out[2400]; int o = 0; out[0] = 0;
+    for (int i = 0; i < nmfu && o < (int)sizeof out - 300; i++) o += snprintf(out + o, sizeof out - o, "%s%d|%s|%s", i ? ";" : "", mfu[i].count, mfu[i].label, mfu[i].action);
+    settings_set("sm_mfu", out); settings_save();
+}
+static void mfu_sort(void) { for (int a = 1; a < nmfu; a++) for (int b = a; b > 0 && mfu[b].count > mfu[b - 1].count; b--) { mfu_t t = mfu[b]; mfu[b] = mfu[b - 1]; mfu[b - 1] = t; } }
+/* a program started from the Start menu counts towards the most-used list */
+static void mfu_note(const char *label, const char *action) {
+    if (!label || !*label || strchr(label, '|') || strchr(label, ';') || strchr(action, '|') || strchr(action, ';')) return;
+    mfu_load();
+    int i = 0;
+    while (i < nmfu && strcmp(mfu[i].action, action)) i++;
+    if (i == nmfu) {
+        if (nmfu == (int)ARRAY_LEN(mfu)) i = --nmfu;      /* the least used goes */
+        strlcpy(mfu[i].label, label, 64); strlcpy(mfu[i].action, action, 200); mfu[i].count = 0; nmfu++;
+    }
+    mfu[i].count++;
+    mfu_sort();
+    mfu_save();
+}
+static void mfu_remove(const char *action) {
+    mfu_load();
+    for (int i = 0; i < nmfu; i++) if (!strcmp(mfu[i].action, action)) { memmove(&mfu[i], &mfu[i + 1], sizeof mfu[0] * (nmfu - i - 1)); nmfu--; break; }
+    mfu_save();
+}
+static int sm_add_left(const char *label, const char *sub, int icon, const char *action, bool bold) {
+    if (sm_left_n >= SM_LEFT_MAX) return -1;
+    int i = sm_left_n++;
+    if (!label) { sm_left[i] = (sm_item_t){ NULL }; return i; }
+    strlcpy(sm_left_text[i][0], label, 160); strlcpy(sm_left_text[i][1], sub ? sub : "", 160); strlcpy(sm_left_text[i][2], action, 160);
+    sm_left[i] = (sm_item_t){ sm_left_text[i][0], sub && *sub ? sm_left_text[i][1] : NULL, icon, sm_left_text[i][2], bold };
+    return i;
+}
+static int action_icon(const char *action) {
+    if (!strncmp(action, "open:", 5)) { vnode_t *n = vfs_resolve(action + 5, NULL); if (n) return file_icon(n); }
+    char t[64]; strlcpy(t, action, sizeof t); char *sp = strchr(t, ' '); if (sp) *sp = 0;
+    const app_info_t *a = app_find(t);
+    return a ? a->icon : ICON_EXE;
+}
+static void sm_build(void) {
+    sm_ensure();
+    sm_left_n = sm_pinned_n = 0;
+    vnode_t *d = vfs_resolve(SM_PINNED, NULL);
+    for (vnode_t *n = d && d->dir ? d->child : NULL; n && sm_pinned_n < 5; n = n->next) {
+        if (n->dir) continue;
+        char label[96], sub[96], action[300];
+        lnk_label(n, label, sizeof label); lnk_line(n, 1, sub, sizeof sub);
+        char p[300]; vfs_path(n, p, sizeof p); snprintf(action, sizeof action, "open:%s", p);
+        sm_add_left(label, sub, file_icon(n), action, true);
+        sm_pinned_n++;
+    }
+    sm_add_left(NULL, NULL, 0, NULL, false);
+    mfu_load();
+    int shown = 0;
+    for (int i = 0; i < nmfu && shown < MFU_SHOW && sm_left_n < SM_LEFT_MAX; i++) {
+        bool pinned = false;                              /* a pinned program is not listed twice */
+        for (int k = 0; k < sm_pinned_n; k++) if (!strcasecmp(sm_left[k].label, mfu[i].label)) pinned = true;
+        if (pinned) continue;
+        sm_add_left(mfu[i].label, NULL, action_icon(mfu[i].action), mfu[i].action, false);
+        shown++;
+    }
+}
 static const sm_item_t sm_right[] = {
     { "My Documents", NULL, ICON_MY_DOCUMENTS, "explorer:" USER_DOCS, true },
     { "My Computer", NULL, ICON_COMPUTER, "explorer:::computer", true },
     { "The WRLD Search", NULL, ICON_SEARCH, "search", true },
     { NULL },
     { "Control Panel", NULL, ICON_CONTROL_PANEL, "control", false },
+    { "Network Connections", NULL, ICON_CP_NETWORK, "control:ncpa.cpl", false },
     { "Personalization", NULL, ICON_CP_APPEARANCE, "control:personalization", false },
-    { "System Information", NULL, ICON_CP_SYSTEM, "control:system", false },
     { "WRLD Security Center", NULL, ICON_CP_SYSTEM, "security", false },
     { NULL },
     { "Help and Support", NULL, ICON_HELP, "help", false },
     { "Run...", NULL, ICON_RUN, "run", false },
 };
-static const sm_item_t all_programs_base[] = {
-    { "Calculator", NULL, ICON_CALCULATOR, "calc" }, { "Command Prompt", NULL, ICON_TERMINAL, "cmd" }, { "The WRLD Browser", NULL, ICON_BROWSER, "xplorer" },
-    { "Control Panel", NULL, ICON_CONTROL_PANEL, "control" }, { "File Explorer", NULL, ICON_EXPLORER, "explorer" },
-    { "Notepad", NULL, ICON_NOTEPAD, "notepad" }, { "WordPad", NULL, ICON_WORDPAD, "wordpad" }, { "Paint", NULL, ICON_PAINT, "paint" },
-    { "Snake", NULL, ICON_GAME, "snake" }, { "Minesweeper", NULL, ICON_GAME, "minesweeper" }, { "Pong", NULL, ICON_GAME, "pong" },
-    { "THE WRLD Media Player", NULL, ICON_MEDIA_PLAYER, "wmplayer" }, { "WRLD 3D", NULL, ICON_CP_DISPLAY, "wrld3d" },
-    { "Logon Skin Maker", NULL, ICON_CP_APPEARANCE, "logonmaker" }, { "Logon Skin Themer", NULL, ICON_CP_APPEARANCE, "logonthemer" },
-    { "WRLD Security Center", NULL, ICON_CP_SYSTEM, "security" }, { "Task Manager", NULL, ICON_TASKMGR, "taskmgr" },
-    { NULL },
-    { "Samples (EXE / DMG / SH)", NULL, ICON_FOLDER, "explorer:C:\\Samples" },
-    { "Hello Console (hello.exe)", NULL, ICON_EXE, "open:C:\\Samples\\hello.exe" },
-    { "Hello Win32 (winhello.exe)", NULL, ICON_EXE, "open:C:\\Samples\\winhello.exe" },
-    { "Shell demo (demo.sh)", NULL, ICON_SCRIPT, "open:C:\\Samples\\demo.sh" },
-    { "Mount Sample.dmg", NULL, ICON_DMG, "open:C:\\Samples\\Sample.dmg" },
-    { NULL },
-    { "About " OS_NAME, NULL, ICON_ABOUT, "about" },
-};
-#define SM_LEFT_N ((int)ARRAY_LEN(sm_left))
+#define SM_LEFT_N sm_left_n
 #define SM_RIGHT_N ((int)ARRAY_LEN(sm_right))
-/* All Programs: the list above, then the programs Linux packages added (pkg.c) */
-#define AP_BASE ((int)ARRAY_LEN(all_programs_base))
-#define AP_LINUX_MAX 40
-static sm_item_t all_programs[AP_BASE + 2 + AP_LINUX_MAX];
-static char ap_actions[AP_LINUX_MAX][16];
-static int ap_n, ap_gen;
-static int ap_refresh(void) {
-    if (ap_n && ap_gen == pkg_db_generation) return ap_n;
-    ap_gen = pkg_db_generation;
-    memcpy(all_programs, all_programs_base, sizeof all_programs_base);
-    ap_n = AP_BASE;
-    int m = MIN(pkg_menu_count(), AP_LINUX_MAX);
-    if (m) {
-        all_programs[ap_n++] = (sm_item_t){ NULL };
-        for (int i = 0; i < m; i++) {
-            const pkg_menu_t *e = pkg_menu_get(i);
-            snprintf(ap_actions[i], sizeof ap_actions[i], "lxmenu:%d", i);
-            all_programs[ap_n++] = (sm_item_t){ e->name, NULL, e->terminal ? ICON_TERMINAL : ICON_PACKAGE, ap_actions[i], false };
+
+/* ---- All Programs: Start Menu\Programs as cascading menus, folders first; at the top level,
+ * after a line, the programs Linux packages added (pkg.c) ---- */
+#define AP_LEVELS 4
+#define AP_MAX 60
+typedef struct { char label[72]; char action[300]; int icon; bool folder; vnode_t *dir; } ap_entry_t;
+typedef struct { ap_entry_t e[AP_MAX]; int n; int from; } ap_level_t;   /* from: the parent row */
+static ap_level_t ap_lv[AP_LEVELS];
+static int ap_depth;                                       /* open levels (0: All Programs is closed) */
+static int ap_hot_lv = -1, ap_hot = -1;                    /* the lit row, and its level */
+static char ap_actions[AP_MAX][16];
+static int ap_cmp(const ap_entry_t *a, const ap_entry_t *b) { if (a->folder != b->folder) return a->folder ? -1 : 1; return strcasecmp(a->label, b->label); }
+static void ap_fill(int lv, vnode_t *dir) {
+    ap_level_t *L = &ap_lv[lv];
+    L->n = 0;
+    for (vnode_t *n = dir && dir->dir ? dir->child : NULL; n && L->n < AP_MAX; n = n->next) {
+        ap_entry_t *e = &L->e[L->n++];
+        lnk_label(n, e->label, sizeof e->label);
+        e->folder = n->dir; e->dir = n->dir ? n : NULL;
+        e->icon = n->dir ? ICON_FOLDER : file_icon(n);
+        char p[280]; vfs_path(n, p, sizeof p); snprintf(e->action, sizeof e->action, "open:%s", p);
+    }
+    for (int a = 1; a < L->n; a++) for (int b = a; b > 0 && ap_cmp(&L->e[b], &L->e[b - 1]) < 0; b--) { ap_entry_t t = L->e[b]; L->e[b] = L->e[b - 1]; L->e[b - 1] = t; }
+    if (lv == 0) {
+        int m = MIN(pkg_menu_count(), AP_MAX - L->n - 1);
+        if (m > 0) {
+            ap_entry_t *sep = &L->e[L->n++]; memset(sep, 0, sizeof *sep);
+            for (int i = 0; i < m; i++) {
+                const pkg_menu_t *pm_ = pkg_menu_get(i);
+                ap_entry_t *e = &L->e[L->n++];
+                strlcpy(e->label, pm_->name, sizeof e->label); e->folder = false; e->dir = NULL;
+                e->icon = pm_->terminal ? ICON_TERMINAL : ICON_PACKAGE;
+                snprintf(ap_actions[i], sizeof ap_actions[i], "lxmenu:%d", i); strlcpy(e->action, ap_actions[i], sizeof e->action);
+            }
         }
     }
-    return ap_n;
 }
-#define AP_N (ap_refresh())
+static void ap_open(int lv, vnode_t *dir, int from) {     /* open level lv (closing deeper ones) */
+    if (lv >= AP_LEVELS) return;
+    ap_fill(lv, dir); ap_lv[lv].from = from; ap_depth = lv + 1;
+    wm_need_redraw = true;
+}
+static void ap_close(void) { ap_depth = 0; ap_hot = ap_hot_lv = -1; }
+#define allprog_open (ap_depth > 0)
+static int ap_width_lv(int lv) {
+    int w = 180;
+    for (int i = 0; i < ap_lv[lv].n; i++) if (ap_lv[lv].e[i].label[0]) w = MAX(w, 28 + text_width(FONT_UI, ap_lv[lv].e[i].label) + 26);
+    return MIN(w, 360);
+}
+static int ap_row_h(const ap_entry_t *e) { return e->label[0] ? 24 : 7; }
 #define SM_W 380
 #define SM_H 480
 #define SM_HEAD 64
@@ -1190,7 +1356,8 @@ static rect_t sm_rect(void) {
     int offset = wm_animations && startmenu_animation == MENU_ANIM_SLIDE ? h * (255 - sm_progress) / 255 : 0;
     return R(0, tb_y() - h + offset, T.classic ? 190 : SM_W, h);
 }
-/* item hit ids: 0..99 left, 100..199 right, 300 all programs, 400 logoff, 401 shutdown */
+/* item hit ids: 0..99 left, 100..199 right, 300 all programs, 400 logoff, 401 shutdown,
+ * 500.. classic items, 600 + level * 100 + row: All Programs */
 static rect_t sm_item_rect(int id) {
     rect_t m = sm_rect();
     if (T.classic) {
@@ -1234,44 +1401,59 @@ static rect_t cl_item_rect(int i) {
     for (int k = 0; k < i; k++) y += classic_items[k].label ? 31 : 8;
     return R(m.x + 24, y, m.w - 27, classic_items[i].label ? 31 : 8);
 }
-static int ap_width(void) {
-    int w = 200;
-    for (int i = 0; i < AP_N; i++) if (all_programs[i].label) w = MAX(w, 28 + text_width(FONT_UI, all_programs[i].label) + 16);
-    return MIN(w, 420);
+static rect_t ap_item_rect_lv(int lv, int i);
+/* level lv's box: level 0 beside All Programs (or Programs in the classic menu), each deeper
+ * level beside the folder row it came from, kept on the screen */
+static rect_t ap_rect_lv(int lv) {
+    ap_level_t *L = &ap_lv[lv];
+    int h = 6; for (int i = 0; i < L->n; i++) h += ap_row_h(&L->e[i]);
+    int aw = ap_width_lv(lv);
+    int x, ytop;
+    if (lv == 0) {
+        rect_t m = sm_rect();
+        if (T.classic) { rect_t r = cl_item_rect(0); x = m.x + m.w - 2; ytop = r.y; }
+        else { rect_t a = sm_item_rect(300); x = a.x + a.w + 6; ytop = a.y + a.h - h; }
+    } else {
+        rect_t pr = ap_rect_lv(lv - 1), row = ap_item_rect_lv(lv - 1, L->from);
+        x = pr.x + pr.w - 3; ytop = row.y - 3;
+        if (x + aw > SCREEN_W) x = MAX(0, pr.x - aw + 3);
+    }
+    if (ytop + h > tb_y()) ytop = tb_y() - h;
+    if (ytop < 0) ytop = 0;
+    return R(x, ytop, aw, MIN(h, tb_y()));
 }
-static rect_t ap_rect(void) {
-    int h = 0; for (int i = 0; i < AP_N; i++) h += all_programs[i].label ? 24 : 7;
-    h += 6;
-    int aw = ap_width();
-    rect_t m = sm_rect();
-    if (T.classic) { rect_t r = cl_item_rect(0); int y = r.y; if (y + h > tb_y()) y = MAX(0, tb_y() - h); return R(m.x + m.w - 2, y, aw, h); }
-    rect_t a = sm_item_rect(300);
-    int y = MAX(0, a.y + a.h - h);
-    return R(a.x + a.w + 6, y, aw, h);
-}
-static rect_t ap_item_rect(int i) {
-    rect_t r = ap_rect(); int y = r.y + 3;
-    for (int k = 0; k < i; k++) y += all_programs[k].label ? 24 : 7;
-    return R(r.x + 2, y, r.w - 4, all_programs[i].label ? 24 : 7);
+static rect_t ap_item_rect_lv(int lv, int i) {
+    rect_t r = ap_rect_lv(lv); int y = r.y + 3;
+    for (int k = 0; k < i; k++) y += ap_row_h(&ap_lv[lv].e[k]);
+    return R(r.x + 2, y, r.w - 4, ap_row_h(&ap_lv[lv].e[i]));
 }
 bool startmenu_is_open(void) { return startmenu_open; }
+static bool sm_kbd;                                         /* the menu is being used from the keyboard */
 static void startmenu_set(bool open) {
-    startmenu_open = open; allprog_open = false; sm_hot = ap_hot = -1; sm_ignore_up = false;
+    if (open) sm_build();
+    startmenu_open = open; ap_close(); sm_hot = -1; sm_ignore_up = false; sm_kbd = false;
     animation_start(&sm_motion, open ? 255 : 0, timer_ticks(), wm_animations && startmenu_animation != MENU_ANIM_NONE ? 200 : 0);
     sm_progress = animation_value(&sm_motion, timer_ticks()); shell_anim_frame = 0; wm_need_redraw = true;
 }
 void startmenu_toggle(void) { startmenu_set(!startmenu_open); }
 static void paint_allprog(canvas_t *c) {
-    rect_t r = ap_rect();
-    if (T.classic) { fill_rect(c, r.x, r.y, r.w, r.h, T.face); bevel_deep(c, r.x, r.y, r.w, r.h, true); }
-    else { blend_rect(c, r.x + 3, r.y + 3, r.w, r.h, BLACK, 50); fill_rect(c, r.x, r.y, r.w, r.h, T.menu_bg); draw_rect(c, r.x, r.y, r.w, r.h, T.sm_border); vline(c, r.x + 1, r.y + 1, r.h - 2, mix(T.sm_border, T.face_light, 150)); }
-    for (int i = 0; i < AP_N; i++) {
-        rect_t ir = ap_item_rect(i);
-        if (!all_programs[i].label) { hline(c, ir.x + 4, ir.y + 3, ir.w - 8, T.face_dark); continue; }
-        bool hot = ap_hot == i;
-        if (hot) fill_rect(c, ir.x, ir.y, ir.w, ir.h, T.hot);
-        draw_icon(c, all_programs[i].icon, 16, ir.x + 6, ir.y + 4);
-        draw_text_ellipsis(c, FONT_UI, ir.x + 28, ir.y + 5, ir.w - 32, all_programs[i].label, hot ? T.hot_text : T.text);
+    for (int lv = 0; lv < ap_depth; lv++) {
+        rect_t r = ap_rect_lv(lv);
+        if (T.classic) { fill_rect(c, r.x, r.y, r.w, r.h, T.face); bevel_deep(c, r.x, r.y, r.w, r.h, true); }
+        else { blend_rect(c, r.x + 3, r.y + 3, r.w, r.h, BLACK, 50); fill_rect(c, r.x, r.y, r.w, r.h, T.menu_bg); draw_rect(c, r.x, r.y, r.w, r.h, T.sm_border); vline(c, r.x + 1, r.y + 1, r.h - 2, mix(T.sm_border, T.face_light, 150)); }
+        ap_level_t *L = &ap_lv[lv];
+        if (!L->n) { draw_text(c, FONT_UI, r.x + 10, r.y + 6, "(Empty)", T.gray_text); continue; }
+        for (int i = 0; i < L->n; i++) {
+            rect_t ir = ap_item_rect_lv(lv, i);
+            if (ir.y + ir.h > r.y + r.h) break;
+            ap_entry_t *e = &L->e[i];
+            if (!e->label[0]) { hline(c, ir.x + 4, ir.y + 3, ir.w - 8, T.face_dark); continue; }
+            bool hot = (ap_hot_lv == lv && ap_hot == i) || (lv + 1 < ap_depth && ap_lv[lv + 1].from == i);
+            if (hot) fill_rect(c, ir.x, ir.y, ir.w, ir.h, T.hot);
+            draw_icon(c, e->icon, 16, ir.x + 6, ir.y + 4);
+            draw_text_ellipsis(c, FONT_UI, ir.x + 28, ir.y + 5, ir.w - 46, e->label, hot ? T.hot_text : T.text);
+            if (e->folder) draw_arrow(c, ir.x + ir.w - 10, ir.y + ir.h / 2, 3, hot ? T.hot_text : T.text);
+        }
     }
 }
 static void paint_rotated_text(canvas_t *c, int x, int ybottom, const char *s, int font, uint32_t col) {
@@ -1437,9 +1619,11 @@ static void run_action(const char *a) {
 /* ---------------- shell input ---------------- */
 static int sm_hit(int x, int y) {
     if (y < 0 || y >= tb_y()) return -1;
-    if (allprog_open) {
-        rect_t ar = ap_rect();
-        if (pt_in(ar, x, y)) { for (int i = 0; i < AP_N; i++) if (all_programs[i].label && pt_in(ap_item_rect(i), x, y)) return 600 + i; return -2; }
+    for (int lv = ap_depth - 1; lv >= 0; lv--) {             /* the deepest menu is on top */
+        rect_t ar = ap_rect_lv(lv);
+        if (!pt_in(ar, x, y)) continue;
+        for (int i = 0; i < ap_lv[lv].n; i++) if (ap_lv[lv].e[i].label[0] && pt_in(ap_item_rect_lv(lv, i), x, y)) return 600 + lv * 100 + i;
+        return -2;
     }
     rect_t m = sm_rect();
     if (!pt_in(m, x, y)) return -1;
@@ -1450,6 +1634,69 @@ static int sm_hit(int x, int y) {
     if (pt_in(sm_item_rect(400), x, y)) return 400;
     if (pt_in(sm_item_rect(401), x, y)) return 401;
     return -2;
+}
+/* the item an id names: what it runs and its label (NULL for a folder or nothing) */
+static const char *sm_id_action(int h, const char **label) {
+    *label = NULL;
+    if (h >= 600) { ap_entry_t *e = &ap_lv[(h - 600) / 100].e[(h - 600) % 100]; if (e->folder) return NULL; *label = e->label; return e->action; }
+    if (h >= 0 && h < SM_LEFT_N && sm_left[h].label) { *label = sm_left[h].label; return sm_left[h].action; }
+    return NULL;
+}
+/* open what an id names: a program (counted towards the most used), a folder, or a command */
+static void sm_activate(int h) {
+    if (h >= 600) {
+        int lv = (h - 600) / 100, i = (h - 600) % 100;
+        ap_entry_t *e = &ap_lv[lv].e[i];
+        if (e->folder) { ap_open(lv + 1, e->dir, i); ap_hot_lv = lv + 1; ap_hot = sm_kbd ? 0 : -1; return; }
+        char a[300], l[72]; strlcpy(a, e->action, sizeof a); strlcpy(l, e->label, sizeof l);
+        mfu_note(l, a); run_action(a); return;
+    }
+    if (h >= 500) { const char *a = classic_items[h - 500].action; if (!strcmp(a, "allprog")) { ap_open(0, vfs_resolve(SM_PROGRAMS, NULL), 0); if (sm_kbd) { ap_hot_lv = 0; ap_hot = 0; } } else run_action(a); return; }
+    if (h == 300) { if (allprog_open) ap_close(); else { ap_open(0, vfs_resolve(SM_PROGRAMS, NULL), 0); if (sm_kbd) { ap_hot_lv = 0; ap_hot = 0; } } wm_need_redraw = true; return; }
+    if (h == 400) { run_action("logoff"); return; }
+    if (h == 401) { run_action("shutdown"); return; }
+    if (h >= 100 && h < 200) { run_action(sm_right[h - 100].action); return; }
+    if (h >= 0 && h < SM_LEFT_N && sm_left[h].label) {
+        char a[160], l[160]; strlcpy(a, sm_left[h].action, sizeof a); strlcpy(l, sm_left[h].label, sizeof l);
+        if (h >= sm_pinned_n) mfu_note(l, a);
+        run_action(a);
+    }
+}
+/* right-click on a program: open it, pin it to the top of the menu or unpin it, or take it off
+ * the most-used list */
+static char smctx_action[300], smctx_label[96]; static int smctx_id;
+static void sm_ctx_cb(void *ctx, int id) {
+    (void)ctx;
+    if (id == 1) { if (startmenu_open) sm_activate(smctx_id); return; }
+    if (id == 2) {                                           /* pin: a shortcut in Pinned with the same command */
+        char dst[300], body[300] = "";
+        snprintf(dst, sizeof dst, SM_PINNED "\\%s.lnk", smctx_label);
+        if (!strncmp(smctx_action, "open:", 5)) {
+            vnode_t *n = vfs_resolve(smctx_action + 5, NULL);
+            if (n && !n->dir && n->data && !strcasecmp(vfs_ext(n->name), "lnk")) { int l = MIN(n->size, (uint32_t)sizeof body - 1); memcpy(body, n->data, l); body[l] = 0; }
+            else strlcpy(body, smctx_action + 5, sizeof body);
+        } else strlcpy(body, smctx_action, sizeof body);
+        vfs_mkdir_p(SM_PINNED);
+        vfs_write_file(dst, body, strlen(body));
+    } else if (id == 3) {                                    /* unpin */
+        vnode_t *n = !strncmp(smctx_action, "open:", 5) ? vfs_resolve(smctx_action + 5, NULL) : NULL;
+        if (n && !n->dir) vfs_delete(n);
+    } else if (id == 4) mfu_remove(smctx_action);
+    if (startmenu_open) { sm_build(); wm_need_redraw = true; }
+}
+static void sm_context(int h, int x, int y) {
+    const char *label, *a = sm_id_action(h, &label);
+    if (!a || !strncmp(a, "lxmenu:", 7)) return;
+    strlcpy(smctx_action, a, sizeof smctx_action); strlcpy(smctx_label, label, sizeof smctx_label); smctx_id = h;
+    bool pinned = h >= 0 && h < sm_pinned_n;
+    bool listed = h >= sm_pinned_n && h < SM_LEFT_N;
+    menu_item_t items[4]; int n = 0;
+    items[n++] = (menu_item_t){ "Open", 1, 0 };
+    items[n++] = (menu_item_t){ "-", 0, 0 };
+    if (pinned) items[n++] = (menu_item_t){ "Unpin from Start menu", 3, 0 };
+    else items[n++] = (menu_item_t){ "Pin to Start menu", 2, 0 };
+    if (listed) items[n++] = (menu_item_t){ "Remove from This List", 4, 0 };
+    popup_menu(x, y, items, n, sm_ctx_cb, NULL);
 }
 static int tb_hit(int x, int y) {
     if (y < tb_y()) return -1;
@@ -1490,10 +1737,20 @@ bool shell_mouse(int type, int x, int y, int btn) {
         }
         if (type == ME_MOVE) {
             int nh = h >= 0 ? h : -1;
+            sm_kbd = false;
+            if (h >= 600) {
+                int lv = (h - 600) / 100, i = (h - 600) % 100;
+                ap_entry_t *e = &ap_lv[lv].e[i];
+                if (ap_hot_lv != lv || ap_hot != i) { ap_hot_lv = lv; ap_hot = i; wm_need_redraw = true; }
+                if (e->folder) { if (ap_depth <= lv + 1 || ap_lv[lv + 1].from != i) ap_open(lv + 1, e->dir, i); }
+                else if (ap_depth > lv + 1) { ap_depth = lv + 1; wm_need_redraw = true; }
+                if (sm_hot != nh) { sm_hot = nh; wm_need_redraw = true; }
+                return true;
+            }
             if (nh != sm_hot) { sm_hot = nh; wm_need_redraw = true; }
-            if (h == 300 || h == 500) { if (!allprog_open) { allprog_open = true; wm_need_redraw = true; } }
-            else if (h >= 0 && h < 600 && allprog_open) { allprog_open = false; wm_need_redraw = true; }
-            if (h >= 600) { if (ap_hot != h - 600) { ap_hot = h - 600; wm_need_redraw = true; } } else if (ap_hot != -1) { ap_hot = -1; wm_need_redraw = true; }
+            if (ap_hot != -1) { ap_hot = ap_hot_lv = -1; wm_need_redraw = true; }
+            if (h == 300 || h == 500) { if (!allprog_open) ap_open(0, vfs_resolve(SM_PROGRAMS, NULL), 0); }
+            else if (h >= 0 && allprog_open) { ap_close(); wm_need_redraw = true; }
             return h != -1 || y >= tb_y();
         }
         if (type == ME_DOWN) {
@@ -1504,16 +1761,8 @@ bool shell_mouse(int type, int x, int y, int btn) {
             }
             return true;
         }
-        if (type == ME_UP && (btn & MB_LEFT)) {
-            if (h >= 600) run_action(all_programs[h - 600].action);
-            else if (h >= 500) { const char *a = classic_items[h - 500].action; if (!strcmp(a, "allprog")) { allprog_open = true; wm_need_redraw = true; } else run_action(a); }
-            else if (h == 300) { allprog_open = !allprog_open; wm_need_redraw = true; }
-            else if (h == 400) run_action("logoff");
-            else if (h == 401) run_action("shutdown");
-            else if (h >= 100) run_action(sm_right[h - 100].action);
-            else if (h >= 0) run_action(sm_left[h].action);
-            return true;
-        }
+        if (type == ME_UP && (btn & MB_LEFT)) { if (h >= 0) sm_activate(h); return true; }
+        if (type == ME_UP && (btn & MB_RIGHT)) { if (h >= 0) sm_context(h, x, y); return true; }
         return true;
     }
     if (side_progress && x >= side_x() && y < tb_y()) {
@@ -1571,8 +1820,110 @@ bool shell_mouse(int type, int x, int y, int btn) {
     }
     return true;
 }
+/* The Start menu from the keyboard: Up/Down move in a column, Left/Right between the columns
+ * and into and out of All Programs and its folders, Enter opens, Esc closes a level or the menu,
+ * a letter jumps to the next item starting with it. */
+static int sm_col_ids(int col, int *ids) {                  /* the ids of a column, top to bottom */
+    int n = 0;
+    if (T.classic) { for (int i = 0; i < CL_N; i++) if (classic_items[i].label) ids[n++] = 500 + i; return n; }
+    if (col == 0) { for (int i = 0; i < SM_LEFT_N; i++) if (sm_left[i].label) ids[n++] = i; ids[n++] = 300; ids[n++] = 400; }
+    else { for (int i = 0; i < SM_RIGHT_N; i++) if (sm_right[i].label) ids[n++] = 100 + i; ids[n++] = 401; }
+    return n;
+}
+static const char *sm_id_label(int h) {
+    if (h >= 600) return ap_lv[(h - 600) / 100].e[(h - 600) % 100].label;
+    if (h >= 500) return classic_items[h - 500].label;
+    if (h >= 400) return h == 400 ? "Log Off" : "Turn Off Computer";
+    if (h == 300) return "All Programs";
+    if (h >= 100) return sm_right[h - 100].label;
+    return h >= 0 && h < SM_LEFT_N ? sm_left[h].label : NULL;
+}
+static void sm_key(key_event_t *e) {
+    sm_kbd = true;
+    if (sm_progress < 255) { animation_set(&sm_motion, 255); sm_progress = 255; }
+    wm_need_redraw = true;
+    if (ap_depth && ap_hot_lv >= 0) {                        /* in All Programs */
+        ap_level_t *L = &ap_lv[ap_hot_lv];
+        int i = ap_hot, lv = ap_hot_lv;
+        switch (e->key) {
+        case KEY_DOWN: case KEY_UP: {
+            int d = e->key == KEY_DOWN ? 1 : -1;
+            for (int k = 0; k < L->n; k++) { i = (i + d + L->n) % L->n; if (L->e[i].label[0]) break; }
+            ap_hot = i;
+            if (ap_depth > lv + 1) ap_depth = lv + 1;          /* moving closes the folder beside */
+            return;
+        }
+        case KEY_RIGHT: case KEY_ENTER:
+            if (i >= 0 && i < L->n) {
+                if (L->e[i].folder) { ap_open(lv + 1, L->e[i].dir, i); ap_hot_lv = lv + 1; ap_hot = 0; if (!ap_lv[lv + 1].n) ap_hot = -1; }
+                else if (e->key == KEY_ENTER) sm_activate(600 + lv * 100 + i);
+            }
+            return;
+        case KEY_LEFT: case KEY_ESC:
+            if (lv > 0) { ap_hot = ap_lv[lv].from; ap_hot_lv = lv - 1; ap_depth = lv; }
+            else { ap_close(); sm_hot = T.classic ? 500 : 300; }
+            return;
+        case KEY_MENU: { rect_t r = ap_item_rect_lv(lv, i); sm_context(600 + lv * 100 + i, r.x + 20, r.y + r.h / 2); return; }
+        default:
+            if (e->ch > 32) {                                   /* the next item starting with the letter */
+                for (int k = 1; k <= L->n; k++) { int j = (i + k) % L->n; if (tolower((unsigned char)L->e[j].label[0]) == tolower((unsigned char)e->ch)) { ap_hot = j; break; } }
+            }
+            return;
+        }
+    }
+    if (e->key == KEY_ESC) { startmenu_set(false); return; }
+    int ids[40], col = sm_hot >= 100 && sm_hot < 200 ? 1 : sm_hot == 401 ? 1 : 0;
+    int n = sm_col_ids(col, ids), at = -1;
+    for (int k = 0; k < n; k++) if (ids[k] == sm_hot) at = k;
+    switch (e->key) {
+    case KEY_DOWN: sm_hot = ids[at < 0 ? 0 : (at + 1) % n]; return;
+    case KEY_UP: sm_hot = ids[at < 0 ? n - 1 : (at + n - 1) % n]; return;
+    case KEY_RIGHT:
+        if (sm_hot == 300 || sm_hot == 500) { sm_activate(sm_hot); return; }
+        if (!T.classic && col == 0) { int r[40]; sm_col_ids(1, r); sm_hot = r[0]; }
+        return;
+    case KEY_LEFT: if (!T.classic && col == 1) { int l[40]; sm_col_ids(0, l); sm_hot = l[0]; } return;
+    case KEY_ENTER: case ' ': if (sm_hot >= 0) sm_activate(sm_hot); else sm_hot = ids[0]; return;
+    case KEY_MENU: if (sm_hot >= 0) { rect_t r = sm_item_rect(sm_hot); sm_context(sm_hot, r.x + 30, r.y + r.h / 2); } return;
+    default:
+        if (e->ch > 32) {
+            for (int k = 1; k <= n; k++) { const char *l = sm_id_label(ids[(at + k + n) % n]); if (l && tolower((unsigned char)l[0]) == tolower((unsigned char)e->ch)) { sm_hot = ids[(at + k + n) % n]; break; } }
+        }
+        return;
+    }
+}
+/* Windows-key shortcuts: the key alone (pressed and let go) opens the Start menu; with another
+ * key: D or M shows the desktop (and gives it the keyboard), E Explorer, R Run, F Search,
+ * L the log-on screen... as in Windows */
+static bool win_held, win_combo;
+static void show_desktop(void) {
+    for (int i = 0; i < wm_window_count(); i++) wm_minimize(wm_window_at(i));
+    wm_focus(NULL);
+    if (dsel < 0 && ndicons) dsel = 0;
+    wm_need_redraw = true;
+}
 bool shell_key(key_event_t *e) {
+    if (e->key == KEY_WIN) {
+        if (e->pressed) { if (!win_held) { win_held = true; win_combo = false; } return true; }
+        bool alone = win_held && !win_combo;
+        win_held = false;
+        if (alone) startmenu_toggle();
+        return true;
+    }
     if (!e->pressed) return false;
+    if (win_held) {
+        win_combo = true;
+        switch (tolower((unsigned char)e->ch)) {
+        case 'd': case 'm': if (startmenu_open) startmenu_set(false); show_desktop(); break;
+        case 'e': app_launch("explorer", NULL); break;
+        case 'r': shell_show_run(); break;
+        case 'f': case 's': wrldsearch_open(NULL); break;
+        case 'u': control_open("ease"); break;
+        case 'b': case 't': show_desktop(); break;
+        default: if (e->key == KEY_F1) app_launch("help", NULL); break;
+        }
+        return true;
+    }
     if (sidebar_open && side_search_focus) {
         if (e->key == KEY_ESC) { side_search_focus = false; wm_need_redraw = true; return true; }
         if (e->key == KEY_BACKSPACE) { int l = strlen(side_query); if (l) side_query[l - 1] = 0; wm_need_redraw = true; return true; }
@@ -1588,10 +1939,27 @@ bool shell_key(key_event_t *e) {
         }
         return true;
     }
-    if (e->key == KEY_WIN || (e->key == KEY_ESC && (e->mods & MOD_CTRL))) { startmenu_toggle(); return true; }
-    if (startmenu_open) {
-        if (e->key == KEY_ESC) startmenu_set(false);
-        return true;
+    if (e->key == KEY_ESC && (e->mods & MOD_CTRL)) { startmenu_toggle(); return true; }
+    if (startmenu_open) { sm_key(e); return true; }
+    if (!wm_active && ndicons) {                       /* the desktop has the keyboard: arrows move between icons */
+        int rows = (SCREEN_H - T.taskbar_h - 10) / DCELL_H, ns = dsel;
+        if (rows < 1) rows = 1;
+        switch (e->key) {
+        case KEY_DOWN: ns = dsel < 0 ? 0 : MIN(ndicons - 1, dsel + 1); break;
+        case KEY_UP: ns = dsel < 0 ? 0 : MAX(0, dsel - 1); break;
+        case KEY_RIGHT: ns = dsel < 0 ? 0 : (dsel + rows < ndicons ? dsel + rows : dsel); break;
+        case KEY_LEFT: ns = dsel < 0 ? 0 : (dsel - rows >= 0 ? dsel - rows : dsel); break;
+        case KEY_HOME: ns = 0; break;
+        case KEY_END: ns = ndicons - 1; break;
+        case KEY_TAB: ns = dsel < 0 ? 0 : dsel; break;
+        default: ns = -2; break;
+        }
+        if (ns != -2) { dsel = ns; wm_need_redraw = true; return true; }
+        if (e->key == KEY_MENU || (e->key == KEY_F10 && (e->mods & MOD_SHIFT))) {   /* the context menu key */
+            rect_t r = dsel >= 0 ? dicon_rect(dsel) : R(SCREEN_W / 2, SCREEN_H / 2, 0, 0);
+            desktop_mouse(ME_DOWN, r.x + r.w / 2, r.y + r.h / 2, MB_RIGHT);
+            return true;
+        }
     }
     if (!wm_active && (e->key == KEY_ENTER) && dsel >= 0) { dicon_open(dsel); return true; }
     if (!wm_active && e->key == KEY_DELETE && dsel >= 0 && dicons[dsel].node) { desk_ctx_cb((void *)(uintptr_t)dsel, 2); return true; }
@@ -1623,8 +1991,8 @@ void shell_init(void) {
     desktop_refresh();
 }
 void shell_reset(void) {
-    startmenu_open = allprog_open = false;
-    sm_hot = ap_hot = -1;
+    startmenu_open = false; ap_close();
+    sm_hot = -1;
     side_hot = -1;
     side_search_focus = false;
     shell_effects_changed();

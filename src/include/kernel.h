@@ -98,16 +98,19 @@ enum {
     KEY_ESC = 0x100, KEY_BACKSPACE, KEY_TAB, KEY_ENTER, KEY_LCTRL, KEY_LSHIFT, KEY_RSHIFT,
     KEY_LALT, KEY_CAPS, KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8,
     KEY_F9, KEY_F10, KEY_F11, KEY_F12, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT,
-    KEY_HOME, KEY_END, KEY_PGUP, KEY_PGDN, KEY_INSERT, KEY_DELETE, KEY_WIN, KEY_MENU
+    KEY_HOME, KEY_END, KEY_PGUP, KEY_PGDN, KEY_INSERT, KEY_DELETE, KEY_WIN, KEY_MENU, KEY_NUMLOCK
 };
 #define MOD_SHIFT 1
 #define MOD_CTRL  2
 #define MOD_ALT   4
+#define MOD_KEYPAD 8    /* the key is on the numeric keypad (Mouse Keys) */
 typedef struct { int key; char ch; bool pressed; int mods; } key_event_t;
 void keyboard_init(void);
 bool keyboard_poll(key_event_t *ev);
 void mouse_init(int w, int h);
 void mouse_set_bounds(int w, int h);
+void mouse_keys_move(int dx, int dy, int buttons);   /* Mouse Keys: move by pixels, set the buttons */
+int ps2_detected(void);                          /* 1 controller, 2 mouse, 4 wheel */
 typedef struct { int x, y; int buttons; int wheel; } mouse_state_t;
 bool mouse_poll(mouse_state_t *st);   /* returns true if changed */
 extern int mouse_speed;               /* 1..10 */

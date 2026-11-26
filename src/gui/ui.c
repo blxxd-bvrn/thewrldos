@@ -5,11 +5,42 @@
 #include "theme.h"
 #include "wm.h"
 
-void ui_begin(window_t *w) { w->ui.next_id = 0; w->ui.cursor = 0; w->ui.hot = 0; }
+void ui_begin(window_t *w) {
+    ui_t *u = &w->ui;
+    u->next_id = 0; u->cursor = 0; u->hot = 0;
+    memcpy(u->pf, u->fids, sizeof u->pf); u->npf = u->nf; u->nf = 0;
+    /* Tab / Shift+Tab: the next or previous control of the last paint takes the focus */
+    if (u->has_key && u->key.key == KEY_TAB && !(u->key.mods & (MOD_ALT | MOD_CTRL)) && u->npf) {
+        int i = 0;
+        while (i < u->npf && u->pf[i] != u->focus) i++;
+        bool back = u->key.mods & MOD_SHIFT;
+        if (i == u->npf) i = back ? u->npf - 1 : 0;
+        else i = (i + (back ? u->npf - 1 : 1)) % u->npf;
+        u->focus = u->pf[i]; u->kbd = true; u->has_key = false;
+    }
+}
 void ui_end(window_t *w) {
     ui_t *u = &w->ui;
     if (u->released) u->active = 0;
     if (u->pressed && !u->hot) u->focus = 0;
+    if (u->pressed) u->kbd = false;                   /* a click: no focus rectangle until the keyboard is used */
+}
+/* a widget that can take the keyboard focus; ring: draw the dotted focus rectangle around r */
+static void focusable(window_t *w, int id, rect_t r, bool ring) {
+    ui_t *u = &w->ui;
+    if (u->nf < (int)ARRAY_LEN(u->fids)) u->fids[u->nf++] = id;
+    if (ring && u->focus == id && u->kbd) dotted_rect(w->surf, r.x - 2, r.y - 1, r.w + 4, r.h + 2, T.text);
+}
+/* Enter or Space on the focused widget */
+static bool key_press(window_t *w, int id) {
+    ui_t *u = &w->ui;
+    if (u->focus == id && u->has_key && (u->key.key == KEY_ENTER || u->key.key == ' ')) { u->has_key = false; return true; }
+    return false;
+}
+static bool key_is(window_t *w, int id, int k) {
+    ui_t *u = &w->ui;
+    if (u->focus == id && u->has_key && u->key.key == k) { u->has_key = false; return true; }
+    return false;
 }
 int ui_id(window_t *w) { return ++w->ui.next_id; }
 
@@ -34,6 +65,7 @@ bool ui_button_ex(window_t *w, rect_t r, const char *label, bool enabled, bool i
     int id = ui_id(w);
     bool hot = false, held = false;
     bool clicked = enabled ? behave(w, id, r, &hot, &held) : false;
+    if (enabled) focusable(w, id, r, false);
     bool focus = w->ui.focus == id || (is_default && !w->ui.focus);
     if (enabled && w->ui.has_key && focus && (w->ui.key.key == KEY_ENTER || w->ui.key.key == ' ')) { clicked = true; w->ui.has_key = false; }
     draw_button(w->surf, r, label, hot && enabled, held, focus && enabled, enabled);
@@ -44,8 +76,9 @@ bool ui_button(window_t *w, rect_t r, const char *label) { return ui_button_ex(w
 bool ui_icon_button(window_t *w, rect_t r, int icon, const char *label) {
     int id = ui_id(w);
     bool hot, held;
-    bool clicked = behave(w, id, r, &hot, &held);
+    bool clicked = behave(w, id, r, &hot, &held) || key_press(w, id);
     canvas_t *c = w->surf;
+    focusable(w, id, r, true);
     if (hot || held) {
         if (T.classic) bevel(c, r.x, r.y, r.w, r.h, !held);
         else if (dark_mode) { fill_round_rect(c, r.x, r.y, r.w, r.h, 3, held ? T.btn_hot_b : T.face_light); draw_round_rect(c, r.x, r.y, r.w, r.h, 3, T.face_dark); }
@@ -65,7 +98,8 @@ bool ui_link(window_t *w, int x, int y, int font, const char *label, uint32_t co
     int id = ui_id(w);
     rect_t r = R(x, y, text_width(font, label), font_height(font));
     bool hot;
-    bool clicked = behave(w, id, r, &hot, NULL);
+    bool clicked = behave(w, id, r, &hot, NULL) || key_press(w, id);
+    focusable(w, id, r, true);
     draw_text(w->surf, font, x, y, label, hot ? lighten(col, 60) : col);
     if (hot) { hline(w->surf, x, y + font_ascent(font) + 2, r.w, hot ? lighten(col, 60) : col); w->ui.cursor = CURSOR_HAND; }
     return clicked;
@@ -77,7 +111,8 @@ bool ui_link_wrapped(window_t *w, int x, int y, int maxw, int font, const char *
     int h = text_wrapped_height(font, maxw, label, 2);
     rect_t r = R(x, y, maxw, h);
     bool hot;
-    bool clicked = behave(w, id, r, &hot, NULL);
+    bool clicked = behave(w, id, r, &hot, NULL) || key_press(w, id);
+    focusable(w, id, r, true);
     draw_text_wrapped(w->surf, font, x, y, maxw, label, hot ? lighten(col, 60) : col, 2);
     if (hot) w->ui.cursor = CURSOR_HAND;
     return clicked;
@@ -86,7 +121,8 @@ bool ui_checkbox(window_t *w, int x, int y, const char *label, bool *v) {
     int id = ui_id(w);
     rect_t r = R(x, y, 18 + text_width(FONT_UI, label), 15);
     bool hot;
-    bool clicked = behave(w, id, r, &hot, NULL);
+    bool clicked = behave(w, id, r, &hot, NULL) || key_is(w, id, ' ');
+    focusable(w, id, r, true);
     if (clicked) { *v = !*v; w->ui.focus = id; }
     draw_check(w->surf, x, y + 1, *v, hot);
     draw_text(w->surf, FONT_UI, x + 19, y + 1, label, T.text);
@@ -96,7 +132,8 @@ bool ui_radio(window_t *w, int x, int y, const char *label, bool checked) {
     int id = ui_id(w);
     rect_t r = R(x, y, 18 + text_width(FONT_UI, label), 15);
     bool hot;
-    bool clicked = behave(w, id, r, &hot, NULL);
+    bool clicked = behave(w, id, r, &hot, NULL) || key_press(w, id);
+    focusable(w, id, r, true);
     draw_radio(w->surf, x, y + 1, checked, hot);
     draw_text(w->surf, FONT_UI, x + 19, y + 1, label, T.text);
     return clicked;
@@ -114,6 +151,15 @@ bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi) {
     }
     if (u->released && u->active == id) changed = true;
     if (hot && u->wheel) { *v = CLAMP(*v - u->wheel * MAX(1, (hi - lo) / 20), lo, hi); changed = true; }
+    focusable(w, id, r, true);
+    if (u->focus == id && u->has_key) {                   /* arrows step, Page Up/Down jump, Home/End */
+        int k = u->key.key, step = MAX(1, (hi - lo) / 20), nv = *v;
+        if (k == KEY_LEFT || k == KEY_DOWN) nv -= step; else if (k == KEY_RIGHT || k == KEY_UP) nv += step;
+        else if (k == KEY_PGDN) nv -= step * 4; else if (k == KEY_PGUP) nv += step * 4;
+        else if (k == KEY_HOME) nv = lo; else if (k == KEY_END) nv = hi;
+        else k = 0;
+        if (k) { nv = CLAMP(nv, lo, hi); changed = nv != *v; *v = nv; u->has_key = false; }
+    }
     canvas_t *c = w->surf;
     int cy = r.y + r.h / 2;
     if (T.classic) { fill_rect(c, r.x, cy - 2, r.w, 4, T.window_bg); bevel_deep(c, r.x, cy - 2, r.w, 4, false); }
@@ -135,6 +181,7 @@ bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_
     bool clicked = behave(w, id, r, &hot, NULL);
     if (clicked || (u->pressed && hot)) u->focus = id;
     if (hot) u->cursor = CURSOR_IBEAM;
+    focusable(w, id, r, false);
     bool focused = u->focus == id;
     if (focused_out) *focused_out = focused;
     bool enter = false;
@@ -168,6 +215,7 @@ bool ui_password(window_t *w, rect_t r, char *buf, int cap) {
     bool clicked = behave(w, id, r, &hot, NULL);
     if (clicked || (u->pressed && hot)) u->focus = id;
     if (hot) u->cursor = CURSOR_IBEAM;
+    focusable(w, id, r, false);
     bool focused = u->focus == id;
     bool enter = false;
     if (focused && u->has_key) {
@@ -201,6 +249,8 @@ int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scr
     behave(w, id, r, &hot, NULL);
     int ih = font_height(FONT_UI) + 4, vis = (r.h - 4) / ih;
     int result = -1;
+    focusable(w, id, r, true);
+    if (u->focus == id && u->has_key && *sel < 0 && n && (u->key.key == KEY_DOWN || u->key.key == KEY_UP)) { *sel = 0; u->has_key = false; }
     if (hot && u->wheel) *scroll = CLAMP(*scroll + u->wheel * 3, 0, MAX(0, n - vis));
     if (hot && u->pressed && u->mx < r.x + r.w - 17) {
         int i = *scroll + (u->my - r.y - 2) / ih;
@@ -216,6 +266,10 @@ int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scr
         if (u->key.key == KEY_DOWN && *sel < n - 1) (*sel)++;
         if (u->key.key == KEY_UP && *sel > 0) (*sel)--;
         if (u->key.key == KEY_ENTER && *sel >= 0) result = *sel;
+        if (u->key.key == KEY_HOME && n) *sel = 0;
+        if (u->key.key == KEY_END && n) *sel = n - 1;
+        if (u->key.key == KEY_PGDN && n) *sel = MIN(n - 1, *sel + vis);
+        if (u->key.key == KEY_PGUP && n) *sel = MAX(0, *sel - vis);
         if (*sel < *scroll) *scroll = *sel;
         if (*sel >= *scroll + vis) *scroll = *sel - vis + 1;
         u->has_key = false;
@@ -265,8 +319,9 @@ bool ui_vscroll(window_t *w, rect_t r, int *pos, int total, int visible) {
 bool ui_tab(window_t *w, rect_t r, const char *label, bool active) {
     int id = ui_id(w);
     bool hot;
-    bool clicked = behave(w, id, r, &hot, NULL);
+    bool clicked = behave(w, id, r, &hot, NULL) || key_press(w, id);
     draw_tab(w->surf, r, label, active, hot);
+    focusable(w, id, R(r.x + 2, r.y + 2, r.w - 4, r.h - 4), true);
     return clicked;
 }
 static window_t *dd_win; static int *dd_sel;
@@ -274,8 +329,15 @@ static void dd_cb(void *ctx, int id) { (void)ctx; if (dd_sel) *dd_sel = id; if (
 bool ui_dropdown(window_t *w, rect_t r, const char **items, int n, int *sel) {
     int id = ui_id(w);
     bool hot;
-    bool clicked = behave(w, id, r, &hot, NULL);
+    bool clicked = behave(w, id, r, &hot, NULL) || key_press(w, id) || (w->ui.focus == id && w->ui.has_key && (w->ui.key.mods & MOD_ALT) && w->ui.key.key == KEY_DOWN);
+    ui_t *u = &w->ui;
+    if (u->focus == id && u->has_key && (u->key.key == KEY_DOWN || u->key.key == KEY_UP) && !(u->key.mods & MOD_ALT)) {   /* arrows pick without opening */
+        int nv = CLAMP(*sel + (u->key.key == KEY_DOWN ? 1 : -1), 0, n - 1);
+        if (nv != *sel) { *sel = nv; if (w->menu_cmd) w->menu_cmd(w, -1000 - nv); w->dirty = true; }
+        u->has_key = false;
+    }
     canvas_t *c = w->surf;
+    focusable(w, id, r, true);
     draw_sunken_box(c, r, T.window_bg);
     if (*sel >= 0 && *sel < n) draw_text_ellipsis(c, FONT_UI, r.x + 4, r.y + (r.h - font_height(FONT_UI)) / 2, r.w - 24, items[*sel], T.text);
     rect_t b = R(r.x + r.w - 18, r.y + 1, 17, r.h - 2);

@@ -85,7 +85,12 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "dll") || !strcasecmp(e, "sys")) return ICON_SYS_FILE;
     if (!strcasecmp(e, "lnk")) {
         /* shortcut: icon of the target app */
-        if (n->data && n->size) { char t[64]; int l = MIN(n->size, 63u); memcpy(t, n->data, l); t[l] = 0; char *nl = strchr(t, '\n'); if (nl) *nl = 0; char *r = strchr(t, '\r'); if (r) *r = 0; const app_info_t *a = app_find(t); if (a) return a->icon; vnode_t *tn = vfs_resolve(t, NULL); if (tn && tn != n) return file_icon(tn); }
+        if (n->data && n->size) { char t[64]; int l = MIN(n->size, 63u); memcpy(t, n->data, l); t[l] = 0; char *nl = strchr(t, '\n'); if (nl) *nl = 0; char *r = strchr(t, '\r'); if (r) *r = 0;
+            if (!strncasecmp(t, "control ncpa", 12)) return ICON_CP_NETWORK;
+            if (!strncasecmp(t, "control inetcpl", 15)) return ICON_BROWSER;
+            vnode_t *tn = vfs_resolve(t, NULL); if (tn && tn != n) return file_icon(tn);
+            char *sp = strchr(t, ' '); if (sp) *sp = 0;          /* "control ncpa.cpl": the program's icon */
+            const app_info_t *a = app_find(t); if (a) return a->icon; }
         return ICON_EXE;
     }
     return ICON_FILE;

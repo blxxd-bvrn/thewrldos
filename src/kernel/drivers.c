@@ -193,10 +193,10 @@ static void kb_byte(uint8_t sc) {
         case 0x38: e.key = KEY_LALT; if (rel) kb_mods &= ~MOD_ALT; else kb_mods |= MOD_ALT; break;
         case 0x5B: case 0x5C: e.key = KEY_WIN; break;
         case 0x5D: e.key = KEY_MENU; break;
-        case 0x35: e.key = '/'; e.ch = '/'; break;
+        case 0x35: e.key = '/'; e.ch = '/'; e.mods = MOD_KEYPAD; break;
         default: return;
         }
-        e.mods = kb_mods; kq_push(e); return;
+        e.mods |= kb_mods; kq_push(e); return;
     }
     switch (sc) {
     case 0x2A: case 0x36: if (rel) kb_mods &= ~MOD_SHIFT; else kb_mods |= MOD_SHIFT; e.key = sc == 0x2A ? KEY_LSHIFT : KEY_RSHIFT; break;
@@ -216,6 +216,11 @@ static void kb_byte(uint8_t sc) {
     case 0x47: e.key = KEY_HOME; break; case 0x4F: e.key = KEY_END; break;
     case 0x49: e.key = KEY_PGUP; break; case 0x51: e.key = KEY_PGDN; break;
     case 0x53: e.key = KEY_DELETE; break;
+    case 0x52: e.key = KEY_INSERT; break;
+    case 0x45: e.key = KEY_NUMLOCK; break;
+    case 0x4C: e.key = '5'; e.ch = '5'; break;
+    case 0x4A: e.key = '-'; e.ch = '-'; break;
+    case 0x4E: e.key = '+'; e.ch = '+'; break;
     default: {
         bool shift = kb_mods & MOD_SHIFT;
         char c = shift ? sc_upper[sc] : sc_lower[sc];
@@ -225,6 +230,7 @@ static void kb_byte(uint8_t sc) {
     }
     }
     e.mods = kb_mods;
+    if (sc == 0x37 || (sc >= 0x47 && sc <= 0x53)) e.mods |= MOD_KEYPAD;   /* the numeric keypad */
     kq_push(e);
 }
 static void ps2_service(void);
@@ -278,6 +284,21 @@ static void mouse_byte(uint8_t b) {
     int dy = ms_pkt[2] - ((ms_pkt[0] & 0x20) ? 256 : 0);
     int wheel = ms_pkt_size == 4 ? (int8_t)(ms_pkt[3] << 4) >> 4 : 0;
     mouse_inject(dx, dy, ms_pkt[0] & 7, wheel);
+}
+/* Mouse Keys: the pointer moved by the keypad, without the mouse speed scaling */
+void mouse_keys_move(int dx, int dy, int buttons)
+{
+    uint32_t f = irq_save();
+    ms_x = CLAMP(ms_x + dx, 0, ms_w - 1);
+    ms_y = CLAMP(ms_y + dy, 0, ms_h - 1);
+    int btn = buttons & 7;
+    if (btn != ms_qb) {
+        if (ms_qn < 16) { int i = (ms_qhead + ms_qn) % 16; ms_q[i].x = ms_x; ms_q[i].y = ms_y; ms_q[i].b = btn; ms_qn++; }
+        ms_qb = btn;
+    }
+    ms_buttons = btn;
+    ms_changed = true;
+    irq_restore(f);
 }
 /* A USB HID mouse reports the same thing a PS/2 packet does: deltas, buttons
  * and a wheel step. Both paths end here so speed and button swap apply. */

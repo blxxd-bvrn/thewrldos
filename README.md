@@ -978,6 +978,22 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   a zoom menu; icons are drawn by the browser itself. Find (Ctrl+F), zoom, Delete Browsing
   History, downloads into My Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
   edition, on smaller machines, or when the Classic engine is chosen in Internet Options.
+- **Without a mouse.** Everything can be reached from the keyboard, as in Windows: Tab and
+  Shift+Tab move between the controls of a window (a dotted rectangle shows which), Space and
+  Enter press them, the arrows move sliders, lists and drop-downs, and Esc closes a dialog; Alt
+  or F10 opens the menu bar (the arrows move through it); the Windows key opens the Start menu
+  (arrows, Enter, Esc, a letter jumps), Win+D shows the desktop and the arrows then pick an icon,
+  Win+E opens Explorer, Win+R Run, Win+F Search; Alt+Tab switches windows. **Mouse Keys** lets the
+  numeric keypad move the pointer (8 2 4 6 and the diagonals, 5 clicks, + double-clicks, 0 holds
+  the button, . lets go); it turns itself on at start when no mouse is found, and Left Alt + Left
+  Shift + Num Lock or Control Panel > Ease of Access turns it on and off.
+- **The Start menu** is built from folders, as in Windows XP, so a program that adds a shortcut
+  appears in it: `Start Menu\Pinned` holds the pinned programs at the top left, and
+  `Start Menu\Programs` (in `C:\Documents and Settings\User`) is All Programs, its folders
+  (Accessories, Games, System Tools...) opening as cascading menus. Under the pinned programs are
+  the ones started most often from the menu. Right-click a program for Pin to Start menu, Unpin
+  and Remove from This List. A shortcut (`.lnk`) holds a command: an application name, a path, or
+  an application and its argument (`control ncpa.cpl`).
 - **Network Connections** (Control Panel > Network and Internet > View network connections, the
   Network and Sharing Center's "Change adapter settings", or `control ncpa.cpl`) is Windows 7's
   window: the adapter as a tile with its state and device name, and the command bar (Disable or

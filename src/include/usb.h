@@ -112,7 +112,8 @@ void usb_poll(void);                            /* poll HID devices for reports 
 int usb_count(void);
 usb_dev_t *usb_first(void);
 const char *usb_boot_summary(void);             /* controller list and device count, for the logon screen */
-int usb_has_input(void);                        /* a USB keyboard or mouse was enumerated */
+int usb_has_input(void);
+int usb_has_mouse(void);                        /* a USB mouse is connected */                        /* a USB keyboard or mouse was enumerated */
 int usb_input_active(void);                     /* a USB report moved the pointer or pressed a key */
 void usb_input_reset(void);                     /* the log-on screen asks for a fresh verdict */
 const char *usb_device_summary(void);           /* "kbd@2, mouse@3*, hub@7" */

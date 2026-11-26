@@ -874,7 +874,9 @@ static void cycle_windows(void) {
     }
 }
 extern void app_launch(const char *name, const char *arg);
+extern bool mousekeys_key(key_event_t *e);
 static void handle_key(key_event_t *e) {
+    if (mousekeys_key(e)) return;                       /* the keypad moves the pointer (Mouse Keys) */
     if (flip3d_active()) { flip3d_key(e); return; }
     if (e->pressed && wm_active) effect_cancel_window(wm_active);
     if (e->pressed) {
@@ -888,6 +890,14 @@ static void handle_key(key_event_t *e) {
         if (e->key == KEY_F4 && (e->mods & MOD_ALT)) { if (wm_active) wm_close(wm_active); else shell_show_shutdown(); return; }
         if (pm.open) {
             if (e->key == KEY_ESC) { popup_close(); return; }
+            /* a menu-bar menu: Left and Right move to the neighbouring menu */
+            if ((e->key == KEY_LEFT || e->key == KEY_RIGHT) && pm.menubar_win && wm_alive(pm.menubar_win) && pm.menubar_win->nmenus > 1) {
+                window_t *mw = pm.menubar_win;
+                int idx = (pm.menubar_idx + (e->key == KEY_RIGHT ? 1 : mw->nmenus - 1)) % mw->nmenus;
+                popup_close();
+                open_menubar(mw, idx);
+                pm.hot = 0; wm_need_redraw = true; return;
+            }
             if (e->key == KEY_DOWN || e->key == KEY_UP) {
                 int d = e->key == KEY_DOWN ? 1 : -1;
                 for (int k = 0; k < pm.n; k++) { pm.hot = (pm.hot + d + pm.n) % pm.n; if (pm.items[pm.hot].label[0] != '-') break; }
@@ -897,6 +907,16 @@ static void handle_key(key_event_t *e) {
             return;
         }
     }
+    /* Alt pressed and let go on its own, or F10: the active window's menu bar, first menu */
+    static bool alt_alone;
+    if (e->key == KEY_LALT) {
+        if (e->pressed) { alt_alone = true; return; }
+        if (alt_alone && wm_active && wm_active->nmenus && !pm.open) { alt_alone = false; open_menubar(wm_active, 0); pm.hot = 0; wm_need_redraw = true; return; }
+        alt_alone = false;
+    } else if (e->pressed) alt_alone = false;
+    if (e->pressed && e->key == KEY_F10 && !(e->mods & (MOD_SHIFT | MOD_CTRL | MOD_ALT)) && wm_active && wm_active->nmenus && !pm.open) {
+        open_menubar(wm_active, 0); pm.hot = 0; wm_need_redraw = true; return;
+    }
     if (shell_key(e)) return;
     window_t *w = wm_active;
     if (!w) return;
@@ -905,7 +925,10 @@ static void handle_key(key_event_t *e) {
     if (e->pressed) {
         w->ui.key = *e; w->ui.has_key = true;
         run_paint(w);
+        bool unused = w->ui.has_key;
         w->ui.has_key = false;
+        /* Esc that nothing in the window used closes a dialog, as Cancel would */
+        if (unused && e->key == KEY_ESC && !w->key && (w->flags & WF_NO_MIN) && !(w->flags & WF_NOCLOSE) && wm_alive(w)) wm_close(w);
     }
 }
 

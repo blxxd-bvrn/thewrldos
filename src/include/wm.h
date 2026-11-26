@@ -38,6 +38,10 @@ typedef struct {
     int cursor;
     bool in_window;
     bool dblclick;
+    /* keyboard focus: the focusable widgets of this paint and the last, in order (Tab moves
+     * through the last paint's list); kbd: the focus was moved with the keyboard, so draw it */
+    int fids[96], nf, pf[96], npf;
+    bool kbd;
 } ui_t;
 
 typedef struct window window_t;

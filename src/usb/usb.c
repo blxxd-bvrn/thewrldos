@@ -90,6 +90,10 @@ int usb_has_input(void) {
         if (d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) return 1;
     return 0;
 }
+int usb_has_mouse(void) {
+    for (usb_dev_t *d = devices; d; d = d->next) if (d->kind == USB_KIND_MOUSE && !d->gone) return 1;
+    return 0;
+}
 int usb_input_active(void) {
     for (usb_dev_t *d = devices; d; d = d->next)
         if ((d->kind == USB_KIND_KEYBOARD || d->kind == USB_KIND_MOUSE) && d->acted) return 1;
@@ -1291,6 +1295,7 @@ void usb_poll(void) {}
 int usb_count(void) { return 0; }
 const char *usb_boot_summary(void) { return "USB is not built into this kernel"; }
 int usb_has_input(void) { return 0; }
+int usb_has_mouse(void) { return 0; }
 int usb_input_active(void) { return 0; }
 const char *usb_device_summary(void) { return ""; }
 const char *usb_live_text(void) { return ""; }

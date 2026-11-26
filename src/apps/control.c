@@ -1252,6 +1252,17 @@ static void page_ease(window_t *w, cp_t *c, int ox, int oy) {
     y += 24;
     y += 24;
     if (ui_link(w, ox + 84, y, FONT_UI, "Show seconds and 24-hour time in the taskbar", W7_LINK)) { show_seconds = true; clock_24h = true; wm_need_redraw = true; }
+    y += 40;
+    draw_text(s, FONT_UI_BOLD, ox + 84, y, "Use the computer without a mouse", T.text); y += 22;
+    {   extern bool mouse_keys_on; extern void mousekeys_set(bool on);
+        bool mk = mouse_keys_on;
+        if (ui_checkbox(w, ox + 84, y, "Turn on Mouse Keys (the numeric keypad moves the pointer)", &mk)) mousekeys_set(mk);
+        y += 22;
+        draw_text_wrapped(s, FONT_UI, ox + 104, y, s->w - ox - 130,
+            "8 2 4 6 move, 5 clicks, + double-clicks, 0 holds the button and . lets go; Left Alt + Left Shift + Num Lock turns it on and off. "
+            "Without Mouse Keys: Tab and Shift+Tab move between controls, Space and Enter press them, Alt or F10 opens the menu bar, "
+            "the Windows key opens the Start menu, Win+D shows the desktop and Alt+Tab switches windows.", W7_TEXT, 2);
+    }
 }
 
 static void cp_refresh_theme(void *arg) { (void)arg; wm_redraw_all(); }
