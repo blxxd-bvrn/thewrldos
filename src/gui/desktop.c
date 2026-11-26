@@ -413,7 +413,8 @@ static void side_tile_header(canvas_t *c, int x, int y, int w, int t, int bh) {
     blend_rect(c, x + 1, y + 1, w - 2, 1, WHITE, dark_mode ? 30 : 90);
     vline(c, x + 1, y + SIDE_TILE_HEAD, bh, T.renderer == RENDER_AERO ? mix(T.glass, WHITE, 70) : T.face_light);
     draw_icon(c, side_tile_icon[t], 12, x + 5, y + 4);
-    draw_text_ellipsis(c, FONT_UI_BOLD, x + 22, y + 3, w - 43, side_tile_name[t], text);
+    draw_text_ellipsis(c, FONT_UI_BOLD, x + 22, y + 3, w - 50, side_tile_name[t], text);
+    for (int gy = 0; gy < 3; gy++) for (int gx = 0; gx < 2; gx++) fill_rect(c, x + w - 29 + gx * 4, y + 6 + gy * 4, 2, 2, mix(text, h2, 90));   /* grip: drag me */
     if (side_hot == 10 + t) fill_rect(c, x + w - 17, y + 3, 13, 13, mix(h2, text, 65));
     draw_text(c, FONT_UI, x + w - 13, y + 2, "x", side_hot == 10 + t ? text : dim);
 }
@@ -546,6 +547,137 @@ static void side_click(int h) {
     shell_anim_frame = 0;
     wm_need_redraw = true;
 }
+/* ---- the tiles' order, and dragging a tile by its title bar to a new place ---- */
+static int side_order[ST_N] = { 0, 1, 2, 3, 4, 5, 6 };
+static int side_ty[ST_N] = { -1, -1, -1, -1, -1, -1, -1 };      /* where each tile is drawn now */
+static struct { bool pending, active, settling; int t, y, y0, off; } side_drag;
+static void side_order_load(void) {
+    static bool done;
+    if (done) return;
+    done = true;
+    const char *v = settings_get("side_order");
+    if (!v || !*v) return;
+    int order[ST_N], n = 0; bool used[ST_N] = { false };
+    for (const char *p = v; *p && n < ST_N; ) {
+        int t = atoi(p);
+        if (t >= 0 && t < ST_N && !used[t]) { order[n++] = t; used[t] = true; }
+        while (*p && *p != ',') p++;
+        if (*p) p++;
+    }
+    for (int t = 0; t < ST_N; t++) if (!used[t]) order[n++] = t;   /* tiles a newer version added */
+    memcpy(side_order, order, sizeof order);
+}
+static void side_order_save(void) {
+    char b[32]; int o = 0;
+    for (int k = 0; k < ST_N; k++) o += snprintf(b + o, sizeof b - o, "%s%d", k ? "," : "", side_order[k]);
+    settings_set("side_order", b); settings_save();
+}
+/* while dragging: the position among the other visible tiles where the tile would land */
+static int side_drop_index(void) {
+    if (!side_drag.active) return -1;
+    int by = 6 + SIDE_HDR + 8, slot = 0;
+    int dh = SIDE_TILE_HEAD + side_body_h(side_drag.t) + 2;
+    int mid = side_drag.y - side_drag.off + dh / 2;
+    for (int k = 0; k < ST_N; k++) {
+        int t = side_order[k];
+        if (!side_tile_visible(t) || t == side_drag.t) continue;
+        int th = SIDE_TILE_HEAD + side_body_h(t) + 2;
+        if (mid < by + th / 2) return slot;
+        by += th + SIDE_TILE_GAP; slot++;
+    }
+    return slot;
+}
+/* let go: the tile moves to the place shown */
+static void side_drop(void) {
+    int drop = side_drop_index();
+    int t = side_drag.t, vis[ST_N], nv = 0;
+    for (int k = 0; k < ST_N; k++) if (side_order[k] != t && side_tile_visible(side_order[k])) vis[nv++] = side_order[k];
+    /* the visible tiles in their new order, then the hidden ones as they were */
+    int out[ST_N], n = 0;
+    for (int i = 0; i <= nv; i++) { if (i == drop) out[n++] = t; if (i < nv) out[n++] = vis[i]; }
+    for (int k = 0; k < ST_N; k++) { int x = side_order[k]; bool in = false; for (int i = 0; i < n; i++) if (out[i] == x) in = true; if (!in) out[n++] = x; }
+    memcpy(side_order, out, sizeof out);
+    side_ty[t] = side_drag.y - side_drag.off;                /* it settles from where it was let go */
+    side_order_save();
+}
+/* one tile: its header and its body, at (ix, by), iw wide */
+static void side_paint_tile(canvas_t *c, int t, int ix, int by, int iw) {
+    uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
+    int bh = side_body_h(t);
+    side_tile_header(c, ix, by, iw, t, bh);
+    int bx = ix + 2, bw = iw - 4, yy = by + SIDE_TILE_HEAD;
+    uint32_t body_text = T.renderer == RENDER_AERO ? WHITE : T.text;
+    uint32_t body_dim = T.renderer == RENDER_AERO ? HEX(0xCFDAE8) : mix(T.text, T.pane_body, 70);
+    text = body_text; dim = body_dim;
+    if (t == ST_CLOCK) {
+        rtc_time_t now; rtc_now(&now);
+        int cx = bx + 24, cy = yy + bh / 2, r = 19;
+        fill_circle(c, cx, cy, r, HEX(0xF4F4EC)); draw_circle(c, cx, cy, r, mix(bot, BLACK, 80));
+        for (int k = 0; k < 12; k++) {
+            int a = k * 1024 / 12;
+            int px = cx + isin(a) * (r - 3) / 256, py = cy - isin(a + 256) * (r - 3) / 256;
+            put_pixel(c, px, py, HEX(0x404040));
+        }
+        int ha = (now.hour % 12) * 1024 / 12 + now.minute * 1024 / 720;
+        int ma = now.minute * 1024 / 60 + now.second * 1024 / 3600;
+        draw_thick_line(c, cx, cy, cx + isin(ha) * (r - 9) / 256, cy - isin(ha + 256) * (r - 9) / 256, 2, BLACK);
+        draw_thick_line(c, cx, cy, cx + isin(ma) * (r - 6) / 256, cy - isin(ma + 256) * (r - 6) / 256, 1, HEX(0x203060));
+        char tb[32], db[40];
+        if (clock_24h) snprintf(tb, sizeof tb, "%02d:%02d", now.hour, now.minute);
+        else { int hh = now.hour % 12; if (!hh) hh = 12; snprintf(tb, sizeof tb, "%d:%02d %s", hh, now.minute, now.hour >= 12 ? "PM" : "AM"); }
+        snprintf(db, sizeof db, "%02d/%02d/%04d", now.month, now.day, now.year);
+        draw_text(c, FONT_LARGE, bx + 50, yy + 7, tb, text);
+        draw_text(c, FONT_SMALL, bx + 50, yy + 27, db, dim);
+        if (now.second & 1) put_pixel(c, cx, cy, HEX(0xC03030));
+    } else if (t == ST_APPS) {
+        int n = MIN(app_count, 5);
+        for (int i = 0; i < n; i++) {
+            int ry = yy + i * 16;
+            if (side_hot == 100 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.select);
+            draw_icon(c, app_table[i].icon, 16, bx + 5, ry);
+            draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, app_table[i].title, side_hot == 100 + i ? T.select_text : text);
+        }
+    } else if (t == ST_SEARCH) {
+        int fw = bw - 8, fy = yy + 3;
+        fill_round_rect(c, bx + 4, fy, fw, 20, 3, T.window_bg);
+        draw_rect(c, bx + 4, fy, fw, 20, side_search_focus ? T.btn_focus : T.face_dark);
+        draw_text_ellipsis(c, FONT_UI, bx + 9, fy + 3, fw - 12, side_query[0] ? side_query : "Search everything...", side_query[0] ? T.text : T.gray_text);
+        for (int i = 0; i < SIDE_RESULTS; i++) {
+            int ry = yy + 27 + i * 16;
+            if (side_query[0]) {
+                if (i < side_res_n) {
+                    if (side_hot == 401 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.select);
+                    draw_icon(c, side_res[i].icon, 16, bx + 5, ry);
+                    draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, side_res[i].label, side_hot == 401 + i ? T.select_text : text);
+                }
+            } else if (i == 0) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Apps, files and settings", dim);
+            else if (i == 1) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Enter: The WRLD Search", dim);
+        }
+        if (side_query[0] && !side_res_n) draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 27, bw - 10, "No matches", dim);
+    } else if (t == ST_SHORTCUTS) {
+        for (int i = 0; i < SIDE_SHORTCUTS; i++) {
+            int ry = yy + i * 16;
+            if (side_hot == 200 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.select);
+            draw_icon(c, side_short[i].icon, 16, bx + 5, ry);
+            draw_text(c, FONT_UI, bx + 25, ry + 1, side_short[i].name, side_hot == 200 + i ? T.select_text : text);
+        }
+    } else if (t == ST_QUICK) {
+        for (int i = 0; i < SIDE_QUICK; i++) {
+            int qx = bx + 6 + i * 26, qy = yy + 4;
+            if (side_hot == 300 + i) fill_round_rect(c, qx - 2, qy - 2, 24, 24, 3, T.select);
+            draw_icon(c, side_quick[i].icon, 16, qx + 2, qy + 2);
+        }
+    } else if (t == ST_USAGE) {
+        side_bar(c, bx + 6, yy + 4, bw - 12, side_cpu, HEX(0x60D060), "CPU");
+        char b[24]; snprintf(b, sizeof b, "CPU %d%%", side_cpu); draw_text(c, FONT_SMALL, bx + bw - 52, yy + 2, b, dim);
+        side_bar(c, bx + 6, yy + 23, bw - 12, side_ram, HEX(0x5090E0), "RAM");
+        snprintf(b, sizeof b, "%d%%", side_ram); draw_text(c, FONT_SMALL, bx + bw - 30, yy + 21, b, dim);
+    } else if (t == ST_MEMO) {
+        side_memo_load();
+        draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 4, bw - 12, side_memo[0] ? side_memo : "Click to write a note", side_memo[0] ? text : dim);
+        draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 18, bw - 12, side_memo[0] ? "Open memo" : "", dim);
+    }
+}
 static void paint_sidebar_panel(canvas_t *c) {
     side_search_run();
     int x = 0, h = c->h;
@@ -577,91 +709,43 @@ static void paint_sidebar_panel(canvas_t *c) {
     draw_text(c, FONT_SMALL, ix + 6, by + SIDE_HDR - 31, "welcome", mix(banner_text, banner_bg, 50));
     draw_text_ellipsis(c, FONT_LARGE_BOLD, ix + 6, by + SIDE_HDR - 20, iw - 12, user_name, banner_text);
     by += SIDE_HDR + 8;
-    for (int t = 0; t < ST_N; t++) {
+    /* the tiles in their order; while one is dragged it floats under the pointer, the others
+     * slide apart to leave room where it would land, and slide back when it is let go */
+    side_order_load();
+    int slot = 0, gap_y = -1, drop = side_drop_index();
+    int dh = side_drag.active ? SIDE_TILE_HEAD + side_body_h(side_drag.t) + 2 : 0;
+    for (int k = 0; k < ST_N; k++) {
+        int t = side_order[k];
         if (!side_tile_visible(t)) continue;
+        if (side_drag.active && t == side_drag.t) continue;
+        if (side_drag.active && slot == drop) { gap_y = by; by += dh + SIDE_TILE_GAP; }
+        slot++;
         int bh = side_body_h(t);
         int tileh = SIDE_TILE_HEAD + bh + 2;
+        /* ease towards the place in the list */
+        if (side_ty[t] < 0 || !side_drag.settling) side_ty[t] = by;
+        else if (side_ty[t] != by) { int d = by - side_ty[t]; side_ty[t] += d / 3 ? d / 3 : d; wm_need_redraw = true; }
+        int ty = side_ty[t];
         if (!side_under) side_under = canvas_new(iw + 2, SIDE_TILE_HEAD + side_body_h(ST_SEARCH) + 5);
-        if (side_alpha[t] < 255) blit(side_under, 0, 0, c, ix, by, iw + 2, tileh + 2);
-        side_tile_header(c, ix, by, iw, t, bh);
-        int bx = ix + 2, bw = iw - 4, yy = by + SIDE_TILE_HEAD;
-        uint32_t body_text = T.renderer == RENDER_AERO ? WHITE : T.text;
-        uint32_t body_dim = T.renderer == RENDER_AERO ? HEX(0xCFDAE8) : mix(T.text, T.pane_body, 70);
-        text = body_text; dim = body_dim;
-        if (t == ST_CLOCK) {
-            rtc_time_t now; rtc_now(&now);
-            int cx = bx + 24, cy = yy + bh / 2, r = 19;
-            fill_circle(c, cx, cy, r, HEX(0xF4F4EC)); draw_circle(c, cx, cy, r, mix(bot, BLACK, 80));
-            for (int k = 0; k < 12; k++) {
-                int a = k * 1024 / 12;
-                int px = cx + isin(a) * (r - 3) / 256, py = cy - isin(a + 256) * (r - 3) / 256;
-                put_pixel(c, px, py, HEX(0x404040));
-            }
-            int ha = (now.hour % 12) * 1024 / 12 + now.minute * 1024 / 720;
-            int ma = now.minute * 1024 / 60 + now.second * 1024 / 3600;
-            draw_thick_line(c, cx, cy, cx + isin(ha) * (r - 9) / 256, cy - isin(ha + 256) * (r - 9) / 256, 2, BLACK);
-            draw_thick_line(c, cx, cy, cx + isin(ma) * (r - 6) / 256, cy - isin(ma + 256) * (r - 6) / 256, 1, HEX(0x203060));
-            char tb[32], db[40];
-            if (clock_24h) snprintf(tb, sizeof tb, "%02d:%02d", now.hour, now.minute);
-            else { int hh = now.hour % 12; if (!hh) hh = 12; snprintf(tb, sizeof tb, "%d:%02d %s", hh, now.minute, now.hour >= 12 ? "PM" : "AM"); }
-            snprintf(db, sizeof db, "%02d/%02d/%04d", now.month, now.day, now.year);
-            draw_text(c, FONT_LARGE, bx + 50, yy + 7, tb, text);
-            draw_text(c, FONT_SMALL, bx + 50, yy + 27, db, dim);
-            if (now.second & 1) put_pixel(c, cx, cy, HEX(0xC03030));
-        } else if (t == ST_APPS) {
-            int n = MIN(app_count, 5);
-            for (int i = 0; i < n; i++) {
-                int ry = yy + i * 16;
-                if (side_hot == 100 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.select);
-                draw_icon(c, app_table[i].icon, 16, bx + 5, ry);
-                draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, app_table[i].title, side_hot == 100 + i ? T.select_text : text);
-            }
-        } else if (t == ST_SEARCH) {
-            int fw = bw - 8, fy = yy + 3;
-            fill_round_rect(c, bx + 4, fy, fw, 20, 3, T.window_bg);
-            draw_rect(c, bx + 4, fy, fw, 20, side_search_focus ? T.btn_focus : T.face_dark);
-            draw_text_ellipsis(c, FONT_UI, bx + 9, fy + 3, fw - 12, side_query[0] ? side_query : "Search everything...", side_query[0] ? T.text : T.gray_text);
-            for (int i = 0; i < SIDE_RESULTS; i++) {
-                int ry = yy + 27 + i * 16;
-                if (side_query[0]) {
-                    if (i < side_res_n) {
-                        if (side_hot == 401 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.select);
-                        draw_icon(c, side_res[i].icon, 16, bx + 5, ry);
-                        draw_text_ellipsis(c, FONT_UI, bx + 25, ry + 1, bw - 30, side_res[i].label, side_hot == 401 + i ? T.select_text : text);
-                    }
-                } else if (i == 0) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Apps, files and settings", dim);
-                else if (i == 1) draw_text_ellipsis(c, FONT_SMALL, bx + 6, ry, bw - 10, "Enter: The WRLD Search", dim);
-            }
-            if (side_query[0] && !side_res_n) draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 27, bw - 10, "No matches", dim);
-        } else if (t == ST_SHORTCUTS) {
-            for (int i = 0; i < SIDE_SHORTCUTS; i++) {
-                int ry = yy + i * 16;
-                if (side_hot == 200 + i) fill_rect(c, bx + 1, ry, bw - 2, 16, T.select);
-                draw_icon(c, side_short[i].icon, 16, bx + 5, ry);
-                draw_text(c, FONT_UI, bx + 25, ry + 1, side_short[i].name, side_hot == 200 + i ? T.select_text : text);
-            }
-        } else if (t == ST_QUICK) {
-            for (int i = 0; i < SIDE_QUICK; i++) {
-                int qx = bx + 6 + i * 26, qy = yy + 4;
-                if (side_hot == 300 + i) fill_round_rect(c, qx - 2, qy - 2, 24, 24, 3, T.select);
-                draw_icon(c, side_quick[i].icon, 16, qx + 2, qy + 2);
-            }
-        } else if (t == ST_USAGE) {
-            side_bar(c, bx + 6, yy + 4, bw - 12, side_cpu, HEX(0x60D060), "CPU");
-            char b[24]; snprintf(b, sizeof b, "CPU %d%%", side_cpu); draw_text(c, FONT_SMALL, bx + bw - 52, yy + 2, b, dim);
-            side_bar(c, bx + 6, yy + 23, bw - 12, side_ram, HEX(0x5090E0), "RAM");
-            snprintf(b, sizeof b, "%d%%", side_ram); draw_text(c, FONT_SMALL, bx + bw - 30, yy + 21, b, dim);
-        } else if (t == ST_MEMO) {
-            side_memo_load();
-            draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 4, bw - 12, side_memo[0] ? side_memo : "Click to write a note", side_memo[0] ? text : dim);
-            draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 18, bw - 12, side_memo[0] ? "Open memo" : "", dim);
-        }
-        if (side_alpha[t] < 255) {
-            if (!side_under) { by += tileh + SIDE_TILE_GAP; continue; }
+        if (side_alpha[t] < 255) blit(side_under, 0, 0, c, ix, ty, iw + 2, tileh + 2);
+        side_paint_tile(c, t, ix, ty, iw);
+        if (side_alpha[t] < 255 && side_under) {
             canvas_t under = *side_under; under.h = tileh + 2;
-            blit_alpha(c, ix, by, &under, 255 - side_alpha[t]);
+            blit_alpha(c, ix, ty, &under, 255 - side_alpha[t]);
         }
         by += tileh + SIDE_TILE_GAP;
+    }
+    if (side_drag.active) {
+        if (gap_y < 0) { gap_y = by; by += dh + SIDE_TILE_GAP; }
+        /* where it will land: a dashed outline */
+        uint32_t lc = T.classic ? T.text : WHITE;
+        for (int xx = ix; xx < ix + iw; xx += 6) { hline(c, xx, gap_y, 3, lc); hline(c, xx, gap_y + dh - 1, 3, lc); }
+        for (int yy = gap_y; yy < gap_y + dh; yy += 6) { vline(c, ix, yy, 3, lc); vline(c, ix + iw - 1, yy, 3, lc); }
+        if (!T.classic) fill_round_rect_blend(c, ix + 1, gap_y + 1, iw - 2, dh - 2, 3, WHITE, 25);
+        /* the tile itself, lifted: a deeper shadow, a little to the left */
+        int fy = CLAMP(side_drag.y - side_drag.off, 0, h - dh), fx = ix - 4;
+        blend_rect(c, fx + 5, fy + 6, iw, dh, BLACK, 70);
+        side_paint_tile(c, side_drag.t, fx, fy, iw);
     }
     /* add tile */
     if (by + 20 <= h - 2) {
@@ -688,11 +772,13 @@ static int side_hit(int x, int y) {
     if (x < ix || x >= ix + iw) return -1;
     if (y >= by && y < by + SIDE_HDR) return 1;
     by += SIDE_HDR + 8;
-    for (int t = 0; t < ST_N; t++) {
+    side_order_load();
+    for (int k = 0; k < ST_N; k++) {
+        int t = side_order[k];
         if (!side_tile_visible(t)) continue;
         int bh = side_body_h(t);
         bool clickable = (sidebar_tiles & TBIT(t)) && side_alpha[t] >= 128;
-        if (y >= by && y < by + SIDE_TILE_HEAD) return clickable && x >= ix + iw - 18 ? 10 + t : -1;
+        if (y >= by && y < by + SIDE_TILE_HEAD) return !clickable ? -1 : x >= ix + iw - 18 ? 10 + t : 700 + t;   /* close, or the title bar: drag */
         if (clickable && y >= by + SIDE_TILE_HEAD && y < by + SIDE_TILE_HEAD + bh) {
             int ry = y - (by + SIDE_TILE_HEAD);
             if (t == ST_APPS && ry < 5 * 16) return 100 + ry / 16;
@@ -1708,7 +1794,12 @@ static int tb_hit(int x, int y) {
     if (x >= SCREEN_W - tray_w()) return 3000;
     return -2;
 }
-int shell_cursor(int x, int y) { if (startmenu_open || (sm_progress && pt_in(sm_rect(), x, y)) || y >= tb_y()) return CURSOR_ARROW; return -1; }
+int shell_cursor(int x, int y) {
+    if (side_drag.active) return CURSOR_MOVE;
+    if (startmenu_open || (sm_progress && pt_in(sm_rect(), x, y)) || y >= tb_y()) return CURSOR_ARROW;
+    if (side_hot >= 700 && side_hot < 700 + ST_N) return CURSOR_MOVE;       /* a tile's title bar */
+    return -1;
+}
 static void tb_ctx_cb(void *ctx, int id) {
     window_t *w = ctx;
     if (!wm_alive(w)) return;
@@ -1765,6 +1856,21 @@ bool shell_mouse(int type, int x, int y, int btn) {
         if (type == ME_UP && (btn & MB_RIGHT)) { if (h >= 0) sm_context(h, x, y); return true; }
         return true;
     }
+    if (side_drag.pending) {                                   /* a tile's title bar was pressed */
+        if (type == ME_MOVE) {
+            side_drag.y = y;
+            if (!side_drag.active && ABSDIFF(y, side_drag.y0) > 4) { side_drag.active = side_drag.settling = true; }
+            if (side_drag.active) wm_need_redraw = true;
+            return true;
+        }
+        if (type == ME_UP) {
+            if (side_drag.active) side_drop();
+            side_drag.pending = side_drag.active = false;
+            wm_need_redraw = true;
+            return true;
+        }
+        return true;
+    }
     if (side_progress && x >= side_x() && y < tb_y()) {
         /* The sidebar lives on the desktop; a window dragged over it is above
          * it.  Let that window take the click and hover instead of treating
@@ -1776,6 +1882,14 @@ bool shell_mouse(int type, int x, int y, int btn) {
         }
         int sh = side_hit(x, y);
         if (type == ME_MOVE) { if (sh != side_hot) { side_hot = sh; wm_need_redraw = true; } return true; }
+        if (type == ME_DOWN && (btn & MB_LEFT) && sidebar_open && sh >= 700 && sh < 700 + ST_N) {
+            /* the title bar: the tile can be dragged to another place */
+            int ty = 6 + SIDE_HDR + 8;
+            for (int k = 0; k < ST_N; k++) { int t = side_order[k]; if (t == sh - 700) break; if (side_tile_visible(t)) ty += SIDE_TILE_HEAD + side_body_h(t) + 2 + SIDE_TILE_GAP; }
+            side_drag.pending = true; side_drag.active = false; side_drag.t = sh - 700;
+            side_drag.y = side_drag.y0 = y; side_drag.off = y - ty;
+            return true;
+        }
         if (type == ME_DOWN && (btn & MB_LEFT) && sidebar_open) { side_click(sh); return true; }
         return true;
     }

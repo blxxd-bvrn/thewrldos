@@ -1532,6 +1532,9 @@ device manager's job is to say what the computer has and which driver runs it.
     Search covers apps, files under My Documents/Samples/C: and Control Panel pages. The open
     state and tile set are saved. Tiles have distinct Longhorn-style title strips, framed
     content panels and separators, using the selected style's colours and Classic bevels.
+    Drag a tile by its title bar (the grip and the move pointer show where) to give it another
+    place: it lifts out with a shadow, the other tiles slide apart to leave a dashed space where
+    it will land, and the order is saved.
     Aero keeps translucent glass tile bodies. The panel stays below application windows,
     including during transitions; covering windows receive the mouse input.
   - Tray balloons; desktop icons with context menus.
