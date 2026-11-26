@@ -469,10 +469,10 @@ WKGTK_DIR := /usr/lib/x86_64-linux-gnu/webkitgtk-6.0
 # on by default in the 64-bit edition: it is The WRLD Browser's engine there (src/apps/webkit.c).
 # LX_WEBKITGTK=0 leaves it out (a smaller image with the classic engine).
 LXWEBKITGTK := $(if $(LX_WEBKITGTK_ON),$(if $(shell pkg-config --exists webkitgtk-6.0 2>/dev/null && echo y),$(patsubst samples/linux-webkitgtk/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-webkitgtk/*.c)),$(warning LX_WEBKITGTK=1 needs libwebkitgtk-6.0-dev)))
-$(LXROOT)/Linux/usr/local/bin/wrldweb: samples/linux-webkitgtk/wrldweb-adblock.h samples/linux-webkitgtk/wrldweb-download.h tools/gen_adblock_rules.py rust/src/adblock.rs
+$(LXROOT)/Linux/usr/local/bin/wrldweb: samples/linux-webkitgtk/wrldweb-adblock.h samples/linux-webkitgtk/wrldweb-download.h samples/linux-webkitgtk/wrldweb-search.h tools/gen_adblock_rules.py rust/src/adblock.rs
 $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/gio/modules $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/etc/ssl/certs
-	gcc -O2 -Wall -rdynamic -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0) -lm
+	gcc -O2 -Wall -rdynamic -o $@ $< $$(pkg-config --cflags --libs webkitgtk-6.0 libsoup-3.0) -lm
 	@mkdir -p $(LXROOT)/Linux/usr/share/wrld && python3 tools/gen_adblock_rules.py rust/src/adblock.rs $(LXROOT)/Linux/usr/share/wrld/adblock.json
 	cp -L $(WKGTK_DIR)/WebKitWebProcess $(WKGTK_DIR)/WebKitNetworkProcess $(LXROOT)/Linux$(WKGTK_DIR)/
 	cp -L $(WKGTK_DIR)/injected-bundle/*.so $(LXROOT)/Linux$(WKGTK_DIR)/injected-bundle/

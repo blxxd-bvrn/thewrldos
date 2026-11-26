@@ -20,7 +20,7 @@
 #define APP_NAME "The WRLD Browser"
 #define HOME_URI "wrld:home"
 #define HOME() (home_uri ? home_uri : HOME_URI)
-#define SEARCH_URI "https://www.google.com/search?q="
+#define SEARCH_URI "wrld://web?q="                /* The WRLD Web: wrldweb-search.h */
 
 static GtkWidget *win, *notebook, *address, *search, *back_btn, *fwd_btn, *refresh_btn, *stop_btn, *status, *zone_label, *zone_icon,
                  *zoom_label, *findbar, *find_entry;
@@ -33,7 +33,7 @@ static char *home_uri;                  /* Internet Options: the home page (NULL
 static gboolean cli_proxy;               /* a proxy given on the command line wins over Internet Options */
 
 static const struct { const char *name, *uri; } favorites[] = {
-    { "Google", "https://www.google.com/" }, { "Wikipedia", "https://en.wikipedia.org/" }, { "YouTube", "https://www.youtube.com/" },
+    { "The WRLD Web", "wrld://web" }, { "Wikipedia", "https://en.wikipedia.org/" }, { "YouTube", "https://www.youtube.com/" },
     { "Hacker News", "https://news.ycombinator.com/" }, { "DuckDuckGo", "https://duckduckgo.com/" }, { "GitHub", "https://github.com/" },
     { "BBC News", "https://www.bbc.com/news" }, { "Weather", "https://wttr.in/" },
 };
@@ -58,9 +58,9 @@ static const char *start_page =
     ".fav{margin:46px auto 0;max-width:560px;font-size:14px;color:#333}.fav a{color:#0645ad;margin:0 8px;line-height:24px}"
     ".foot{margin-top:70px;font-size:12px;color:#888}.foot a{color:#888}</style></head><body>"
     "<div class=band><div class=swoosh></div><div class=logo><div class=globe></div>The WRLD Home</div></div>"
-    "<div class=opts><a href='https://www.google.com/preferences'>Options</a></div>"
+    "<div class=opts><a href='wrld://web'>The WRLD Web</a></div>"
     "<div class=main><h1>WRLD Search</h1>"
-    "<form id=f action='https://www.google.com/search'><input name=q id=q autofocus><input type=hidden name=tbm id=t disabled><button title=Search><svg width=16 height=16 viewBox='0 0 16 16'><circle cx=6.5 cy=6.5 r=4.2 fill=#dcefff stroke=#1d4f8c stroke-width=1.8 /><path d='M9.6 9.6 14 14' stroke=#1d4f8c stroke-width=2.6 stroke-linecap=round /></svg></button></form>"
+    "<form id=f action='wrld://web'><input name=q id=q autofocus><input type=hidden name=tbm id=t disabled><button title=Search><svg width=16 height=16 viewBox='0 0 16 16'><circle cx=6.5 cy=6.5 r=4.2 fill=#dcefff stroke=#1d4f8c stroke-width=1.8 /><path d='M9.6 9.6 14 14' stroke=#1d4f8c stroke-width=2.6 stroke-linecap=round /></svg></button></form>"
     "<div class=verts><a href=# class=on data-t=''>Web</a><a href=# data-t=isch>Images</a><a href=# data-t=nws>News</a><a href=# data-t=vid>Videos</a></div>"
     "<div class=fav>Favorites: <a href='https://en.wikipedia.org/'>Wikipedia</a><a href='https://www.youtube.com/'>YouTube</a>"
     "<a href='https://news.ycombinator.com/'>Hacker News</a><a href='https://www.bbc.com/news'>BBC News</a><a href='https://github.com/'>GitHub</a>"
@@ -340,6 +340,24 @@ static void update_toolbar(WebKitWebView *v) {
     update_window_title(v);
 }
 
+/* A page that stops answering (its web process busy or stuck): a bar offers to wait or to
+ * reload it, as a browser does, instead of the window looking dead */
+static GtkWidget *hang_bar;
+static void on_responsive(WebKitWebView *v, GParamSpec *ps, gpointer d) {
+    (void)ps; (void)d;
+    gboolean ok = webkit_web_view_get_is_web_process_responsive(v);
+    if (!ok) g_printerr("wrldweb: the page %s stopped responding\n", webkit_web_view_get_uri(v) ? webkit_web_view_get_uri(v) : "");
+    if (v == current() && hang_bar) gtk_widget_set_visible(hang_bar, !ok);
+}
+static void on_hang_wait(GtkButton *b, gpointer d) { (void)b; (void)d; gtk_widget_set_visible(hang_bar, FALSE); }
+static void on_hang_reload(GtkButton *b, gpointer d) {
+    (void)b; (void)d;
+    WebKitWebView *v = current();
+    gtk_widget_set_visible(hang_bar, FALSE);
+    if (!v) return;
+    webkit_web_view_terminate_web_process(v);
+    webkit_web_view_reload(v);
+}
 static void on_title(WebKitWebView *v, GParamSpec *ps, gpointer d) {
     (void)ps; (void)d;
     const char *t = webkit_web_view_get_title(v);
@@ -439,6 +457,7 @@ static WebKitWebView *new_tab(const char *uri, WebKitWebView *related, gboolean 
     int i = gtk_notebook_insert_page(GTK_NOTEBOOK(notebook), GTK_WIDGET(v), box, at);
     gtk_notebook_set_tab_reorderable(GTK_NOTEBOOK(notebook), GTK_WIDGET(v), TRUE);
     g_signal_connect(v, "notify::title", G_CALLBACK(on_title), NULL);
+    g_signal_connect(v, "notify::is-web-process-responsive", G_CALLBACK(on_responsive), NULL);
     g_signal_connect(v, "notify::favicon", G_CALLBACK(on_favicon), NULL);
     g_signal_connect(v, "notify::uri", G_CALLBACK(on_changed), NULL);
     g_signal_connect(v, "notify::estimated-load-progress", G_CALLBACK(on_changed), NULL);
@@ -648,8 +667,20 @@ static gboolean on_key(GtkEventControllerKey *k, guint key, guint code, GdkModif
 #include "wrldweb-download.h"
 
 /* ---------------- wrld: pages and requests from the desktop ---------------- */
+#include "wrldweb-search.h"
 static void wrld_scheme(WebKitURISchemeRequest *r, gpointer d) {
     (void)d;
+    const char *uri = webkit_uri_scheme_request_get_uri(r);
+    if (uri && (g_str_has_prefix(uri, "wrld://web") || g_str_has_prefix(uri, "wrld:web"))) {
+        char *q = NULL; const char *qs = strchr(uri, '?');
+        if (qs) {
+            GHashTable *t = g_uri_parse_params(qs + 1, -1, "&", G_URI_PARAMS_WWW_FORM, NULL);
+            if (t) { const char *v = g_hash_table_lookup(t, "q"); q = g_strdup(v); g_hash_table_unref(t); }
+        }
+        wrld_web(r, q);
+        g_free(q);
+        return;
+    }
     GInputStream *in = g_memory_input_stream_new_from_data(start_page, strlen(start_page), NULL);
     webkit_uri_scheme_request_finish(r, in, strlen(start_page), "text/html");
     g_object_unref(in);
@@ -682,6 +713,7 @@ static void apply_options(void) {
                 char *u = strstr(v, "://") ? g_strdup(v) : g_strconcat("http://", v, NULL);
                 const char *local[] = { "localhost", "127.0.0.0/8", NULL };
                 WebKitNetworkProxySettings *ps = webkit_network_proxy_settings_new(u, local);
+                g_free(web_proxy); web_proxy = g_strdup(u);
                 webkit_network_session_set_proxy_settings(session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
                 webkit_network_proxy_settings_free(ps);
                 g_free(u);
@@ -770,6 +802,7 @@ static void activate(GtkApplication *app, gpointer d) {
     if (proxy) {
         const char *local[] = { "localhost", "127.0.0.0/8", NULL };
         WebKitNetworkProxySettings *ps = webkit_network_proxy_settings_new(proxy, local);
+        g_free(web_proxy); web_proxy = g_strdup(proxy);
         webkit_network_session_set_proxy_settings(session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
         webkit_network_proxy_settings_free(ps);
     }
@@ -817,7 +850,7 @@ static void activate(GtkApplication *app, gpointer d) {
     GtkWidget *addr_box = field(address, refresh_btn, stop_btn);
     gtk_widget_set_hexpand(addr_box, TRUE);
     search = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(search), "Google");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(search), "The WRLD Web");
     g_signal_connect(search, "activate", G_CALLBACK(on_search), NULL);
     GtkWidget *search_box = field(search, icon_button(IC_SEARCH, 16, NULL, "Search (Ctrl+E)", G_CALLBACK(on_search), NULL), NULL);
     gtk_widget_set_size_request(search_box, 230, -1);
@@ -883,6 +916,16 @@ static void activate(GtkApplication *app, gpointer d) {
     g_object_unref(pm); g_object_unref(tm);
     gtk_notebook_set_action_widget(GTK_NOTEBOOK(notebook), cmd, GTK_PACK_END);
     g_signal_connect(notebook, "switch-page", G_CALLBACK(on_switch), NULL);
+    hang_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(hang_bar, "hang-bar");
+    GtkWidget *hl = gtk_label_new("This page is not responding. You can wait for it, or reload it.");
+    gtk_widget_set_hexpand(hl, TRUE); gtk_label_set_xalign(GTK_LABEL(hl), 0);
+    GtkWidget *hw = gtk_button_new_with_label("Wait"), *hr = gtk_button_new_with_label("Reload page");
+    g_signal_connect(hw, "clicked", G_CALLBACK(on_hang_wait), NULL);
+    g_signal_connect(hr, "clicked", G_CALLBACK(on_hang_reload), NULL);
+    gtk_box_append(GTK_BOX(hang_bar), hl); gtk_box_append(GTK_BOX(hang_bar), hw); gtk_box_append(GTK_BOX(hang_bar), hr);
+    gtk_widget_set_visible(hang_bar, FALSE);
+    gtk_box_append(GTK_BOX(vbox), hang_bar);
     gtk_box_append(GTK_BOX(vbox), notebook);
 
     /* status bar: the link or progress, the zone, the zoom */
@@ -934,6 +977,15 @@ int main(int argc, char **argv) {
     /* GStreamer's ORC writes machine code to a file it maps twice (writable and executable);
      * on THE WRLD OS a shared mapping of a file is a private copy, so use ORC's C versions */
     g_setenv("ORC_CODE", "backup", FALSE);
+    /* a log the user can send when something goes wrong: this process's messages and those of
+     * WebKit's processes (they inherit it), with GStreamer's warnings (video and sound) */
+    if (!g_getenv("WRLDWEB_LOG_CONSOLE")) {
+        g_mkdir_with_parents("/mnt/c/WRLD/Temp", 0755);
+        int lf = open("/mnt/c/WRLD/Temp/wrldweb.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (lf >= 0) { dup2(lf, 2); close(lf); }
+    }
+    g_setenv("GST_DEBUG", "2", FALSE);
+    g_setenv("GST_DEBUG_NO_COLOR", "1", FALSE);
     const char *proxy = g_getenv("WRLD_PROXY"), *start = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--proxy") && i + 1 < argc) proxy = argv[++i];

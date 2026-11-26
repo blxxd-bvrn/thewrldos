@@ -809,7 +809,7 @@ static void side_sample(void) {
 }
 
 /* ---------------- desktop icons ---------------- */
-typedef struct { char name[96]; int icon; char path[256]; int kind; vnode_t *node; } dicon_t;
+typedef struct { char name[96]; int icon; char path[256]; int kind; vnode_t *node; int px, py; } dicon_t;   /* px < 0: arranged */
 #define MAX_DICON 48
 static dicon_t dicons[MAX_DICON];
 static int ndicons, dsel = -1;
@@ -835,12 +835,73 @@ void desktop_refresh(void) {
     }
     dgen = vfs_generation;
     wm_need_redraw = true;
+    extern void dpos_apply(void); dpos_apply();
 }
 #define DCELL_W 76
 #define DCELL_H 76
+/* Icons the user placed stay where they were dropped (C:\WRLD\deskpos.txt: name, x, y per line);
+ * the others fill the grid from the top left, around them, as Windows does without Auto Arrange */
+#define DESKPOS_FILE "C:\\WRLD\\deskpos.txt"
+void dpos_apply(void) {
+    for (int i = 0; i < ndicons; i++) dicons[i].px = dicons[i].py = -1;
+    uint32_t len = 0; char *t = (char *)vfs_read_file(DESKPOS_FILE, &len);
+    if (!t) return;
+    char *buf = kmalloc(len + 1); if (!buf) { kfree(t); return; }
+    memcpy(buf, t, len); buf[len] = 0; kfree(t);
+    for (char *line = buf; line && *line; ) {
+        char *nl = strchr(line, '\n'); if (nl) *nl = 0;
+        char *t1 = strchr(line, '\t'), *t2 = t1 ? strchr(t1 + 1, '\t') : NULL;
+        if (t1 && t2) {
+            *t1 = 0;
+            for (int i = 0; i < ndicons; i++) if (!strcmp(dicons[i].name, line)) { dicons[i].px = atoi(t1 + 1); dicons[i].py = atoi(t2 + 1); }
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+    kfree(buf);
+}
+static void dpos_save(void) {
+    char *b = kmalloc(MAX_DICON * 120 + 1); if (!b) return;
+    int o = 0;
+    for (int i = 0; i < ndicons; i++) if (dicons[i].px >= 0) o += snprintf(b + o, MAX_DICON * 120 + 1 - o, "%s\t%d\t%d\n", dicons[i].name, dicons[i].px, dicons[i].py);
+    vfs_write_file(DESKPOS_FILE, b, o);
+    kfree(b);
+}
 static rect_t dicon_rect(int i) {
-    int rows = (SCREEN_H - T.taskbar_h - 10) / DCELL_H;
-    return R(6 + (i / rows) * DCELL_W, 8 + (i % rows) * DCELL_H, DCELL_W, DCELL_H - 4);
+    if (dicons[i].px >= 0) return R(dicons[i].px, dicons[i].py, DCELL_W, DCELL_H - 4);
+    int rows = MAX(1, (SCREEN_H - T.taskbar_h - 10) / DCELL_H);
+    /* the i-th arranged icon takes the next grid cell no placed icon covers */
+    int slot = 0, k = 0;
+    for (;; slot++) {
+        rect_t c = R(6 + (slot / rows) * DCELL_W, 8 + (slot % rows) * DCELL_H, DCELL_W, DCELL_H - 4);
+        bool taken = false;
+        for (int j = 0; j < ndicons && !taken; j++) if (dicons[j].px >= 0 && ABSDIFF(dicons[j].px, c.x) < DCELL_W / 2 && ABSDIFF(dicons[j].py, c.y) < DCELL_H / 2) taken = true;
+        if (taken) continue;
+        int idx = -1;
+        for (int j = 0, n = 0; j < ndicons; j++) if (dicons[j].px < 0) { if (n == k) { idx = j; break; } n++; }
+        if (idx == i) return c;
+        if (idx < 0 || slot > 400) return c;
+        k++;
+    }
+}
+/* the icons named in a drag, dropped on empty desktop at (x, y): placed there, on the grid */
+static bool dpos_place(int x, int y, const char *paths) {
+    int rows = MAX(1, (SCREEN_H - T.taskbar_h - 10) / DCELL_H), cols = MAX(1, (SCREEN_W - 12) / DCELL_W);
+    int col = CLAMP((x - 6) / DCELL_W, 0, cols - 1), row = CLAMP((y - 8) / DCELL_H, 0, rows - 1);
+    bool any = false;
+    for (const char *p = paths; p && *p; ) {
+        const char *e = strchr(p, '\n'); size_t n = e ? (size_t)(e - p) : strlen(p);
+        char line[300]; snprintf(line, sizeof line, "%.*s", (int)MIN(n, sizeof line - 1), p);
+        p += n + (e ? 1 : 0);
+        for (int i = 0; i < ndicons; i++) {
+            bool me = !strcasecmp(dicons[i].path, line) || (!strncmp(line, "::desk:", 7) && !strcmp(dicons[i].name, line + 7));
+            if (!me) continue;
+            dicons[i].px = 6 + col * DCELL_W; dicons[i].py = 8 + row * DCELL_H;
+            if (++row >= rows) { row = 0; col = MIN(col + 1, cols - 1); }
+            any = true;
+        }
+    }
+    if (any) { dpos_save(); wm_need_redraw = true; }
+    return any;
 }
 static void paint_dicons(canvas_t *c) {
     for (int i = 0; i < ndicons; i++) {
@@ -912,10 +973,22 @@ static void desk_ctx_cb(void *ctx, int id) {
 }
 /* files dropped on the desktop: on the Recycle Bin they are deleted, on a folder they go in it,
  * anywhere else into the Desktop folder */
+static bool dpos_place(int x, int y, const char *paths);
 bool desktop_drop(int x, int y, const char *paths, bool copy) {
     extern bool recycle_move(vnode_t *n);
     int i = dicon_at(x, y);
     bool ok = false;
+    if (i >= 0) {                                             /* an icon dropped on itself: just moved a little */
+        char self[300]; snprintf(self, sizeof self, "::desk:%s", dicons[i].name);
+        const char *e = strchr(paths, '\n'); size_t n = e ? (size_t)(e - paths) : strlen(paths);
+        if ((n == strlen(dicons[i].path) && !strncasecmp(paths, dicons[i].path, n)) || (n == strlen(self) && !strncmp(paths, self, n))) {
+            int k = i; i = -1;
+            dicons[k].px = dicons[k].py = -2;                 /* not in the way of its own new place */
+            bool moved = dpos_place(x, y, paths);
+            if (!moved) dicons[k].px = dicons[k].py = -1;
+            return true;
+        }
+    }
     if (i >= 0 && !strcmp(dicons[i].path, "::recycle")) {
         for (const char *p = paths; p && *p; ) {
             const char *e = strchr(p, '\n'); size_t n = e ? (size_t)(e - p) : strlen(p);
@@ -930,7 +1003,22 @@ bool desktop_drop(int x, int y, const char *paths, bool copy) {
         snprintf(first, sizeof first, "%.*s", (int)MIN(n, sizeof first - 1), paths);
         char cmd[800]; snprintf(cmd, sizeof cmd, "\"%s\" \"%s\"", dicons[i].path, first);
         ok = shell_execute(cmd, NULL);
-    } else ok = shell_drop_files(USER_DESKTOP, paths, copy);
+    } else {
+        /* icons of the desktop itself (its files, or the fixed icons) dropped on empty space: moved there */
+        bool from_desktop = true;
+        for (const char *p = paths; p && *p && from_desktop; ) {
+            const char *e = strchr(p, '\n'); size_t n = e ? (size_t)(e - p) : strlen(p);
+            char line[300]; snprintf(line, sizeof line, "%.*s", (int)MIN(n, sizeof line - 1), p);
+            p += n + (e ? 1 : 0);
+            bool found = !strncmp(line, "::desk:", 7);
+            for (int k = 0; k < ndicons && !found; k++) if (!strcasecmp(dicons[k].path, line)) found = true;
+            if (!found) from_desktop = false;
+        }
+        if (from_desktop && i < 0) { dpos_place(x, y, paths); return true; }
+        ok = shell_drop_files(USER_DESKTOP, paths, copy);
+        if (ok) { desktop_refresh(); dpos_place(x, y, paths); }
+        return ok;
+    }
     desktop_refresh();
     return ok;
 }
@@ -941,10 +1029,11 @@ void desktop_mouse(int type, int x, int y, int btn) {
     if (type == ME_MOVE && dpress >= 0 && (btn & MB_LEFT) && (ABSDIFF(x, dpress_x) > 5 || ABSDIFF(y, dpress_y) > 5)) {
         int k = dpress; dpress = -1;
         if (dicons[k].node) wm_drag_files(dicons[k].path, dicons[k].icon);
+        else { char p[128]; snprintf(p, sizeof p, "::desk:%s", dicons[k].name); wm_drag_files(p, dicons[k].icon); }
         return;
     }
     if (type == ME_DOWN) {
-        dpress = (btn & MB_LEFT) && i >= 0 && dicons[i].node ? i : -1; dpress_x = x; dpress_y = y;
+        dpress = (btn & MB_LEFT) && i >= 0 ? i : -1; dpress_x = x; dpress_y = y;
         if (dsel != i) { dsel = i; wm_need_redraw = true; }
         if (wm_active) { wm_active = NULL; wm_need_redraw = true; }
         if (btn & MB_RIGHT) {

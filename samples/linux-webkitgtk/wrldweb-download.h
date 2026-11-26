@@ -419,6 +419,7 @@ static void on_download(WebKitNetworkSession *s, WebKitDownload *dl, gpointer u)
     g_signal_connect(dl, "failed", G_CALLBACK(on_dl_failed2), d);
 }
 static const char dl_css[] =
+    ".hang-bar { background: #FFFFE1; border-bottom: 1px solid #ACA899; padding: 4px 8px; font-family: 'Liberation Sans'; font-size: 9pt; }"
     ".dl-dialog { background: #ECE9D8; }"
     ".dl-body { padding: 12px 14px 10px 14px; font-family: 'Liberation Sans'; font-size: 9pt; color: #000; }"
     ".dl-bold { font-weight: bold; }"

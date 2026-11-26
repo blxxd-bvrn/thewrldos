@@ -387,7 +387,7 @@ pub unsafe extern "C" fn lxwin_drop(w: *mut Window, x: c_int, y: c_int, paths: *
     if lw.is_null() { return 0; }
     let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
     for line in core::ffi::CStr::from_ptr(paths).to_bytes().split(|&c| c == b'\n') {
-        if line.is_empty() { continue; }
+        if line.is_empty() || line.starts_with(b"::") { continue; }   /* desktop-only items (My Computer...) */
         let lp = crate::lxpath::wrld_to_linux(line, 1024);
         out.extend_from_slice(b"file://");
         for &c in crate::lxpath::cstr(&lp) {
