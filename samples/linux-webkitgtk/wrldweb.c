@@ -14,10 +14,12 @@
 #include <webkit/webkit.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 #define APP_NAME "The WRLD Browser"
 #define HOME_URI "wrld:home"
+#define HOME() (home_uri ? home_uri : HOME_URI)
 #define SEARCH_URI "https://www.google.com/search?q="
 
 static GtkWidget *win, *notebook, *address, *search, *back_btn, *fwd_btn, *refresh_btn, *stop_btn, *status, *zone_label, *zone_icon,
@@ -26,6 +28,8 @@ static WebKitNetworkSession *session;
 static WebKitSettings *wsettings;
 static char *downloads_dir;
 static const char *request_file;
+static char *home_uri;                  /* Internet Options: the home page (NULL: wrld:home) */
+static gboolean cli_proxy;               /* a proxy given on the command line wins over Internet Options */
 
 static const struct { const char *name, *uri; } favorites[] = {
     { "Google", "https://www.google.com/" }, { "Wikipedia", "https://en.wikipedia.org/" }, { "YouTube", "https://www.youtube.com/" },
@@ -488,7 +492,7 @@ static void on_back(GtkButton *b, gpointer d) { (void)b; (void)d; webkit_web_vie
 static void on_fwd(GtkButton *b, gpointer d) { (void)b; (void)d; webkit_web_view_go_forward(current()); }
 static void on_refresh(GtkButton *b, gpointer d) { (void)b; (void)d; webkit_web_view_reload(current()); }
 static void on_stop(GtkButton *b, gpointer d) { (void)b; (void)d; webkit_web_view_stop_loading(current()); }
-static void on_home(GtkButton *b, gpointer d) { (void)b; (void)d; load(current(), HOME_URI); }
+static void on_home(GtkButton *b, gpointer d) { (void)b; (void)d; load(current(), HOME()); }
 static void zoom(double f) {
     WebKitWebView *v = current();
     double z = f == 0 ? 1.0 : webkit_web_view_get_zoom_level(v) * f;
@@ -516,7 +520,7 @@ static void on_find_close(GtkButton *b, gpointer d) { (void)b; (void)d; show_fin
 
 /* ---------------- menus ---------------- */
 #define ACT(name) static void name(GSimpleAction *a, GVariant *p, gpointer d)
-ACT(act_new_tab) { (void)a; (void)p; (void)d; new_tab(HOME_URI, NULL, TRUE); gtk_widget_grab_focus(address); }
+ACT(act_new_tab) { (void)a; (void)p; (void)d; new_tab(HOME(), NULL, TRUE); gtk_widget_grab_focus(address); }
 ACT(act_close_tab) { (void)a; (void)p; (void)d; close_tab(current()); }
 ACT(act_exit) { (void)a; (void)p; (void)d; gtk_window_destroy(GTK_WINDOW(win)); }
 ACT(act_find) { (void)a; (void)p; (void)d; show_find(TRUE); }
@@ -527,7 +531,7 @@ ACT(act_refresh) { (void)a; (void)p; (void)d; webkit_web_view_reload(current());
 ACT(act_stop) { (void)a; (void)p; (void)d; webkit_web_view_stop_loading(current()); }
 ACT(act_back) { (void)a; (void)p; (void)d; webkit_web_view_go_back(current()); }
 ACT(act_forward) { (void)a; (void)p; (void)d; webkit_web_view_go_forward(current()); }
-ACT(act_home) { (void)a; (void)p; (void)d; load(current(), HOME_URI); }
+ACT(act_home) { (void)a; (void)p; (void)d; load(current(), HOME()); }
 ACT(act_open) { (void)a; (void)d; load(current(), g_variant_get_string(p, NULL)); }
 ACT(act_address) { (void)a; (void)p; (void)d; gtk_widget_grab_focus(address); gtk_editable_select_region(GTK_EDITABLE(address), 0, -1); }
 ACT(act_add_fav) {
@@ -675,6 +679,41 @@ static void wrld_scheme(WebKitURISchemeRequest *r, gpointer d) {
     webkit_uri_scheme_request_finish(r, in, strlen(start_page), "text/html");
     g_object_unref(in);
 }
+/* Internet Options (written by the desktop): home page, scripts, pictures, pop-ups, cookies,
+ * proxy and smooth scrolling; read at start and whenever the desktop says "wrld:options" */
+static void apply_options(void) {
+    const char *f = g_getenv("WRLD_OPTIONS");
+    char *text = NULL;
+    if (!f || !g_file_get_contents(f, &text, NULL, NULL)) return;
+    char **lines = g_strsplit(text, "\n", -1);
+    for (char **l = lines; *l; l++) {
+        char *eq = strchr(*l, '=');
+        if (!eq) continue;
+        *eq = 0;
+        const char *k = *l, *v = eq + 1;
+        gboolean on = atoi(v) != 0;
+        if (!strcmp(k, "home")) { g_free(home_uri); home_uri = *v && strcmp(v, HOME_URI) && strcmp(v, "wrld://home") ? guess_uri(v) : NULL; }
+        else if (!strcmp(k, "javascript")) webkit_settings_set_enable_javascript(wsettings, on);
+        else if (!strcmp(k, "images")) webkit_settings_set_auto_load_images(wsettings, on);
+        else if (!strcmp(k, "popups")) webkit_settings_set_javascript_can_open_windows_automatically(wsettings, on);
+        else if (!strcmp(k, "smooth")) webkit_settings_set_enable_smooth_scrolling(wsettings, on);
+        else if (!strcmp(k, "cookies")) {
+            WebKitCookieAcceptPolicy pol = !strcmp(v, "always") ? WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS
+                                         : !strcmp(v, "never") ? WEBKIT_COOKIE_POLICY_ACCEPT_NEVER : WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
+            webkit_cookie_manager_set_accept_policy(webkit_network_session_get_cookie_manager(session), pol);
+        } else if (!strcmp(k, "proxy") && !cli_proxy) {
+            if (*v) {
+                char *u = strstr(v, "://") ? g_strdup(v) : g_strconcat("http://", v, NULL);
+                const char *local[] = { "localhost", "127.0.0.0/8", NULL };
+                WebKitNetworkProxySettings *ps = webkit_network_proxy_settings_new(u, local);
+                webkit_network_session_set_proxy_settings(session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
+                webkit_network_proxy_settings_free(ps);
+                g_free(u);
+            } else webkit_network_session_set_proxy_settings(session, WEBKIT_NETWORK_PROXY_MODE_NO_PROXY, NULL);
+        }
+    }
+    g_strfreev(lines); g_free(text);
+}
 static gboolean poll_requests(gpointer d) {
     (void)d;
     if (!request_file) return G_SOURCE_REMOVE;
@@ -685,7 +724,9 @@ static gboolean poll_requests(gpointer d) {
     for (char **l = lines; *l; l++) {
         if (l[1] == NULL && !**l) break;            /* the empty piece after the last newline */
         g_strstrip(*l);
-        new_tab(**l ? *l : HOME_URI, NULL, TRUE);
+        if (!strcmp(*l, "wrld:options")) { apply_options(); set_status("Internet Options changed."); continue; }
+        if (!strcmp(*l, "wrld:clear-data")) { act_clear(NULL, NULL, NULL); continue; }
+        new_tab(**l ? *l : HOME(), NULL, TRUE);
     }
     g_strfreev(lines); g_free(text);
     return G_SOURCE_CONTINUE;
@@ -727,6 +768,7 @@ static void activate(GtkApplication *app, gpointer d) {
     downloads_dir = docs ? g_build_filename(docs, "Downloads", NULL) : g_build_filename(g_get_home_dir(), "Downloads", NULL);
     g_signal_connect(session, "download-started", G_CALLBACK(on_download), NULL);
     const char *proxy = g_object_get_data(G_OBJECT(app), "wrld-proxy");
+    cli_proxy = proxy != NULL;
     if (proxy) {
         const char *local[] = { "localhost", "127.0.0.0/8", NULL };
         WebKitNetworkProxySettings *ps = webkit_network_proxy_settings_new(proxy, local);
@@ -739,6 +781,7 @@ static void activate(GtkApplication *app, gpointer d) {
     webkit_settings_set_hardware_acceleration_policy(wsettings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     webkit_settings_set_enable_smooth_scrolling(wsettings, FALSE);   /* fewer repaints on the CPU */
     webkit_settings_set_enable_developer_extras(wsettings, FALSE);
+    apply_options();
 
     win = gtk_application_window_new(app);
     gtk_widget_add_css_class(win, "wrld");
@@ -877,7 +920,7 @@ static void activate(GtkApplication *app, gpointer d) {
     gtk_widget_add_controller(win, keys);
 
     gtk_window_set_child(GTK_WINDOW(win), vbox);
-    new_tab(start ? start : HOME_URI, NULL, TRUE);
+    new_tab(start ? start : HOME(), NULL, TRUE);
     request_file = g_getenv("WRLD_REQUEST");
     if (request_file) g_timeout_add(400, poll_requests, NULL);
     gtk_window_present(GTK_WINDOW(win));

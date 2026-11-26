@@ -34,6 +34,7 @@ void snake_open(void);
 void minesweeper_open(void);
 void pong_open(void);
 void security_open(void);
+void inetopts_open(int tab);                     /* Internet Options; tab 0 General .. 6 Advanced */
 void wrldsearch_open(const char *query);   /* The WRLD Search, optionally already searching */
 void recent_add(const char *path);
 void clip_set_text(const char *s);         /* the system clipboard (plain text, UTF-8) */

@@ -33,6 +33,39 @@ bool webkit_browser_available(char *why, int cap) {
 }
 static bool running(void) { return wk_pid && task_find(wk_pid); }
 
+/* Internet Options for WebKit: a key=value file it reads at start and again when told
+ * ("wrld:options" in the request file) */
+#define WK_OPTS WK_REQ_DIR "\\wrldweb-options.txt"
+#define WK_PROFILE "C:\\Documents and Settings\\User\\Application Data\\WRLD Browser"
+extern bool js_enabled, browser_show_images;
+static const char *opt(const char *k, const char *def) { const char *v = settings_get(k); return v && *v ? v : def; }
+static void write_options(void) {
+    char b[1200];
+    bool proxy = atoi(opt("proxy_on", "0")) != 0;
+    int n = snprintf(b, sizeof b, "home=%s\njavascript=%d\nimages=%d\npopups=%s\ncookies=%s\nproxy=%s\nsmooth=%s\n",
+                     opt("home_page", "wrld:home"), js_enabled, browser_show_images, opt("popups", "0"), opt("cookies", "no-third-party"),
+                     proxy ? opt("proxy", "") : "", opt("smooth_scroll", "0"));
+    vfs_mkdir_p(WK_REQ_DIR);
+    vfs_write_file(WK_OPTS, b, MIN(n, (int)sizeof b - 1));
+}
+/* append a line to the request file without bringing the window forward */
+static void tell(const char *line) {
+    vnode_t *n = vfs_resolve(WK_REQ, NULL);
+    if (n && !n->dir) vfs_append_node(n, line, strlen(line));
+    else vfs_write_file(WK_REQ, line, strlen(line));
+}
+void webkit_options_changed(void) { write_options(); if (running()) tell("wrld:options\n"); }
+/* Delete Browsing History: a running browser clears its own data (WebKit's website data
+ * manager); otherwise the profile's files go: cookies and saved site data (the cache is in
+ * memory and goes when the browser exits). False if there is no WebKit here. */
+bool webkit_clear_data(void) {
+    if (!vfs_resolve(WK_WEB, NULL)) return false;
+    if (running()) { tell("wrld:clear-data\n"); return true; }
+    vnode_t *d = vfs_resolve(WK_PROFILE, NULL);
+    if (d && d->dir) while (d->child) if (!vfs_delete(d->child)) break;
+    return true;
+}
+
 /* hand an address (or "" for a new tab with the home page) to the running browser */
 static void request(const char *url) {
     vfs_mkdir_p(WK_REQ_DIR);
@@ -54,6 +87,7 @@ static bool webkit_open(const char *url) {
     if (running()) { request(url); return true; }
     vfs_mkdir_p(WK_REQ_DIR);
     vfs_write_file(WK_REQ, "", 0);                 /* nothing pending from an earlier run */
+    write_options();
     char docs[200], prof[200], who[64];
     snprintf(docs, sizeof docs, "WRLD_DOCS=/mnt/c/Documents and Settings/User/My Documents");
     snprintf(prof, sizeof prof, "WRLD_PROFILE=/mnt/c/Documents and Settings/User/Application Data/WRLD Browser");
@@ -65,7 +99,7 @@ static bool webkit_open(const char *url) {
     bool sse41 = (c >> 19) & 1;
     if (!sse41) klog("browser: the processor has no SSE4.1: WebKit runs JavaScript without its JIT");
     char *env[] = { "PATH=/usr/local/bin:/usr/bin:/bin", "HOME=/home/user", "USER=user", "LOGNAME=user", "SHELL=/bin/sh",
-                    "LANG=C.UTF-8", "PWD=/", docs, prof, who, "WRLD_REQUEST=/mnt/c/WRLD/Temp/wrldweb-open.txt",
+                    "LANG=C.UTF-8", "PWD=/", docs, prof, who, "WRLD_REQUEST=/mnt/c/WRLD/Temp/wrldweb-open.txt", "WRLD_OPTIONS=/mnt/c/WRLD/Temp/wrldweb-options.txt",
                     sse41 ? NULL : "JSC_useJIT=false", NULL };
     char *argv[4] = { "wrldcomp", "/usr/local/bin/wrldweb", NULL, NULL };
     int argc = 2;
@@ -79,6 +113,8 @@ static bool webkit_open(const char *url) {
 }
 #else
 bool webkit_browser_available(char *why, int cap) { snprintf(why, cap, "WebKit needs the 64-bit edition"); return false; }
+void webkit_options_changed(void) {}
+bool webkit_clear_data(void) { return false; }
 static bool webkit_open(const char *url) { (void)url; return false; }
 #endif
 

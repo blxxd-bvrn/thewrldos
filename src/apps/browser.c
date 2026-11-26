@@ -4,6 +4,7 @@
  * controls). Images load after the text and the page is laid out again.
  * Ads and trackers are filtered by adblock.c. */
 #include "kernel.h"
+#include "disk.h"
 #include "gfx.h"
 #include "raster.h"
 #include "theme.h"
@@ -22,13 +23,23 @@ bool js_enabled = true;
 #define PAGE_MEM_STEP ((uint64_t)PAGE_MEM_STEP_MB * 1024 * 1024)   /* warn each time a page passes another 500 MB */
 
 #define HOME_URL "wrld://home"
+bool browser_show_images = true;                /* Internet Options, Advanced: Show pictures */
+static void normalize_address(const char *in, char *out, int cap);
+/* the home page chosen in Internet Options (General), else the built-in start page */
+static const char *home_url(void) {
+    static char u[1024];
+    const char *h = settings_get("home_page");
+    if (!h || !*h) return HOME_URL;
+    normalize_address(h, u, sizeof u);
+    return u;
+}
 #define TOOLBAR_H 34                           /* the navigation bar: back, forward, address, search */
 #define TABS_H 30                              /* the tab row: favorites, tabs, the command bar */
 #define CHROME_H (TOOLBAR_H + TABS_H)
 #define STATUS_H 22
 #define SB_W 16
 
-enum { BM_NEWTAB = 50, BM_CLOSETAB, BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_JS, BM_CONSOLE, BM_FAV0 = 100 };
+enum { BM_NEWTAB = 50, BM_CLOSETAB, BM_NEW = 1, BM_OPEN, BM_SAVE, BM_CLOSE, BM_SOURCE, BM_REFRESH, BM_STOP, BM_BACK, BM_FWD, BM_HOME, BM_ABOUT, BM_ADBLOCK, BM_ADALLOW, BM_ADLIST, BM_JS, BM_CONSOLE, BM_INETOPTS, BM_FAV0 = 100 };
 static void br_menu(window_t *w, int id);
 
 typedef struct {
@@ -1191,7 +1202,8 @@ static bool load_images(browser_t *b, job_t *j, page_t *p) {
         if (im->state) continue;
         char err[96];
         canvas_t *c = builtin_image(im->url);
-        if (!c && !strncmp(im->url, "data:", 5)) { uint32_t l; uint8_t *d = data_url(im->url, &l); if (d) { c = image_decode(d, l, err, sizeof err); kfree(d); } }
+        if (!c && !browser_show_images) {}                   /* Internet Options: pictures off */
+        else if (!c && !strncmp(im->url, "data:", 5)) { uint32_t l; uint8_t *d = data_url(im->url, &l); if (d) { c = image_decode(d, l, err, sizeof err); kfree(d); } }
         else if (!c && !strncasecmp(im->url, "file:", 5)) {
             const char *pth = im->url + 5; while (*pth == '/') pth++;
             uint32_t l; uint8_t *d = vfs_read_file(pth, &l);
@@ -1953,7 +1965,7 @@ static void draw_tabs(window_t *w, brwin_t *bw, const chrome_t *k) {
     static const menu_item_t page_items[] = { { "New Tab    Ctrl+T", BM_NEWTAB, 0 }, { "Close Tab    Ctrl+W", BM_CLOSETAB, 0 }, { "-", 0, 0 },
                                               { "Save Page As...", BM_SAVE, 0 }, { "Page Source", BM_SOURCE, 0 } };
     static menu_item_t tools_items[] = { { "Block Ads", BM_ADBLOCK, 0 }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { "-", 0, 0 },
-                                         { "Enable JavaScript", BM_JS, 0 }, { "Script Messages...", BM_CONSOLE, 0 }, { "-", 0, 0 }, { "About The WRLD Browser", BM_ABOUT, 0 } };
+                                         { "Enable JavaScript", BM_JS, 0 }, { "Script Messages...", BM_CONSOLE, 0 }, { "-", 0, 0 }, { "Internet Options", BM_INETOPTS, 0 }, { "-", 0, 0 }, { "About The WRLD Browser", BM_ABOUT, 0 } };
     tools_items[0].flags = adblock_enabled ? MI_CHECKED : 0;
     tools_items[4].flags = js_enabled ? MI_CHECKED : 0;
     int bh = TABS_H - 7, by = y0 + 3;
@@ -1964,7 +1976,7 @@ static void draw_tabs(window_t *w, brwin_t *bw, const chrome_t *k) {
     cx -= page_w + 2;
     if (label_btn(w, cx, by, bh, ICON_FILE, "Page", true, &r)) open_cmd_menu(w, r, page_items, ARRAY_LEN(page_items));
     cx -= 28;
-    if (label_btn(w, cx, by, bh, ICON_HOME, NULL, false, &r)) browser_navigate_ext(active_tab(w), HOME_URL, NULL, true);
+    if (label_btn(w, cx, by, bh, ICON_HOME, NULL, false, &r)) browser_navigate_ext(active_tab(w), home_url(), NULL, true);
     int right = cx - 8;
     /* the tabs */
     int x = 68, stub = 34, avail = right - x - stub;
@@ -2000,7 +2012,7 @@ static void draw_tabs(window_t *w, brwin_t *bw, const chrome_t *k) {
         gradient_round_rect(c, sr.x, sr.y, sr.w, sr.h + 4, 3, hot ? WHITE : HEX(0xF8FBFF), hot ? HEX(0xD9E8FA) : HEX(0xE1EAF5));
         draw_round_rect(c, sr.x, sr.y, sr.w, sr.h + 4, 3, hot ? HEX(0x8FB0DC) : HEX(0xB8C8DE));
         fill_rect(c, sr.x, y0 + TABS_H - 1, sr.w, 1, k->line);
-        if (ui_click_area(w, sr)) new_tab(w, HOME_URL, true);
+        if (ui_click_area(w, sr)) new_tab(w, home_url(), true);
     }
     if (close_req >= 0) close_tab(w, close_req);
     else if (switch_req >= 0 && switch_req != bw->cur) switch_tab(w, switch_req);
@@ -2011,7 +2023,9 @@ static void search_url(const char *in, char *out, int cap) {
     q[o] = 0;
     snprintf(out, cap, "https://html.duckduckgo.com/html/?q=%s", q);
 }
+static void sync_menu_ticks(void);
 static void br_paint(window_t *w) {
+    sync_menu_ticks();                       /* Internet Options may have changed them */
     brwin_t *bw = w->data;
     browser_t *b = active_tab(w);
     canvas_t *c = w->surf;
@@ -2205,7 +2219,7 @@ static void br_key(window_t *w, key_event_t *e) {
     }
     if (e->mods & MOD_CTRL) {
         int ch = e->ch | 0x20;
-        if (ch == 't') { new_tab(w, HOME_URL, true); return; }
+        if (ch == 't') { new_tab(w, home_url(), true); return; }
         if (ch == 'w') { close_tab(w, bw->cur); return; }
         if (ch == 'l') { w->ui.focus = bw->addr_id; bw->addr_all = true; bw->addr_was_focused = true; w->dirty = true; return; }
         if (e->key == KEY_TAB) { switch_tab(w, (bw->cur + ((e->mods & MOD_SHIFT) ? bw->n - 1 : 1)) % bw->n); return; }
@@ -2280,7 +2294,7 @@ static void new_tab(window_t *w, const char *url, bool activate) {
     memmove(&bw->tab[at + 1], &bw->tab[at], sizeof bw->tab[0] * (bw->n - at));
     bw->tab[at] = b; bw->n++;
     if (!activate && at <= bw->cur) bw->cur++;
-    char u[1024]; normalize_address(url && *url ? url : HOME_URL, u, sizeof u);
+    char u[1024]; normalize_address(url && *url ? url : home_url(), u, sizeof u);
     if (activate) switch_tab(w, at);
     browser_navigate_ext(b, u, NULL, true);
     w->dirty = true;
@@ -2305,14 +2319,18 @@ static menu_t br_menus[] = {
     { "Favorites", { { "Wikipedia", BM_FAV0, 0 }, { "Hacker News", BM_FAV0 + 1, 0 }, { "CNN Lite", BM_FAV0 + 2, 0 }, { "NPR text edition", BM_FAV0 + 3, 0 },
                      { "68k.news", BM_FAV0 + 4, 0 }, { "FrogFind", BM_FAV0 + 5, 0 }, { NULL } } },
     { "Tools", { { "Block Ads", BM_ADBLOCK, MI_CHECKED }, { "Allow Ads on This Site", BM_ADALLOW, 0 }, { "Edit Ad Blocker List...", BM_ADLIST, 0 }, { "-", 0, 0 },
-                 { "Enable JavaScript", BM_JS, MI_CHECKED }, { "Script Messages...", BM_CONSOLE, 0 }, { NULL } } },
+                 { "Enable JavaScript", BM_JS, MI_CHECKED }, { "Script Messages...", BM_CONSOLE, 0 }, { "-", 0, 0 }, { "Internet Options", BM_INETOPTS, 0 }, { NULL } } },
     { "Help", { { "About The WRLD Browser", BM_ABOUT, 0 }, { NULL } } },
 };
+static void sync_menu_ticks(void) {
+    br_menus[4].items[0].flags = adblock_enabled ? MI_CHECKED : 0;
+    br_menus[4].items[4].flags = js_enabled ? MI_CHECKED : 0;
+}
 static void br_menu(window_t *w, int id) {
     brwin_t *bw = w->data;
     browser_t *b = active_tab(w);
     switch (id) {
-    case BM_NEWTAB: new_tab(w, HOME_URL, true); break;
+    case BM_NEWTAB: new_tab(w, home_url(), true); break;
     case BM_CLOSETAB: close_tab(w, bw->cur); break;
     case BM_NEW: browser_open(NULL); break;
     case BM_OPEN: w->ui.focus = bw->addr_id; b->addr[0] = 0; w->dirty = true; break;
@@ -2329,6 +2347,7 @@ static void br_menu(window_t *w, int id) {
     case BM_ADBLOCK:
         adblock_enabled = !adblock_enabled;
         br_menus[4].items[0].flags = adblock_enabled ? MI_CHECKED : 0;
+        settings_save();
         browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
         break;
     case BM_ADALLOW: {
@@ -2349,6 +2368,7 @@ static void br_menu(window_t *w, int id) {
     case BM_JS:
         js_enabled = !js_enabled;
         br_menus[4].items[4].flags = js_enabled ? MI_CHECKED : 0;
+        settings_save();
         browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false);
         break;
     case BM_CONSOLE: {
@@ -2365,7 +2385,8 @@ static void br_menu(window_t *w, int id) {
     case BM_REFRESH: browser_navigate_ext(b, b->page ? b->page->url : b->addr, NULL, false); break;
     case BM_BACK: go_back(b); break;
     case BM_FWD: go_fwd(b); break;
-    case BM_HOME: browser_navigate_ext(b, HOME_URL, NULL, true); break;
+    case BM_HOME: browser_navigate_ext(b, home_url(), NULL, true); break;
+    case BM_INETOPTS: inetopts_open(0); break;
     case BM_ABOUT: {
         char m[600];
         snprintf(m, sizeof m, "The WRLD Browser 2.0\n\nA web browser for " OS_NAME ": HTML, simple CSS, tables, forms and PNG/GIF/JPEG/BMP images over HTTP and HTTPS.\n\n"
@@ -2387,6 +2408,34 @@ void browser_classic_open(const char *url) {
     w->menus = (menu_t *)br_menus; w->nmenus = ARRAY_LEN(br_menus);
     w->icon = ICON_BROWSER; w->min_w = 480; w->min_h = 320;
     wm_set_timer(w, 250, br_tick);
-    char u[1024]; normalize_address(url && *url ? url : HOME_URL, u, sizeof u);
+    char u[1024]; normalize_address(url && *url ? url : home_url(), u, sizeof u);
     browser_navigate_ext(b, u, NULL, true);
+}
+
+/* Internet Options: the open windows' back and forward lists (each tab keeps its current page),
+ * and the address of the page in front, for "Use current" */
+static bool is_browser(window_t *w) { return w && w->paint == br_paint && w->data; }
+void browser_classic_clear_history(void) {
+    for (int i = 0; i < wm_window_count(); i++) {
+        window_t *w = wm_window_at(i);
+        if (!is_browser(w)) continue;
+        brwin_t *bw = w->data;
+        for (int t = 0; t < bw->n; t++) {
+            browser_t *b = bw->tab[t];
+            if (b->nhist) { memmove(b->hist[0], b->hist[b->hpos], sizeof b->hist[0]); b->nhist = 1; b->hpos = 0; }
+        }
+        w->dirty = true;
+    }
+}
+bool browser_classic_current_url(char *out, int cap) {
+    for (int i = wm_window_count() - 1; i >= 0; i--) {     /* top of the z order first */
+        window_t *w = wm_window_at(i);
+        if (!is_browser(w)) continue;
+        browser_t *b = active_tab(w);
+        const char *u = b->page ? b->page->url : b->addr;
+        if (!u || !*u) continue;
+        strlcpy(out, u, cap);
+        return true;
+    }
+    return false;
 }

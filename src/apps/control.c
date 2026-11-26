@@ -16,7 +16,7 @@ typedef struct { const char *id, *name, *desc; int icon; int cat; } applet_t;
 enum { CAT_SYSTEM, CAT_NETWORK, CAT_HARDWARE, CAT_PROGRAMS, CAT_USERS, CAT_APPEARANCE, CAT_CLOCK, CAT_EASE, CAT_N };
 static const struct { const char *name; int icon; const char *links[3]; const char *targets[3]; } cats[CAT_N] = {
     { "System and Security", ICON_CP_SYSTEM, { "Review your computer's status", "View system information", "Open Task Manager" }, { "system", "system", "::taskmgr" } },
-    { "Network and Internet", ICON_CP_NETWORK, { "View network status and tasks", NULL }, { "network" } },
+    { "Network and Internet", ICON_CP_NETWORK, { "View network status and tasks", "Change Internet options" }, { "network", "::inetopts" } },
     { "Hardware and Sound", ICON_CP_HARDWARE, { "View devices", "Mouse", "Sound" }, { "devices", "mouse", "sound" } },
     { "Programs", ICON_CP_PROGRAMS, { "Uninstall a program", "Default programs" }, { "programs", "defaults" } },
     { "User Accounts", ICON_CP_USERS, { "Change account name", "Change your picture" }, { "users", "users" } },
@@ -30,6 +30,7 @@ static const applet_t applets[] = {
     { "devices", "Device Manager", "See every device and the driver that runs it", ICON_CP_DEVICES, CAT_HARDWARE },
     { "::taskmgr", "Task Manager", "See running programs and performance", ICON_TASKMGR, CAT_SYSTEM },
     { "network", "Network and Sharing Center", "View network status", ICON_CP_NETWORK, CAT_NETWORK },
+    { "::inetopts", "Internet Options", "Home page, browsing history, privacy, connections", ICON_BROWSER, CAT_NETWORK },
     { "mouse", "Mouse", "Change mouse settings", ICON_CP_MOUSE, CAT_HARDWARE },
     { "keyboard", "Keyboard", "Test and change keyboard settings", ICON_CP_KEYBOARD, CAT_HARDWARE },
     { "sound", "Sound", "Test the PC speaker", ICON_CP_SOUND, CAT_HARDWARE },
@@ -69,6 +70,7 @@ typedef struct {
 static const applet_t *find_applet(const char *id) { for (int i = 0; i < NAPPLETS; i++) if (!strcmp(applets[i].id, id)) return &applets[i]; return NULL; }
 static void cp_go(cp_t *c, const char *page, bool push) {
     if (!strcmp(page, "::taskmgr")) { taskmgr_open(); return; }
+    if (!strcmp(page, "::inetopts")) { inetopts_open(0); return; }
     if (push) {
         if (c->hlen) c->hpos++;
         if (c->hpos >= 20) { memmove(c->hist, c->hist + 1, 19 * 32); c->hpos = 19; }
@@ -989,6 +991,7 @@ static void page_network(window_t *w, cp_t *c, int ox, int oy) {
     y += 10;
     if (netif.present && ui_button(w, R(ox + 40, y, 150, 26), "Renew address (DHCP)")) dhcp_renew();
     if (ui_link(w, ox + 210, y + 5, FONT_UI, "Open The WRLD Browser", W7_LINK)) browser_open(NULL);
+    if (ui_link(w, ox + 210 + text_width(FONT_UI, "Open The WRLD Browser") + 20, y + 5, FONT_UI, "Internet Options", W7_LINK)) inetopts_open(0);
     y += 34;
     {   /* the browser's engine: WebKit (64-bit edition, when the image has it) or the built-in one */
         extern bool webkit_browser_available(char *why, int cap);
@@ -1297,6 +1300,8 @@ static void cp_menu(window_t *w, int id) {
 }
 static void cp_destroy(window_t *w) { kfree(w->data); }
 void control_open(const char *page) {
+    /* "control inetcpl.cpl", as in Windows: the Internet Options dialog alone */
+    if (page && (!strcasecmp(page, "inetcpl.cpl") || !strcmp(page, "::inetopts"))) { inetopts_open(0); return; }
     window_t *w = wm_create("Control Panel", -1, -1, MIN(840, SCREEN_W - 40), MIN(660, SCREEN_H - 70), WF_RESIZABLE);
     cp_t *c = kzalloc(sizeof *c);
     c->win = w; c->prog_sel = -1;

@@ -48,6 +48,7 @@ void settings_apply(void) {
     if ((s = settings_get("computer")) && *s) strlcpy(computer_name, s, sizeof computer_name);
     strlcpy(user_password, settings_get("password") ? settings_get("password") : "", sizeof user_password);
     { extern bool adblock_enabled; adblock_enabled = geti("adblock", 1) != 0; }
+    { extern bool js_enabled, browser_show_images; js_enabled = geti("javascript", 1) != 0; browser_show_images = geti("images", 1) != 0; }
     fw_enabled = geti("fw_on", 0) != 0; fw_block_tcp = geti("fw_tcp", 1) != 0; fw_block_udp = geti("fw_udp", 1) != 0;
     fw_clear_ports(); { const char *fp = settings_get("fw_ports"); while (fp && *fp) { char *e; unsigned long v = strtoul(fp, &e, 10); if (v) fw_allow_port((uint16_t)v); fp = (*e == 0) ? e : e + 1; } }
     user_picture = picture_from_name(settings_get("picture"), user_picture);
@@ -115,6 +116,7 @@ void settings_capture(void) {
     settings_set("cursor", cursor_set_active());
     settings_set("password", user_password);
     { extern bool adblock_enabled; settings_set("adblock", adblock_enabled ? "1" : "0"); }
+    { extern bool js_enabled, browser_show_images; settings_set("javascript", js_enabled ? "1" : "0"); settings_set("images", browser_show_images ? "1" : "0"); }
     settings_set("fw_on", fw_enabled ? "1" : "0"); settings_set("fw_tcp", fw_block_tcp ? "1" : "0"); settings_set("fw_udp", fw_block_udp ? "1" : "0");
     { char fp[64] = ""; int o = 0; for (int i = 0; i < fw_port_count() && o < (int)sizeof fp - 8; i++) o += snprintf(fp + o, sizeof fp - o, "%s%u", i ? "," : "", fw_port_at(i)); settings_set("fw_ports", fp); }
 }

@@ -973,7 +973,22 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   Favorites buttons and the command bar (Home, Page, Tools), and a status bar with the zone and
   a zoom menu; icons are drawn by the browser itself. Find (Ctrl+F), zoom, Delete Browsing
   History, downloads into My Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
-  edition, on smaller machines, or when "Use WebKit" is turned off under Control Panel, Network.
+  edition, on smaller machines, or when the Classic engine is chosen in Internet Options.
+- **Internet Options** (Control Panel > Network and Internet, the browser's Tools menu, or
+  `control inetcpl.cpl`) is the Windows dialog with its seven tabs, each wired to a real setting:
+  General (home page with Use current/default/blank, Delete Browsing History), Security
+  (JavaScript, the trusted root certificates), Privacy (cookies: accept all, block third-party,
+  block all; the pop-up blocker), Content (the ad blocker and its allowed sites, the certificates
+  folder), Connections (network status, an HTTP proxy), Programs (WebKit or the classic engine)
+  and Advanced (smooth scrolling, pictures, reset). OK and Apply save them in `wrld.ini`; a
+  running WebKit browser picks them up at once. Cookies, pop-ups, the proxy and smooth scrolling
+  apply to WebKit; the ad blocker to the classic engine; the rest to both.
+- **Browser speed.** Setting a `timerfd` clears its unread expirations, as on Linux: the
+  compositor and WebKit re-arm timers without reading them, and a stale count kept their event
+  loops spinning (948,000 system calls in 79 seconds while showing a page, now 52,000, and the
+  page appears about twice as fast). The clocks have sub-millisecond resolution (the time-stamp
+  counter since the last 1 ms tick), and finding room for a new mapping is one pass over the
+  memory regions.
   Video and audio go through GStreamer: WebM and MP4 with VP8, VP9, AV1, H.264, Opus and AAC
   (YouTube's formats among them; FFmpeg is left out for size). There is no GPU driver for Linux
   programs, so pages are drawn on the CPU, and composited ones (videos, some animations) reach the
