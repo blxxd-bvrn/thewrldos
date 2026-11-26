@@ -83,8 +83,8 @@ jobs:
           # every DLL the programs and the modules load, until nothing new turns up: a DLL left out
           # makes Windows show a dialog nobody can answer, and QEMU then hangs without a word
           for pass in 1 2 3 4; do
-            find qemu -name '*.exe' -o -name '*.dll' | while read -r f; do ldd "$f" 2>/dev/null; done \
-              | awk '$3 ~ /^\/ucrt64\// { print $3 }' | sort -u | while read -r d; do [ -f "qemu/$(basename "$d")" ] || cp "$d" qemu/; done
+            find qemu -name '*.exe' -o -name '*.dll' | while read -r f; do ldd "$f" 2>/dev/null || true; done \
+              | awk '$3 ~ /^\/ucrt64\// { print $3 }' | sort -u | while read -r d; do [ -f "qemu/$(basename "$d")" ] || cp "$d" qemu/; done || true
           done
           ls qemu/*.dll | wc -l
           # the packaged copy on its own, as it runs on a computer without MSYS2
