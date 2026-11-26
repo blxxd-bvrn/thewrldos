@@ -17,7 +17,8 @@ param(
     [string]$KitDir = '',          # where the build kit lives (default: %LOCALAPPDATA%\WRLD OS build VM)
     [switch]$NoDownload,           # use the kit already in KitDir (the kit workflow's own test)
     [switch]$Emulate,              # never use Windows Hypervisor Platform (a computer where it hangs)
-    [switch]$BootLog               # show the Linux kernel's boot messages too
+    [switch]$BootLog,              # show the Linux kernel's boot messages too
+    [int]$TimeoutMinutes = 0       # stop the VM after this long (0: no limit)
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -145,8 +146,9 @@ if (-not (Test-Path $overlay)) {
 # the sources go in as a tar archive on a second disk, the ISOs come out on a third
 $srcTar = Join-Path $kit 'sources.tar'
 $outImg = Join-Path $kit 'output.img'
+$serialLog = Join-Path $kit 'console.log'
 Say "Packing the sources"
-Remove-Item -Force $srcTar, $outImg -ErrorAction SilentlyContinue
+Remove-Item -Force $srcTar, $outImg, $serialLog -ErrorAction SilentlyContinue
 & $tar -cf $srcTar --exclude ./build --exclude ./build64 --exclude ./.git --exclude ./rust/target --exclude '*.iso' --exclude ./disk.img --exclude ./disk64.img -C $Src .
 if ($LASTEXITCODE -ne 0) { Fail "could not pack the sources" }
 & $qimg create -q -f raw $outImg 3G
@@ -170,10 +172,39 @@ $qargs = @('-L', (Join-Path $qemuDir 'share'), '-machine', 'q35', '-m', "$mem", 
     '-drive', "file=$srcTar,if=virtio,format=raw,readonly=on",
     '-drive', "file=$outImg,if=virtio,format=raw",
     '-netdev', 'user,id=n0', '-device', 'virtio-net-pci,netdev=n0,romfile=',
-    '-nographic', '-vga', 'none', '-no-reboot'
+    '-serial', "file:$serialLog", '-display', 'none', '-monitor', 'none', '-vga', 'none', '-no-reboot'
 )
-& $qemu @qargs
-if ($LASTEXITCODE -ne 0) { Fail "QEMU stopped with an error ($LASTEXITCODE)." }
+# The VM's console goes to a file that is shown here as it grows: QEMU's own console on standard
+# input and output stays silent when nothing is typing at it (GitHub's runners, a redirected log).
+function Quote($a) { if ($a -match '[\s"]') { '"' + ($a -replace '"', '\"') + '"' } else { $a } }
+$qp = Start-Process -FilePath $qemu -ArgumentList (($qargs | ForEach-Object { Quote $_ }) -join ' ') -NoNewWindow -PassThru
+$null = $qp.Handle                     # keeps the exit code readable once it has stopped
+$shown = 0L; $started = Get-Date
+function Show-Console {
+    if (-not (Test-Path $serialLog)) { return }
+    $fs = [IO.File]::Open($serialLog, 'Open', 'Read', 'ReadWrite')
+    try {
+        if ($fs.Length -gt $script:shown) {
+            $fs.Seek($script:shown, 'Begin') | Out-Null
+            $buf = New-Object byte[] ($fs.Length - $script:shown)
+            $n = $fs.Read($buf, 0, $buf.Length)
+            $script:shown += $n
+            Write-Host -NoNewline ([Text.Encoding]::UTF8.GetString($buf, 0, $n))
+        }
+    } finally { $fs.Close() }
+}
+while (-not $qp.HasExited) {
+    Start-Sleep -Milliseconds 500
+    Show-Console
+    if ($TimeoutMinutes -gt 0 -and ((Get-Date) - $started).TotalMinutes -ge $TimeoutMinutes) {
+        Stop-Process -Id $qp.Id -Force -ErrorAction SilentlyContinue
+        Show-Console
+        Fail "the build VM was still running after $TimeoutMinutes minutes; its console is above."
+    }
+}
+Show-Console
+Write-Host ""
+if ($qp.ExitCode -ne 0) { Fail "QEMU stopped with an error ($($qp.ExitCode))." }
 
 Say "Collecting the result"
 $res = Join-Path $kit 'result'
