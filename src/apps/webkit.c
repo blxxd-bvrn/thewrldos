@@ -37,13 +37,13 @@ static bool running(void) { return wk_pid && task_find(wk_pid); }
  * ("wrld:options" in the request file) */
 #define WK_OPTS WK_REQ_DIR "\\wrldweb-options.txt"
 #define WK_PROFILE "C:\\Documents and Settings\\User\\Application Data\\WRLD Browser"
-extern bool js_enabled, browser_show_images;
+extern bool js_enabled, browser_show_images, adblock_enabled;
 static const char *opt(const char *k, const char *def) { const char *v = settings_get(k); return v && *v ? v : def; }
 static void write_options(void) {
     char b[1200];
     bool proxy = atoi(opt("proxy_on", "0")) != 0;
-    int n = snprintf(b, sizeof b, "home=%s\njavascript=%d\nimages=%d\npopups=%s\ncookies=%s\nproxy=%s\nsmooth=%s\n",
-                     opt("home_page", "wrld:home"), js_enabled, browser_show_images, opt("popups", "0"), opt("cookies", "no-third-party"),
+    int n = snprintf(b, sizeof b, "home=%s\njavascript=%d\nimages=%d\nadblock=%d\npopups=%s\ncookies=%s\nproxy=%s\nsmooth=%s\n",
+                     opt("home_page", "wrld:home"), js_enabled, browser_show_images, adblock_enabled, opt("popups", "0"), opt("cookies", "no-third-party"),
                      proxy ? opt("proxy", "") : "", opt("smooth_scroll", "0"));
     vfs_mkdir_p(WK_REQ_DIR);
     vfs_write_file(WK_OPTS, b, MIN(n, (int)sizeof b - 1));

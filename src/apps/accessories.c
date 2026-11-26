@@ -342,6 +342,14 @@ static const menu_t paint_menus[] = {
     { "Image", { { "Clear Image", 6, 0 }, { "Invert Colors", 7, 0 }, { NULL } } },
     { "Help", { { "About Paint", 8, 0 }, { NULL } } },
 };
+static bool pt_drop(window_t *w, int x, int y, const char *paths, bool copy) {
+    (void)w; (void)x; (void)y; (void)copy;
+    char p[512]; const char *e = strchr(paths, '\n'); size_t n = e ? (size_t)(e - paths) : strlen(paths);
+    snprintf(p, sizeof p, "%.*s", (int)MIN(n, sizeof p - 1), paths);
+    if (!p[0]) return false;
+    paint_load(w, p);
+    return true;
+}
 void paint_open(const char *path) {
     if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     window_t *w = wm_create("untitled - Paint", -1, -1, 680, 520, WF_RESIZABLE);
@@ -355,6 +363,7 @@ void paint_open(const char *path) {
     }
     p->fg = BLACK; p->bg = WHITE; p->size = 1;
     w->data = p; w->paint = paint_paint; w->mouse = paint_mouse; w->menu_cmd = paint_menu; w->destroy = paint_destroy; w->icon = ICON_PAINT;
+    w->drop = pt_drop;
     w->menus = kmalloc(sizeof paint_menus); memcpy(w->menus, paint_menus, sizeof paint_menus); w->nmenus = ARRAY_LEN(paint_menus);
     rect_t cr = wm_client_rect(w); wm_resize_client(w, cr.w, cr.h);
     if (path && *path) paint_load(w, path);

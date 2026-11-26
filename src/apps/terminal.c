@@ -186,9 +186,46 @@ static void complete_word(term_t *t) {
     } else { strlcat(t->line, add, sizeof t->line); if (match->dir) strlcat(t->line, "\\", sizeof t->line); t->llen = strlen(t->line); }
     t->lpos = t->llen;
 }
+/* paste: into the line being typed, up to its first line break; the rest is typed ahead, so a
+ * pasted list of commands runs one after another, as in the Windows console */
+static void term_paste(term_t *t) {
+    const char *s = clip_text();
+    if (!s) return;
+    for (; *s; s++) {
+        char ch = *s == '\r' ? 0 : *s == '\t' ? ' ' : *s;
+        if (!ch) continue;
+        if (t->reading && !t->line_done) {
+            if (ch == '\n') { t->line[t->llen] = 0; t->line_done = true; continue; }
+            if ((unsigned char)ch >= 32 && t->llen < 510) { memmove(t->line + t->lpos + 1, t->line + t->lpos, t->llen - t->lpos); t->line[t->lpos++] = ch; t->llen++; }
+        } else push_typeahead(t, ch);
+    }
+    t->line[t->llen] = 0;
+    t->scroll = 0;
+    t->win->dirty = true;
+}
+/* Ctrl+Shift+C: the text on the screen to the clipboard */
+static void term_copy_screen(term_t *t) {
+    int vis = term_vis_rows(t), cols = term_cols(t);
+    int first = MAX(0, t->nrows - vis - t->scroll), last = MIN(t->nrows, first + vis);
+    char *out = kmalloc((size_t)(last - first) * (cols + 2) + 1);
+    if (!out) return;
+    int o = 0;
+    for (int r = first; r < last; r++) {
+        cell_t *row = row_ptr(t, r);
+        int n = cols; while (n > 0 && (row[n - 1].ch == ' ' || !row[n - 1].ch)) n--;
+        for (int x = 0; x < n; x++) out[o++] = row[x].ch ? row[x].ch : ' ';
+        out[o++] = '\r'; out[o++] = '\n';
+    }
+    while (o >= 2 && out[o - 1] == '\n' && out[o - 3] == '\n') o -= 2;    /* no blank lines at the end */
+    out[o] = 0;
+    clip_set_text(out);
+    kfree(out);
+}
 static void term_key(window_t *w, key_event_t *e) {
     term_t *t = w->data;
     if (!e->pressed) return;
+    if ((e->mods & MOD_CTRL) && (e->mods & MOD_SHIFT) && (e->key == 'c' || e->key == 'C')) { term_copy_screen(t); return; }
+    if (((e->mods & MOD_CTRL) && (e->key == 'v' || e->key == 'V')) || ((e->mods & MOD_SHIFT) && e->key == KEY_INSERT)) { term_paste(t); return; }
     if ((e->mods & MOD_CTRL) && (e->key == 'c' || e->key == 'C')) {
         t->interrupted = true;
         if (t->reading) { t->line_done = true; t_write(&t->con, "^C", 2); }
@@ -222,6 +259,7 @@ static void term_key(window_t *w, key_event_t *e) {
 static void term_mouse(window_t *w, int type, int x, int y, int b) {
     term_t *t = w->data;
     if (type == ME_WHEEL) { t->scroll = CLAMP(t->scroll - b * 3, 0, MAX(0, t->nrows - term_vis_rows(t))); w->dirty = true; }
+    if (type == ME_DOWN && (b & MB_RIGHT) && x < w->surf->w - 17) { term_paste(t); return; }   /* right-click pastes */
     if (type == ME_DOWN && x >= w->surf->w - 17) {
         int vis = term_vis_rows(t), maxs = MAX(0, t->nrows - vis);
         if (y < 17) t->scroll = MIN(maxs, t->scroll + 1); else if (y > w->surf->h - 17) t->scroll = MAX(0, t->scroll - 1);

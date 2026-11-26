@@ -4,6 +4,7 @@
 #include "gfx.h"
 #include "theme.h"
 #include "wm.h"
+#include "apps.h"
 
 void ui_begin(window_t *w) {
     ui_t *u = &w->ui;
@@ -194,13 +195,27 @@ bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_
     if (!focused && sel_w == w && sel_id == id) sel_w = NULL;
     if (focused && u->has_key) {
         key_event_t *k = &u->key;
-        if ((k->mods & MOD_CTRL) && (k->ch == 'a' || k->ch == 'A' || k->ch == 1)) { sel_w = w; sel_id = id; sel = buf[0] != 0; }
+        bool ctrl = (k->mods & MOD_CTRL) != 0;
+        int kc = k->key >= 'A' && k->key <= 'Z' ? k->key + 32 : k->key;
+        if (ctrl && (k->ch == 'a' || k->ch == 'A' || k->ch == 1 || kc == 'a')) { sel_w = w; sel_id = id; sel = buf[0] != 0; }
+        /* the system clipboard: copy and cut take the whole text, paste replaces a selection or adds */
+        else if (ctrl && (kc == 'c' || (kc == KEY_INSERT))) { if (buf[0]) clip_set_text(buf); }
+        else if (ctrl && kc == 'x') { if (buf[0]) { clip_set_text(buf); buf[0] = 0; sel = false; sel_w = NULL; } }
+        else if ((ctrl && kc == 'v') || ((k->mods & MOD_SHIFT) && k->key == KEY_INSERT)) {
+            const char *t = clip_text();
+            if (t) {
+                if (sel) { buf[0] = 0; sel = false; sel_w = NULL; }
+                int len = strlen(buf);
+                for (; *t && len < cap - 1; t++) { if (*t == '\r' || *t == '\n' || *t == '\t') { if (len && buf[len - 1] != ' ') buf[len++] = ' '; } else if ((unsigned char)*t >= 32) buf[len++] = *t; }
+                buf[len] = 0;
+            }
+        }
         else if (sel && (k->key == KEY_BACKSPACE || k->key == KEY_DELETE || (k->ch >= 32 && k->ch < 127 && !(k->mods & MOD_CTRL)))) { buf[0] = 0; sel = false; sel_w = NULL; }
         else if (sel && k->key != KEY_ENTER && k->key != KEY_TAB && k->key != KEY_ESC) { sel = false; sel_w = NULL; }
         int len = strlen(buf);
         if (k->key == KEY_BACKSPACE) { if (len) buf[len - 1] = 0; }
         else if (k->key == KEY_ENTER) enter = true;
-        else if (k->ch >= 32 && k->ch < 127 && len < cap - 1 && !(k->mods & MOD_CTRL)) { buf[len] = k->ch; buf[len + 1] = 0; }
+        else if (k->ch >= 32 && k->ch < 127 && len < cap - 1 && !ctrl) { buf[len] = k->ch; buf[len + 1] = 0; }
         if (k->key != KEY_TAB && k->key != KEY_ESC) u->has_key = false;
     }
     canvas_t *c = w->surf;

@@ -75,6 +75,9 @@ struct window {
     void *w32;
     int minimized_state;             /* restore maximized windows without losing their state */
     bool opening;                    /* start the effect after the first client paint */
+    /* files dragged from Explorer or the desktop were dropped on the client area at (x, y):
+     * THE WRLD OS paths, one per line; copy: Ctrl was held. True if the window took them. */
+    bool (*drop)(window_t *w, int x, int y, const char *paths, bool copy);
 };
 
 /* window manager */
@@ -177,6 +180,11 @@ void shell_effects_changed(void);
 rect_t shell_task_button_rect(window_t *w);
 void shell_wallpaper_changed(void);
 void desktop_refresh(void);
+/* drag and drop of files: a program starts it while the mouse button is down (paths: THE WRLD
+ * OS paths, one per line); the window manager shows the icon under the pointer and hands the
+ * files to the window, the Linux program or the desktop they are dropped on */
+void wm_drag_files(const char *paths, int icon);
+bool desktop_drop(int x, int y, const char *paths, bool copy);
 bool startmenu_is_open(void);
 void startmenu_toggle(void);
 void shell_show_run(void);

@@ -367,6 +367,18 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
                 _ => -EINVAL,
             }
         }
+        271 => {                                                 /* ppoll: poll with a timespec (GStreamer's clocks wait this way) */
+            let tmo: i64 = if a2 == 0 { -1 } else {
+                let Some(ts) = uget::<[i64; 2]>(vm, a2) else { return -EFAULT };
+                if ts[0] < 0 || ts[1] < 0 { return -EINVAL; }
+                ts[0].saturating_mul(1000).saturating_add((ts[1] + 999_999) / 1_000_000).min(i32::MAX as i64)
+            };
+            let (oax, odx) = ((*r).eax, (*r).edx);
+            (*r).eax = 7; (*r).edx = tmo as i32 as u64;
+            let res = lx_syscall(r);
+            (*r).eax = oax; (*r).edx = odx;                      /* the caller's registers as they were */
+            res
+        }
         7 => {                                                   /* poll */
             let tmo = a2 as i32;                                 /* an int: -1 waits for ever */
             let deadline = timer_ticks().wrapping_add(if tmo > 0 { tmo as u32 } else { 0 });
@@ -507,6 +519,7 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
         274 => -ENOSYS,                                          /* get_robust_list */
         202 => sys_futex(p, a0, a1 as c_int, a2 as u32, a3, a4, a5 as u32),
         203 => 0,                                                /* sched_setaffinity */
+        221 => if lx_fd_get(p, a0 as i64).is_null() { -EBADF } else { 0 },   /* fadvise64: a hint */
         204 => { let m: u64 = 1; if a1 < 8 { return -EINVAL; } if uput(vm, a2, &m) { 8 } else { -EFAULT } }   /* sched_getaffinity: one CPU */
         143..=148 => 0,                                          /* sched_* params */
         318 => {                                                 /* getrandom */

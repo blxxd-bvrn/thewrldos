@@ -1270,6 +1270,22 @@ pub unsafe fn lx_sys_ipc(t: *mut LxThread, nr: i64, r: *mut Regs, handled: &mut 
         45 => do_recvfrom(p, i(a0), a1, a2, i(a3), a4, a5),
         46 => do_sendmsg(p, i(a0), a1, i(a2)),
         47 => do_recvmsg(p, i(a0), a1, i(a2)),
+        307 | 299 => {                                   /* sendmmsg, recvmmsg: a sendmsg / recvmsg per entry */
+            /* struct mmsghdr { struct msghdr msg_hdr (56 bytes); unsigned msg_len; } (64 with padding).
+             * glibc's resolver sends its A and AAAA questions with sendmmsg */
+            let (vec, vlen) = (a1, (a2 as u32).min(1024) as u64);
+            let mut n = 0u64;
+            while n < vlen {
+                let at = vec.wrapping_add(n * 64);
+                let fl = if nr == 299 && n > 0 { i(a3) | 0x40 } else { i(a3) };   /* after the first: MSG_DONTWAIT */
+                let r = if nr == 307 { do_sendmsg(p, i(a0), at, fl) } else { do_recvmsg(p, i(a0), at, fl) };
+                if r < 0 { return if n > 0 { n as i64 } else { r }; }
+                let len = r as u32;
+                if !put(p, at + 56, &len, 4) { return if n > 0 { n as i64 } else { -EFAULT }; }
+                n += 1;
+            }
+            n as i64
+        }
         48 => do_shutdown(p, i(a0), i(a1)),
         51 => do_getname(p, i(a0), a1, a2, false),
         52 => do_getname(p, i(a0), a1, a2, true),

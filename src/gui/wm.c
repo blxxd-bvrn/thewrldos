@@ -24,7 +24,7 @@ static int capture_btn;
 static window_t *dying[MAX_WIN];
 static int ndying;
 
-enum { DRAG_NONE, DRAG_MOVE, DRAG_RESIZE, DRAG_CAPBTN, DRAG_CLIENT };
+enum { DRAG_NONE, DRAG_MOVE, DRAG_RESIZE, DRAG_CAPBTN, DRAG_CLIENT, DRAG_FILES };
 static struct { int mode; window_t *w; int edges; int mx, my; rect_t start; int btn; } drag;
 static struct { window_t *w; int btn; } cap_hot;
 static uint32_t last_click_time; static int last_click_x, last_click_y, last_click_btn;
@@ -45,6 +45,7 @@ static window_effect_t effects[MAX_EFFECTS];
 static uint32_t effect_bytes, effect_frame;
 static bool effects_suppressed;
 static void paint_window_at(canvas_t *c, window_t *w, int x, int y);
+static void paint_file_drag(canvas_t *c);
 static void effect_begin(window_t *w, int kind, rect_t from, rect_t to, bool snapshot);
 static void effects_cancel(void);
 static void effect_cancel_window(window_t *w);
@@ -680,6 +681,7 @@ static void compose(void) {
     }
     shell_paint_overlays(&screen);
     popup_paint(&screen);
+    paint_file_drag(&screen);
     gfx_present(current_cursor(), wm_mouse_x, wm_mouse_y);
     wm_need_redraw = false;
 }
@@ -705,6 +707,49 @@ static void deliver_mouse(window_t *w, int type, int sx, int sy, int btn) {
     u->pressed = u->released = u->rpressed = u->dblclick = false; u->wheel = 0;
 }
 static window_t *hover_win;
+/* ---- drag and drop of files ---- */
+static struct { char *paths; int icon, count; } fdrag;
+#ifdef __x86_64__
+extern bool lxwin_drop(window_t *w, int x, int y, const char *paths);   /* Linux programs' windows (64-bit edition) */
+#else
+static bool lxwin_drop(window_t *w, int x, int y, const char *paths) { (void)w; (void)x; (void)y; (void)paths; return false; }
+#endif
+void wm_drag_files(const char *paths, int icon) {
+    if (!paths || !*paths) return;
+    kfree(fdrag.paths); fdrag.paths = strdup(paths);
+    if (!fdrag.paths) return;
+    fdrag.icon = icon; fdrag.count = 0;
+    for (const char *p = paths; *p; p++) if (*p == '\n' && p[1]) fdrag.count++;
+    fdrag.count++;
+    capture = NULL;                            /* the drag has the mouse now */
+    drag.mode = DRAG_FILES;
+    wm_need_redraw = true;
+}
+static void files_dropped(int mx, int my) {
+    bool copy = (keyboard_mods() & MOD_CTRL) != 0;
+    window_t *w = window_at(mx, my);
+    if (w) {
+        rect_t cr = wm_client_rect(w);
+        if (!pt_in(cr, mx, my)) return;
+        int lx = mx - cr.x, ly = my - cr.y;
+        bool ok = w->drop ? w->drop(w, lx, ly, fdrag.paths, copy) : lxwin_drop(w, lx, ly, fdrag.paths);
+        if (ok && wm_alive(w)) { wm_focus(w); w->dirty = true; }
+    } else if (my < SCREEN_H - T.taskbar_h) desktop_drop(mx, my, fdrag.paths, copy);
+}
+static void paint_file_drag(canvas_t *c) {
+    if (drag.mode != DRAG_FILES || !fdrag.paths) return;
+    int x = wm_mouse_x + 4, y = wm_mouse_y + 10;
+    draw_icon_tinted(c, fdrag.icon, 32, x, y, T.select, 70);
+    if (fdrag.count > 1) {
+        char b[12]; snprintf(b, sizeof b, "%d", fdrag.count);
+        int tw = text_width(FONT_UI_BOLD, b) + 8;
+        fill_round_rect(c, x + 26, y - 4, tw, 16, 7, T.select);
+        draw_text(c, FONT_UI_BOLD, x + 30, y - 3, b, T.select_text);
+    }
+    window_t *w = window_at(wm_mouse_x, wm_mouse_y);
+    const char *hint = (keyboard_mods() & MOD_CTRL) ? "Copy" : w ? NULL : "Move";
+    if (hint) { int tw = text_width(FONT_UI, hint) + 8; fill_rect(c, x + 34, y + 20, tw, 15, T.window_bg); draw_rect(c, x + 34, y + 20, tw, 15, T.text); draw_text(c, FONT_UI, x + 38, y + 21, hint, T.text); }
+}
 static void handle_mouse(mouse_state_t *ms) {
     int mx = ms->x, my = ms->y;
     bool moved = mx != wm_mouse_x || my != wm_mouse_y;
@@ -759,6 +804,17 @@ static void handle_mouse(mouse_state_t *ms) {
             wm_need_redraw = true;
         }
         if (released & MB_LEFT) drag.mode = DRAG_NONE;
+        return;
+    }
+    if (drag.mode == DRAG_FILES) {
+        if (moved) wm_need_redraw = true;
+        if (pressed & MB_RIGHT) { drag.mode = DRAG_NONE; wm_need_redraw = true; return; }   /* right-click cancels */
+        if (released & MB_LEFT) {
+            drag.mode = DRAG_NONE;
+            files_dropped(mx, my);
+            kfree(fdrag.paths); fdrag.paths = NULL;
+            wm_need_redraw = true;
+        }
         return;
     }
     if (drag.mode == DRAG_CAPBTN) {

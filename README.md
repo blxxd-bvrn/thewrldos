@@ -343,6 +343,27 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
   - Win key opens the Start menu;
   - Alt+Tab switches windows and Alt+F4 closes them;
   - Ctrl+Shift+Esc opens Task Manager.
+- **Clipboard**: one system clipboard for text, shared by every program:
+  - text boxes (the Run box, address and search boxes, dialogs): Ctrl+A selects the text,
+    Ctrl+C / Ctrl+X copy or cut it, Ctrl+V (or Shift+Insert) pastes;
+  - Notepad and WordPad use it for their Copy, Cut and Paste;
+  - the Command Prompt pastes with Ctrl+V, Shift+Insert or a right-click (a pasted list of
+    commands runs one after another), and Ctrl+Shift+C copies the text on the screen;
+  - the WebKit browser shares it both ways: copy on a page or in the address bar and paste in
+    Notepad, or copy in Notepad and paste into a web form;
+  - Explorer has Copy, Cut and Paste for files and folders (Ctrl+C, Ctrl+X, Ctrl+V, or the
+    right-click menu).
+- **Drag and drop**: drag a file or folder from Explorer or the desktop
+  - onto a folder (in Explorer, on the desktop, or a drive in My Computer): on the same drive
+    it moves, from another drive it is copied, and holding Ctrl copies;
+  - onto the Recycle Bin to delete it, or onto the desktop to put it in the Desktop folder;
+  - onto Notepad, WordPad, Media Player or Paint to open it there, or onto a program's icon
+    on the desktop to open it with that program;
+  - onto the WebKit browser: the drop reaches the page as a list of file links (text/uri-list),
+    but WebKit does not yet hand it to the page as files, so drag-and-drop uploads do not work
+    yet (use the page's Browse button). Inside the browser, text, links and pictures drag and
+    drop as on any desktop.
+  A right-click during the drag cancels it.
 
 ## What's inside
 
@@ -1063,6 +1084,26 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   browser fills the whole screen at any resolution. `make ARCH=x86_64 LX_GTK=1` adds GTK 4 and `gtkhello`;
   `make ARCH=x86_64 LX_WEBKITGTK=1` adds WebKitGTK and `wrldweb`, a small WebKit browser
   (needs a 3 GB VM): `C:/Linux/usr/local/bin/wrldcomp /usr/local/bin/wrldweb [address]`.
+  - **Ad blocker:** WebKit's content blocker never requests about 165 ad and tracking servers
+    or the paths YouTube serves its ads and ad reports from, and hides ad slots
+    (`tools/gen_adblock_rules.py` makes the rules from the same lists as The WRLD Browser's
+    blocker; your own `C:\WRLD\adblock.txt` is added: `example.com` blocks a server, `##.class`
+    hides, `@@example.org` allows a site). On YouTube a page script removes the ads from the
+    player's data before the player reads them, skips any ad that still starts, and removes
+    the "ad blockers are not allowed" dialog, resuming the video. Internet Options' "Block
+    advertisements and trackers" turns it on and off.
+  - **Downloads** ask as Internet Explorer does: *File Download - Security Warning* (name, type,
+    size and server; Run, Save, Cancel), then the *File Download* window with a progress bar,
+    the time left, where the file goes and the transfer rate, "Close this dialog box when
+    download completes", and Open / Open Folder. Run keeps the file in `C:\WRLD\Temp\Downloads`
+    and opens it when it is complete.
+  - **Clipboard and drag and drop** go through `wrldcomp` (wl_data_device,
+    `samples/linux-wayland/wrldcomp-data.h`): a copy in a program becomes THE WRLD OS's
+    clipboard and the other way round, drags inside a program work, and files dropped on the
+    window from the desktop arrive as a drop of file links (WebKit does not yet turn them into
+    files for the page). The window device gains requests for
+    these (`WRLDWIN_CLIP_SET/GET`, `WRLDWIN_DROP_GET`) and `WRLDWIN_OPEN`, which asks THE WRLD
+    OS to open a file as a double-click would.
   `lxtrace on` in the Command Prompt logs every Linux system call to the serial port (with
   the path of calls that take one), and
   `guiprof on` logs how long each window takes to paint, every 2 seconds.

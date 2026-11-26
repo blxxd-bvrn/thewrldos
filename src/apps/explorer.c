@@ -16,6 +16,7 @@ typedef struct {
     char addr[256];
     bool addr_dirty;
     window_t *win;
+    int press_i, press_x, press_y;          /* the item the left button went down on, for a drag */
 } expl_t;
 
 #define TB_H 38
@@ -214,6 +215,42 @@ static void paste(expl_t *e) {
         if (vfs_lookup_child(d, nm)) snprintf(nm, sizeof nm, "Copy of %s", clip_node->name);
         vfs_copy(clip_node, d, nm);
     }
+}
+/* Dropped files go into folder dir: on the same drive they move, from another drive (or with
+ * Ctrl held) they are copied, as in Windows. "Copy of" when the name is taken. */
+bool shell_drop_files(const char *dir, const char *paths, bool copy) {
+    vnode_t *d = vfs_resolve(dir, NULL);
+    if (!d || !d->dir || d->readonly) { msgbox("Error", "Files cannot be put in this location.", MBI_ERROR, MBX_OK, NULL, NULL); return false; }
+    bool any = false;
+    for (const char *p = paths; p && *p; ) {
+        const char *e = strchr(p, '\n');
+        size_t n = e ? (size_t)(e - p) : strlen(p);
+        char line[512]; snprintf(line, sizeof line, "%.*s", (int)MIN(n, sizeof line - 1), p);
+        p += n + (e ? 1 : 0);
+        vnode_t *f = line[0] ? vfs_resolve(line, NULL) : NULL;
+        if (!f || f == d || f->parent == d) continue;          /* already there */
+        bool inside = false;
+        for (vnode_t *q = d; q; q = q->parent) if (q == f) inside = true;
+        if (inside) { msgbox("Error", "A folder cannot be moved into itself.", MBI_ERROR, MBX_OK, NULL, NULL); continue; }
+        bool same = vfs_drive_letter(f) == vfs_drive_letter(d) && !(f->parent && f->parent->readonly);
+        if (same && !copy) { if (vfs_move(f, d)) any = true; continue; }
+        char nm[96]; strlcpy(nm, f->name, sizeof nm);
+        if (vfs_lookup_child(d, nm)) snprintf(nm, sizeof nm, "Copy of %s", f->name);
+        if (vfs_copy(f, d, nm)) any = true;
+    }
+    return any;
+}
+static bool expl_drop(window_t *w, int x, int y, const char *paths, bool copy) {
+    expl_t *e = w->data;
+    int i = item_at(e, x, y);
+    const char *dir = e->path;
+    char p[256];
+    if (i >= 0 && e->items[i].node && e->items[i].node->dir) { vfs_path(e->items[i].node, p, sizeof p); dir = p; }
+    else if (i >= 0 && e->items[i].path[1] == ':' && !e->items[i].node) dir = e->items[i].path;   /* a drive in My Computer */
+    else if (is_special(e)) return false;
+    bool ok = shell_drop_files(dir, paths, copy);
+    rebuild(e); w->dirty = true;
+    return ok;
 }
 static void ctx_cb(void *ctx, int id) {
     window_t *w = ctx; if (!wm_alive(w)) return;
@@ -438,9 +475,17 @@ static void expl_mouse(window_t *w, int type, int x, int y, int btn) {
         else e->scroll = (y - cr.y - 17) * maxs / MAX(1, cr.h - 34);
         w->dirty = true; return;
     }
+    if (type == ME_UP) e->press_i = -1;
+    if (type == ME_MOVE && e->press_i >= 0 && e->press_i < e->n && (ABSDIFF(x, e->press_x) > 5 || ABSDIFF(y, e->press_y) > 5)) {
+        eitem_t *it = &e->items[e->press_i];
+        e->press_i = -1;
+        if (it->node) { char p[256]; vfs_path(it->node, p, sizeof p); wm_drag_files(p, it->icon); }
+        return;
+    }
     if (type == ME_DOWN) {
         int i = item_at(e, x, y);
         e->sel = i;
+        e->press_i = (btn & MB_LEFT) ? i : -1; e->press_x = x; e->press_y = y;
         if (btn & MB_RIGHT) { rect_t c = wm_client_rect(w); show_ctx(w, c.x + x, c.y + y); }
         w->dirty = true;
     } else if (type == ME_DBLCLICK) { int i = item_at(e, x, y); if (i >= 0) open_item(e, i); }
@@ -484,7 +529,8 @@ static const menu_t expl_menus[] = {
 void explorer_open(const char *path) {
     window_t *w = wm_create("Explorer", -1, -1, 720, 480, WF_RESIZABLE);
     expl_t *e = kzalloc(sizeof *e);
-    e->win = w; e->sel = -1; e->view = 0;
+    e->win = w; e->sel = -1; e->view = 0; e->press_i = -1;
+    w->drop = expl_drop;
     w->data = e; w->paint = expl_paint; w->mouse = expl_mouse; w->key = expl_key; w->destroy = expl_destroy; w->menu_cmd = expl_menu;
     w->min_w = 360; w->min_h = 260;
     w->menus = kmalloc(sizeof expl_menus); memcpy(w->menus, expl_menus, sizeof expl_menus); w->nmenus = ARRAY_LEN(expl_menus);

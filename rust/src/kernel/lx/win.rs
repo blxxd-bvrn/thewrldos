@@ -67,6 +67,10 @@ extern "C" {
     fn wm_minimize(w: *mut Window);
     fn wm_maximize(w: *mut Window, on: CBool);
     fn gfx_clear(c: *mut Canvas, color: u32);
+    fn shell_open_later(path: *const c_char);
+    fn clip_set_text(s: *const c_char);
+    fn clip_text() -> *const c_char;
+    fn clip_gen() -> u32;
     static SCREEN_W: c_int;
     static SCREEN_H: c_int;
 }
@@ -79,6 +83,10 @@ const WIN_INFO: u64 = 0x57A5;        /* struct { int32 width, height, buf_width,
 const WIN_SETSIZE: u64 = 0x57A6;     /* struct { int32 width, height; }: resize the window and its buffer */
 const WIN_ACTION: u64 = 0x57A7;      /* 1 move, 2 | edges << 8 resize, 3 minimise, 4 maximise, 5 restore */
 const WIN_SCREEN: u64 = 0x57A8;      /* struct { int32 screen_w, screen_h, maximized, minimized; }: works before CREATE too */
+const WIN_OPEN: u64 = 0x57A9;        /* char path[512] (a Linux path): THE WRLD OS opens it, as a double-click would */
+const WIN_CLIP_SET: u64 = 0x57AA;    /* struct { uint64 text; uint32 len; }: the system clipboard's text */
+const WIN_CLIP_GET: u64 = 0x57AB;    /* struct { uint64 buf; uint32 cap; uint32 gen; }: copies it, returns its length */
+const WIN_DROP_GET: u64 = 0x57AC;    /* struct { uint64 buf; uint32 cap; }: the files of the last drop, as a text/uri-list */
 const WS_MINIMIZED: c_int = 1; const WS_MAXIMIZED: c_int = 2;
 const WINF_RESIZABLE: u32 = 1;
 const WINF_FRAMELESS: u32 = 2;       /* the program draws its own frame; pixels with alpha 0 are see-through */
@@ -91,6 +99,7 @@ const MB_LEFT: c_int = 1; const MB_RIGHT: c_int = 2; const MB_MIDDLE: c_int = 4;
 
 const WEV_MOTION: u32 = 1; const WEV_BUTTON_DOWN: u32 = 2; const WEV_BUTTON_UP: u32 = 3; const WEV_WHEEL: u32 = 4;
 const WEV_KEY_DOWN: u32 = 5; const WEV_KEY_UP: u32 = 6; const WEV_RESIZE: u32 = 7; const WEV_CLOSE: u32 = 8; const WEV_LEAVE: u32 = 9; const WEV_ACTIVE: u32 = 10;
+const WEV_DROP: u32 = 11;            /* files dropped on the window at x, y: WIN_DROP_GET has them */
 #[repr(C)] #[derive(Clone, Copy, Default)] struct Wev { ty: u32, x: i32, y: i32, code: u32, ch: u32, mods: u32 }
 const WQ: usize = 256;
 
@@ -105,6 +114,7 @@ struct LxWin {
     frames: u32,
     owner: c_int,                                    /* pid of the process that created the window */
     next: *mut LxWin,
+    drop_list: *mut u8, drop_len: usize,             /* the last drop, as a text/uri-list (kmalloc) */
 }
 static mut ALL_WINS: *mut LxWin = null_mut();
 /// The WebKit browser's compositor (src/apps/webkit.c).
@@ -213,6 +223,7 @@ pub unsafe fn lxwin_release(o: *mut c_void) {
     let mut pp: *mut *mut LxWin = ptr::addr_of_mut!(ALL_WINS);
     while !(*pp).is_null() { if *pp == lw { *pp = (*lw).next; break; } pp = ptr::addr_of_mut!((**pp).next); }
     shm_unref((*lw).fb);
+    kfree((*lw).drop_list as *mut c_void);
     zfree(lw);
 }
 unsafe fn set_buffer(lw: *mut LxWin, w: c_int, h: c_int) -> i64 {
@@ -289,6 +300,45 @@ pub unsafe fn lxwin_ioctl(o: *mut c_void, cmd: u64, arg: u64, vm: *mut Uvm) -> i
             if !(*lw).w.is_null() { wm_set_title((*lw).w, t.as_ptr() as *const c_char); }
             if !(*lw).w.is_null() { 0 } else { -ENODEV }
         }
+        WIN_OPEN => {
+            let Some(mut b) = uget::<[u8; 512]>(vm, arg) else { return -EFAULT };
+            b[511] = 0;
+            let th = lx_current();
+            if th.is_null() { return -EINVAL; }
+            let (_, mut wp) = super::fs::lx_path((*th).proc_, -100, cstr(&b));
+            if super::proc_::resolve_w(&wp).is_null() { return -ENOENT; }
+            wp.push(0);
+            shell_open_later(wp.as_ptr() as *const c_char);
+            0
+        }
+        WIN_CLIP_SET => {
+            let Some(a) = uget::<[u64; 2]>(vm, arg) else { return -EFAULT };
+            let n = (a[1] as u32).min(4 << 20) as usize;
+            let mut t: alloc::vec::Vec<u8> = alloc::vec![0u8; n + 1];
+            if n > 0 && !uin(vm, t.as_mut_ptr(), a[0], n as u64) { return -EFAULT; }
+            t[n] = 0;
+            clip_set_text(t.as_ptr() as *const c_char);
+            0
+        }
+        WIN_CLIP_GET => {
+            let Some(a) = uget::<[u64; 2]>(vm, arg) else { return -EFAULT };
+            let gen = clip_gen();
+            if !uput(vm, arg + 12, &gen) { return -EFAULT; }
+            let t = clip_text();
+            if t.is_null() { return 0; }
+            let s = core::ffi::CStr::from_ptr(t).to_bytes();
+            let cap = (a[1] as u32) as usize;
+            let n = s.len().min(cap);
+            if n > 0 && !uout(vm, a[0], s.as_ptr(), n as u64) { return -EFAULT; }
+            s.len() as i64
+        }
+        WIN_DROP_GET => {
+            let Some(a) = uget::<[u64; 2]>(vm, arg) else { return -EFAULT };
+            let cap = (a[1] as u32) as usize;
+            let n = (*lw).drop_len.min(cap);
+            if n > 0 && !uout(vm, a[0], (*lw).drop_list, n as u64) { return -EFAULT; }
+            (*lw).drop_len as i64
+        }
         WIN_SCREEN => {
             /* the desktop's size now (it changes with the display settings) and the window's state,
              * so a compositor can tell its programs the real output size and that they are maximized */
@@ -324,4 +374,34 @@ pub unsafe fn lxwin_read(o: *mut c_void, dst: *mut u8, n: u64, nonblock: bool) -
         k += SZ;
     }
     k as i64
+}
+
+/// The window manager: files (THE WRLD OS paths, one per line) were dropped on `w` at x, y.
+/// For a Linux program's window they become a text/uri-list of their Linux paths and an event;
+/// false for any other window.
+#[no_mangle]
+pub unsafe extern "C" fn lxwin_drop(w: *mut Window, x: c_int, y: c_int, paths: *const c_char) -> CBool {
+    if w.is_null() || paths.is_null() { return 0; }
+    let mut lw = ALL_WINS;                               /* one of ours? */
+    while !lw.is_null() && (*lw).w != w { lw = (*lw).next; }
+    if lw.is_null() { return 0; }
+    let mut out: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+    for line in core::ffi::CStr::from_ptr(paths).to_bytes().split(|&c| c == b'\n') {
+        if line.is_empty() { continue; }
+        let lp = crate::lxpath::wrld_to_linux(line, 1024);
+        out.extend_from_slice(b"file://");
+        for &c in crate::lxpath::cstr(&lp) {
+            if c.is_ascii_alphanumeric() || b"/-_.~".contains(&c) { out.push(c); }
+            else { let h = b"0123456789ABCDEF"; out.push(b'%'); out.push(h[(c >> 4) as usize]); out.push(h[(c & 15) as usize]); }
+        }
+        out.extend_from_slice(b"\r\n");
+    }
+    if out.is_empty() { return 0; }
+    kfree((*lw).drop_list as *mut c_void);
+    let p = kmalloc(out.len()) as *mut u8;
+    if p.is_null() { return 0; }
+    ptr::copy_nonoverlapping(out.as_ptr(), p, out.len());
+    (*lw).drop_list = p; (*lw).drop_len = out.len();
+    push(lw, WEV_DROP, x, y, 0, 0, 0);
+    1
 }

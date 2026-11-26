@@ -1341,6 +1341,14 @@ static void wp_destroy(window_t *w) {
     for (int i = 0; i < d->nredo; i++) kfree(d->redo[i]);
     kfree(d); w->data = NULL;
 }
+static bool wp_drop(window_t *w, int x, int y, const char *paths, bool copy) {
+    (void)w; (void)x; (void)y; (void)copy;
+    char p[512]; const char *e = strchr(paths, '\n'); size_t n = e ? (size_t)(e - paths) : strlen(paths);
+    snprintf(p, sizeof p, "%.*s", (int)MIN(n, sizeof p - 1), paths);
+    if (!p[0]) return false;
+    wordpad_open(p);
+    return true;
+}
 void wordpad_open(const char *path) {
     window_t *w = wm_create("Document - WordPad", -1, -1, MIN(940, SCREEN_W - 40), MIN(680, SCREEN_H - 70), WF_RESIZABLE);
     if (!w) return;
@@ -1348,6 +1356,7 @@ void wordpad_open(const char *path) {
     d->w = w; d->zoom = 100; d->ruler = true; d->status = true; d->wrap = 2; d->want_x = -1;
     doc_new(d);
     w->data = d; w->paint = wp_paint; w->key = wp_key; w->mouse = wp_mouse; w->close = wp_close; w->destroy = wp_destroy;
+    w->drop = wp_drop;
     w->icon = ICON_WORDPAD; w->cursor = CURSOR_IBEAM;
     wm_set_timer(w, 530, wp_blink);
     if (path && *path && !wp_load(d, path)) msgbox("WordPad", "WordPad cannot open this file.", MBI_WARNING, MBX_OK, NULL, NULL);

@@ -15,6 +15,7 @@ int file_icon(vnode_t *n);
 const char *file_type_name(vnode_t *n);
 
 void explorer_open(const char *path);
+bool shell_drop_files(const char *dir, const char *paths, bool copy);   /* move / copy dropped files into a folder */
 void notepad_open(const char *path);
 void terminal_open(const char *script, const char *cwd);
 void terminal_run(const char *cmdline, const char *cwd, const char *title);   /* a Command Prompt running one command */
@@ -44,6 +45,8 @@ void wrldsearch_open(const char *query);   /* The WRLD Search, optionally alread
 void recent_add(const char *path);
 void clip_set_text(const char *s);         /* the system clipboard (plain text, UTF-8) */
 const char *clip_text(void);                /* NULL when empty */
+uint32_t clip_gen(void);                    /* changes whenever the clipboard does */
+void shell_open_later(const char *path);    /* shell_open on the desktop's thread */
 void wordpad_open(const char *path);          /* a file the user opened, for Recent Activities */
 void mediaplayer_open(const char *path);
 void demo3d_open(void);                    /* WRLD 3D: the 3D engine's test */   /* NULL: My Music */

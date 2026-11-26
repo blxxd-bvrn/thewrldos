@@ -378,6 +378,7 @@ static void on_crashed(WebKitWebView *v, WebKitWebProcessTerminationReason r, gp
 }
 
 static WebKitWebView *new_tab(const char *uri, WebKitWebView *related, gboolean show);
+#include "wrldweb-adblock.h"
 static GtkWidget *on_create(WebKitWebView *v, WebKitNavigationAction *a, gpointer d) {
     (void)a; (void)d;
     return GTK_WIDGET(new_tab(NULL, v, TRUE));        /* target=_blank and window.open: a new tab */
@@ -418,8 +419,8 @@ static WebKitWebView *new_tab(const char *uri, WebKitWebView *related, gboolean 
     /* videos may start by themselves, with sound, as on a desktop browser (YouTube expects it) */
     WebKitWebsitePolicies *pol = webkit_website_policies_new_with_policies("autoplay", WEBKIT_AUTOPLAY_ALLOW, NULL);
     WebKitWebView *v = related
-        ? WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, "settings", wsettings, "website-policies", pol, NULL))
-        : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "web-context", wctx, "network-session", session, "settings", wsettings, "website-policies", pol, NULL));
+        ? WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, "settings", wsettings, "website-policies", pol, "user-content-manager", ucm, NULL))
+        : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "web-context", wctx, "network-session", session, "settings", wsettings, "website-policies", pol, "user-content-manager", ucm, NULL));
     g_object_unref(pol);
     gtk_widget_set_vexpand(GTK_WIDGET(v), TRUE);
     /* the tab: the page's icon, its title, and a close button */
@@ -644,34 +645,7 @@ static gboolean on_key(GtkEventControllerKey *k, guint key, guint code, GdkModif
 }
 
 /* ---------------- downloads ---------------- */
-static gboolean on_dl_dest(WebKitDownload *dl, char *name, gpointer d) {
-    (void)d;
-    g_mkdir_with_parents(downloads_dir, 0755);
-    char *base = g_path_get_basename(name && *name ? name : "download");
-    char *path = g_build_filename(downloads_dir, base, NULL);
-    for (int i = 2; g_file_test(path, G_FILE_TEST_EXISTS) && i < 100; i++) {   /* keep earlier files */
-        g_free(path); char *b2 = g_strdup_printf("(%d) %s", i, base); path = g_build_filename(downloads_dir, b2, NULL); g_free(b2);
-    }
-    webkit_download_set_destination(dl, path);
-    char *s = g_strdup_printf("Downloading %s...", base); set_status(s); g_free(s);
-    g_free(path); g_free(base);
-    return TRUE;
-}
-static void on_dl_done(WebKitDownload *dl, gpointer d) {
-    (void)d;
-    const char *dest = webkit_download_get_destination(dl);
-    char *base = dest ? g_path_get_basename(dest) : g_strdup("the file");
-    char *s = g_strdup_printf("Saved %s in My Documents\\Downloads", base); set_status(s); g_free(s); g_free(base);
-}
-static void on_dl_failed(WebKitDownload *dl, GError *e, gpointer d) {
-    (void)dl; (void)d; char *s = g_strdup_printf("Download failed: %s", e ? e->message : "error"); set_status(s); g_free(s);
-}
-static void on_download(WebKitNetworkSession *s, WebKitDownload *dl, gpointer d) {
-    (void)s; (void)d;
-    g_signal_connect(dl, "decide-destination", G_CALLBACK(on_dl_dest), NULL);
-    g_signal_connect(dl, "finished", G_CALLBACK(on_dl_done), NULL);
-    g_signal_connect(dl, "failed", G_CALLBACK(on_dl_failed), NULL);
-}
+#include "wrldweb-download.h"
 
 /* ---------------- wrld: pages and requests from the desktop ---------------- */
 static void wrld_scheme(WebKitURISchemeRequest *r, gpointer d) {
@@ -698,6 +672,7 @@ static void apply_options(void) {
         else if (!strcmp(k, "images")) webkit_settings_set_auto_load_images(wsettings, on);
         else if (!strcmp(k, "popups")) webkit_settings_set_javascript_can_open_windows_automatically(wsettings, on);
         else if (!strcmp(k, "smooth")) webkit_settings_set_enable_smooth_scrolling(wsettings, on);
+        else if (!strcmp(k, "adblock")) ab_set(on);
         else if (!strcmp(k, "cookies")) {
             WebKitCookieAcceptPolicy pol = !strcmp(v, "always") ? WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS
                                          : !strcmp(v, "never") ? WEBKIT_COOKIE_POLICY_ACCEPT_NEVER : WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
@@ -725,7 +700,7 @@ static gboolean poll_requests(gpointer d) {
     for (char **l = lines; *l; l++) {
         if (l[1] == NULL && !**l) break;            /* the empty piece after the last newline */
         g_strstrip(*l);
-        if (!strcmp(*l, "wrld:options")) { apply_options(); set_status("Internet Options changed."); continue; }
+        if (!strcmp(*l, "wrld:options")) { apply_options(); if (ab_on) ab_load(); set_status("Internet Options changed."); continue; }
         if (!strcmp(*l, "wrld:clear-data")) { act_clear(NULL, NULL, NULL); continue; }
         new_tab(**l ? *l : HOME(), NULL, TRUE);
     }
@@ -751,6 +726,7 @@ static void activate(GtkApplication *app, gpointer d) {
     g_object_set(gtk_settings_get_default(), "gtk-font-name", "Liberation Sans 9", NULL);
     GtkCssProvider *cp = gtk_css_provider_new();
     gtk_css_provider_load_from_string(cp, css);
+    dl_init();
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(cp), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     /* where things are kept: the profile on C:, a cache in memory */
@@ -803,6 +779,7 @@ static void activate(GtkApplication *app, gpointer d) {
     webkit_settings_set_hardware_acceleration_policy(wsettings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     webkit_settings_set_enable_smooth_scrolling(wsettings, FALSE);   /* fewer repaints on the CPU */
     webkit_settings_set_enable_developer_extras(wsettings, FALSE);
+    ab_init();
     apply_options();
 
     win = gtk_application_window_new(app);

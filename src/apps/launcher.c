@@ -137,7 +137,12 @@ static void err_box(const char *title, const char *msg) { msgbox(title, msg, MBI
 
 /* the system clipboard: plain text (UTF-8), shared by WordPad, Notepad and Windows programs */
 static char *clip_buf;
-void clip_set_text(const char *s) { kfree(clip_buf); clip_buf = s ? strdup(s) : NULL; }
+static uint32_t clip_generation;
+void clip_set_text(const char *s) { kfree(clip_buf); clip_buf = s ? strdup(s) : NULL; clip_generation++; }
+uint32_t clip_gen(void) { return clip_generation; }
+/* a Linux program asked THE WRLD OS to open a file: on the desktop's thread, as a double-click */
+static void open_later_cb(void *p) { shell_open((const char *)p, NULL); kfree(p); }
+void shell_open_later(const char *path) { char *p = strdup(path); if (p) wm_defer(open_later_cb, p); }
 const char *clip_text(void) { return clip_buf; }
 
 /* files opened lately, newest first, for The WRLD Search; kept in C:\WRLD\recent.txt */

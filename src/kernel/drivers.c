@@ -158,6 +158,7 @@ void rtc_now(rtc_time_t *t) {
 static key_event_t kq[KQ];
 static volatile uint32_t kq_head, kq_tail;
 static int kb_mods;
+int keyboard_mods(void) { return kb_mods; }
 static bool kb_caps, kb_e0;
 static const char sc_lower[128] = {
     0, 27, '1','2','3','4','5','6','7','8','9','0','-','=', 8, 9,

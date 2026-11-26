@@ -8,8 +8,9 @@
  * come back as wl_pointer, wl_keyboard and xdg_toplevel events.
  *
  * Globals: wl_compositor 5, wl_subcompositor, wl_shm (libwayland's), wl_seat 7
- * (pointer, keyboard), wl_output 3, wl_data_device_manager 3 (no clipboard
- * contents yet) and xdg_wm_base 3 (toplevels, popups with positioners).
+ * (pointer, keyboard), wl_output 3, wl_data_device_manager 3 (the clipboard and drag and drop:
+ * wrldcomp-data.h)
+ * and xdg_wm_base 3 (toplevels, popups with positioners).
  * A client that sets a window geometry draws its own decorations: its window
  * is frameless, cropped to the geometry plus a small margin, and its title bar
  * drags and resizes the desktop window. Others get the system frame.
@@ -620,29 +621,6 @@ static void outputs_update(int fd) {
     if (own && fd >= 0) close(fd);
 }
 
-/* ---------------- wl_data_device_manager (no clipboard contents yet) ---------------- */
-static void ds_offer(struct wl_client *c, struct wl_resource *r, const char *m) { (void)c; (void)r; (void)m; }
-static void ds_destroy(struct wl_client *c, struct wl_resource *r) { (void)c; wl_resource_destroy(r); }
-static void ds_actions(struct wl_client *c, struct wl_resource *r, uint32_t a) { (void)c; (void)r; (void)a; }
-static const struct wl_data_source_interface data_source_impl = { ds_offer, ds_destroy, ds_actions };
-static void dd_drag(struct wl_client *c, struct wl_resource *r, struct wl_resource *s, struct wl_resource *o, struct wl_resource *i, uint32_t serial) { (void)c; (void)r; (void)s; (void)o; (void)i; (void)serial; }
-static void dd_sel(struct wl_client *c, struct wl_resource *r, struct wl_resource *s, uint32_t serial) { (void)c; (void)r; (void)s; (void)serial; }
-static void dd_release(struct wl_client *c, struct wl_resource *r) { (void)c; wl_resource_destroy(r); }
-static const struct wl_data_device_interface data_device_impl = { dd_drag, dd_sel, dd_release };
-static void dm_source(struct wl_client *c, struct wl_resource *r, uint32_t id) {
-    struct wl_resource *s = wl_resource_create(c, &wl_data_source_interface, wl_resource_get_version(r), id);
-    wl_resource_set_implementation(s, &data_source_impl, NULL, NULL);
-}
-static void dm_device(struct wl_client *c, struct wl_resource *r, uint32_t id, struct wl_resource *seat) {
-    (void)seat; struct wl_resource *d = wl_resource_create(c, &wl_data_device_interface, wl_resource_get_version(r), id);
-    wl_resource_set_implementation(d, &data_device_impl, NULL, NULL);
-}
-static const struct wl_data_device_manager_interface data_manager_impl = { dm_source, dm_device };
-static void bind_data_manager(struct wl_client *c, void *d, uint32_t v, uint32_t id) {
-    (void)d; struct wl_resource *r = wl_resource_create(c, &wl_data_device_manager_interface, v, id);
-    wl_resource_set_implementation(r, &data_manager_impl, NULL, NULL);
-}
-
 /* ---------------- input ---------------- */
 /* THE WRLD OS key -> Linux evdev code (the PC scancode for the main block) */
 static const char sc_lower[] = { 0, 27, '1','2','3','4','5','6','7','8','9','0','-','=', 8, 9,
@@ -708,13 +686,15 @@ static struct surface *keyboard_target(struct window *w) {
     wl_list_for_each(p, &w->popups, link) if (p->grab && p->popup && p->s) best = p;
     return best ? best->s : w->top ? w->top->s : NULL;
 }
+static void selection_to(struct wl_client *c);
 static void keyboard_focus(struct surface *s) {
     if (s == kbd_focus) return;
     struct kbd_arg a = { 0 };
     if (kbd_focus) { a.s = kbd_focus; a.serial = next_serial(); send_to_client(&keyboards, wl_resource_get_client(kbd_focus->res), k_leave, &a); }
     kbd_focus = s;
-    if (s) { a.s = s; a.serial = next_serial(); send_to_client(&keyboards, wl_resource_get_client(s->res), k_enter, &a); }
+    if (s) { a.s = s; a.serial = next_serial(); send_to_client(&keyboards, wl_resource_get_client(s->res), k_enter, &a); selection_to(wl_resource_get_client(s->res)); }
 }
+#include "wrldcomp-data.h"
 static void window_events(struct window *w) {
     struct wrldwin_event ev[32];
     ssize_t n = read(w->fd, ev, sizeof ev);
@@ -730,12 +710,14 @@ static void window_events(struct window *w) {
         switch (e->type) {
         case WRLDWIN_EV_MOTION: {
             struct surface *s = surface_at(w, e->x, e->y, &lx, &ly);
+            if (drag_active) { drag_motion(s, lx, ly); break; }
             pointer_focus(s, lx, ly);
             if (s) { struct ptr_arg a = { s, lx, ly, 0, 0, 0, 0 }; send_to_client(&pointers, wl_resource_get_client(s->res), p_motion, &a); }
             break;
         }
         case WRLDWIN_EV_BUTTON_DOWN: case WRLDWIN_EV_BUTTON_UP: {
             struct surface *s = surface_at(w, e->x, e->y, &lx, &ly);
+            if (drag_active) { if (e->type == WRLDWIN_EV_BUTTON_UP) { drag_motion(s, lx, ly); drag_drop(); } break; }
             /* a click outside an open menu closes the menus */
             if (e->type == WRLDWIN_EV_BUTTON_DOWN && any_grab(w) && (!s || s->role != ROLE_POPUP)) {
                 int in_popup = 0;
@@ -778,6 +760,7 @@ static void window_events(struct window *w) {
             }
             break;
         case WRLDWIN_EV_ACTIVE: w->inactive = !e->code; break;
+        case WRLDWIN_EV_DROP: os_drop(w, e->x, e->y); break;
         case WRLDWIN_EV_CLOSE:
             if (w->top && w->top->toplevel) xdg_toplevel_send_close(w->top->toplevel);
             break;
@@ -827,6 +810,7 @@ int main(int argc, char **argv) {
     wl_global_create(display, &wl_output_interface, 3, NULL, bind_output);
     wl_global_create(display, &wl_data_device_manager_interface, 3, NULL, bind_data_manager);
     loop = wl_display_get_event_loop(display);
+    data_init(loop);
     frame_timer = wl_event_loop_add_timer(loop, frame_tick, NULL);
     wl_event_source_timer_update(frame_timer, 16);
     setenv("WAYLAND_DISPLAY", sock, 1);

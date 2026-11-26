@@ -910,9 +910,41 @@ static void desk_ctx_cb(void *ctx, int id) {
     case 14: { extern void recycle_empty(void); recycle_empty(); break; }
     }
 }
+/* files dropped on the desktop: on the Recycle Bin they are deleted, on a folder they go in it,
+ * anywhere else into the Desktop folder */
+bool desktop_drop(int x, int y, const char *paths, bool copy) {
+    extern bool recycle_move(vnode_t *n);
+    int i = dicon_at(x, y);
+    bool ok = false;
+    if (i >= 0 && !strcmp(dicons[i].path, "::recycle")) {
+        for (const char *p = paths; p && *p; ) {
+            const char *e = strchr(p, '\n'); size_t n = e ? (size_t)(e - p) : strlen(p);
+            char line[512]; snprintf(line, sizeof line, "%.*s", (int)MIN(n, sizeof line - 1), p);
+            p += n + (e ? 1 : 0);
+            vnode_t *f = line[0] ? vfs_resolve(line, NULL) : NULL;
+            if (f && recycle_move(f)) ok = true;
+        }
+    } else if (i >= 0 && dicons[i].node && dicons[i].node->dir) ok = shell_drop_files(dicons[i].path, paths, copy);
+    else if (i >= 0 && dicons[i].node) {                      /* on a file or shortcut: open the file with it */
+        char first[512]; const char *e = strchr(paths, '\n'); size_t n = e ? (size_t)(e - paths) : strlen(paths);
+        snprintf(first, sizeof first, "%.*s", (int)MIN(n, sizeof first - 1), paths);
+        char cmd[800]; snprintf(cmd, sizeof cmd, "\"%s\" \"%s\"", dicons[i].path, first);
+        ok = shell_execute(cmd, NULL);
+    } else ok = shell_drop_files(USER_DESKTOP, paths, copy);
+    desktop_refresh();
+    return ok;
+}
+static int dpress = -1, dpress_x, dpress_y;
 void desktop_mouse(int type, int x, int y, int btn) {
     int i = dicon_at(x, y);
+    if (type == ME_UP) dpress = -1;
+    if (type == ME_MOVE && dpress >= 0 && (btn & MB_LEFT) && (ABSDIFF(x, dpress_x) > 5 || ABSDIFF(y, dpress_y) > 5)) {
+        int k = dpress; dpress = -1;
+        if (dicons[k].node) wm_drag_files(dicons[k].path, dicons[k].icon);
+        return;
+    }
     if (type == ME_DOWN) {
+        dpress = (btn & MB_LEFT) && i >= 0 && dicons[i].node ? i : -1; dpress_x = x; dpress_y = y;
         if (dsel != i) { dsel = i; wm_need_redraw = true; }
         if (wm_active) { wm_active = NULL; wm_need_redraw = true; }
         if (btn & MB_RIGHT) {

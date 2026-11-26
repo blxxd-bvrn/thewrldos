@@ -1474,6 +1474,14 @@ void mediaplayer_open_prompt(void) {
     input_box("Open", "Type the path of a media file or a folder:", MUSIC_DIR, open_cb, NULL);
 }
 
+static bool mp_drop(window_t *w, int x, int y, const char *paths, bool copy) {
+    (void)w; (void)x; (void)y; (void)copy;
+    char p[512]; const char *e = strchr(paths, '\n'); size_t n = e ? (size_t)(e - paths) : strlen(paths);
+    snprintf(p, sizeof p, "%.*s", (int)MIN(n, sizeof p - 1), paths);
+    if (!p[0]) return false;
+    mediaplayer_open(p);
+    return true;
+}
 void mediaplayer_open(const char *path) {
     if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     if (mp_win && wm_alive(mp_win)) {
@@ -1495,6 +1503,7 @@ void mediaplayer_open(const char *path) {
     m->list = kzalloc(sizeof(track_t) * MAXT);
     m->voice = -1; m->lib_sel = -1; m->list_sel = -1; m->vid_track = -1; m->skin_sel = m->skin; m->lib_view = 0;
     w->data = m; w->paint = mp_paint; w->destroy = mp_destroy; w->key = mp_key;
+    w->drop = mp_drop;
     w->icon = ICON_MEDIA_PLAYER;
     w->min_w = 600; w->min_h = 430;
     mp_win = w;

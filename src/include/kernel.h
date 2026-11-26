@@ -108,6 +108,7 @@ enum {
 typedef struct { int key; char ch; bool pressed; int mods; } key_event_t;
 void keyboard_init(void);
 bool keyboard_poll(key_event_t *ev);
+int keyboard_mods(void);                     /* MOD_* held now */
 void mouse_init(int w, int h);
 void mouse_set_bounds(int w, int h);
 void mouse_keys_move(int dx, int dy, int buttons);   /* Mouse Keys: move by pixels, set the buttons */

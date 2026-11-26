@@ -303,12 +303,21 @@ static const menu_t np_menus[] = {
     { "Format", { { "Word Wrap", NP_WRAP, 0 }, { NULL } } },
     { "Help", { { "About Notepad", NP_ABOUT, 0 }, { NULL } } },
 };
+static bool np_drop(window_t *w, int x, int y, const char *paths, bool copy) {
+    (void)w; (void)x; (void)y; (void)copy;
+    char p[512]; const char *e = strchr(paths, '\n'); size_t n = e ? (size_t)(e - paths) : strlen(paths);
+    snprintf(p, sizeof p, "%.*s", (int)MIN(n, sizeof p - 1), paths);
+    if (!p[0]) return false;
+    notepad_open(p);
+    return true;
+}
 void notepad_open(const char *path) {
     if (path && *path && vfs_resolve(path, NULL)) { char full_[256]; vfs_path(vfs_resolve(path, NULL), full_, sizeof full_); recent_add(full_); }   /* for The WRLD Search */
     window_t *w = wm_create("Untitled - Notepad", -1, -1, 600, 420, WF_RESIZABLE);
     np_t *n = kzalloc(sizeof *n);
     n->win = w; n->anchor = -1; n->cap = 256; n->buf = kmalloc(n->cap); n->buf[0] = 0;
     w->data = n; w->paint = np_paint; w->key = np_key; w->mouse = np_mouse; w->close = np_close; w->destroy = np_destroy; w->menu_cmd = np_cmd;
+    w->drop = np_drop;
     w->icon = ICON_NOTEPAD; w->cursor = CURSOR_IBEAM;
     w->menus = kmalloc(sizeof np_menus); memcpy(w->menus, np_menus, sizeof np_menus); w->nmenus = ARRAY_LEN(np_menus);
     rect_t cr = wm_client_rect(w); wm_resize_client(w, cr.w, cr.h);
