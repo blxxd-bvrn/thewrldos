@@ -1348,6 +1348,7 @@ static int action_icon(const char *action) {
     const app_info_t *a = app_find(t);
     return a ? a->icon : ICON_EXE;
 }
+static void sm_fit(void);
 static void sm_build(void) {
     sm_ensure();
     sm_left_n = sm_pinned_n = 0;
@@ -1370,6 +1371,7 @@ static void sm_build(void) {
         sm_add_left(mfu[i].label, NULL, action_icon(mfu[i].action), mfu[i].action, false);
         shown++;
     }
+    sm_fit();
 }
 static const sm_item_t sm_right[] = {
     { "My Documents", NULL, ICON_MY_DOCUMENTS, "explorer:" USER_DOCS, true },
@@ -1441,8 +1443,21 @@ static int ap_row_h(const ap_entry_t *e) { return e->label[0] ? 24 : 7; }
 #define SM_HEAD 64
 #define SM_FOOT 44
 
+/* The menu is as tall as its columns need (the left one grows with pinned and frequently used
+ * programs, and All Programs sits under it), at least SM_H, and never taller than the space above
+ * the taskbar: past that, the least used programs are left out of the list. */
+static int sm_left_h(void) { int h = 0; for (int i = 0; i < sm_left_n; i++) h += !sm_left[i].label ? 9 : sm_left[i].sub ? 40 : 34; return h; }
+static int sm_right_h(void) { int h = 0; for (int i = 0; i < SM_RIGHT_N; i++) h += !sm_right[i].label ? 9 : 26; return h; }
+static int sm_needed_h(void) {
+    int left = sm_left_h() + 10 + 36;                         /* the line and All Programs under the list */
+    return SM_HEAD + 6 + MAX(left, sm_right_h()) + 6 + SM_FOOT;
+}
+static void sm_fit(void) {
+    while (sm_left_n > sm_pinned_n + 1 && sm_needed_h() > tb_y() - 2) sm_left_n--;
+    if (sm_left_n == sm_pinned_n + 1 && sm_needed_h() > tb_y() - 2) sm_left_n = sm_pinned_n;   /* no list: no line */
+}
 static rect_t sm_rect(void) {
-    int h = T.classic ? 290 : SM_H;
+    int h = T.classic ? 290 : CLAMP(sm_needed_h(), SM_H, tb_y() - 2);
     int offset = wm_animations && startmenu_animation == MENU_ANIM_SLIDE ? h * (255 - sm_progress) / 255 : 0;
     return R(0, tb_y() - h + offset, T.classic ? 190 : SM_W, h);
 }
