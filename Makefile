@@ -489,6 +489,9 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-webkitgtk/%.c
 	@# and MP3. No AV1: libaom decodes it far too slowly in software, and YouTube picks AV1 when it is
 	@# offered, so leaving it out makes YouTube send VP9. The Opus parser is what MSE needs for Opus.
 	@# About 15 MB; FFmpeg (gst-libav) is left out, at 200 MB. Sound goes to /dev/dsp (ossaudio).
+	@# subenc/subparse: WebKit's subtitle tracks; debugutilsbad: the fakevideosink it uses for hidden video.
+	@# A machine id, which D-Bus and GLib look for (fixed: one per image, not per computer).
+	@[ -s $(LXROOT)/Linux/etc/machine-id ] || echo 57524c444f53505245414c5048413031 > $(LXROOT)/Linux/etc/machine-id
 	@mkdir -p $(LXROOT)/Linux$(GST_DIR) $(LXROOT)/Linux$(GST_SCANNER_DIR)
 	@for p in $(GST_PLUGINS); do [ -f $(GST_DIR)/libgst$$p.so ] && cp -L $(GST_DIR)/libgst$$p.so $(LXROOT)/Linux$(GST_DIR)/ || echo "GStreamer plugin $$p not on this machine (gstreamer1.0-plugins-base/good/bad)"; done
 	@if [ -x $(GST_SCANNER_DIR)/gst-plugin-scanner ]; then cp -L $(GST_SCANNER_DIR)/gst-plugin-scanner $(LXROOT)/Linux$(GST_SCANNER_DIR)/; fi
@@ -498,7 +501,7 @@ GST_DIR := /usr/lib/x86_64-linux-gnu/gstreamer-1.0
 GST_SCANNER_DIR := /usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0
 GST_PLUGINS := coreelements typefindfunctions playback app audioconvert audioresample videoconvertscale volume autodetect \
                audiofx isomp4 matroska vpx opus opusparse openh264 faad videoparsersbad audioparsers codecalpha ossaudio \
-               vorbis flac mpg123 ogg
+               vorbis flac mpg123 ogg subenc subparse debugutilsbad
 # the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
 # replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
 LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)
