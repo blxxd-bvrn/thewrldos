@@ -10,36 +10,52 @@ use super::proc_::*;
 use core::ptr::{self, null_mut};
 
 /* ---------------- time ---------------- */
-static mut BOOT_EPOCH: i64 = -1;
-static mut BOOT_TICK: u32 = 0;
-unsafe fn epoch_ms() -> i64 {
-    if BOOT_EPOCH < 0 {
-        let mut t = RtcTime::default();
-        rtc_read(&mut t);                                       /* the RTC keeps UTC */
-        BOOT_EPOCH = epoch_of([t.year, t.month, t.day, t.hour, t.minute, t.second]) * 1000;
-        BOOT_TICK = timer_ticks();
-    }
-    BOOT_EPOCH + timer_ticks().wrapping_sub(BOOT_TICK) as i64
-}
-/// Nanoseconds since boot, finer than the 1 ms tick when the TSC is calibrated.
+/* One time base for everything: the 1 ms timer tick, refined by the TSC counted from the last
+ * tick (src/kernel/drivers.c stores it as tick_tsc). So the clock never steps backwards, a
+ * deadline in whole ticks is never reached before the clock shows it, and the real-time clock
+ * moves with the monotonic one. */
+extern "C" { static tick_tsc: u64; }
 static mut TSC_PER_MS: u64 = 0;
-static mut BASE_TSC: u64 = 0;
-unsafe fn mono_ns() -> u64 {
+static mut LAST_NS: u64 = 0;
+/// Nanoseconds since boot.
+pub(super) unsafe fn mono_ns() -> u64 {
     if TSC_PER_MS == 0 {
         let a = rdtsc();
         let t0 = timer_ticks();
         while timer_ticks().wrapping_sub(t0) < 5 {}
-        TSC_PER_MS = (rdtsc() - a) / timer_ticks().wrapping_sub(t0).max(1) as u64;
-        BASE_TSC = rdtsc();
+        TSC_PER_MS = ((rdtsc() - a) / timer_ticks().wrapping_sub(t0).max(1) as u64).max(1);
     }
-    let ms = timer_ticks() as u64;
-    let sub = if TSC_PER_MS != 0 { ((rdtsc().wrapping_sub(BASE_TSC)) % TSC_PER_MS) * 1_000_000 / TSC_PER_MS } else { 0 };
-    ms * 1_000_000 + sub % 1_000_000
+    let (t, base, now) = loop {
+        let t = timer_ticks();
+        let base = ptr::read_volatile(ptr::addr_of!(tick_tsc));
+        let now = rdtsc();
+        if timer_ticks() == t { break (t, base, now); }
+    };
+    let sub = if base == 0 { 0 } else { ((now.wrapping_sub(base) as u128 * 1_000_000) / TSC_PER_MS as u128).min(999_999) as u64 };
+    let ns = (t as u64 * 1_000_000 + sub).max(LAST_NS);
+    LAST_NS = ns;
+    ns
 }
+static mut BOOT_EPOCH_NS: u64 = 0;
+static mut BOOT_MONO_NS: u64 = 0;
+/// Nanoseconds since 1970 (UTC): the RTC read once, then the monotonic clock.
+pub(super) unsafe fn real_ns() -> u64 {
+    if BOOT_EPOCH_NS == 0 {
+        let mut t = RtcTime::default();
+        rtc_read(&mut t);                                       /* the RTC keeps UTC */
+        BOOT_MONO_NS = mono_ns();
+        BOOT_EPOCH_NS = (epoch_of([t.year, t.month, t.day, t.hour, t.minute, t.second]) as u64).wrapping_mul(1_000_000_000).max(1);
+    }
+    BOOT_EPOCH_NS.wrapping_add(mono_ns().wrapping_sub(BOOT_MONO_NS))
+}
+unsafe fn epoch_ms() -> i64 { (real_ns() / 1_000_000) as i64 }
+/// The tick (timer_ticks) at which the monotonic clock has certainly reached `ns`.
+pub(super) fn tick_at(ns: u64) -> u32 { ns.div_ceil(1_000_000) as u32 }
 fn ns_ts(ns: u64) -> [i64; 2] { [(ns / 1_000_000_000) as i64, (ns % 1_000_000_000) as i64] }
+fn ts_ns(ts: [i64; 2]) -> u64 { if ts[0] < 0 || ts[1] < 0 { 0 } else { (ts[0] as u64).saturating_mul(1_000_000_000).saturating_add(ts[1] as u64) } }
 unsafe fn sys_clock_gettime(vm: *mut Uvm, clk: u64, ut: u64) -> i64 {
     let ts = match clk {
-        0 | 5 | 8 | 11 => { let ms = epoch_ms(); [ms / 1000, (ms % 1000) * 1_000_000] }   /* REALTIME, _COARSE, _ALARM, TAI */
+        0 | 5 | 8 | 11 => ns_ts(real_ns()),                                             /* REALTIME, _COARSE, _ALARM, TAI */
         1 | 4 | 6 | 7 | 9 => ns_ts(mono_ns()),                                        /* MONOTONIC, RAW, COARSE, BOOTTIME */
         2 | 3 => ns_ts((*task_current()).cpu_ms as u64 * 1_000_000),                   /* process / thread CPU time */
         _ => return -EINVAL,
@@ -47,14 +63,12 @@ unsafe fn sys_clock_gettime(vm: *mut Uvm, clk: u64, ut: u64) -> i64 {
     if uput(vm, ut, &ts) { 0 } else { -EFAULT }
 }
 unsafe fn sleep_ns(ns: u64) -> i64 {
-    let mut ms = ns.wrapping_add(999_999) / 1_000_000;
-    if ms == 0 {
+    if ns == 0 {
         if interrupted() { return -EINTR; }
         task_yield();
         return 0;
     }
-    if ms > 0x7FFF_FFFF { ms = 0x7FFF_FFFF; }
-    let end = timer_ticks().wrapping_add(ms as u32);
+    let end = tick_at(mono_ns().saturating_add(ns.min(0x7FFF_FFFF * 1_000_000)));
     while end.wrapping_sub(timer_ticks()) as i32 > 0 {
         if interrupted() { return -EINTR; }
         let left = end.wrapping_sub(timer_ticks());
@@ -84,13 +98,13 @@ unsafe fn sys_futex(p: *mut LxProc, uaddr: u64, op: c_int, val: u32, utime: u64,
             let mut timed = false;
             if utime != 0 {
                 let Some(ts) = uget::<[i64; 2]>(vm, utime) else { return -EFAULT };
-                let mut ms = (ts[0].wrapping_mul(1000).wrapping_add(ts[1] / 1_000_000)) as u64;
-                if cmd == 9 {                                    /* absolute */
-                    let real = op & 256 != 0;
-                    let now = if real { epoch_ms() as u64 } else { mono_ns() / 1_000_000 };
-                    ms = if ms > now { ms - now } else { 0 };
-                }
-                deadline = timer_ticks().wrapping_add(ms.min(0x7FFF_FFFF) as u32);
+                let t = ts_ns(ts);
+                let now = mono_ns();
+                let rel = if cmd == 9 {                          /* absolute, on the monotonic or (FUTEX_CLOCK_REALTIME) the real-time clock */
+                    let base = if op & 256 != 0 { real_ns() } else { now };
+                    t.saturating_sub(base)
+                } else { t };
+                deadline = tick_at(now.saturating_add(rel.min(0x7FFF_FFFF * 1_000_000)));
                 timed = true;
             }
             let w = kmalloc(core::mem::size_of::<FWait>()) as *mut FWait;
@@ -384,7 +398,7 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
         35 | 230 => {                                            /* nanosleep, clock_nanosleep */
             let Some(ts) = uget::<[i64; 2]>(vm, if nr == 35 { a0 } else { a2 }) else { return -EFAULT };
             let mut ns = (ts[0] as u64).wrapping_mul(1_000_000_000).wrapping_add(ts[1] as u64);
-            if nr == 230 && a1 & 1 != 0 { let now = if a0 == 0 { epoch_ms() as u64 * 1_000_000 } else { mono_ns() }; ns = if ns > now { ns - now } else { 0 }; }   /* TIMER_ABSTIME */
+            if nr == 230 && a1 & 1 != 0 { let now = if a0 == 0 { real_ns() } else { mono_ns() }; ns = if ns > now { ns - now } else { 0 }; }   /* TIMER_ABSTIME */
             sleep_ns(ns)
         }
         36 => {                                                  /* getitimer: only ITIMER_REAL is real here */
@@ -428,7 +442,7 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
         }
         228 => sys_clock_gettime(vm, a0, a1),
         229 => { let ts: [i64; 2] = [0, 1_000_000]; if a1 != 0 { if uput(vm, a1, &ts) { 0 } else { -EFAULT } } else { 0 } }
-        96 => { let ms = epoch_ms(); let tv: [i64; 2] = [ms / 1000, (ms % 1000) * 1000]; if a0 != 0 && !uput(vm, a0, &tv) { return -EFAULT; } 0 }
+        96 => { let us = real_ns() / 1000; let tv: [i64; 2] = [(us / 1_000_000) as i64, (us % 1_000_000) as i64]; if a0 != 0 && !uput(vm, a0, &tv) { return -EFAULT; } 0 }
         201 => { let s = epoch_ms() / 1000; if a0 != 0 { uput(vm, a0, &s); } s }   /* time */
         39 => (*p).pid as i64,
         186 => (*t).tid as i64,

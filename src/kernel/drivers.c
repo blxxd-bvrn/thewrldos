@@ -7,8 +7,12 @@ volatile uint32_t idle_ticks;
 volatile bool cpu_idle_flag;
 void (*timer_tick_hook)(uint32_t ticks);    /* runs in interrupt context every tick */
 void (*watchdog_hook)(regs_t *r, uint32_t ticks);
+/* the TSC at the last tick: the Linux layer's clock (rust/src/kernel/lx/sys.rs) counts the
+ * time within a tick from it, so its nanoseconds stay in step with the tick */
+volatile uint64_t tick_tsc;
 static void timer_irq(regs_t *r) {
     ticks++;
+    uint32_t lo, hi; __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi)); tick_tsc = ((uint64_t)hi << 32) | lo;
     if (timer_tick_hook) timer_tick_hook(ticks);
     if (watchdog_hook && !(ticks & 63)) watchdog_hook(r, ticks);
     if (!(ticks & 15)) { extern void ps2_poll(void); ps2_poll(); }

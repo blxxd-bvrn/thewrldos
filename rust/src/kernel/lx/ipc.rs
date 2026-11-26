@@ -13,6 +13,7 @@ use super::*;
 use super::mem::*;
 use super::sig::*;
 use super::fs::{lx_fd_get, lx_fd_alloc, lx_file_put, O_NONBLOCK};
+use super::sys::{mono_ns, real_ns, tick_at};
 use crate::kernel as k;
 use crate::netstack::Tcb;
 use core::ptr::{self, null_mut};
@@ -80,7 +81,7 @@ struct Sock {
 #[repr(C)] #[derive(Clone, Copy)] struct EpItem { fd: c_int, events: u32, data: u64 }
 #[repr(C)] struct Epoll { o: Obj, n: c_int, items: [EpItem; 64] }
 #[repr(C)] struct EvFd { o: Obj, count: u64, sem: bool }
-#[repr(C)] struct TFd { o: Obj, armed: bool, next: u32, interval: u32, exp: u64 }
+#[repr(C)] struct TFd { o: Obj, armed: bool, next: u32, interval: u32, exp: u64, realtime: bool }
 
 static mut BOUND_LIST: *mut Sock = null_mut();
 static mut INET_SOCKS: *mut Sock = null_mut();
@@ -1131,6 +1132,7 @@ unsafe fn do_timerfd_create(p: *mut LxProc, clockid: c_int, flags: c_int) -> i64
     if clockid != 0 && clockid != 1 && clockid != 7 { return -EINVAL; }
     let t = znew::<TFd>();
     if t.is_null() { return -ENOMEM; }
+    (*t).realtime = clockid == 0;
     let f = wrap(FD_TIMERFD, t as *mut c_void);
     if f.is_null() { zfree(t); return -ENOMEM; }
     (*f).oflags = O_RDWR_F | if flags & O_NONBLOCK != 0 { O_NONBLOCK } else { 0 };
@@ -1146,11 +1148,23 @@ unsafe fn do_timerfd_settime(p: *mut LxProc, fd: c_int, flags: c_int, unew: u64,
     let mut iv = [0u64; 4];
     if !get(p, &mut iv, unew, 32) { return -EFAULT; }
     if uold != 0 { let zero = [0u64; 4]; if !put(p, uold, &zero, 32) { return -EFAULT; } }
-    let iv_ms = iv[0].wrapping_mul(1000).wrapping_add(iv[1] / 1_000_000);   /* interval */
-    let vl_ms = iv[2].wrapping_mul(1000).wrapping_add(iv[3] / 1_000_000);   /* value */
-    if iv[2] == 0 && iv[3] == 0 { (*t).armed = false; (*t).interval = 0; return 0; }
-    (*t).interval = iv_ms.min(0x7FFF_FFFF) as u32;
-    (*t).next = if flags & 1 != 0 { vl_ms.min(0xFFFF_FFFF) as u32 } else { timer_ticks().wrapping_add(vl_ms.min(0x7FFF_FFFF) as u32) };
+    /* deadlines in whole ticks, rounded up: a timer never fires before the clock that
+       clock_gettime reads has reached it (rounding down woke programs up to 1 ms early, and
+       libwayland and WebKit then re-armed the same deadline and spun until the next tick) */
+    let ns = |s: u64, n: u64| s.saturating_mul(1_000_000_000).saturating_add(n);
+    let interval = ns(iv[0], iv[1]);
+    let value = ns(iv[2], iv[3]);
+    /* setting the timer clears the expirations not yet read, as on Linux: libwayland and WebKit
+       re-arm their timerfds without reading them, and a count left over kept them "readable"
+       for ever, so their event loops never slept */
+    (*t).exp = 0;
+    if value == 0 { (*t).armed = false; (*t).interval = 0; return 0; }
+    (*t).interval = interval.div_ceil(1_000_000).min(0x7FFF_FFFF) as u32;
+    let now = mono_ns();
+    let target = if flags & 1 == 0 { now.saturating_add(value) }                       /* relative */
+                 else if (*t).realtime { now.saturating_add(value.saturating_sub(real_ns())) }  /* TFD_TIMER_ABSTIME on the real-time clock */
+                 else { value };
+    (*t).next = tick_at(target.min(now.saturating_add(0x7FFF_FFFF * 1_000_000)));
     (*t).armed = true;
     0
 }

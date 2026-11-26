@@ -316,18 +316,23 @@ unsafe fn split_vma(v: *mut Vma, a: u64) {
     (*v).end = a;
     (*v).next = n;
 }
+/// The highest free range of `len` bytes ending at or below `below` (0: none). One pass over
+/// the regions, which are kept sorted and apart: the candidates are the ends of the gaps between
+/// them. (It used to rescan every region for each candidate, which made each mmap in a large
+/// program like WebKit cost millions of steps.)
 pub unsafe fn uvm_find_free(vm: *mut Uvm, len: u64, below: u64) -> u64 {
-    let mut end = below;
-    for _ in 0..100000 {
-        if end < USER_LO.wrapping_add(len) { return 0; }
-        let start = end - len;
-        let mut hit: *mut Vma = null_mut();
-        let mut v = (*vm).vmas;
-        while !v.is_null() { if (*v).start < end && (*v).end > start { hit = v; } v = (*v).next; }   /* highest overlap */
-        if hit.is_null() { return start; }
-        end = (*hit).start;
+    if below < USER_LO.wrapping_add(len) { return 0; }
+    let mut best = 0u64;
+    let mut gap_lo = USER_LO;                             /* start of the gap before v */
+    let mut v = (*vm).vmas;
+    loop {
+        let gap_hi = if v.is_null() { below } else { (*v).start.min(below) };
+        if gap_hi >= gap_lo.saturating_add(len) { best = gap_hi - len; }
+        if v.is_null() || (*v).start >= below { break; }
+        gap_lo = gap_lo.max((*v).end);
+        v = (*v).next;
     }
-    0
+    best
 }
 pub unsafe fn uvm_unmap(vm: *mut Uvm, start: u64, len: u64) -> i64 {
     let end = palign(start.wrapping_add(len));
