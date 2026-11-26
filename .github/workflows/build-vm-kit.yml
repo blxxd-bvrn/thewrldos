@@ -91,8 +91,8 @@ jobs:
           echo "Unresolved with only Windows' folders on the PATH:"
           (cd qemu && PATH=/usr/bin:/c/Windows/System32:/c/Windows ldd ./qemu-system-x86_64.exe 2>&1 | grep -E '\?\?\?|not found|/ucrt64/' || echo "  none")
           # the packaged copy on its own, as it runs on a computer without MSYS2
-          (cd qemu && PATH=/c/Windows/System32:/c/Windows timeout 60 ./qemu-system-x86_64.exe --version) || { echo "QEMU does not start without MSYS2's folder: a DLL is missing"; exit 1; }
-          (cd qemu && PATH=/c/Windows/System32:/c/Windows timeout 60 ./qemu-system-x86_64.exe -machine help > /dev/null) || { echo "QEMU's machine list failed without MSYS2's folder"; exit 1; }
+          (cd qemu && PATH=/c/Windows/System32:/c/Windows /usr/bin/timeout 60 ./qemu-system-x86_64.exe --version) || { echo "QEMU does not start without MSYS2's folder: it did not start or did not finish in a minute"; exit 1; }
+          (cd qemu && PATH=/c/Windows/System32:/c/Windows /usr/bin/timeout 60 ./qemu-system-x86_64.exe -machine help > /dev/null) || { echo "QEMU's machine list failed without MSYS2's folder"; exit 1; }
           (cd qemu && zip -qr ../wrld-build-vm-qemu-win64.zip .)
           ls -la wrld-build-vm-qemu-win64.zip
       - uses: actions/download-artifact@v4
