@@ -341,6 +341,60 @@ def ic_drive_dmg():
     text(i, 50, 18, "D", hexc("#2B3A55"), 14)
     return i
 
+def ic_drive_cd():
+    i = ic_drive()
+    # a disc above the drive: silver, a rainbow sheen, the hole
+    ellipse(i, 22, 2, 78, 40, hexc("#F4F6F9"), hexc("#AEB6C2"), ol=hexc("#5E646E"), ow=1.4)
+    ellipse(i, 28, 6, 72, 36, hexc("#E6F0FF"), hexc("#C9D2DE"))
+    line(i, [(34, 10), (66, 32)], hexc("#F7C6FF"), 2.2)
+    line(i, [(38, 8), (70, 28)], hexc("#C6F2FF"), 2.0)
+    ellipse(i, 45, 16, 55, 26, hexc("#FFFFFF"), hexc("#8C95A3"), ol=hexc("#5E646E"), ow=1.0)
+    return i
+
+def ic_drive_usb():
+    i = new()
+    # a USB flash drive lying across: the body, its loop, the metal plug with its two windows
+    rect(i, 8, 38, 66, 72, hexc("#5A86D6"), hexc("#1F3F8C"), r=8, ol=hexc("#142C66"), ow=1.6)
+    rect(i, 12, 41, 62, 50, hexc("#8FB4F2"), hexc("#5A86D6"), r=5)
+    ellipse(i, 14, 50, 24, 60, hexc("#E8EEF8"), hexc("#9AA9C2"), ol=hexc("#142C66"), ow=1.2)
+    rect(i, 66, 43, 94, 67, hexc("#F4F6F9"), hexc("#A7AFBB"), r=2, ol=hexc("#5E646E"), ow=1.4)
+    rect(i, 74, 50, 80, 55, hexc("#3A4250"), hexc("#3A4250"))
+    rect(i, 84, 50, 90, 55, hexc("#3A4250"), hexc("#3A4250"))
+    ellipse(i, 50, 62, 57, 69, hexc("#9CFF9C"), hexc("#20A020"))
+    return i
+
+def ic_cards():
+    i = new()
+    rect(i, 10, 14, 60, 84, hexc("#FFFFFF"), hexc("#E3E7EE"), r=6, ol=hexc("#6B7380"), ow=1.6)
+    text(i, 22, 28, "A", hexc("#202020"), 16)
+    poly(i, [(35, 42), (46, 58), (35, 74), (24, 58)], hexc("#2A2A2A"), hexc("#000000"))
+    rect(i, 40, 18, 90, 88, hexc("#FFFFFF"), hexc("#E3E7EE"), r=6, ol=hexc("#6B7380"), ow=1.6)
+    text(i, 52, 32, "K", hexc("#C21E1E"), 16)
+    ellipse(i, 54, 46, 66, 58, hexc("#E83A3A"), hexc("#B01010"))
+    ellipse(i, 64, 46, 76, 58, hexc("#E83A3A"), hexc("#B01010"))
+    poly(i, [(54, 54), (76, 54), (65, 72)], hexc("#E83A3A"), hexc("#B01010"))
+    return i
+
+def ic_pinball():
+    i = new()
+    poly(i, [(14, 10), (86, 10), (92, 90), (8, 90)], hexc("#2C6BD8"), hexc("#0E2E78"), ol=hexc("#0A1E50"), ow=1.6)
+    ellipse(i, 22, 20, 44, 42, hexc("#FFE36A"), hexc("#E08A00"), ol=hexc("#7A4A00"), ow=1.2)
+    ellipse(i, 56, 26, 76, 46, hexc("#FF8AA8"), hexc("#C21E4E"), ol=hexc("#6A0A26"), ow=1.2)
+    poly(i, [(18, 76), (44, 84), (44, 88), (16, 82)], hexc("#F4F6F9"), hexc("#A7AFBB"))
+    poly(i, [(82, 76), (56, 84), (56, 88), (84, 82)], hexc("#F4F6F9"), hexc("#A7AFBB"))
+    ellipse(i, 44, 52, 60, 68, hexc("#FFFFFF"), hexc("#8C95A3"), ol=hexc("#3A4250"), ow=1.2)
+    return i
+
+def ic_fps():
+    i = new()
+    ellipse(i, 8, 8, 92, 92, hexc("#2A3442"), hexc("#0C1118"), ol=hexc("#000000"), ow=1.6)
+    ellipse(i, 20, 20, 80, 80, hexc("#3E6B3A"), hexc("#16301A"))
+    ellipse(i, 32, 32, 68, 68, hexc("#E85A3A"), hexc("#902010"))
+    ellipse(i, 42, 42, 58, 58, hexc("#FFE36A"), hexc("#E08A00"))
+    for a, b in (((50, 10), (50, 34)), ((50, 66), (50, 90)), ((10, 50), (34, 50)), ((66, 50), (90, 50))):
+        line(i, [a, b], hexc("#9CFF9C"), 3)
+    return i
+
 def ic_help():
     i = new(); circle_badge(i, 8, 8, 92, 92, "#5AA2FF", "#1446B8", "#0E3486"); text(i, 50, 52, "?", WHITE, 56); return i
 def ic_info():
@@ -641,6 +695,7 @@ ICONS = [
     ("about", ic_about), ("explorer", ic_explorer), ("game", ic_game), ("desktop", ic_desktop), ("shell_folder", ic_shell_folder), ("setup", ic_setup),
     ("browser", ic_browser), ("stop", ic_stop), ("refresh", ic_refresh), ("home", ic_home), ("lock", ic_lock),
     ("media_player", ic_media_player), ("music_file", ic_music_file), ("package", ic_package), ("wordpad", ic_wordpad),
+    ("drive_cd", ic_drive_cd), ("drive_usb", ic_drive_usb), ("cards", ic_cards), ("pinball", ic_pinball), ("fps", ic_fps),
 ]
 SIZES = [48, 32, 16]
 

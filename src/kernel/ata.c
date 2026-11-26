@@ -126,6 +126,86 @@ static bool ata_read(blkdev_t *d, uint64_t blk, uint32_t count, void *buf);
 static bool ata_write(blkdev_t *d, uint64_t blk, uint32_t count, const void *buf);
 static const blkops_t ata_ops = { ata_read, ata_write, NULL };
 
+/* ---------------- ATAPI: CD/DVD/Blu-ray drives on IDE (PIO packet commands) ---------------- */
+static int atapi_wait(uint16_t io, uint16_t ctl, uint32_t ms) {
+    uint32_t t0 = timer_ticks();
+    for (;;) {
+        uint8_t st = inb(ctl);
+        if (!(st & ST_BSY)) return st;
+        if (timer_ticks() - t0 > ms) return -1;
+        task_yield();
+    }
+}
+/* one packet command: 0 done, 2 the drive reported an error (no disc, not ready), -1 no answer */
+static int atapi_cmd(blkdev_t *d, const uint8_t *cdb, void *buf, uint32_t len) {
+    uint16_t io = d->io, ctl = d->ctl;
+    if (atapi_wait(io, ctl, 2000) < 0) return -1;
+    outb(io + ATA_DRIVE, 0xA0 | (d->slave << 4));
+    for (int i = 0; i < 15; i++) inb(ctl);
+    uint32_t lim = len ? MIN(len, 0xF800u) : 0;
+    outb(io + ATA_ERR, 0);                                   /* PIO */
+    outb(io + ATA_LBA1, lim & 0xFF); outb(io + ATA_LBA2, lim >> 8);
+    outb(io + ATA_CMD, 0xA0);                                /* PACKET */
+    int st = atapi_wait(io, ctl, 2000);
+    if (st < 0) return -1;
+    if (st & ST_ERR) return 2;
+    if (!(st & ST_DRQ)) return -1;
+    uint16_t pkt[6] = { 0 }; memcpy(pkt, cdb, 12);
+    outsw(io, pkt, 6);
+    uint32_t got = 0;
+    for (;;) {
+        st = atapi_wait(io, ctl, 10000);                     /* a disc spinning up takes seconds */
+        if (st < 0) return -1;
+        if (st & ST_ERR) return 2;
+        if (!(st & ST_DRQ)) break;
+        uint32_t n = inb(io + ATA_LBA1) | (inb(io + ATA_LBA2) << 8);
+        if (!n) break;
+        for (uint32_t k = 0; k < n; k += 2) {                /* words the buffer has no room for are dropped */
+            uint16_t w = inw(io);
+            if (buf && got + 1 < len) { ((uint8_t *)buf)[got] = w & 0xFF; ((uint8_t *)buf)[got + 1] = w >> 8; }
+            got += 2;
+        }
+    }
+    return 0;
+}
+static bool atapi_read(blkdev_t *d, uint64_t blk, uint32_t n, void *buf) {
+    uint8_t cdb[12] = { 0x28, 0, (uint8_t)(blk >> 24), (uint8_t)(blk >> 16), (uint8_t)(blk >> 8), (uint8_t)blk, 0, (uint8_t)(n >> 8), (uint8_t)n };
+    for (int tries = 0; tries < 3; tries++) if (atapi_cmd(d, cdb, buf, n * 2048) == 0) return true;
+    return false;
+}
+static bool atapi_write(blkdev_t *d, uint64_t blk, uint32_t n, const void *buf) { (void)d; (void)blk; (void)n; (void)buf; return false; }
+static const blkops_t atapi_ops = { atapi_read, atapi_write, NULL };
+static int atapi_media(blkdev_t *d) {
+    int r = optical_media(d, atapi_cmd);
+    static int last[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+    int k = (d->bus * 2 + d->slave) & 7;
+    if (r != last[k]) { klog("atapi: %s: %s (%u sectors)", d->model, r ? "disc in" : "no disc", d->sectors); last[k] = r; }
+    return r;
+}
+static bool atapi_eject(blkdev_t *d) { return optical_eject(d, atapi_cmd); }
+static void atapi_identify(int bus, int slave) {
+    uint16_t io = chans[bus].io, ctl = chans[bus].ctl;
+    outb(io + ATA_DRIVE, 0xA0 | (slave << 4));
+    for (int i = 0; i < 15; i++) inb(ctl);
+    outb(io + ATA_CMD, 0xA1);                                /* IDENTIFY PACKET DEVICE */
+    uint8_t st = 0;
+    { uint32_t t0 = timer_ticks(); do { st = inb(io + 7); if (!(st & ST_BSY) && (st & (ST_DRQ | ST_ERR))) break; } while (timer_ticks() - t0 < 1000); }
+    if (st & ST_ERR || !(st & ST_DRQ)) return;
+    uint16_t id[256];
+    insw(io, id, 256);
+    if (((id[0] >> 8) & 0x1F) != 5) return;                  /* not a CD/DVD drive (a tape, a ZIP drive) */
+    blkdev_t *d = blk_register();
+    if (!d) return;
+    d->bus = bus; d->slave = slave; d->io = io; d->ctl = ctl;
+    for (int i = 0; i < 20; i++) { d->model[i * 2] = id[27 + i] >> 8; d->model[i * 2 + 1] = id[27 + i] & 0xFF; }
+    d->model[40] = 0;
+    for (int i = 39; i >= 0 && d->model[i] == ' '; i--) d->model[i] = 0;
+    d->ops = &atapi_ops; d->kind = "IDE"; d->driver = "cdrom";
+    d->busno = bus; d->id = slave; d->bsize = 2048; d->max_blocks = 30;   /* 60 KB: under the byte-count limit */
+    d->removable = d->optical = true; d->media = atapi_media; d->eject = atapi_eject;
+    atapi_media(d);                                          /* the disc in it now, if any */
+    blk_commit(d);
+}
 static void identify(int bus, int slave) {
     uint16_t io = chans[bus].io, ctl = chans[bus].ctl;
     if (inb(io + 7) == 0xFF) return;                  /* floating bus */
@@ -137,7 +217,8 @@ static void identify(int bus, int slave) {
     uint8_t st = inb(io + 7);
     if (!st) return;
     { uint32_t t0 = timer_ticks(); while ((inb(io + 7) & ST_BSY) && timer_ticks() - t0 < 1000) {} }
-    if (inb(io + ATA_LBA1) || inb(io + ATA_LBA2)) return;   /* ATAPI / SATA signature: not an ATA disk */
+    if (inb(io + ATA_LBA1) == 0x14 && inb(io + ATA_LBA2) == 0xEB) { atapi_identify(bus, slave); return; }   /* a CD/DVD drive */
+    if (inb(io + ATA_LBA1) || inb(io + ATA_LBA2)) return;   /* SATA signature: not an ATA disk */
     { uint32_t t0 = timer_ticks(); do { st = inb(io + 7); if (st & (ST_DRQ | ST_ERR)) break; } while (timer_ticks() - t0 < 1000); }
     if (st & ST_ERR || !(st & ST_DRQ)) return;
     uint16_t id[256];

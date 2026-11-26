@@ -43,6 +43,15 @@ pub static mut vfs_hook: Option<unsafe extern "C" fn(c_int, *mut Vnode, *const c
 
 unsafe fn bump() { vfs_generation = vfs_generation.wrapping_add(1); }
 unsafe fn hook(op: c_int, n: *mut Vnode, old: *const c_char) { if let Some(f) = vfs_hook { f(op, n, old); } }
+/// Removable media (media.c): fills a file's contents the first time it is opened.
+#[no_mangle]
+pub static mut vfs_lazy_load: Option<unsafe extern "C" fn(*mut Vnode) -> CBool> = None;
+/// A file on a removable medium whose contents have not been read yet: read them now.
+pub(crate) unsafe fn ensure_loaded(n: *mut Vnode) {
+    if !n.is_null() && (*n).dir == 0 && (*n).data.is_null() && (*n).lazy != 0 && (*n).size != 0 {
+        if let Some(f) = vfs_lazy_load { f(n); }
+    }
+}
 unsafe fn cstr<'a>(p: *const c_char) -> &'a [u8] { if p.is_null() { &[] } else { CStr::from_ptr(p).to_bytes() } }
 fn cvec(s: &[u8]) -> Vec<u8> { let mut v = s.to_vec(); v.push(0); v }
 unsafe fn name<'a>(n: *mut Vnode) -> &'a [u8] { cstr((*n).name.as_ptr()) }
@@ -89,6 +98,7 @@ unsafe fn pin_slot(n: *mut Vnode) -> Option<usize> {
 /// The node's contents, guaranteed not to change or be freed (NULL if it cannot be pinned).
 #[no_mangle]
 pub unsafe extern "C" fn vfs_pin(n: *mut Vnode) -> *const u8 {
+    ensure_loaded(n);
     if n.is_null() || (*n).dir != 0 || (*n).data.is_null() { return core::ptr::null(); }
     if pin_slot(n).is_some() { return (*n).data; }
     let Some(i) = (0..NPIN).find(|&i| PINS[i].0.is_null()) else { return core::ptr::null() };
@@ -279,7 +289,9 @@ unsafe fn resolve(path: &[u8], cwd: Option<&[u8]>) -> *mut Vnode {
 #[no_mangle]
 pub unsafe extern "C" fn vfs_resolve(path: *const c_char, cwd: *const c_char) -> *mut Vnode {
     if path.is_null() { return null_mut(); }
-    resolve(cstr(path), (!cwd.is_null()).then(|| cstr(cwd)))
+    let n = resolve(cstr(path), (!cwd.is_null()).then(|| cstr(cwd)));
+    ensure_loaded(n);
+    n
 }
 #[no_mangle]
 pub unsafe extern "C" fn vfs_path(n: *mut Vnode, buf: *mut c_char, cap: c_int) { put_cbytes(buf, cap, &path_of(n)) }
@@ -419,7 +431,8 @@ pub unsafe extern "C" fn vfs_copy(n: *mut Vnode, dd: *mut Vnode, newname: *const
         if top.is_null() { top = c; }
         if c.is_null() { continue; }
         if (*s).dir == 0 {
-            if (*s).size != 0 { vfs_write_node(c, (*s).data as *const c_void, (*s).size); }
+            ensure_loaded(s);
+            if (*s).size != 0 && !(*s).data.is_null() { vfs_write_node(c, (*s).data as *const c_void, (*s).size); }
         } else {
             stack.extend(kids(s).into_iter().rev().map(|k| (k, c, core::ptr::null())));
         }

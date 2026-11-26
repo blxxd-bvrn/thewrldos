@@ -48,13 +48,56 @@ static bool sd_flush(blkdev_t *d) {
 }
 static const blkops_t sd_ops = { sd_read, sd_write, sd_flush };
 
+/* ---- CD/DVD/Blu-ray drives (SCSI peripheral type 5), here and for ATAPI and USB ---- */
+static int cdb_len(uint8_t op) { return op < 0x20 ? 6 : op < 0x60 ? 10 : op >= 0xA0 && op < 0xC0 ? 12 : 16; }
+/* Is a disc in, and how big is it? TEST UNIT READY (a fresh disc first reports UNIT ATTENTION,
+ * so it is asked twice), then READ CAPACITY. Sets the drive's size: 0 without a disc. */
+int optical_media(blkdev_t *d, packet_fn run) {
+    uint8_t tur[12] = { 0 }, rs[12] = { 0x03, 0, 0, 0, 18 }, sense[18];
+    int r = run(d, tur, NULL, 0);
+    /* a drive whose disc changed answers UNIT ATTENTION until the sense data is read */
+    for (int i = 0; r && i < 3; i++) { run(d, rs, sense, sizeof sense); r = run(d, tur, NULL, 0); }
+    uint8_t rc[12] = { 0x25 }, b[8] = { 0 };
+    if (r || run(d, rc, b, 8)) { d->sectors = 0; d->total_sectors = 0; return 0; }
+    uint64_t blocks = (uint64_t)be32(b) + 1;
+    uint64_t secs = blocks * 4;                               /* 2048-byte blocks in 512-byte sectors */
+    d->total_sectors = secs;
+    d->sectors = secs > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)secs;
+    return blocks > 1;
+}
+bool optical_eject(blkdev_t *d, packet_fn run) {
+    uint8_t allow[12] = { 0x1E }, stop[12] = { 0x1B, 0, 0, 0, 0x02 };   /* allow removal; stop, eject */
+    run(d, allow, NULL, 0);
+    return run(d, stop, NULL, 0) == 0;
+}
+static int sd_packet(blkdev_t *d, const uint8_t *cdb, void *buf, uint32_t len) {
+    scsi_disk_t *s = d->priv;
+    return cmd(s->h, s->target, s->lun, cdb, cdb_len(cdb[0]), buf, len, len ? 1 : 0);
+}
+static int sd_media(blkdev_t *d) { return optical_media(d, sd_packet); }
+static bool sd_eject(blkdev_t *d) { return optical_eject(d, sd_packet); }
+static bool cd_write(blkdev_t *d, uint64_t blk, uint32_t n, const void *buf) { (void)d; (void)blk; (void)n; (void)buf; return false; }
+static const blkops_t cd_ops = { sd_read, cd_write, NULL };
+static void probe_cd(scsi_host_t *h, int t, int l, const char *model) {
+    blkdev_t *d = blk_register();
+    if (!d) return;
+    scsi_disk_t *s = kzalloc(sizeof *s); s->h = h; s->target = t; s->lun = l;
+    d->bsize = 2048; d->max_blocks = MAX(1u, h->max_xfer / 2048);
+    strncpy(d->model, model, sizeof d->model - 1);
+    d->ops = &cd_ops; d->priv = s; d->kind = "SCSI"; d->driver = h->driver;
+    d->busno = h->busno; d->id = t; d->lun = l;
+    d->removable = d->optical = true; d->media = sd_media; d->eject = sd_eject;
+    sd_media(d);
+    blk_commit(d);
+}
+
 static void probe_lun(scsi_host_t *h, int t, int l, uint8_t *buf) {
     uint8_t inq[6] = { 0x12, 0, 0, 0, 36, 0 };
     memset(buf, 0, 36);
     if (cmd(h, t, l, inq, 6, buf, 36, 1)) return;
     if ((buf[0] >> 5) != 0) return;                     /* nothing connected at this LUN */
     uint8_t type = buf[0] & 0x1F;
-    if (type != 0x00 && type != 0x0E) return;           /* only disks (CD-ROMs etc. are skipped) */
+    if (type != 0x00 && type != 0x0E && type != 0x05) return;   /* disks and CD/DVD drives */
     char model[41]; int k = 0;
     for (int i = 8; i < 16; i++) model[k++] = buf[i] >= 32 && buf[i] < 127 ? buf[i] : ' ';
     while (k && model[k - 1] == ' ') k--;
@@ -62,6 +105,7 @@ static void probe_lun(scsi_host_t *h, int t, int l, uint8_t *buf) {
     for (int i = 16; i < 32; i++) model[k++] = buf[i] >= 32 && buf[i] < 127 ? buf[i] : ' ';
     while (k && model[k - 1] == ' ') k--;
     model[k] = 0;
+    if (type == 0x05) { probe_cd(h, t, l, model); return; }
     uint8_t tur[6] = { 0 };
     for (int i = 0; i < 6 && cmd(h, t, l, tur, 6, NULL, 0, 0); i++) {}
     uint8_t rc10[10] = { 0x25 };

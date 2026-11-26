@@ -27,6 +27,11 @@ struct blkdev {
     const char *driver;        /* the Windows driver name Setup shows: atapi, storahci, ... */
     int busno, id, lun;        /* for "Disk 0 at Id 0 on bus 0 on atapi" */
     void *priv;                /* the driver's own state */
+    /* removable media (media.c mounts them as drive letters) */
+    bool removable;            /* the medium can change or the device be unplugged (CD/DVD, USB) */
+    bool optical;              /* a CD/DVD/Blu-ray drive: 2048-byte blocks, read-only */
+    int (*media)(blkdev_t *d); /* 1: a medium is in (sectors set from it), 0: none */
+    bool (*eject)(blkdev_t *d);
     /* IDE (ata.c) */
     int bus, slave; uint16_t io, ctl; bool lba48, dma;
 };
@@ -49,6 +54,12 @@ void nvme_probe(void);
 void virtio_probe(void);
 void mpt_probe(void);
 void pvscsi_probe(void);
+/* SCSI/ATAPI multimedia commands shared by the CD/DVD drivers (scsi.c): a command runner, and
+ * the TEST UNIT READY + READ CAPACITY / START STOP UNIT built on it */
+typedef int (*packet_fn)(blkdev_t *d, const uint8_t *cdb, void *buf, uint32_t len);
+int optical_media(blkdev_t *d, packet_fn cmd);
+bool optical_eject(blkdev_t *d, packet_fn cmd);
+void media_init(void);                      /* the removable-media task (media.c) */
 /* SCSI disks behind any host adapter (scsi.c) */
 typedef struct scsi_host scsi_host_t;
 struct scsi_host {

@@ -177,13 +177,75 @@ static bool ahci_flush(blkdev_t *d) {
 }
 static const blkops_t ahci_ops = { ahci_read, ahci_write, ahci_flush };
 
+/* ---- CD/DVD/Blu-ray drives on SATA: ATAPI packet commands (the A bit, the packet at ACMD) ---- */
+static int port_packet(blkdev_t *d, const uint8_t *cdb, void *buf, uint32_t len) {
+    ahci_port_t *ap = d->priv;
+    volatile uint8_t *p = ap->port;
+    if (ap->dead || len > 65536) return -1;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (!wait_clear(p, PX_TFD, TFD_BSY | TFD_DRQ, 2000)) { port_recover(ap); continue; }
+        uint8_t *f = ap->table;
+        memset(f, 0, 0x80 + 16);
+        f[0] = 0x27; f[1] = 0x80; f[2] = 0xA0;                   /* register H2D: PACKET */
+        f[3] = len ? 1 : 0;                                      /* DMA */
+        f[5] = len & 0xFF; f[6] = (len >> 8) & 0xFF;             /* byte count limit */
+        memcpy(f + 0x40, cdb, 12);
+        uint32_t *prd = (uint32_t *)(f + 0x80);
+        if (len) { prd[0] = (uint32_t)dma_addr(ap->buf); prd[1] = (uint32_t)(dma_addr(ap->buf) >> 32); prd[3] = (len - 1) & 0x3FFFFF; }
+        uint32_t *h = ap->clist;
+        h[0] = 5 | (1u << 5) | ((len ? 1u : 0u) << 16);         /* CFL 5, ATAPI, PRDTL */
+        h[1] = 0;
+        h[2] = (uint32_t)dma_addr(f); h[3] = (uint32_t)(dma_addr(f) >> 32);
+        wr(p, PX_IS, 0xFFFFFFFF);
+        __asm__ volatile("" ::: "memory");
+        wr(p, PX_CI, 1);
+        uint32_t t0 = timer_ticks();
+        bool to = false;
+        for (;;) {
+            if (!(rd(p, PX_CI) & 1)) break;
+            if (rd(p, PX_IS) & IS_TFES) break;
+            if (timer_ticks() - t0 > 10000) { to = true; break; }   /* a disc spinning up */
+            task_yield();
+        }
+        if (to) { port_recover(ap); continue; }
+        if ((rd(p, PX_IS) & IS_TFES) || (rd(p, PX_TFD) & TFD_ERR)) { port_recover(ap); return 2; }   /* no disc, not ready */
+        if (buf && len) memcpy(buf, ap->buf, len);
+        return 0;
+    }
+    return -1;
+}
+static bool satapi_read(blkdev_t *d, uint64_t blk, uint32_t n, void *buf) {
+    uint8_t cdb[12] = { 0x28, 0, (uint8_t)(blk >> 24), (uint8_t)(blk >> 16), (uint8_t)(blk >> 8), (uint8_t)blk, 0, (uint8_t)(n >> 8), (uint8_t)n };
+    for (int tries = 0; tries < 3; tries++) if (port_packet(d, cdb, buf, n * 2048) == 0) return true;
+    return false;
+}
+static bool satapi_write(blkdev_t *d, uint64_t blk, uint32_t n, const void *buf) { (void)d; (void)blk; (void)n; (void)buf; return false; }
+static const blkops_t satapi_ops = { satapi_read, satapi_write, NULL };
+static int satapi_media(blkdev_t *d) { return optical_media(d, port_packet); }
+static bool satapi_eject(blkdev_t *d) { return optical_eject(d, port_packet); }
+static void atapi_port(ahci_port_t *ap, int i) {
+    if (!port_cmd(ap, 0xA1, 0, 0, 512, false)) { klog("ahci: port %d: IDENTIFY PACKET DEVICE failed", i); return; }
+    uint16_t *id = (uint16_t *)ap->buf;
+    if (((id[0] >> 8) & 0x1F) != 5) return;
+    blkdev_t *d = blk_register();
+    if (!d) return;
+    for (int k = 0; k < 20; k++) { d->model[k * 2] = id[27 + k] >> 8; d->model[k * 2 + 1] = id[27 + k] & 0xFF; }
+    d->model[40] = 0;
+    for (int k = 39; k >= 0 && d->model[k] == ' '; k--) d->model[k] = 0;
+    d->ops = &satapi_ops; d->priv = ap; d->kind = "SATA"; d->driver = "cdrom";
+    d->busno = 0; d->id = i; d->bsize = 2048; d->max_blocks = 32;
+    d->removable = d->optical = true; d->media = satapi_media; d->eject = satapi_eject;
+    satapi_media(d);
+    blk_commit(d);
+}
+
 static void port_init(volatile uint8_t *abar, int i) {
     volatile uint8_t *p = abar + 0x100 + i * 0x80;
     uint32_t ssts = rd(p, PX_SSTS);
     if ((ssts & 0xF) == 1) { port_comreset(p); ssts = rd(p, PX_SSTS); }   /* device seen, no link: COMRESET */
     if ((ssts & 0xF) != 3) return;                            /* no device / no link */
     uint32_t sig = rd(p, PX_SIG);
-    if (sig == 0xEB140101 || sig == 0xC33C0101 || sig == 0x96690101) return;   /* ATAPI, enclosure, port multiplier */
+    if (sig == 0xC33C0101 || sig == 0x96690101) return;      /* enclosure, port multiplier */
     port_stop(p);
     ahci_port_t *ap = kzalloc(sizeof *ap);
     ap->port = p; ap->no = i;
@@ -198,7 +260,8 @@ static void port_init(volatile uint8_t *abar, int i) {
     if (!port_start(p)) { klog("ahci: port %d: the device stays busy", i); snprintf(blk_failed, sizeof blk_failed, "SATA disk on port %d: the device stays busy", i); port_stop(p); return; }
     /* after an HBA reset the signature arrives with the device's first FIS, once FRE is on */
     { uint32_t t0 = timer_ticks(); while ((sig = rd(p, PX_SIG)) == 0xFFFFFFFF && timer_ticks() - t0 < 500) {} }
-    if (sig == 0xEB140101 || sig == 0xC33C0101 || sig == 0x96690101) { port_stop(p); return; }   /* ATAPI etc. */
+    if (sig == 0xC33C0101 || sig == 0x96690101) { port_stop(p); return; }
+    if (sig == 0xEB140101) { atapi_port(ap, i); return; }      /* a CD/DVD drive */
     if (!port_cmd(ap, 0xEC, 0, 0, 512, false)) { klog("ahci: port %d: IDENTIFY failed", i); snprintf(blk_failed, sizeof blk_failed, "SATA disk on port %d: it did not answer IDENTIFY", i); port_stop(p); return; }
     uint16_t *id = (uint16_t *)ap->buf;
     blkdev_t *d = blk_register();

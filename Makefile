@@ -186,7 +186,7 @@ dual:
 	cp build64/wrld-ship.elf $(DUALDIR)/boot/wrld64.elf
 	cp build64/initrd.tar $(DUALDIR)/boot/initrd64.tar
 	cp grub/grub-dual.cfg $(DUALDIR)/boot/grub/grub.cfg
-	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS) cpuid" -o wrldos.iso $(DUALDIR)
+	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS) cpuid" -o wrldos.iso $(DUALDIR) -- -volid THE_WRLD_OS
 
 $(BUILD)/%.o: src/%.c $(wildcard src/include/*.h src/win32/*.h src/win32/*.inc src/apps/*.h)
 	@mkdir -p $(dir $@)
@@ -533,7 +533,7 @@ $(ISO): $(KERNEL_SHIP) $(BUILD)/initrd.tar grub/grub.cfg
 	cp $(KERNEL_SHIP) $(BUILD)/iso/boot/wrld.elf
 	cp $(BUILD)/initrd.tar $(BUILD)/iso/boot/initrd.tar
 	cp grub/grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
-	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS)" -o $@ $(BUILD)/iso
+	$(GRUB_MKRESCUE) --modules="$(GRUB_ISO_MODS)" -o $@ $(BUILD)/iso -- -volid THE_WRLD_OS
 
 # live session from the CD (nothing is saved)
 run: $(ISO)

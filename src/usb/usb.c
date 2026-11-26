@@ -562,8 +562,8 @@ static bool stor_read(blkdev_t *b, uint64_t blk, uint32_t n, void *buf)
     stor_t *s = b->priv;
     usb_dev_t *d = s->dev;
     if (d->gone) return false;                   /* unplugged: its address may belong to another device */
-    uint64_t lba = blk * 512 / s->bsize;
-    uint32_t cnt = (uint32_t)((uint64_t)n * 512 / s->bsize);
+    uint64_t lba = blk;                          /* native blocks (blk.c splits 512-byte sectors) */
+    uint32_t cnt = n;
     if (lba + cnt > s->blocks) return false;
     uint8_t cdb[10] = { 0x28, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
                         0, (uint8_t)(cnt >> 8), (uint8_t)cnt, 0 };
@@ -574,8 +574,8 @@ static bool stor_write(blkdev_t *b, uint64_t blk, uint32_t n, const void *buf)
     stor_t *s = b->priv;
     usb_dev_t *d = s->dev;
     if (d->gone) return false;
-    uint64_t lba = blk * 512 / s->bsize;
-    uint32_t cnt = (uint32_t)((uint64_t)n * 512 / s->bsize);
+    uint64_t lba = blk;
+    uint32_t cnt = n;
     if (lba + cnt > s->blocks) return false;
     uint8_t cdb[10] = { 0x2A, 0, (uint8_t)(lba >> 24), (uint8_t)(lba >> 16), (uint8_t)(lba >> 8), (uint8_t)lba,
                         0, (uint8_t)(cnt >> 8), (uint8_t)cnt, 0 };
@@ -589,6 +589,21 @@ static bool stor_flush(blkdev_t *b)
     return stor_cmd(s->dev, s->lun, cdb, 10, NULL, 0, false) == 0;
 }
 static const blkops_t stor_ops = { stor_read, stor_write, stor_flush };
+/* a USB CD/DVD drive: packet commands go through the same bulk-only transport */
+static int stor_packet(blkdev_t *b, const uint8_t *cdb, void *buf, uint32_t len) {
+    stor_t *s = b->priv;
+    if (s->dev->gone) return -1;
+    uint8_t op = cdb[0]; int cl = op < 0x20 ? 6 : op < 0x60 ? 10 : 12;
+    int r = stor_cmd(s->dev, s->lun, cdb, cl, buf, len, true);
+    return r == 0 ? 0 : r < 0 ? -1 : 2;
+}
+static int stor_media(blkdev_t *b) {
+    stor_t *s = b->priv;
+    int r = optical_media(b, stor_packet);
+    s->blocks = (uint32_t)(b->total_sectors / 4);
+    return r;
+}
+static bool stor_eject(blkdev_t *b) { return optical_eject(b, stor_packet); }
 
 static void stor_attach(usb_dev_t *d, int iface)
 {
@@ -597,6 +612,21 @@ static void stor_attach(usb_dev_t *d, int iface)
     uint8_t inquiry[36];
     uint8_t cdb[6] = { 0x12, 0, 0, 0, 36, 0 };                        /* INQUIRY */
     if (stor_cmd(d, 0, cdb, 6, inquiry, 36, true) < 0) { klog("usb-storage: INQUIRY failed"); return; }
+    if ((inquiry[0] & 0x1F) == 5) {                                   /* a CD/DVD drive: the disc may be out */
+        stor_t *s = kzalloc(sizeof *s);
+        blkdev_t *b = blk_register();
+        if (!s || !b) { kfree(s); return; }
+        s->dev = d; s->lun = lun; s->bsize = 2048;
+        b->ops = &stor_ops; b->priv = s; b->bsize = 2048; b->max_blocks = 2;
+        b->kind = "USB"; b->driver = "cdrom";
+        b->removable = b->optical = true; b->media = stor_media; b->eject = stor_eject;
+        usb_inquiry_model(inquiry, b->model, sizeof b->model);
+        d->kind = USB_KIND_STORAGE; d->disk = b;
+        stor_media(b);
+        blk_commit(b);
+        klog("usb-storage: CD/DVD drive %s", b->model);
+        return;
+    }
     uint8_t cap[8];
     uint8_t rc[10] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0 };             /* READ CAPACITY(10) */
     if (stor_cmd(d, 0, rc, 10, cap, 8, true) < 0) { klog("usb-storage: READ CAPACITY failed"); return; }
@@ -614,6 +644,7 @@ static void stor_attach(usb_dev_t *d, int iface)
     b->sectors = (uint32_t)MIN((uint64_t)s->blocks * bsize / 512, 0xFFFFFFFFull);
     b->kind = "USB";
     b->driver = "usbstor";
+    b->removable = true;                                            /* a flash drive or card reader */
     usb_inquiry_model(inquiry, b->model, sizeof b->model);
     d->kind = USB_KIND_STORAGE;
     d->disk = b;

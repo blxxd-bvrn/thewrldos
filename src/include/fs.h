@@ -12,13 +12,17 @@ typedef struct vnode {
     rtc_time_t mtime;
     int drive;
     bool dirty;          /* pending write-back to the system disk */
+    uint32_t lazy;       /* removable media (media.c): the mount whose file this is, 0 for none; */
+    uint64_t lazy_loc;   /* where on it the file is: its contents are read when first opened */
 } vnode_t;
 
 void vfs_init(void);
 vnode_t *vfs_root(int drive);                        /* 'C' etc. */
 char vfs_drive_letter(vnode_t *n);
 const char *vfs_drive_label(char letter);
-int vfs_drive_kind(char letter);                     /* 0 none, 1 hdd, 2 disk image */
+int vfs_drive_kind(char letter);                     /* 0 none, 1 hdd, 2 disk image, 3 CD/DVD, 4 removable disk */
+/* removable media: fills a file's contents the first time it is opened (media.c) */
+extern bool (*vfs_lazy_load)(vnode_t *n);
 char vfs_mount(vnode_t *root, const char *label, int kind);   /* returns letter */
 bool vfs_unmount(char letter);
 vnode_t *vfs_resolve(const char *path, const char *cwd);

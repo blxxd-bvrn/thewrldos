@@ -97,6 +97,11 @@ enum {
     ICON_MUSIC_FILE = 70,
     ICON_PACKAGE = 71,
     ICON_WORDPAD = 72,
-    ICON_COUNT = 73
+    ICON_DRIVE_CD = 73,
+    ICON_DRIVE_USB = 74,
+    ICON_CARDS = 75,
+    ICON_PINBALL = 76,
+    ICON_FPS = 77,
+    ICON_COUNT = 78
 };
 #endif

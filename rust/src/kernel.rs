@@ -13,6 +13,7 @@ mod w32;
 mod fat32k;
 mod ntfsk;
 mod vfsk;
+mod mediak;
 mod volk;
 mod shk;
 mod imgk;
@@ -38,7 +39,7 @@ extern "C" {
     fn panic(fmt: *const c_char, ...) -> !;
     fn vfs_new_node(parent: *mut Vnode, name: *const c_char, dir: CBool) -> *mut Vnode;
     fn vfs_mount(root: *mut Vnode, label: *const c_char, kind: c_int) -> c_char;
-    static rust_vnode_layout: [u32; 13];
+    static rust_vnode_layout: [u32; 15];
     static rust_mdec_layout: [u32; 4];
     static rust_net_layout: [u32; 12];
     static rust_http_layout: [u32; 6];
@@ -221,6 +222,8 @@ pub struct Vnode {
     mtime: RtcTime,
     drive: c_int,
     dirty: CBool,
+    lazy: u32,
+    lazy_loc: u64,
 }
 /// What the Linux layer (kernel/lx) reads of a node; the VFS (kernel/vfsk.rs) owns them.
 #[allow(dead_code)]
@@ -241,7 +244,7 @@ fn vnode_layout_ok() -> bool {
     want == [size_of::<Vnode>() as u32, offset_of!(Vnode, name) as u32, offset_of!(Vnode, dir) as u32, offset_of!(Vnode, readonly) as u32,
              offset_of!(Vnode, data) as u32, offset_of!(Vnode, size) as u32, offset_of!(Vnode, cap) as u32, offset_of!(Vnode, parent) as u32,
              offset_of!(Vnode, child) as u32, offset_of!(Vnode, next) as u32, offset_of!(Vnode, mtime) as u32, offset_of!(Vnode, drive) as u32,
-             offset_of!(Vnode, dirty) as u32]
+             offset_of!(Vnode, dirty) as u32, offset_of!(Vnode, lazy) as u32, offset_of!(Vnode, lazy_loc) as u32]
 }
 
 /// A NUL-terminated copy of `s` in a stack buffer (names are at most 95 bytes in the VFS).

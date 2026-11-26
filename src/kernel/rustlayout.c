@@ -3,10 +3,10 @@
 #include "kernel.h"
 #include "fs.h"
 
-const uint32_t rust_vnode_layout[13] = {
+const uint32_t rust_vnode_layout[15] = {
     sizeof(vnode_t), offsetof(vnode_t, name), offsetof(vnode_t, dir), offsetof(vnode_t, readonly), offsetof(vnode_t, data),
     offsetof(vnode_t, size), offsetof(vnode_t, cap), offsetof(vnode_t, parent), offsetof(vnode_t, child), offsetof(vnode_t, next),
-    offsetof(vnode_t, mtime), offsetof(vnode_t, drive), offsetof(vnode_t, dirty),
+    offsetof(vnode_t, mtime), offsetof(vnode_t, drive), offsetof(vnode_t, dirty), offsetof(vnode_t, lazy), offsetof(vnode_t, lazy_loc),
 };
 
 #ifdef __x86_64__

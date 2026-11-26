@@ -66,7 +66,7 @@ void app_launch(const char *name, const char *arg) {
 int file_icon(vnode_t *n) {
     if (n->dir) {
         if (str_ends_with_ci(n->name, ".app")) return ICON_APP_BUNDLE;
-        if (!n->parent) return vfs_drive_kind(n->drive) == 2 ? ICON_DRIVE_DMG : ICON_DRIVE;
+        if (!n->parent) { int k = vfs_drive_kind(n->drive); return k == 2 ? ICON_DRIVE_DMG : k == 3 ? ICON_DRIVE_CD : k == 4 ? ICON_DRIVE_USB : ICON_DRIVE; }
         if (!strcasecmp(n->name, "My Documents")) return ICON_MY_DOCUMENTS;
         return ICON_FOLDER;
     }

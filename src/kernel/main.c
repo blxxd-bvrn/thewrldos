@@ -189,6 +189,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
     if (strstr(audio_hint(), "is not playing")) notify_balloon("Sound", audio_hint());
     { extern void mousekeys_boot_check(void); mousekeys_boot_check(); }   /* no mouse: the keypad moves the pointer */
+    media_init();                                    /* CDs, DVDs and USB sticks become drive letters */
     devmgr_boot_check();                             /* "Found New Hardware" replaces the welcome balloon when there is some */
     shellmanager_start();                            /* shellmanager.exe: desktop, taskbar, sidebar and windows */
     for (;;) task_sleep(10000);                      /* System task stays alive; the shell task runs the GUI */

@@ -978,6 +978,16 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   a zoom menu; icons are drawn by the browser itself. Find (Ctrl+F), zoom, Delete Browsing
   History, downloads into My Documents\Downloads, cookies in the user's profile. The built-in engine is used on the 32-bit
   edition, on smaller machines, or when the Classic engine is chosen in Internet Options.
+- **CDs, DVDs, Blu-ray discs and USB flash drives** become drive letters by themselves, as in
+  Windows: CD/DVD drives on IDE, SATA (AHCI), SCSI (LSI, PVSCSI, virtio-scsi) and USB, and USB
+  sticks and card readers. A disc put in, or a stick plugged in, is mounted within two seconds and
+  **AutoPlay** offers to play its music or video, show its pictures or open it in Explorer; a disc
+  taken out, or a stick pulled, takes its letter with it. My Computer lists them with their own
+  icons, and Eject (right-click) opens the drive or lets a stick go. The file systems are read
+  by `rust/src/media.rs`: ISO 9660 with Joliet and Rock Ridge names, UDF 1.02 to 2.60 (DVDs and
+  Blu-ray discs, including the metadata partition of UDF 2.50+), FAT12/16/32 with long names and
+  exFAT, whole-disk or in MBR/GPT partitions. Only names and sizes are read at first: a file's
+  contents are read from the medium the first time it is opened. Removable drives are read-only.
 - **Without a mouse.** Everything can be reached from the keyboard, as in Windows: Tab and
   Shift+Tab move between the controls of a window (a dotted rectangle shows which), Space and
   Enter press them, the arrows move sliders, lists and drop-downs, and Esc closes a dialog; Alt

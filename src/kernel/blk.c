@@ -158,3 +158,7 @@ const char *part_type_name(uint8_t t) {
     default: return "Unknown";
     }
 }
+
+/* for the removable-media layer (rust/src/kernel/mediak.rs) */
+uint64_t blk_bytes(blkdev_t *d) { return d && !d->dead ? (uint64_t)d->sectors * 512 : 0; }
+bool blk_dead(blkdev_t *d) { return !d || d->dead; }

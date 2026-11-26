@@ -71,12 +71,17 @@ static void title_for(expl_t *e, char *b, int cap) {
 static void rebuild(expl_t *e) {
     e->n = 0;
     if (!strcmp(e->path, "::computer")) {
-        for (char l = 'C'; l <= 'Z'; l++) {
-            if (!vfs_drive_kind(l)) continue;
-            char nm[64], p[8] = { l, ':', '\\', 0 };
-            snprintf(nm, sizeof nm, "%s (%c:)", vfs_drive_label(l), l);
-            add_item(e, nm, vfs_drive_kind(l) == 2 ? ICON_DRIVE_DMG : ICON_DRIVE, vfs_root(l), p, vfs_drive_kind(l) == 2 ? "Disk Image (read-only)" : "Local Disk", vfs_drive_kind(l) == 2 ? 1 : 0);
-        }
+        /* Hard Disk Drives, then Devices with Removable Storage (discs, sticks, disk images) */
+        for (int pass = 0; pass < 2; pass++)
+            for (char l = 'C'; l <= 'Z'; l++) {
+                int k = vfs_drive_kind(l);
+                if (!k || (pass == 0) != (k == 1)) continue;
+                char nm[64], p[8] = { l, ':', '\\', 0 };
+                snprintf(nm, sizeof nm, "%s (%c:)", vfs_drive_label(l), l);
+                static const char *types[] = { "", "Local Disk", "Disk Image (read-only)", "CD Drive", "Removable Disk" };
+                static const int icons[] = { ICON_DRIVE, ICON_DRIVE, ICON_DRIVE_DMG, ICON_DRIVE_CD, ICON_DRIVE_USB };
+                add_item(e, nm, icons[k > 4 ? 1 : k], vfs_root(l), p, types[k > 4 ? 1 : k], pass);
+            }
         add_item(e, "Control Panel", ICON_CONTROL_PANEL, NULL, "::control", "System Folder", 2);
         add_item(e, "My Documents", ICON_MY_DOCUMENTS, vfs_resolve(USER_DOCS, NULL), USER_DOCS, "File Folder", 2);
     } else if (!strcmp(e->path, "::recycle")) {
@@ -228,7 +233,12 @@ static void ctx_cb(void *ctx, int id) {
     case 13: rebuild(e); break;
     case 14: if (it && it->node) recycle_restore(it->node); break;
     case 15: recycle_empty(); break;
-    case 16: if (it && it->node && it->node->dir && !it->node->parent && vfs_drive_kind(it->node->drive) == 2) { vfs_unmount(it->node->drive); notify_balloon("Disk image ejected", "The disk image was ejected safely."); } break;
+    case 16: if (it && it->node && it->node->dir && !it->node->parent) {
+            char l = it->node->drive; int k = vfs_drive_kind(l);
+            if (k == 2) { vfs_unmount(l); notify_balloon("Disk image ejected", "The disk image was ejected safely."); }
+            else if (k == 3 || k == 4) { extern bool media_eject(char letter); if (media_eject(l)) notify_balloon(k == 3 ? "Eject" : "Safe To Remove Hardware", k == 3 ? "The disc was ejected." : "The device can now be safely removed from the computer."); }
+            rebuild(e);
+        } break;
     case 17: if (it && it->node) { char dir[256]; vfs_path(it->node->dir ? it->node : it->node->parent, dir, sizeof dir); terminal_open(NULL, dir); } else terminal_open(NULL, e->path); break;
     case 20: about_open(); break;
     case 21: wm_close(w); break;
@@ -415,7 +425,7 @@ static void expl_paint(window_t *w) {
     if (e->sel >= 0 && e->sel < e->n && e->items[e->sel].node && !e->items[e->sel].node->dir) { char s2[32]; format_size(s2, sizeof s2, e->items[e->sel].size); snprintf(st, sizeof st, "Type: %s   Size: %s", e->items[e->sel].type, s2); }
     else snprintf(st, sizeof st, "%d object%s", e->n, e->n == 1 ? "" : "s");
     draw_text(c, FONT_UI, 8, sy + 4, st, T.text);
-    if (!is_special(e)) { vnode_t *n = vfs_resolve(e->path, NULL); if (n) { char d[48]; snprintf(d, sizeof d, "%c: %s", vfs_drive_letter(n), vfs_drive_kind(vfs_drive_letter(n)) == 2 ? "Disk image (read-only)" : "Local Disk"); draw_text(c, FONT_UI, c->w - text_width(FONT_UI, d) - 12, sy + 4, d, T.text); } }
+    if (!is_special(e)) { vnode_t *n = vfs_resolve(e->path, NULL); if (n) { char d[48]; int k = vfs_drive_kind(vfs_drive_letter(n)); snprintf(d, sizeof d, "%c: %s", vfs_drive_letter(n), k == 2 ? "Disk image (read-only)" : k == 3 ? "CD Drive (read-only)" : k == 4 ? "Removable Disk (read-only)" : "Local Disk"); draw_text(c, FONT_UI, c->w - text_width(FONT_UI, d) - 12, sy + 4, d, T.text); } }
 }
 static void expl_mouse(window_t *w, int type, int x, int y, int btn) {
     expl_t *e = w->data;
@@ -449,6 +459,14 @@ static void expl_key(window_t *w, key_event_t *k) {
     case KEY_DELETE: if (e->sel >= 0 && e->items[e->sel].node) ask_delete(e->items[e->sel].node); break;
     case KEY_F2: ctx_cb(w, 3); break;
     case KEY_F5: rebuild(e); break;
+    case KEY_MENU:                                           /* the context-menu key (Shift+F10 below) */
+    menu_key: {
+        rect_t cr = wm_client_rect(w);
+        rect_t r = e->sel >= 0 ? item_rect(e, e->sel) : R(cr.w / 2, cr.h / 2, 0, 0);
+        show_ctx(w, cr.x + r.x + r.w / 2, cr.y + r.y + r.h / 2);
+        break;
+    }
+    case KEY_F10: if (k->mods & MOD_SHIFT) goto menu_key; break;
     default:
         if (k->mods & MOD_CTRL) { if (k->key == 'c') ctx_cb(w, 5); else if (k->key == 'x') ctx_cb(w, 6); else if (k->key == 'v') ctx_cb(w, 7); }
     }
