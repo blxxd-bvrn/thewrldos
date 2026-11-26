@@ -187,6 +187,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
         notify_balloon("USB", "This computer's USB controller has no driver yet. A PS/2 keyboard and mouse still work.");
     else if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
+    if (strstr(audio_hint(), "is not playing")) notify_balloon("Sound", audio_hint());
     devmgr_boot_check();                             /* "Found New Hardware" replaces the welcome balloon when there is some */
     shellmanager_start();                            /* shellmanager.exe: desktop, taskbar, sidebar and windows */
     for (;;) task_sleep(10000);                      /* System task stays alive; the shell task runs the GUI */

@@ -213,7 +213,11 @@ attach a hard disk on any of the usual controllers: **IDE**, **SATA (AHCI)**, **
 controller.
 USB keyboards and mice work the same way, including through a hub. BusLogic adapters are not supported.
 For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH AC97** or
-**SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). Graphics work with **VBoxVGA**, **VMSVGA** or
+**SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). **HD Audio is the recommended card.** VMware gives "Other" and Windows XP guests the Ensoniq
+AudioPCI, which plays nothing on some hosts: `tools/vm/THE WRLD OS.vmx` is a ready VMware machine
+set to HD Audio (or set the guest OS to Windows 7 or later, or add `sound.virtualDev = "hdaudio"`
+to your `.vmx`); in VirtualBox choose Intel HD Audio. If the card in use does not play, the OS
+says so at log-on and in Control Panel > Sound. Graphics work with **VBoxVGA**, **VMSVGA** or
 VMware's SVGA, and those can change resolution. Every network adapter VMware offers works (**e1000**, **e1000e**,
 **VMXNET3**, and the **AMD PCnet** "vlance" it picks for Windows XP guests), as do VirtualBox's (**Intel PRO/1000**,
 **PCnet**, **virtio-net**) and QEMU's e1000, e1000e, igb, rtl8139, pcnet, vmxnet3 and virtio-net.

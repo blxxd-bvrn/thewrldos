@@ -966,6 +966,7 @@ static void vsnd_refill(void) {
 /* Sound that arrives a piece at a time (a Linux program writing to /dev/dsp): a ring of
  * 16-bit stereo frames at the mixer's rate that the mixer drains as it plays. */
 static char off_reason[96];                    /* defined with the device code below */
+static char audio_hint_text[240];              /* advice when the card is not HD Audio or does not play */
 #define NSTREAM 4
 #define SRING 16384                            /* frames: a third of a second at 48 kHz */
 typedef struct { bool open; uint32_t rd, wr; int16_t buf[SRING * 2]; } stream_t;
@@ -1351,7 +1352,22 @@ void audio_init(void) {
         uint32_t f = irq_save(); refill(); irq_restore(f);
         timer_tick_hook = audio_tick;                   /* USB audio is paced by its packets */
     }
+    /* A card that takes its settings but never plays (VMware's Ensoniq AudioPCI does this on some
+     * hosts): check that the playback position moves, and if it does not, say what to change.
+     * HD Audio is the card this OS is made for. */
+    if (dev != DEV_HDA && dev != DEV_USB) {
+        uint32_t f = irq_save(); int a = cur_position(); irq_restore(f);
+        sleep_ms(120);
+        f = irq_save(); int b = cur_position(); irq_restore(f);
+        if (a >= 0 && a == b) {
+            snprintf(audio_hint_text, sizeof audio_hint_text,
+                     "%s is not playing. HD Audio works best: in VMware set the guest OS to Windows 7 or later, or add sound.virtualDev = \"hdaudio\" to the .vmx; in VirtualBox choose Intel HD Audio.", devname);
+            klog("audio: %s", audio_hint_text);
+        } else if (dev == DEV_ES1370 || dev == DEV_ES1371)
+            snprintf(audio_hint_text, sizeof audio_hint_text, "Using %s. Intel HD Audio is the recommended sound card for virtual machines.", devname);
+    }
 }
+const char *audio_hint(void) { return audio_hint_text; }
 /* Some device names already carry the rate (the USB audio one does), so the
  * status lines do not append it twice. */
 static bool name_has_rate(const char *s)

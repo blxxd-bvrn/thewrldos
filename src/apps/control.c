@@ -1060,6 +1060,10 @@ static void page_sound(window_t *w, cp_t *c, int ox, int oy) {
         draw_text(s, FONT_UI, ox + 210, cy, ctl, T.gray_text);
         cy += 22;
     }
+    if (audio_present() && audio_hint()[0]) {
+        draw_icon(s, ICON_INFO, 16, ox + 96, cy);
+        cy += draw_text_wrapped(s, FONT_UI, ox + 118, cy, s->w - ox - 150, audio_hint(), W7_TEXT, 2) + 8;
+    }
     if (!audio_present()) {
         draw_text_wrapped(s, FONT_UI, ox + 96, y + 30, s->w - ox - 120, audio_summary(), W7_TEXT, 2);
         draw_text_wrapped(s, FONT_SMALL, ox + 96, y + 60, s->w - ox - 120, "Supported: Intel High Definition Audio, AC'97, Ensoniq AudioPCI, Sound Blaster 16 and USB audio class 1/2. "

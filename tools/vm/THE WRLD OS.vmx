@@ -1,0 +1,33 @@
+.encoding = "UTF-8"
+# A VMware Workstation / Player virtual machine for THE WRLD OS. Put this file in a folder with
+# wrldos.iso (or change the path below), then open it in VMware (File > Open). To install the OS,
+# add a hard disk first (VM > Settings > Add > Hard Disk, SATA or NVMe).
+# HD Audio is the sound card the OS is made for; VMware picks the older Ensoniq AudioPCI for
+# "Other" and Windows XP guests, which plays nothing on some hosts.
+config.version = "8"
+virtualHW.version = "16"
+displayName = "THE WRLD OS"
+guestOS = "windows7-64"
+firmware = "bios"
+memsize = "3072"
+numvcpus = "2"
+sound.present = "TRUE"
+sound.virtualDev = "hdaudio"
+sound.autoDetect = "TRUE"
+ethernet0.present = "TRUE"
+ethernet0.virtualDev = "e1000e"
+ethernet0.connectionType = "nat"
+ethernet0.addressType = "generated"
+svga.present = "TRUE"
+svga.vramSize = "134217728"
+usb.present = "TRUE"
+ehci.present = "TRUE"
+usb_xhci.present = "TRUE"
+usb.generic.autoconnect = "FALSE"
+sata0.present = "TRUE"
+sata0:1.present = "TRUE"
+sata0:1.deviceType = "cdrom-image"
+sata0:1.fileName = "wrldos.iso"
+sata0:1.startConnected = "TRUE"
+floppy0.present = "FALSE"
+tools.syncTime = "FALSE"
