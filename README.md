@@ -1022,6 +1022,12 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   and Advanced (smooth scrolling, pictures, reset). OK and Apply save them in `wrld.ini`; a
   running WebKit browser picks them up at once. Cookies, pop-ups, the proxy and smooth scrolling
   apply to WebKit; the ad blocker to the classic engine; the rest to both.
+- **Heavy pages.** The WebKit browser keeps more of a page in memory rather than redoing work
+  (the "web browser" cache model: decoded pictures, the back/forward cache), within a limit set
+  from the computer's memory (a third, at most 1.5 GB a process) past which WebKit drops caches
+  before it could run the system out. Linux programs now see the computer's real memory size
+  (they were told 256 MB). The compositor gives a large window 30 frames a second, a small one
+  60, and an inactive or minimized one 4.
 - **Browser speed.** Setting a `timerfd` clears its unread expirations, as on Linux: the
   compositor and WebKit re-arm timers without reading them, and a stale count kept their event
   loops spinning (948,000 system calls in 79 seconds while showing a page, now 52,000, and the

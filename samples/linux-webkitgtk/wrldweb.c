@@ -26,6 +26,7 @@ static GtkWidget *win, *notebook, *address, *search, *back_btn, *fwd_btn, *refre
                  *zoom_label, *findbar, *find_entry;
 static WebKitNetworkSession *session;
 static WebKitSettings *wsettings;
+static WebKitWebContext *wctx;          /* the web context: caches sized to this computer */
 static char *downloads_dir;
 static const char *request_file;
 static char *home_uri;                  /* Internet Options: the home page (NULL: wrld:home) */
@@ -418,7 +419,7 @@ static WebKitWebView *new_tab(const char *uri, WebKitWebView *related, gboolean 
     WebKitWebsitePolicies *pol = webkit_website_policies_new_with_policies("autoplay", WEBKIT_AUTOPLAY_ALLOW, NULL);
     WebKitWebView *v = related
         ? WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "related-view", related, "settings", wsettings, "website-policies", pol, NULL))
-        : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "network-session", session, "settings", wsettings, "website-policies", pol, NULL));
+        : WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW, "web-context", wctx, "network-session", session, "settings", wsettings, "website-policies", pol, NULL));
     g_object_unref(pol);
     gtk_widget_set_vexpand(GTK_WIDGET(v), TRUE);
     /* the tab: the page's icon, its title, and a close button */
@@ -753,6 +754,26 @@ static void activate(GtkApplication *app, gpointer d) {
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(cp), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 
     /* where things are kept: the profile on C:, a cache in memory */
+    /* Memory instead of processor time, within a limit: the "web browser" cache model keeps
+     * decoded pictures, pages and the back/forward cache in memory, so going back or scrolling a
+     * heavy page does not redo the work; memory-pressure settings put a ceiling on it (a third of
+     * the computer's memory, at most 1.5 GB per process) past which WebKit drops caches before it
+     * would run the system out. */
+    {
+        long pages = sysconf(_SC_PHYS_PAGES), psz = sysconf(_SC_PAGESIZE);
+        guint64 total_mb = pages > 0 && psz > 0 ? (guint64)pages * (guint64)psz / (1024 * 1024) : 2048;
+        guint limit = (guint)MIN(MAX(total_mb / 3, 384), 1536);
+        WebKitMemoryPressureSettings *mp = webkit_memory_pressure_settings_new();
+        webkit_memory_pressure_settings_set_memory_limit(mp, limit);
+        webkit_memory_pressure_settings_set_conservative_threshold(mp, 0.5);
+        webkit_memory_pressure_settings_set_strict_threshold(mp, 0.75);
+        webkit_memory_pressure_settings_set_poll_interval(mp, 5.0);
+        webkit_network_session_set_memory_pressure_settings(mp);
+        wctx = WEBKIT_WEB_CONTEXT(g_object_new(WEBKIT_TYPE_WEB_CONTEXT, "memory-pressure-settings", mp, NULL));
+        webkit_memory_pressure_settings_free(mp);
+        webkit_web_context_set_cache_model(wctx, WEBKIT_CACHE_MODEL_WEB_BROWSER);
+        g_message("wrldweb: %" G_GUINT64_FORMAT " MB of memory, WebKit limited to %u MB a process", total_mb, limit);
+    }
     const char *prof = g_getenv("WRLD_PROFILE");
     char *data = prof ? g_strdup(prof) : g_build_filename(g_get_home_dir(), ".wrldweb", NULL);
     g_mkdir_with_parents(data, 0755);
@@ -775,8 +796,8 @@ static void activate(GtkApplication *app, gpointer d) {
         webkit_network_session_set_proxy_settings(session, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
         webkit_network_proxy_settings_free(ps);
     }
-    webkit_web_context_register_uri_scheme(webkit_web_context_get_default(), "wrld", wrld_scheme, NULL, NULL);
-    webkit_security_manager_register_uri_scheme_as_local(webkit_web_context_get_security_manager(webkit_web_context_get_default()), "wrld");
+    webkit_web_context_register_uri_scheme(wctx, "wrld", wrld_scheme, NULL, NULL);
+    webkit_security_manager_register_uri_scheme_as_local(webkit_web_context_get_security_manager(wctx), "wrld");
     wsettings = webkit_settings_new();
     webkit_settings_set_hardware_acceleration_policy(wsettings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     webkit_settings_set_enable_smooth_scrolling(wsettings, FALSE);   /* fewer repaints on the CPU */

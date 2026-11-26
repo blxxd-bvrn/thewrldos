@@ -58,6 +58,15 @@ pub unsafe fn pmm_free(p: *mut u8) {
     USED = USED.wrapping_sub(1);
 }
 pub fn pmm_used_pages() -> u32 { unsafe { USED } }
+extern "C" { fn mm_phys_total() -> u64; fn mm_used() -> u32; }
+/// The computer's memory as Linux programs see it (sysinfo, /proc/meminfo): its real size, and
+/// what the kernel heap and the programs' pages leave free. (It said 256 MB whatever the
+/// machine had, so WebKit sized its caches for a small computer.)
+pub fn sys_mem() -> (u64, u64) {
+    let total = unsafe { mm_phys_total() }.max(64 << 20);
+    let used = unsafe { mm_used() } as u64 + pmm_used_pages() as u64 * 4096;
+    (total, total.saturating_sub(used))
+}
 
 /* ---------------- shared objects ---------------- */
 

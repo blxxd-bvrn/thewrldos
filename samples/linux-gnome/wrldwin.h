@@ -34,7 +34,8 @@ struct wrldwin_size { int32_t width, height; };
 struct wrldwin_info { int32_t width, height, buf_width, buf_height; };
 
 enum { WRLDWIN_EV_MOTION = 1, WRLDWIN_EV_BUTTON_DOWN, WRLDWIN_EV_BUTTON_UP, WRLDWIN_EV_WHEEL,
-       WRLDWIN_EV_KEY_DOWN, WRLDWIN_EV_KEY_UP, WRLDWIN_EV_RESIZE, WRLDWIN_EV_CLOSE, WRLDWIN_EV_LEAVE };
+       WRLDWIN_EV_KEY_DOWN, WRLDWIN_EV_KEY_UP, WRLDWIN_EV_RESIZE, WRLDWIN_EV_CLOSE, WRLDWIN_EV_LEAVE,
+       WRLDWIN_EV_ACTIVE /* code: 1 the window is active, 0 not (or minimized) */ };
 /* button: 1 left, 2 middle, 3 right; wheel: code is the step (negative = up);
  * keys: code is THE WRLD OS key (ASCII, or 0x100 + Esc, Backspace, Tab, Enter...), ch the character;
  * resize: x, y are the new client size; close: the user clicked the close button (a second

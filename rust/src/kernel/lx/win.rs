@@ -86,7 +86,7 @@ const ME_MOVE: c_int = 0; const ME_DOWN: c_int = 1; const ME_UP: c_int = 2; cons
 const MB_LEFT: c_int = 1; const MB_RIGHT: c_int = 2; const MB_MIDDLE: c_int = 4;
 
 const WEV_MOTION: u32 = 1; const WEV_BUTTON_DOWN: u32 = 2; const WEV_BUTTON_UP: u32 = 3; const WEV_WHEEL: u32 = 4;
-const WEV_KEY_DOWN: u32 = 5; const WEV_KEY_UP: u32 = 6; const WEV_RESIZE: u32 = 7; const WEV_CLOSE: u32 = 8; const WEV_LEAVE: u32 = 9;
+const WEV_KEY_DOWN: u32 = 5; const WEV_KEY_UP: u32 = 6; const WEV_RESIZE: u32 = 7; const WEV_CLOSE: u32 = 8; const WEV_LEAVE: u32 = 9; const WEV_ACTIVE: u32 = 10;
 #[repr(C)] #[derive(Clone, Copy, Default)] struct Wev { ty: u32, x: i32, y: i32, code: u32, ch: u32, mods: u32 }
 const WQ: usize = 256;
 
@@ -180,6 +180,12 @@ unsafe extern "C" fn win_key(w: *mut Window, e: *mut KeyEvent) {
     if lw.is_null() { return; }
     push(lw, if (*e).pressed != 0 { WEV_KEY_DOWN } else { WEV_KEY_UP }, 0, 0, (*e).key as u32, (*e).ch as u8 as u32, (*e).mods as u32);
 }
+/* the window became active (1) or not (0), minimized included: wrldcomp slows its frames then */
+unsafe extern "C" fn win_activate(w: *mut Window, on: CBool) {
+    let lw = (*w).data as *mut LxWin;
+    if lw.is_null() { return; }
+    push(lw, WEV_ACTIVE, 0, 0, (on != 0) as u32, 0, 0);
+}
 unsafe extern "C" fn win_resized(w: *mut Window) {
     let lw = (*w).data as *mut LxWin;
     if lw.is_null() { return; }
@@ -229,7 +235,7 @@ pub unsafe fn lxwin_ioctl(o: *mut c_void, cmd: u64, arg: u64, vm: *mut Uvm) -> i
                               (if a.flags & WINF_RESIZABLE != 0 { WF_RESIZABLE } else { 0 }) | (if (*lw).frameless { WF_SKINNED } else { 0 }));
             if w.is_null() { return -ENOMEM; }
             (*w).data = lw as *mut c_void; (*w).paint = Some(win_paint); (*w).mouse = Some(win_mouse); (*w).key = Some(win_key);
-            (*w).resized = Some(win_resized); (*w).close = Some(win_close); (*w).destroy = Some(win_destroy);
+            (*w).resized = Some(win_resized); (*w).close = Some(win_close); (*w).destroy = Some(win_destroy); (*w).activate = Some(win_activate);
             (*w).icon = ICON_EXE; (*w).min_w = 120; (*w).min_h = 80;
             let th = lx_current();
             (*lw).owner = if !th.is_null() && !(*th).proc_.is_null() { (*(*th).proc_).pid } else { 0 };

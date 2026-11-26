@@ -81,6 +81,7 @@ struct window {
     struct wl_list popups;
     int want_w, want_h;                     /* a size the user dragged the window to */
     int dirty;
+    int inactive;                           /* not the active window (or minimized): fewer frames */
 };
 
 /* ---------------- seat ---------------- */
@@ -191,16 +192,26 @@ static void composite(struct window *w) {
     w->dirty = 0;
 }
 
-/* ---------------- frame callbacks: every 16 ms ---------------- */
+/* ---------------- frame callbacks ----------------
+ * A client draws its next frame when told to. Pages are drawn on the CPU, so the pace follows
+ * what it costs: 60 a second for a small window, 30 for a large one (a maximized browser
+ * repainting an animated page at 60 kept the processor busy for nothing anyone could see), and
+ * 4 for a window that is not active or is minimized. */
 static struct wl_list all_surfaces_frames;   /* not used; frames live on surfaces */
 static struct wl_event_source *frame_timer;
 static struct wl_list surfaces;              /* struct surface_link */
-struct surface_link { struct surface *s; struct wl_list link; };
+struct surface_link { struct surface *s; struct wl_list link; uint32_t last; };
+static void window_of(struct surface *s, struct window **out);
 static int frame_tick(void *data) {
     (void)data;
     uint32_t t = now_ms();
     struct surface_link *l;
     wl_list_for_each(l, &surfaces, link) {
+        if (wl_list_empty(&l->s->frames)) continue;
+        struct window *w; window_of(l->s, &w);
+        uint32_t every = !w ? 16 : w->inactive ? 250 : (long)w->w * w->h > 500000 ? 33 : 16;
+        if (t - l->last < every - 4) continue;
+        l->last = t;
         struct wl_resource *cb, *tmp;
         wl_resource_for_each_safe(cb, tmp, &l->s->frames) { wl_callback_send_done(cb, t); wl_resource_destroy(cb); }
     }
@@ -737,6 +748,7 @@ static void window_events(struct window *w) {
                 xdg_send_configure(w->top, w->top->has_geom ? cw : e->x, w->top->has_geom ? ch : e->y);
             }
             break;
+        case WRLDWIN_EV_ACTIVE: w->inactive = !e->code; break;
         case WRLDWIN_EV_CLOSE:
             if (w->top && w->top->toplevel) xdg_toplevel_send_close(w->top->toplevel);
             break;

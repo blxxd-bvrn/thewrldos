@@ -189,9 +189,8 @@ unsafe fn proc_text(p: *mut LxProc, kind: c_int, out: &mut u32) -> *mut u8 {
         }
         K::PROC_CMDLINE => { b.b.extend_from_slice(cstr(&(*p).exe)); b.b.push(0); }
         K::PROC_MEMINFO => {
-            let totalkb = 256u64 << 10;
-            let usedkb = pmm_used_pages() as u64 * PAGE / 1024;
-            let freekb = totalkb.saturating_sub(usedkb);
+            let (total, free) = super::mem::sys_mem();
+            let (totalkb, freekb) = (total / 1024, free / 1024);
             b.add(format_args!("MemTotal:       {:8} kB\nMemFree:        {:8} kB\nMemAvailable:   {:8} kB\nBuffers:               0 kB\nCached:                0 kB\nSwapCached:            0 kB\nActive:                0 kB\nInactive:              0 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\nDirty:                 0 kB\nWriteback:             0 kB\nAnonPages:             0 kB\nMapped:                0 kB\nShmem:                 0 kB\nSlab:                  0 kB\nSReclaimable:          0 kB\nSUnreclaim:            0 kB\nPageTables:            0 kB\n",
                   totalkb, freekb, freekb));
         }

@@ -479,7 +479,8 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
         99 => {                                                  /* sysinfo */
             let mut si = [0u8; 112];
             si[0..8].copy_from_slice(&((timer_ticks() / 1000) as i64).to_le_bytes());
-            si[32..40].copy_from_slice(&(256u64 << 20).to_le_bytes()); si[40..48].copy_from_slice(&(128u64 << 20).to_le_bytes());
+            let (total, free) = super::mem::sys_mem();
+            si[32..40].copy_from_slice(&total.to_le_bytes()); si[40..48].copy_from_slice(&free.to_le_bytes());
             si[80..82].copy_from_slice(&(task_count() as u16).to_le_bytes());
             si[104..108].copy_from_slice(&1u32.to_le_bytes());
             if uout(vm, a0, si.as_ptr(), 112) { 0 } else { -EFAULT }
