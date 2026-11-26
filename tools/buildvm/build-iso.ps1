@@ -17,7 +17,7 @@ param(
     [string]$KitDir = '',          # where the build kit lives (default: %LOCALAPPDATA%\WRLD OS build VM)
     [switch]$NoDownload,           # use the kit already in KitDir (the kit workflow's own test)
     [switch]$Emulate,              # never use Windows Hypervisor Platform (a computer where it hangs)
-    [switch]$Verbose               # show the Linux kernel's boot messages too
+    [switch]$BootLog               # show the Linux kernel's boot messages too
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -165,7 +165,7 @@ $accel = @(if (-not $Emulate) { '-accel'; 'whpx,kernel-irqchip=off' })
 $qargs = @('-L', (Join-Path $qemuDir 'share'), '-machine', 'q35', '-m', "$mem", '-smp', "$cpus") + $accel + @(
     '-accel', 'tcg,thread=multi',
     '-kernel', $kernel,
-    '-append', ('root=/dev/vda rw console=ttyS0 init=/usr/local/sbin/wrld-vm-build panic=-1' + $(if ($Verbose) { '' } else { ' quiet loglevel=3' })),
+    '-append', ('root=/dev/vda rw console=ttyS0 init=/usr/local/sbin/wrld-vm-build panic=-1' + $(if ($BootLog) { '' } else { ' quiet loglevel=3' })),
     '-drive', "file=$overlay,if=virtio,format=qcow2",
     '-drive', "file=$srcTar,if=virtio,format=raw,readonly=on",
     '-drive', "file=$outImg,if=virtio,format=raw",
