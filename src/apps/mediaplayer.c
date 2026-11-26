@@ -154,6 +154,8 @@ typedef struct {
     canvas_t *art; char art_key[140];
     bool copy_sel[MAXT]; int copy_dest; char copy_msg[120];
     window_t *full;
+    uint32_t viz_gen;               /* bumped by the player's tick: one visualizer step per tick */
+    struct { canvas_t *cv; uint32_t gen; int c, p; } vcache[2];   /* the last frame, window and full screen */
 } mp_t;
 static window_t *mp_win;
 #define SK (&skins[CLAMP(m->skin, 0, NSKINS - 1)])
@@ -771,7 +773,7 @@ static void draw_taskbar(window_t *w, mp_t *m, layout_t *L) {
         draw_text(c, FONT_UI_BOLD, b.x + 4, b.y + 4, l1, tc);
         if (l2[0]) draw_text(c, FONT_UI_BOLD, b.x + 4, b.y + 18, l2, tc);
         if (on) glyph(c, G_RIGHT, b.x + b.w - 6, b.y + b.h / 2, 7, tc);
-        if (ui_click_area(w, b)) { m->page = i; if (i == P_LIB && !m->scanned) library_scan(m); if (i == P_SKIN) m->skin_sel = m->skin; }
+        if (ui_click_area(w, b)) { m->page = i; w->dirty = true; if (i == P_LIB && !m->scanned) library_scan(m); if (i == P_SKIN) m->skin_sel = m->skin; }
         y += h + 1;
         if (!s->classic && i < P_COUNT - 1) hline(c, b.x + 4, y - 1, b.w - 8, s->tb_line);
     }
@@ -827,7 +829,23 @@ static void draw_picture(canvas_t *c, mp_t *m, rect_t r) {
         c->clip = old;
         return;
     }
-    viz_draw(c, r, m->viz_c, m->viz_p, &m->au, art_for(m, t));
+    /* The visualizer steps once per player tick, not once per paint: moving the mouse over the
+     * window repaints it, and a step per paint made the picture race and jump with the cursor
+     * (and move after Stop). A paint between ticks shows the last frame again. */
+    int slot = mp_win && c == mp_win->surf ? 0 : 1;
+    if (r.w <= 0 || r.h <= 0) return;
+    __typeof__(m->vcache[0]) *vc = &m->vcache[slot];
+    if (!vc->cv || vc->cv->w != r.w || vc->cv->h != r.h) {
+        if (vc->cv) canvas_free(vc->cv);
+        vc->cv = canvas_new(r.w, r.h);
+        vc->gen = m->viz_gen - 1;
+        if (!vc->cv) { viz_draw(c, r, m->viz_c, m->viz_p, &m->au, art_for(m, t)); return; }
+    }
+    if (vc->gen != m->viz_gen || vc->c != m->viz_c || vc->p != m->viz_p) {
+        viz_draw(vc->cv, R(0, 0, r.w, r.h), m->viz_c, m->viz_p, &m->au, art_for(m, t));
+        vc->gen = m->viz_gen; vc->c = m->viz_c; vc->p = m->viz_p;
+    }
+    blit(c, r.x, r.y, vc->cv, 0, 0, r.w, r.h);
 }
 static void draw_now(window_t *w, mp_t *m, rect_t a) {
     canvas_t *c = w->surf;
@@ -882,9 +900,11 @@ static void draw_now(window_t *w, mp_t *m, rect_t a) {
     int y = p.y + ah + 2, rowh = 18, rows = (p.y + p.h - y - 20) / rowh;
     if (ui_hover(w, R(p.x, y, p.w, rows * rowh)) && w->ui.wheel) m->list_scroll += w->ui.wheel * 3;
     m->list_scroll = CLAMP(m->list_scroll, 0, MAX(0, m->nlist - rows));
+    int lsb = m->nlist > rows ? 16 : 0;                     /* a scrollbar when the list is longer than the pane */
+    if (lsb) ui_vscroll(w, R(p.x + p.w - lsb - 1, y, lsb, rows * rowh), &m->list_scroll, m->nlist, rows);
     for (int r = 0; r < rows && m->list_scroll + r < m->nlist; r++) {
         int i = m->list_scroll + r, ry = y + r * rowh;
-        rect_t rr = R(p.x + 2, ry, p.w - 4, rowh);
+        rect_t rr = R(p.x + 2, ry, p.w - 4 - lsb, rowh);
         bool cur = i == m->cur && m->state != ST_STOP;
         if (i == m->list_sel) fill_rect(c, rr.x, rr.y, rr.w, rr.h, s->pn_sel);
         char len[16]; fmt_time(m->list[i].ms, len, sizeof len);
@@ -1007,11 +1027,13 @@ static void draw_library(window_t *w, mp_t *m, rect_t a) {
     for (int i = 0; i < m->nlib; i++) if (lib_match(m, &m->lib[i])) idx[n++] = i;
     if (ui_hover(w, R(t.x, ty, t.w, rows * rowh)) && w->ui.wheel) m->lib_scroll += w->ui.wheel * 3;
     m->lib_scroll = CLAMP(m->lib_scroll, 0, MAX(0, n - rows));
-    old = canvas_push_clip(c, R(t.x + 1, ty, t.w - 2, rows * rowh));
+    int lsb = n > rows ? 17 : 0;
+    if (lsb) ui_vscroll(w, R(t.x + t.w - lsb - 1, ty, lsb, rows * rowh), &m->lib_scroll, n, rows);
+    old = canvas_push_clip(c, R(t.x + 1, ty, t.w - 2 - lsb, rows * rowh));
     for (int r = 0; r < rows && m->lib_scroll + r < n; r++) {
         int i = idx[m->lib_scroll + r], ry = ty + r * rowh;
         const track_t *tk = &m->lib[i];
-        rect_t rr = R(t.x + 1, ry, t.w - 2, rowh);
+        rect_t rr = R(t.x + 1, ry, t.w - 2 - lsb, rowh);
         bool sel = m->lib_sel == i;
         if (sel) fill_rect(c, rr.x, rr.y, rr.w, rr.h, s->pg_sel);
         else if (r & 1) fill_rect(c, rr.x, rr.y, rr.w, rr.h, s->pg_row);
@@ -1227,8 +1249,11 @@ static void draw_transport(window_t *w, mp_t *m, layout_t *L) {
         if (ui_click_area(w, r)) seek_ms(m, (int64_t)pos * 1000 / MAX(1u, rate) + (k ? 10000 : -10000));
     }
     int pv = slider(w, m, R(46, sy - 8, c->w - 92, 16), total ? (int)((uint64_t)pos * 1000 / total) : 0, 1000, &m->seek_drag, can_seek);
-    if (m->seek_drag && can_seek) pos = (uint32_t)((uint64_t)pv * total / 1000);
     static bool was_drag;
+    /* while dragging, and on the paint that ends the drag (the slider has just let go, so the
+     * target is still where the mouse was): the position under the thumb, not the playing one,
+     * or a seek went back to where it started */
+    if ((m->seek_drag || was_drag) && can_seek) pos = (uint32_t)((uint64_t)pv * total / 1000);
     if (was_drag && !m->seek_drag && can_seek) seek_ms(m, (int64_t)pos * 1000 / MAX(1u, rate));
     was_drag = m->seek_drag;
     /* row 2: play, stop, previous, next, mute, volume, shuffle, repeat ... status */
@@ -1344,6 +1369,7 @@ static void mp_tick(window_t *w) {
     if (m->state == ST_PLAY || m->state == ST_LOAD || m->job) m->quiet = 0; else if (m->quiet < 1000) m->quiet++;
     if (m->quiet > 20) return;
     analyse(m);
+    m->viz_gen++;
     w->dirty = true;
     if (m->full && wm_alive(m->full)) m->full->dirty = true;
 }
@@ -1428,6 +1454,7 @@ static void mp_destroy(window_t *w) {
     if (m->full && wm_alive(m->full)) { window_t *f = m->full; m->full = NULL; wm_close(f); }
     unload(m);
     if (m->art) canvas_free(m->art);
+    for (int i = 0; i < 2; i++) if (m->vcache[i].cv) canvas_free(m->vcache[i].cv);
     settings_save();
     kfree(m->lib); kfree(m->list); kfree(m);
     if (mp_win == w) mp_win = NULL;

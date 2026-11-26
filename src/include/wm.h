@@ -151,6 +151,7 @@ bool ui_password(window_t *w, rect_t r, char *buf, int cap);
 bool ui_hover(window_t *w, rect_t r);
 bool ui_click_area(window_t *w, rect_t r);
 int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scroll);
+bool ui_vscroll(window_t *w, rect_t r, int *pos, int total, int visible);   /* arrows, track paging, thumb drag */
 bool ui_tab(window_t *w, rect_t r, const char *label, bool active);
 bool ui_icon_button(window_t *w, rect_t r, int icon, const char *label);
 bool ui_dropdown(window_t *w, rect_t r, const char **items, int n, int *sel);

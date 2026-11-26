@@ -232,6 +232,36 @@ int ui_list(window_t *w, rect_t r, const char **items, int n, int *sel, int *scr
     if (n > vis) draw_scrollbar(c, R(r.x + r.w - 18, r.y + 1, 17, r.h - 2), n, vis, *scroll, true);
     return result;
 }
+/* A vertical scrollbar that works: the arrows step by one, the track pages, the thumb drags.
+ * pos is the first visible row of total rows, visible of which fit. True when pos changed.
+ * (The mouse wheel is left to the caller, which knows the area it scrolls.) */
+static window_t *sb_drag_w; static int sb_drag_id, sb_drag_off;
+bool ui_vscroll(window_t *w, rect_t r, int *pos, int total, int visible) {
+    int id = ui_id(w);
+    ui_t *u = &w->ui;
+    bool hot;
+    behave(w, id, r, &hot, NULL);
+    int maxp = MAX(0, total - visible), thick = r.w, avail = r.h - 2 * thick;
+    int tl = total > visible && total > 0 ? MAX(12, avail * visible / total) : avail;
+    int old = *pos;
+    *pos = CLAMP(*pos, 0, maxp);
+    int tp = maxp ? (avail - tl) * *pos / maxp : 0;
+    if (hot && u->pressed && maxp) {
+        int y = u->my - r.y;
+        if (y < thick) (*pos)--;
+        else if (y >= r.h - thick) (*pos)++;
+        else if (y < thick + tp) *pos -= MAX(1, visible - 1);
+        else if (y >= thick + tp + tl) *pos += MAX(1, visible - 1);
+        else { sb_drag_w = w; sb_drag_id = id; sb_drag_off = y - thick - tp; }
+    }
+    if (sb_drag_w == w && sb_drag_id == id) {
+        if (!u->down) sb_drag_w = NULL;
+        else if (avail > tl) *pos = (int)((int64_t)(u->my - r.y - thick - sb_drag_off) * maxp / (avail - tl));
+    }
+    *pos = CLAMP(*pos, 0, maxp);
+    draw_scrollbar(w->surf, r, total, visible, *pos, true);
+    return *pos != old;
+}
 bool ui_tab(window_t *w, rect_t r, const char *label, bool active) {
     int id = ui_id(w);
     bool hot;
