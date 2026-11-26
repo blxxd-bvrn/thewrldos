@@ -86,7 +86,10 @@ jobs:
             find qemu -name '*.exe' -o -name '*.dll' | while read -r f; do ldd "$f" 2>/dev/null || true; done \
               | awk '$3 ~ /^\/ucrt64\// { print $3 }' | sort -u | while read -r d; do [ -f "qemu/$(basename "$d")" ] || cp "$d" qemu/; done || true
           done
-          ls qemu/*.dll | wc -l
+          echo "DLLs in the kit ($(ls qemu/*.dll | wc -l)):"; ls qemu/*.dll | xargs -n1 basename | sort | tr '\n' ' '; echo
+          # what the packaged copy still cannot find with MSYS2's folder off the PATH (ldd prints ??? or "not found")
+          echo "Unresolved with only Windows' folders on the PATH:"
+          (cd qemu && PATH=/usr/bin:/c/Windows/System32:/c/Windows ldd ./qemu-system-x86_64.exe 2>&1 | grep -E '\?\?\?|not found|/ucrt64/' || echo "  none")
           # the packaged copy on its own, as it runs on a computer without MSYS2
           (cd qemu && PATH=/c/Windows/System32:/c/Windows timeout 60 ./qemu-system-x86_64.exe --version) || { echo "QEMU does not start without MSYS2's folder: a DLL is missing"; exit 1; }
           (cd qemu && PATH=/c/Windows/System32:/c/Windows timeout 60 ./qemu-system-x86_64.exe -machine help > /dev/null) || { echo "QEMU's machine list failed without MSYS2's folder"; exit 1; }
