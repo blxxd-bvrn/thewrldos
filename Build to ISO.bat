@@ -27,6 +27,7 @@ if not exist "Makefile" goto :notsource
 if not exist "tools\build-iso.sh" goto :notsource
 if /i "%~1"=="download" goto :download
 if /i "%~1"=="vm" goto :buildvm
+if /i "%~1"=="vm-emulate" ( set "VMOPT=-Emulate" & goto :buildvm )
 
 rem ---- WSL with a Linux distribution installed? ----
 where wsl.exe >nul 2>nul || goto :trydocker
@@ -63,8 +64,9 @@ goto :done
 :buildvm
 echo Building in the portable Linux build VM (nothing is installed; no administrator rights).
 echo The first time it downloads the build kit (about 1 GB) into "%LOCALAPPDATA%\WRLD OS build VM".
+echo If it shows nothing for a long time with Windows Hypervisor Platform on, run: "Build to ISO.bat" vm-emulate
 echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HERE%\tools\buildvm\build-iso.ps1" -Mode vm -Src "%HERE%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%HERE%\tools\buildvm\build-iso.ps1" -Mode vm -Src "%HERE%" %VMOPT%
 if errorlevel 1 goto :failed
 goto :done
 

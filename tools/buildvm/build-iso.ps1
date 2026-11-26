@@ -15,7 +15,9 @@ param(
     [Parameter(Mandatory = $true)][string]$Src,
     [string]$Repo = '',
     [string]$KitDir = '',          # where the build kit lives (default: %LOCALAPPDATA%\WRLD OS build VM)
-    [switch]$NoDownload            # use the kit already in KitDir (the kit workflow's own test)
+    [switch]$NoDownload,           # use the kit already in KitDir (the kit workflow's own test)
+    [switch]$Emulate,              # never use Windows Hypervisor Platform (a computer where it hangs)
+    [switch]$Verbose               # show the Linux kernel's boot messages too
 )
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -156,13 +158,14 @@ $mem = [Math]::Max(2048, [Math]::Min(6144, [int]($ramMB / 2)))
 Say "Starting the build VM ($cpus processors, $mem MB). The build's own messages follow."
 Write-Host "    If QEMU reports that WHPX is not available, it carries on emulating (much slower)."
 Write-Host "    Turn on 'Windows Hypervisor Platform' in Windows Features for full speed."
+if (-not $Emulate) { Write-Host "    If nothing happens for many minutes (a virtual machine without nested virtualization), run 'Build to ISO.bat' vm-emulate." }
 Write-Host ""
-$qargs = @(
-    '-L', (Join-Path $qemuDir 'share'),
-    '-machine', 'q35', '-m', "$mem", '-smp', "$cpus",
-    '-accel', 'whpx,kernel-irqchip=off', '-accel', 'tcg,thread=multi',
+# the hypervisor first (QEMU falls back to the next -accel when it is missing)
+$accel = @(if (-not $Emulate) { '-accel'; 'whpx,kernel-irqchip=off' })
+$qargs = @('-L', (Join-Path $qemuDir 'share'), '-machine', 'q35', '-m', "$mem", '-smp', "$cpus") + $accel + @(
+    '-accel', 'tcg,thread=multi',
     '-kernel', $kernel,
-    '-append', 'root=/dev/vda rw console=ttyS0 init=/usr/local/sbin/wrld-vm-build quiet loglevel=3 panic=-1',
+    '-append', ('root=/dev/vda rw console=ttyS0 init=/usr/local/sbin/wrld-vm-build panic=-1' + $(if ($Verbose) { '' } else { ' quiet loglevel=3' })),
     '-drive', "file=$overlay,if=virtio,format=qcow2",
     '-drive', "file=$srcTar,if=virtio,format=raw,readonly=on",
     '-drive', "file=$outImg,if=virtio,format=raw",

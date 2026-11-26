@@ -102,7 +102,7 @@ jobs:
           $src = "$env:RUNNER_TEMP\src"
           New-Item -ItemType Directory -Force "$src\tools" | Out-Null
           [IO.File]::WriteAllText("$src\tools\build-iso.sh", "#!/bin/bash`nset -e`nuname -a`ncommand -v gcc nasm grub-mkrescue xorriso cargo`npkg-config --modversion webkitgtk-6.0`necho fake > /root/src/wrldos.iso`necho fake > /root/src/wrldos64.iso`n")
-          powershell -NoProfile -ExecutionPolicy Bypass -File tools\buildvm\build-iso.ps1 -Mode vm -Src $src -KitDir $kit -NoDownload
+          powershell -NoProfile -ExecutionPolicy Bypass -File tools\buildvm\build-iso.ps1 -Mode vm -Src $src -KitDir $kit -NoDownload -Emulate -Verbose
           if ($LASTEXITCODE -ne 0) { throw "build-iso.ps1 failed" }
           Get-Content "$src\build-vm.log"
           if ((Get-Content "$src\wrldos.iso") -ne 'fake') { throw "no result came back from the VM" }
