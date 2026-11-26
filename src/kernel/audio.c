@@ -610,6 +610,18 @@ static void es1371_codec(uint8_t reg, uint16_t val) {
     src_ready();
     outl(es_io + ES1371_SRC, x);
 }
+static int es1371_codec_read(uint8_t reg) {
+    for (int i = 0; i < 10000 && (inl(es_io + ES1371_CODEC) & (1u << 30)); i++) io_wait();
+    uint32_t x = src_ready();
+    outl(es_io + ES1371_SRC, (x & SRC_KEEP) | 0x00010000);
+    for (int i = 0; i < 10000 && (inl(es_io + ES1371_SRC) & 0x00870000) != 0; i++) {}
+    for (int i = 0; i < 10000 && (inl(es_io + ES1371_SRC) & 0x00870000) != 0x00010000; i++) {}
+    outl(es_io + ES1371_CODEC, ((uint32_t)(reg & 0x7F) << 16) | (1u << 23));   /* read */
+    src_ready();
+    outl(es_io + ES1371_SRC, x);
+    for (int i = 0; i < 20000; i++) { uint32_t v = inl(es_io + ES1371_CODEC); if (v & (1u << 31)) return v & 0xFFFF; io_wait(); }
+    return -1;
+}
 static void es1371_rate(uint8_t base, uint32_t rate) {
     uint32_t freq = ((rate << 15) + 1500) / 3000;
     uint32_t r = src_ready() & (SRC_DISABLE | SRC_DIS_P1 | SRC_DIS_R1);
@@ -639,10 +651,17 @@ static bool es1371_init(pci_dev_t *p) {
     src_ready(); outl(es_io + ES1371_SRC, 0);              /* SRC on */
     /* AC'97 codec: reset, power up, unmute master and PCM */
     es1371_codec(0x00, 0); sleep_ms(20);
-    es1371_codec(0x26, 0x0000); sleep_ms(5);
+    es1371_codec(0x26, 0x0000);
+    /* wait until the codec says its DAC, ADC, mixer and reference are ready (Linux waits the
+     * same way): volume writes made before that can be lost */
+    int pw = -1;
+    for (int i = 0; i < 50; i++) { pw = es1371_codec_read(0x26); if (pw >= 0 && (pw & 0x0F) == 0x0F) break; sleep_ms(4); }
     es1371_codec(0x02, 0x0000); es1371_codec(0x04, 0x0000); es1371_codec(0x18, 0x0808);
     out_rate = 48000;
     es_start_dac2(0);
+    /* and once more with the DAC running, for codecs that ignore them while idle */
+    es1371_codec(0x02, 0x0000); es1371_codec(0x18, 0x0808);
+    klog("es1371: codec power %04x, master %04x, PCM %04x", pw & 0xFFFF, es1371_codec_read(0x02) & 0xFFFF, es1371_codec_read(0x18) & 0xFFFF);
     snprintf(devname, sizeof devname, "%s (%04x:%04x)", p->device == 0x1371 ? "Ensoniq AudioPCI ES1371" : p->vendor == 0x1102 ? "Creative Ectiva EV1938" : "Ensoniq AudioPCI ES1373", p->vendor, p->device);
     klog("es1371: %s at %x", devname, es_io);
     return true;
@@ -966,7 +985,7 @@ static void vsnd_refill(void) {
 /* Sound that arrives a piece at a time (a Linux program writing to /dev/dsp): a ring of
  * 16-bit stereo frames at the mixer's rate that the mixer drains as it plays. */
 static char off_reason[96];                    /* defined with the device code below */
-static char audio_hint_text[240];              /* advice when the card is not HD Audio or does not play */
+static char audio_hint_text[400];              /* advice when the card is not HD Audio or does not play */
 #define NSTREAM 4
 #define SRING 16384                            /* frames: a third of a second at 48 kHz */
 typedef struct { bool open; uint32_t rd, wr; int16_t buf[SRING * 2]; } stream_t;
@@ -1363,7 +1382,13 @@ void audio_init(void) {
             snprintf(audio_hint_text, sizeof audio_hint_text,
                      "%s is not playing. HD Audio works best: in VMware set the guest OS to Windows 7 or later, or add sound.virtualDev = \"hdaudio\" to the .vmx; in VirtualBox choose Intel HD Audio.", devname);
             klog("audio: %s", audio_hint_text);
-        } else if (dev == DEV_ES1370 || dev == DEV_ES1371)
+        } else if (dev == DEV_ES1371)
+            /* VMware's Ensoniq can take the sound and still play nothing on some hosts, so the
+             * check above cannot tell: say how to switch to HD Audio every time */
+            snprintf(audio_hint_text, sizeof audio_hint_text,
+                     "This virtual machine gives " OS_NAME " an Ensoniq AudioPCI sound card, which plays silence on many VMware hosts. "
+                     "Use HD Audio instead: shut down, then add sound.virtualDev = \"hdaudio\" to the .vmx (or set the guest OS to Windows 7 or later).");
+        else if (dev == DEV_ES1370)
             snprintf(audio_hint_text, sizeof audio_hint_text, "Using %s. Intel HD Audio is the recommended sound card for virtual machines.", devname);
     }
 }

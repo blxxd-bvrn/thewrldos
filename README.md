@@ -219,8 +219,9 @@ For sound, any of the cards VirtualBox offers works (**Intel HD Audio**, **ICH A
 **SoundBlaster 16**), and VMware's **HD Audio** or **Ensoniq AudioPCI** (ES1371). **HD Audio is the recommended card.** VMware gives "Other" and Windows XP guests the Ensoniq
 AudioPCI, which plays nothing on some hosts: `tools/vm/THE WRLD OS.vmx` is a ready VMware machine
 set to HD Audio (or set the guest OS to Windows 7 or later, or add `sound.virtualDev = "hdaudio"`
-to your `.vmx`); in VirtualBox choose Intel HD Audio. If the card in use does not play, the OS
-says so at log-on and in Control Panel > Sound. Graphics work with **VBoxVGA**, **VMSVGA** or
+to your `.vmx`); in VirtualBox choose Intel HD Audio. The OS cannot choose the card: the virtual
+machine's settings do. With VMware's Ensoniq card, or any card that does not play, the OS says
+how to switch at the end of Setup, at log-on and in Control Panel > Sound. Graphics work with **VBoxVGA**, **VMSVGA** or
 VMware's SVGA, and those can change resolution. Every network adapter VMware offers works (**e1000**, **e1000e**,
 **VMXNET3**, and the **AMD PCnet** "vlance" it picks for Windows XP guests), as do VirtualBox's (**Intel PRO/1000**,
 **PCnet**, **virtio-net**) and QEMU's e1000, e1000e, igb, rtl8139, pcnet, vmxnet3 and virtio-net.
@@ -271,15 +272,24 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
    - a **summary page** repeats the exact disk, partition, letter, size and file system, warns
      that formatting deletes everything on the partition, and requires an "I understand"
      checkbox before **Install** is enabled;
-   - **copies the system** with a progress bar and writes the boot loader: GRUB's boot code in
-     the MBR and its core image after the MBR (which also keeps the disk BIOS-bootable);
-   - restarts.
+   - **installs**, on a screen laid out like the Windows XP installer's: the stages on the left
+     (*Preparing the disk*, *Copying files*, *Installing devices*, *Finalizing installation*)
+     with the time left and a progress bar, and on the right pages about what THE WRLD OS does,
+     changing every 8 seconds. Setup formats the partition and copies the system. It then
+     **installs devices**: it matches each device in the computer to its built-in driver and
+     writes the hardware profile to the new system. Last, it writes the boot loader: GRUB's boot
+     code in the MBR and its core image after the MBR (which also keeps the disk BIOS-bootable).
+     The work takes about a minute, so Setup then shows the pages it has not shown yet
+     (Enter moves on). The pages come from `C:\WRLD\Setup\Slides.txt`, which has a title line,
+     its text, and a blank line between pages, so they can be changed without a rebuild;
+   - restarts. If the sound card is not HD Audio and may play nothing, the last page says how to
+     switch.
 
    The blue text-mode Setup is kept as a fallback: choose **Install THE WRLD OS (text mode)** in
    the boot menu (or add `setup=text` to the kernel command line).
-2. **First boot from the disk**: Setup first **installs devices**: it detects the hardware in
-   the computer, matches each device to its built-in driver and shows them one by one, then
-   says how many are ready and how many have no driver. A graphical wizard then asks for:
+2. **First boot from the disk**: the devices are already installed, so a graphical wizard
+   asks straight away for (a disk installed by an older Setup, with no hardware profile, gets
+   the *Installing devices* step first):
    - time zone;
    - your name and organisation;
    - computer name;
@@ -1328,7 +1338,7 @@ device manager's job is to say what the computer has and which driver runs it.
   menu and from the live desktop.
 - **Text mode:** fallback (`setup=text`), with the same partition editor, NTFS/FAT32 format
   (quick/full), file copy and GRUB install.
-- **First boot:** *Installing devices* (see above), then the graphical wizard. It runs before
+- **First boot:** the graphical wizard (devices were installed by Setup). It runs before
   the log-on screen, using the normal widgets.
 
 ### Desktop (`src/gui`)

@@ -13,6 +13,7 @@
 #include "wm.h"
 #include "apps.h"
 #include "disk.h"
+#include "audio.h"
 
 bool boot_setup_mode;
 uint32_t boot_root_serial;
@@ -306,6 +307,36 @@ static void message_screen(const char *msg, const char *status) {
     while (ts_key() != KEY_ENTER) {}
 }
 
+/* Installing devices, as part of the installation itself: every device in this computer is
+ * matched to its built-in driver now, and the result goes to the new system as its hardware
+ * profile, so the first start has its hardware set up before it asks anything. */
+static int inst_phase = 1;                  /* the installation's stage: 1 disk, 2 files, 3 devices, 4 finishing */
+static void install_devices(vol_t *v) {
+    devmgr_scan();
+    int nd = devmgr_count(), ready = 0, nodrv = 0;
+    inst_phase = 3;
+    for (int i = 0; i < nd; i++) {
+        device_t *d = devmgr_get(i);
+        bool bad = d->status == DS_NO_DRIVER || d->status == DS_FAILED;
+        if (bad) nodrv++; else ready++;
+        if (!gui_setup) continue;
+        char cap[64], det[200];
+        snprintf(cap, sizeof cap, "Installing devices (%d of %d)...", i + 1, nd);
+        if (d->drv) snprintf(det, sizeof det, "%s: %s", d->name, d->drv->desc);
+        else snprintf(det, sizeof det, "%s%s", d->name, bad ? ": no driver" : "");
+        gui_setup_progress(cap, (i + 1) * 100 / MAX(1, nd), det);
+        task_sleep(150);
+    }
+    int len = 0;
+    char *txt = devmgr_profile_text(&len);
+    if (txt) {
+        vol_mkdir(v, "WRLD\\System32"); vol_mkdir(v, "WRLD\\System32\\config");
+        vol_write(v, "WRLD\\System32\\config\\hardware.ini", txt, len, false);
+        kfree(txt);
+    }
+    klog("setup: %d devices installed, %d without a driver", ready, nodrv);
+}
+
 /* mode: 0 NTFS quick, 1 NTFS full, 2 FAT32 quick, 3 FAT32 full, 4 keep the file system */
 static bool do_install(int disk, int slot, int mode) {
     blkdev_t *dv = blk_get(disk);
@@ -341,8 +372,8 @@ static bool do_install(int disk, int slot, int mode) {
         item_t it = { .kind = IT_PART, .disk = disk, .slot = slot, .lba = p->lba, .sectors = p->sectors, .type = vol_part_type(kind), .letter = 'C' };
         char pd[96]; part_desc(&it, pd, sizeof pd);
         if (gui_setup) {
-            char det[200]; snprintf(det, sizeof det, "%s\n%s", pd, dd);
-            gui_setup_progress("Formatting the partition...", 0, det);
+            inst_phase = 1;
+            gui_setup_progress("Formatting the partition...", 0, pd);
         } else {
             ts_begin("", NULL);
             tx(2, 3, "Please wait while Setup formats the partition", TS_FG);
@@ -387,7 +418,7 @@ static bool do_install(int disk, int slot, int mode) {
             last = timer_ticks();
             char st[160]; snprintf(st, sizeof st, "Copying: %s", n->name);
             int pct = (int)(done * 100 / MAX(1, L.bytes));
-            if (gui_setup) gui_setup_progress("Copying files to the hard disk...", pct, st);
+            if (gui_setup) { inst_phase = 2; gui_setup_progress("Copying files...", pct, st); }
             else {
                 ts_begin("", NULL);
                 tx_wrap(2, 3, "Please wait while Setup copies files to the " OS_NAME " installation folders. This might take several minutes to complete.", TS_FG);
@@ -409,8 +440,10 @@ static bool do_install(int disk, int slot, int mode) {
         }
     }
     vol_delete(v, "Documents and Settings\\User\\Desktop\\Install " OS_NAME ".lnk");
+    install_devices(v);
     /* configuration */
-    if (gui_setup) gui_setup_progress("Finishing the installation...", 40, "Installing the boot loader");
+    inst_phase = 4;
+    if (gui_setup) gui_setup_progress("Installing the boot loader...", 40, NULL);
     else {
         ts_begin("", NULL);
         tx(2, 3, "Please wait while Setup initializes your " OS_NAME " configuration.", TS_FG);
@@ -469,7 +502,7 @@ static bool do_install(int disk, int slot, int mode) {
     for (int i = 0; i < 4; i++) ptab[disk][i].boot = i == slot;
     ok = ok && mbr_write(dv, ptab[disk], bootimg);
     kfree(bootimg); kfree(core);
-    if (gui_setup) gui_setup_progress("Finishing the installation...", 100, "The boot loader is installed");
+    if (gui_setup) gui_setup_progress("Saving settings...", 100, NULL);
     else { ts_progress(16, "Setup is installing the boot loader...", 100, TS_YEL); ts_present(); }
     if (!ok) { message_screen("Setup could not write the boot loader to the disk.\n\nPress ENTER to return.", "ENTER=Continue"); return false; }
     klog("setup: installed to disk %d partition %d (serial %08x)", disk, slot + 1, serial);
@@ -910,25 +943,161 @@ static bool gui_confirm(const char *title, const char *msg, const char *yes, con
 static void gui_setup_message(const char *msg) { gui_confirm("Setup", msg, "OK", NULL); }
 
 /* ---------- progress page (also used from do_install) ---------- */
+/* ---------- the installation screen ----------
+ * While Setup works, the screen is laid out like the Windows XP installer's: the stages on the
+ * left with the time left and a progress bar, and on the right a page about what THE WRLD OS
+ * does, changing every few seconds. The pages come from C:\WRLD\Setup\Slides.txt (a title
+ * line, its text, a blank line between pages), so they can be edited without a rebuild. */
+#define SLIDE_MS 8000
+typedef struct { char title[96]; char body[900]; } slide_t;
+static slide_t *slides; static int nslides;
+static void slides_add(const char *title, const char *body) {
+    if (nslides >= 16) return;
+    if (!slides) slides = kzalloc(sizeof(slide_t) * 16);
+    if (!slides) return;
+    strlcpy(slides[nslides].title, title, sizeof slides[0].title);
+    strlcpy(slides[nslides].body, body, sizeof slides[0].body);
+    nslides++;
+}
+static void slides_load(void) {
+    if (nslides) return;
+    uint32_t len = 0;
+    uint8_t *raw = vfs_read_file("C:\\WRLD\\Setup\\Slides.txt", &len);
+    if (raw) {
+        char *t = kmalloc(len + 1);
+        if (t) {
+            memcpy(t, raw, len); t[len] = 0;
+            char title[96] = "", body[900] = "";
+            char *line = t;
+            while (line) {
+                char *nl = strchr(line, '\n');
+                if (nl) *nl = 0;
+                int l = strlen(line);
+                if (l && line[l - 1] == '\r') line[--l] = 0;
+                if (line[0] == ';') { /* a note */ }
+                else if (!l) { if (title[0]) slides_add(title, body); title[0] = body[0] = 0; }
+                else if (!title[0]) strlcpy(title, line, sizeof title);
+                else { if (body[0]) strlcat(body, "\n", sizeof body); strlcat(body, line, sizeof body); }
+                line = nl ? nl + 1 : NULL;
+            }
+            if (title[0]) slides_add(title, body);
+            kfree(t);
+        }
+        kfree(raw);
+    }
+    if (!nslides) slides_add("Welcome to THE WRLD OS", OS_NAME " is being installed on your computer. This takes only a few minutes.");
+}
+static uint32_t inst_t0;                    /* when the installation started */
+static int inst_slide = -1;                 /* the page to show (-1: by time) */
+static uint32_t inst_seen;                  /* the pages shown so far, one bit each */
+static const char *inst_steps[] = { "Collecting information", "Preparing the disk", "Copying files", "Installing devices", "Finalizing installation" };
+static const int phase_base[] = { 0, 0, 6, 80, 93 }, phase_span[] = { 0, 6, 74, 13, 7 };
+static void shadow_text(canvas_t *c, int font, int x, int y, const char *t, uint32_t col) {
+    draw_text(c, font, x + 2, y + 2, t, HEX(0x16307C));
+    draw_text(c, font, x, y, t, col);
+}
+/* The work itself takes only a minute or so, so when it is done Setup goes on through the
+ * pages that were not shown yet, one every few seconds; Enter or a click moves to the next. */
+static void gui_setup_progress(const char *caption, int pct, const char *detail);
+static void inst_tour(void) {
+    slides_load();
+    int si = (int)(((timer_ticks() - inst_t0) / SLIDE_MS) % nslides);
+    key_event_t ke; mouse_state_t ms = { 0 };
+    while (keyboard_poll(&ke)) {}
+    while (mouse_poll(&ms)) {}
+    for (int step = 0; step < nslides; step++) {
+        si = (si + 1) % nslides;
+        if (inst_seen & (1u << si)) continue;
+        inst_slide = si;
+        uint32_t t0 = timer_ticks();
+        bool next = false;
+        while (!next && timer_ticks() - t0 < SLIDE_MS) {
+            int left = 0;
+            for (int i = 0; i < nslides; i++) if (!(inst_seen & (1u << i)) && i != si) left++;
+            char cap[64]; snprintf(cap, sizeof cap, left ? "Finishing... (%d more %s)" : "Finishing...", left, left == 1 ? "page" : "pages");
+            gui_setup_progress(cap, 100, "Press Enter to go to the next page");
+            for (int k = 0; k < 10 && !next; k++) {
+                while (keyboard_poll(&ke)) if (ke.pressed && (ke.key == KEY_ENTER || ke.ch == ' ' || ke.key == KEY_RIGHT)) next = true;
+                int prev = ms.buttons;
+                while (mouse_poll(&ms)) { wm_mouse_x = ms.x; wm_mouse_y = ms.y; if ((ms.buttons & 1) && !(prev & 1)) next = true; prev = ms.buttons; }
+                task_sleep(20);
+            }
+        }
+    }
+    inst_slide = -1;
+}
 static void gui_setup_progress(const char *caption, int pct, const char *detail) {
     gui_heartbeat = timer_ticks();
+    slides_load();
     sg_bg();
-    sg_sync();
     if (sbg) memcpy(screen.px, sbg->px, SCREEN_W * SCREEN_H * 4); else gfx_clear(&screen, HEX(0x163EB0));
     canvas_reset_clip(&screen);
-    sg_left(SG_INSTALL);
-    rect_t r = sg_rect();
-    draw_window_frame(&screen, r, OS_NAME " Setup", ICON_LOGO, true, WF_NO_MAX | WF_NO_MIN | WF_NOCLOSE, -1, -1, WS_NORMAL);
-    rect_t cr = wm_client_rect(&sw);
-    fill_rect(&screen, cr.x, cr.y, cr.w, cr.h, WHITE);
-    int x = cr.x + 24, y = cr.y + 24, iw = cr.w - 48;
-    draw_text(&screen, FONT_LARGE, x, y, "Installing " OS_NAME, BLACK); y += 36;
-    draw_text_ellipsis(&screen, FONT_UI, x, y, iw, caption, HEX(0x303030)); y += 30;
-    draw_progress(&screen, R(x, y, iw, 22), pct);
-    char b[16]; snprintf(b, sizeof b, "%d%%", CLAMP(pct, 0, 100));
-    draw_text_centered(&screen, FONT_UI_BOLD, R(x, y, iw, 22), b, BLACK); y += 40;
-    if (detail) draw_text_wrapped(&screen, FONT_UI, x, y, iw, detail, HEX(0x505050), 4);
-    draw_text(&screen, FONT_UI, x, cr.y + cr.h - 30, "Do not turn off the computer.", HEX(0x9C1C1C));
+    canvas_t *c = &screen;
+    int ph = CLAMP(inst_phase, 1, 4);
+    int overall = phase_base[ph] + CLAMP(pct, 0, 100) * phase_span[ph] / 100;
+    /* the stages */
+    int y = 100;
+    for (int i = 0; i < 5; i++) {
+        uint32_t col = i == ph ? HEX(0xFFB54A) : i < ph ? WHITE : HEX(0x9AB2F0);
+        fill_circle(c, 30, y + 7, 7, WHITE);
+        fill_circle(c, 30, y + 7, 5, i < ph ? HEX(0x3CA83C) : i == ph ? HEX(0xFFB54A) : HEX(0xC8D4F4));
+        draw_text_wrapped(c, i == ph ? FONT_UI_BOLD : FONT_UI, 46, y, 190, inst_steps[i], col, 2);
+        y += 34;
+    }
+    /* time left: from how fast it has gone so far, plus the first start's few minutes */
+    y += 16;
+    char eta[48];
+    uint32_t el = timer_ticks() - inst_t0;
+    int unseen = 0;
+    for (int i = 0; i < nslides; i++) if (!(inst_seen & (1u << i))) unseen++;
+    if (overall < 8 || !inst_t0) strlcpy(eta, "a few minutes", sizeof eta);
+    else {
+        /* the work left at the pace so far, the pages not yet shown, and the first start */
+        uint32_t left_s = (uint32_t)((uint64_t)el * (100 - overall) / overall / 1000) + unseen * SLIDE_MS / 1000 + 120;
+        uint32_t m = (left_s + 30) / 60;
+        if (m <= 1) strlcpy(eta, "1 minute", sizeof eta); else snprintf(eta, sizeof eta, "%u minutes", m);
+    }
+    draw_text(c, FONT_UI_BOLD, 22, y, "Setup will complete in", WHITE); y += 16;
+    draw_text(c, FONT_UI_BOLD, 22, y, "approximately:", WHITE); y += 18;
+    draw_text(c, FONT_UI_BOLD, 40, y, eta, WHITE);
+    /* what it is doing now, and the bar */
+    int by = SCREEN_H - 64 - 92;
+    draw_text_ellipsis(c, FONT_UI, 22, by, 210, caption, WHITE);
+    draw_progress(c, R(22, by + 20, 206, 16), overall);
+    if (detail) draw_text_ellipsis(c, FONT_UI, 22, by + 44, 210, detail, HEX(0xC8D8FF));
+    /* the page about the OS */
+    int si = inst_slide >= 0 ? inst_slide % nslides : inst_t0 ? (int)((el / SLIDE_MS) % nslides) : 0;
+    inst_seen |= 1u << si;
+    const slide_t *sl = &slides[si];
+    int x = 300, w = MIN(SCREEN_W - x - 60, 640);
+    y = 120;
+    /* the title, wrapped by hand so each line gets the shadow */
+    {
+        char line[96] = "", word[96]; const char *p = sl->title;
+        while (*p) {
+            int n = 0; while (p[n] && p[n] != ' ') n++;
+            int k = MIN(n, (int)sizeof word - 1); memcpy(word, p, k); word[k] = 0;
+            char tryb[192]; snprintf(tryb, sizeof tryb, "%s%s%s", line, line[0] ? " " : "", word);
+            if (line[0] && text_width(FONT_HUGE, tryb) > w) { shadow_text(c, FONT_HUGE, x, y, line, WHITE); y += font_height(FONT_HUGE) + 4; strlcpy(line, word, sizeof line); }
+            else strlcpy(line, tryb, sizeof line);
+            p += n; while (*p == ' ') p++;
+        }
+        if (line[0]) { shadow_text(c, FONT_HUGE, x, y, line, WHITE); y += font_height(FONT_HUGE) + 4; }
+    }
+    y += 22;
+    {
+        char para[900]; const char *p = sl->body;
+        while (*p) {
+            int n = 0; while (p[n] && p[n] != '\n') n++;
+            int k = MIN(n, (int)sizeof para - 1); memcpy(para, p, k); para[k] = 0;
+            y += draw_text_wrapped(c, FONT_LARGE, x, y, w, para, HEX(0xF0F4FF), 5) + 14;
+            p += n; if (*p) p++;
+        }
+    }
+    /* which page this is, as XP's row of dots */
+    int dx = SCREEN_W - 40 - nslides * 14, dy = SCREEN_H - 64 - 22;
+    for (int i = 0; i < nslides; i++)
+        fill_rect(c, dx + i * 14, dy, i == si ? 8 : 4, i == si ? 8 : 4, i == si ? HEX(0x7CE07C) : HEX(0x3CA83C));
     gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y);
 }
 
@@ -1120,6 +1289,8 @@ static void sg_done(window_t *w) {
     draw_text_wrapped(s, FONT_UI, bx, y, bw, "Setup has written the boot menu and copied your files. The first start asks for your user name, computer name, time zone and look.", HEX(0x303030), 5);
     y += 60;
     draw_text(s, FONT_UI_BOLD, bx, y, "You can restart now.", BLACK);
+    const char *ah = audio_hint();
+    if (ah && ah[0]) { y += 30; draw_text_wrapped(s, FONT_UI, bx, y, bw, ah, HEX(0x9C4A00), 4); }
     int fy = s->h - 40;
     hline(s, 0, fy, s->w, HEX(0xA0A0A0)); hline(s, 0, fy + 1, s->w, WHITE);
     if (ui_button_ex(w, R(s->w - 116, fy + 8, 100, 24), "Restart now", true, true)) SG.action = SGA_RESTART;
@@ -1203,8 +1374,10 @@ static void sg_install(void) {
     item_t it = items[SG.sel];
     int mode = SG_fs[CLAMP(SG.fs, 0, MAX(0, SG_nfs - 1))];
     SG.page = SG_INSTALL;
+    inst_t0 = timer_ticks(); inst_phase = 1; inst_seen = 0; inst_slide = -1;
     gui_setup_progress("Preparing the disk...", 0, NULL);
     bool ok = do_install(it.disk, it.slot, mode);
+    if (ok) { inst_phase = 4; inst_tour(); }
     SG.page = ok ? SG_DONE : SG_CONFIRM;
 }
 static void sg_action(void) {
@@ -1399,7 +1572,7 @@ static void oobe_paint(window_t *w) {
     bool next_ok = true;
     switch (O.page) {
     case 0:
-        page_header(s, "Welcome to " OS_NAME " Setup", "Setup has copied the system files to your hard disk.");
+        page_header(s, "Welcome to " OS_NAME " Setup", "Setup has copied the system files and installed your devices.");
         by += draw_text_wrapped(s, FONT_UI, bx, by, bw, "Setup will now finish installing " OS_NAME ". Answer a few questions about yourself and your computer, and Setup will do the rest.", BLACK, 4) + 14;
         by += draw_text_wrapped(s, FONT_UI, bx, by, bw, "Your files and settings are stored on the hard disk from now on, so they are kept when you restart or turn off the computer.", BLACK, 4) + 14;
         draw_text_wrapped(s, FONT_UI, bx, by, bw, "To continue, click Next.", BLACK, 4);
@@ -1607,7 +1780,9 @@ void setup_oobe(void) {
     O.tz = 6;
     for (unsigned i = 0; i < ARRAY_LEN(zones); i++) if (zones[i].off == tz_offset_minutes) O.tz = i;
     obg_render();
-    oobe_install_devices();
+    /* Setup installed the devices and left the hardware profile; a disk installed by an
+     * older Setup has none, so the step runs here */
+    if (!vfs_resolve(HARDWARE_PROFILE, NULL)) oobe_install_devices();
     mouse_state_t ms = { 0 }; key_event_t ke;
     while (keyboard_poll(&ke)) {}                     /* nothing typed during that step is meant for the pages */
     while (mouse_poll(&ms)) { wm_mouse_x = ms.x; wm_mouse_y = ms.y; }

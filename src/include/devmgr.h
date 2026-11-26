@@ -60,6 +60,7 @@ void devmgr_summary(char *buf, int cap);       /* "23 devices, 21 working, 2 wit
  * and marks them is_new; -1 if there is no profile yet. */
 int devmgr_compare_profile(void);
 bool devmgr_save_profile(void);
+char *devmgr_profile_text(int *len);              /* the profile as text (kmalloc'd), for Setup */
 void devmgr_boot_check(void);                 /* desktop is up: announce new hardware, then watch for hotplug */
 #define HARDWARE_PROFILE "C:\\WRLD\\System32\\config\\hardware.ini"
 #endif

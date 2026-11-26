@@ -383,15 +383,23 @@ void devmgr_boot_check(void) {
     snapshot();
     task_create("devmgr", watch_task, NULL, 16384);
 }
-bool devmgr_save_profile(void) {
+/* the hardware profile's text (kmalloc'd): Setup writes it to the disk it installs to */
+char *devmgr_profile_text(int *len) {
     if (!ndevices) devmgr_scan();
     int cap = ndevices * 280 + 64, o = 0;
     char *b = kmalloc(cap);
-    if (!b) return false;
+    if (!b) return NULL;
     for (int i = 0; i < ndevices; i++) {
         device_t *d = &devices[i];
         o += snprintf(b + o, cap - o, "%s\t%s\t%s\t%s\r\n", d->hwid, d->location, d->drv ? d->drv->name : "-", d->name);
     }
+    *len = o;
+    return b;
+}
+bool devmgr_save_profile(void) {
+    int o = 0;
+    char *b = devmgr_profile_text(&o);
+    if (!b) return false;
     vfs_mkdir_p("C:\\WRLD\\System32\\config");
     bool ok = vfs_write_file(HARDWARE_PROFILE, b, o) != NULL;
     kfree(b);

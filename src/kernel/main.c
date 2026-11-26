@@ -187,7 +187,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
         notify_balloon("USB", "This computer's USB controller has no driver yet. A PS/2 keyboard and mouse still work.");
     else if (system_volume) notify_balloon("Welcome to " OS_NAME, "Your files and settings are saved to the hard disk. Try the samples in C:\\Samples.");
     else notify_balloon("Welcome to " OS_NAME, "This is the live session (changes are lost on restart). Double-click \"Install " OS_NAME "\" on the desktop to install it to a hard disk.");
-    if (strstr(audio_hint(), "is not playing")) notify_balloon("Sound", audio_hint());
+    if (strstr(audio_hint(), "is not playing") || strstr(audio_hint(), "plays silence")) notify_balloon("Sound", audio_hint());
     { extern void mousekeys_boot_check(void); mousekeys_boot_check(); }   /* no mouse: the keypad moves the pointer */
     media_init();                                    /* CDs, DVDs and USB sticks become drive letters */
     devmgr_boot_check();                             /* "Found New Hardware" replaces the welcome balloon when there is some */
