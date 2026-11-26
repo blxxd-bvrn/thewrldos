@@ -427,8 +427,12 @@ pub unsafe fn lx_execve(r: *mut Regs, upath: u64, uargv: u64, uenvp: u64) -> i64
     let mut argv = match copy_vec((*p).vm, uargv) { Ok(v) => v, Err(e) => return e };
     let envp = match copy_vec((*p).vm, uenvp) { Ok(v) => v, Err(e) => return e };
     if argv.is_empty() { argv.push(path.clone()); }
-    /* the Linux path of the program */
-    let (kind, wrld) = lx_path(p, -100, &path);
+    /* the Linux path of the program; /proc/self/exe is the program this process runs */
+    let (mut kind, mut wrld) = lx_path(p, -100, &path);
+    if kind == lp::kind::PROC_SELF_EXE {
+        path = cstr(&(*p).exe).to_vec();
+        (kind, wrld) = lx_path(p, -100, &path);
+    }
     let mut n = if kind == lp::kind::FILE { resolve_w(&wrld) } else { null_mut() };
     if n.is_null() || (*n).is_dir() { return -ENOENT; }
     /* "#!interpreter [arg]": run the interpreter with the script's path in front of the arguments */
@@ -467,7 +471,7 @@ pub unsafe fn lx_execve(r: *mut Regs, upath: u64, uargv: u64, uenvp: u64) -> i64
     }
     /* close-on-exec descriptors */
     for i in 0..LX_MAXFD {
-        if !(*p).fds[i].is_null() && (*p).fdflags[i] != 0 { lx_file_put((*p).fds[i]); (*p).fds[i] = null_mut(); (*p).fdflags[i] = 0; }
+        if !(*p).fds[i].is_null() && (*p).fdflags[i] != 0 { super::locks::on_close(p, (*p).fds[i]); lx_file_put((*p).fds[i]); (*p).fds[i] = null_mut(); (*p).fdflags[i] = 0; }
     }
     /* switch address spaces before releasing the old one */
     let old = (*p).vm;
@@ -548,6 +552,7 @@ unsafe fn proc_free(p: *mut LxProc) {
         o = nx;
     }
     for i in 0..LX_MAXFD { if !(*p).fds[i].is_null() { lx_file_put((*p).fds[i]); (*p).fds[i] = null_mut(); } }
+    super::locks::on_exit((*p).pid);
     record_zombie(p);
     lx_signal_child_exit(p, (*p).pid, status);
     if !(*p).vm_borrowed { uvm_free((*p).vm); }

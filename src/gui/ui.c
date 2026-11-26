@@ -174,6 +174,9 @@ bool ui_slider(window_t *w, rect_t r, int *v, int lo, int hi) {
     return changed;
 }
 /* flat: the caller draws the box (text in fg); *focused_out reports keyboard focus */
+static window_t *sel_w; static int sel_id = -1;
+/* the text of the window's focused text box starts out selected, as the Run box's does */
+void ui_textbox_select_all(window_t *w) { sel_w = w; sel_id = -1; }
 bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_t fg, bool *focused_out) {
     int id = ui_id(w);
     ui_t *u = &w->ui;
@@ -185,9 +188,16 @@ bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_
     bool focused = u->focus == id;
     if (focused_out) *focused_out = focused;
     bool enter = false;
+    /* all of the text selected (ui_textbox_select_all, Ctrl+A): typing replaces it */
+    bool sel = focused && sel_w == w && (sel_id < 0 || sel_id == id) && buf[0];
+    if (sel) sel_id = id;
+    if (!focused && sel_w == w && sel_id == id) sel_w = NULL;
     if (focused && u->has_key) {
-        int len = strlen(buf);
         key_event_t *k = &u->key;
+        if ((k->mods & MOD_CTRL) && (k->ch == 'a' || k->ch == 'A' || k->ch == 1)) { sel_w = w; sel_id = id; sel = buf[0] != 0; }
+        else if (sel && (k->key == KEY_BACKSPACE || k->key == KEY_DELETE || (k->ch >= 32 && k->ch < 127 && !(k->mods & MOD_CTRL)))) { buf[0] = 0; sel = false; sel_w = NULL; }
+        else if (sel && k->key != KEY_ENTER && k->key != KEY_TAB && k->key != KEY_ESC) { sel = false; sel_w = NULL; }
+        int len = strlen(buf);
         if (k->key == KEY_BACKSPACE) { if (len) buf[len - 1] = 0; }
         else if (k->key == KEY_ENTER) enter = true;
         else if (k->ch >= 32 && k->ch < 127 && len < cap - 1 && !(k->mods & MOD_CTRL)) { buf[len] = k->ch; buf[len + 1] = 0; }
@@ -199,8 +209,9 @@ bool ui_textbox_ex(window_t *w, rect_t r, char *buf, int cap, bool flat, uint32_
     int tw = text_width(FONT_UI, buf);
     int off = tw > r.w - 10 ? tw - (r.w - 10) : 0;
     int ty = r.y + (r.h - font_height(FONT_UI)) / 2;
+    if (sel) { fill_rect(c, r.x + 3 - off, ty - 1, tw + 2, font_height(FONT_UI) + 2, T.select); fg = T.select_text; }
     draw_text(c, FONT_UI, r.x + 4 - off, ty, buf, fg);
-    if (focused && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), fg);
+    if (focused && !sel && (timer_ticks() / 500) % 2 == 0) vline(c, r.x + 4 - off + tw, ty, font_height(FONT_UI), fg);
     c->clip = old;
     if (focused) { extern void ui_blink_request(window_t *w); ui_blink_request(w); }
     return enter;

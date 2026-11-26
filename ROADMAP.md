@@ -109,7 +109,9 @@ Already working, and not on the list below:
 - Shared objects (`src/linux/shm.c`) are reference-counted page sets: a `MAP_SHARED` mapping of
   a memfd, a `/dev/shm` object or shared anonymous memory uses the object's own pages (marked so
   no address space frees them), and `fork` keeps them shared. `MAP_SHARED` of an ordinary file
-  is still a private snapshot copied on first touch, with no write-back.
+  maps one set of pages per file (`rust/src/kernel/lx/locks.rs`) that every process mapping it
+  shares; they are written back to the file on `msync`, `munmap` and exit, and `read`/`write`
+  of the file stay in step with them.
 - A fixed 8 MiB stack with no growth and no guard page.
 - No swap and no reclaim, and about 3.75 GB of RAM at most.
 
@@ -118,8 +120,10 @@ Already working, and not on the list below:
 - The kernel is cooperative, so one long system call (a disk poll, a TLS handshake, populating a
   large mapping) stalls every thread. Only ring 3 is preemptive.
 - One CPU: `sched_setaffinity` is a no-op and the affinity mask reports a single CPU.
-- `fcntl` locks are always granted and `fsync` does nothing, which is fine for the in-memory VFS
-  but unsafe for SQLite.
+- `fcntl` record locks (`F_GETLK`, `F_SETLK`, `F_SETLKW` and the OFD ones) and `flock` are real:
+  conflicting locks are refused or waited for, and they go on close and exit as on Linux.
+  `fsync` writes a file on C: through to the system disk. Deadlocks between two waiting
+  processes are not detected (`EDEADLK`).
 
 ### 7. C and C++ runtime
 
@@ -307,7 +311,10 @@ Already working, and not on the list below:
 8. [x] **Software rasterisation** - the GUI's own path engine (`src/gui/raster.c`): anti-aliased
     fills and strokes, round joins, linear/radial gradients and clipping, used by The WRLD Browser for
    `border-radius` and gradient backgrounds. Skia itself is not used.
-9. [ ] **libjpeg/libpng and SQLite** - media and storage (libpng runs, through Cairo).
+9. [x] **libjpeg/libpng and SQLite** - media and storage. `mediatest` (samples/linux-media) runs
+   the build machine's libjpeg-turbo, libpng and SQLite: JPEG and PNG written and read back,
+   SQLite on C: with transactions, an index, record locks between two processes and WAL mode
+   across processes (15 of 15 checks pass).
 10. [x] **`/proc`, `/sys`, honest `prctl`** - `/proc/self/{maps,stat,status,cmdline,fd}`,
    `/proc/{meminfo,cpuinfo,uptime,version}`, a minimal `/sys` CPU/kernel tree, per-process
    rlimits (NOFILE and FSIZE enforced) and a `prctl` that returns `EINVAL` for what it does not

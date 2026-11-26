@@ -5,7 +5,7 @@
 use super::*;
 use super::mem::*;
 use super::sig::*;
-use super::fs::{lx_fd_get, lx_fd_alloc, lx_file_put, epoch_of, vfs_unshare};
+use super::fs::{lx_fd_get, lx_fd_alloc, lx_file_put, epoch_of};
 use super::proc_::*;
 use core::ptr::{self, null_mut};
 
@@ -178,7 +178,16 @@ unsafe fn sys_mmap(p: *mut LxProc, a: u64, len: u64, prot: u64, flags: u64, fd: 
         if (*f).ty == FD_ZERO { anon = true; }                   /* like anonymous */
         else if (*f).ty != FD_FILE { return -ENODEV; }
         else {
-            if flags & MAP_SHARED != 0 && prot & 2 != 0 && vfs_unshare((*f).node) == 0 { return -ENOMEM; }   /* PROT_WRITE */
+            if flags & MAP_SHARED != 0 && !(*f).node.is_null() {           /* every process mapping the file shares its pages */
+                if prot & 2 != 0 && (*f).oflags & 3 == 0 { return -EACCES; }
+                let node = (*f).node;
+                let o = super::locks::filemap_get(node, off.saturating_add(palign(len)));
+                if o.is_null() { return -ENOMEM; }
+                let r = uvm_map_shm(vm, a, len, prot_of(prot), true, fixed, o, off);
+                if r >= 0 { let v = uvm_find(vm, r as u64); if !v.is_null() { (*v).fnode = node; } }
+                else { super::locks::filemap_unmapped(node, o); }
+                return r;
+            }
             data = (*(*f).node).data(); size = (*(*f).node).size() as u64; node = (*f).node;
         }
     }
@@ -259,7 +268,8 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
             if a2 == 4 || a2 == 8 { uvm_dontneed(vm, a0 & !(PAGE - 1), a0.wrapping_add(a1)); }   /* MADV_DONTNEED / MADV_FREE */
             0
         }
-        26 | 27 | 149 | 150 | 151 | 152 => 0,                    /* msync, mincore, mlock... */
+        26 => { super::locks::msync((*p).vm, a0, a1); 0 }       /* msync */
+        27 | 149 | 150 | 151 | 152 => 0,                    /* msync, mincore, mlock... */
         13 => {                                                  /* rt_sigaction */
             if a0 < 1 || a0 > LX_NSIG as u64 || a0 == 9 || a0 == 19 { return -EINVAL; }
             if a3 != 0 && a3 != 8 { return -EINVAL; }
@@ -331,11 +341,11 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
             if nr == 32 { let fd = lx_fd_alloc(p, f, 0); if fd >= 0 { (*f).refs += 1; } return fd; }
             if a1 >= LX_MAXFD as u64 { return -EBADF; }
             if a0 == a1 { return if nr == 292 { -EINVAL } else { a1 as i64 }; }
-            if !(*p).fds[a1 as usize].is_null() { lx_file_put((*p).fds[a1 as usize]); }
+            if !(*p).fds[a1 as usize].is_null() { super::locks::on_close(p, (*p).fds[a1 as usize]); lx_file_put((*p).fds[a1 as usize]); }
             (*p).fds[a1 as usize] = f; (*f).refs += 1; (*p).fdflags[a1 as usize] = if nr == 292 && a2 & 0o2000000 != 0 { 1 } else { 0 };
             a1 as i64
         }
-        73 => if lx_fd_get(p, a0 as i64).is_null() { -EBADF } else { 0 },   /* flock: granted */
+        73 => { let f = lx_fd_get(p, a0 as i64); if f.is_null() { -EBADF } else { super::locks::flock(f, a1) } }   /* flock */
         72 => {                                                  /* fcntl */
             let f = lx_fd_get(p, a0 as i64); if f.is_null() { return -EBADF; }
             match a1 {
@@ -344,7 +354,7 @@ pub unsafe fn lx_syscall(r: *mut Regs) -> i64 {
                 2 => { (*p).fdflags[a0 as usize] = (a2 & 1) as c_int; 0 }
                 3 => (*f).oflags as i64,
                 4 => { (*f).oflags = ((*f).oflags & !(0o2000 | 0o4000)) | (a2 as c_int & (0o2000 | 0o4000)); 0 }
-                5 | 6 | 7 | 36 | 37 | 38 => 0,                   /* locks (and OFD locks): always granted */
+                5 | 6 | 7 | 36 | 37 | 38 => super::locks::fcntl_lock(p, f, a1, a2),   /* record locks, and OFD locks */
                 1033 => {                                        /* F_ADD_SEALS */
                     if (*f).ty != FD_SHM { return -EINVAL; }
                     let o = (*f).obj as *mut ShmObj;

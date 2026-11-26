@@ -309,4 +309,5 @@ static void run_paint(window_t *w) {
 void shell_show_run(void) {
     window_t *w = wm_create("Run", 8, SCREEN_H - T.taskbar_h - 190, 350, 132, WF_NO_MAX | WF_NO_MIN);
     w->paint = run_paint; w->icon = ICON_RUN;
+    ui_textbox_select_all(w);
 }

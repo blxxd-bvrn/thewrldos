@@ -1,5 +1,8 @@
 # THE WRLD OS
 
+**Version: Pre-Alpha 1** (build 2600). It is shown in About THE WRLD OS (Run: `winver`), System
+Properties, `ver` and the Command Prompt banner; `uname -r` reports it as `0.1.2600`.
+
 An original x86 operating system written from scratch in C and assembly (about 20,000
 lines, plus the Mbed TLS library for HTTPS, the QuickJS JavaScript engine, the Lexbor HTML parser and the minimp3, stb_vorbis, dr_flac and PL_MPEG decoders), in a **32-bit**
 and a **64-bit (x86-64) edition**. It has an XP-style "Luna" desktop and a
@@ -1071,8 +1074,13 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
   their interpreter. So package scripts, `system()` and `popen()` work, and
   `C:/Linux/usr/bin/sh` in the Command Prompt is an interactive Linux shell. Linux scripts under
   `C:\Linux` started from the Command Prompt run with their own interpreter.
+- File locks and storage: `fcntl` record locks, OFD locks and `flock` are enforced between
+  processes, `fsync` writes a file on C: through to the disk, and `MAP_SHARED` of an ordinary
+  file is shared between processes and written back to it. So **SQLite** works, WAL mode
+  included, as do **libjpeg-turbo** and **libpng**: `C:/Linux/usr/local/bin/mediatest` in the
+  Command Prompt checks all three (samples/linux-media).
 - Not yet: job control (`SIGSTOP`/`SIGCONT`, `WUNTRACED`), `signalfd`, IPv6 sockets and a
-  loopback interface, and `MAP_SHARED` write-back to ordinary files. See `ROADMAP.md` for what is left before WebKit becomes the browser.
+  loopback interface. See `ROADMAP.md` for what is left before WebKit becomes the browser.
 
 ### USB (`src/usb`)
 - In **both editions** (`-DWRLD_NO_USB` builds a kernel without it).
@@ -1871,7 +1879,7 @@ used to test every screen above, including a full install from a blank disk.
   - Text-heavy sites work best.
 - **Linux programs:**
   - `fork` copies the whole address space (there is no copy-on-write); `MAP_SHARED` mappings of
-    shared memory stay shared, those of ordinary files are copied. `vfork` and `posix_spawn`
+    shared memory and of ordinary files stay shared. `vfork` and `posix_spawn`
     run the child in the parent's memory until it calls `execve`, as on Linux.
   - The file system is case-insensitive, so a package with two files whose names differ only in
     case installs one of them.

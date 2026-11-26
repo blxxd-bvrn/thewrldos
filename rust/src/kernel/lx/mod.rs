@@ -26,6 +26,7 @@ pub mod fs;
 pub mod ipc;
 pub mod dsp;
 pub mod win;
+pub mod locks;
 
 use core::ffi::{c_char, c_int, c_void};
 use core::fmt;

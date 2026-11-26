@@ -384,6 +384,14 @@ $(LXROOT)/Linux/usr/local/bin/%: samples/linux-gnome/%.c
 	gcc -O2 -Wall -o $@ $< $$(pkg-config --cflags --libs $(GNOME_PKGS)) -lm
 	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
 	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
+# media and storage libraries (samples/linux-media): libjpeg-turbo, libpng and SQLite, the same way
+MEDIA_PKGS := libjpeg libpng sqlite3
+LXMEDIA := $(if $(shell pkg-config --exists $(MEDIA_PKGS) 2>/dev/null && echo y),$(patsubst samples/linux-media/%.c,$(LXROOT)/Linux/usr/local/bin/%,$(wildcard samples/linux-media/*.c)))
+$(LXROOT)/Linux/usr/local/bin/%: samples/linux-media/%.c
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64
+	gcc -O2 -Wall -Wno-unused-result -o $@ $< $$(pkg-config --cflags --libs $(MEDIA_PKGS))
+	@for lib in $$(ldd $@ | awk '/=> \// { print $$3 }'); do cp -L $$lib $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/; done
+	@cp -L /lib64/ld-linux-x86-64.so.2 $(LXROOT)/Linux/usr/lib64/
 # fontconfig settings for those programs: the OS's fonts, with the generic names mapped onto them
 LXFONTCONF := $(if $(LXGNOME)$(LXGTK)$(LXWEBKITGTK),$(LXROOT)/Linux/etc/fonts/fonts.conf)
 $(LXROOT)/Linux/etc/fonts/fonts.conf: Makefile
@@ -498,7 +506,7 @@ $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub: samples/linux-webkitgtk/stub
 # the build machine's BusyBox, when it is position-independent (Debian/Ubuntu's "busybox" package; their
 # "busybox-static" is linked at a fixed address in the low 4 GiB, which the kernel keeps for itself)
 LXBUSYBOX := $(firstword $(foreach b,/usr/bin/busybox /bin/busybox,$(if $(wildcard $(b)),$(if $(shell readelf -h $(b) 2>/dev/null | grep -q DYN && echo pie),$(b)))))
-$(LXROOT)/.stamp: $(LXBUSYBOX) tools/gen_busybox_links.py $(LXBINS) $(LXCXX) $(LXGNOME) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK) $(LXWEBKITGTK) $(LXEGL)
+$(LXROOT)/.stamp: $(LXBUSYBOX) tools/gen_busybox_links.py $(LXBINS) $(LXCXX) $(LXGNOME) $(LXMEDIA) $(LXFONTCONF) $(LXWEBKIT) $(LXWAYLAND) $(LXGTK) $(LXWEBKITGTK) $(LXEGL)
 	@mkdir -p $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu $(LXROOT)/Linux/usr/lib64 $(LXROOT)/Linux/tmp $(LXROOT)/Linux/home/user $(LXROOT)/Linux/etc
 ifneq ($(MUSLCC),)
 	@echo "  linux userland: musl static PIE ($(MUSLCC)); no libc is shipped"

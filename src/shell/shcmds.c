@@ -20,13 +20,13 @@ static void out_f(io_t *io, const char *fmt, ...) { char b[1024]; va_list ap; va
 static void err_f(io_t *io, const char *fmt, ...) { char b[512]; va_list ap; va_start(ap, fmt); int n = vsnprintf(b, sizeof b, fmt, ap); va_end(ap); io->err->write(io->err, "\x1b[91m", 5); io->err->write(io->err, b, MIN(n, 511)); io->err->write(io->err, "\x1b[0m", 4); }
 
 static int b_uname(const char *cwd, int argc, char **argv, io_t *io) {
-    if (argc > 1 && !strcmp(argv[1], "-a")) out_f(io, "WRLD %s %s.%s WRLD-Kernel " OS_MACHINE " %s\n", computer_name, OS_VERSION, OS_BUILD, OS_NAME);
-    else if (argc > 1 && !strcmp(argv[1], "-r")) out_f(io, "%s.%s\n", OS_VERSION, OS_BUILD);
+    if (argc > 1 && !strcmp(argv[1], "-a")) out_f(io, "WRLD %s %s.%s WRLD-Kernel " OS_MACHINE " %s\n", computer_name, OS_VERSION_NUM, OS_BUILD, OS_NAME);
+    else if (argc > 1 && !strcmp(argv[1], "-r")) out_f(io, "%s.%s\n", OS_VERSION_NUM, OS_BUILD);
     else if (argc > 1 && !strcmp(argv[1], "-m")) out_s(io, OS_MACHINE "\n");
     else out_s(io, "WRLD\n");
     return 0;
 }
-static int b_ver(const char *cwd, int argc, char **argv, io_t *io) { out_f(io, "\n%s %s [Version %s.%s]\n\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD); return 0; }
+static int b_ver(const char *cwd, int argc, char **argv, io_t *io) { out_f(io, "\n%s %s [Version %s (Build %s)]\n\n", OS_NAME, OS_EDITION, OS_VERSION, OS_BUILD); return 0; }
 static int b_whoami(const char *cwd, int argc, char **argv, io_t *io) { out_f(io, "%s\n", user_name); return 0; }
 static int b_ipconfig(const char *cwd, int argc, char **argv, io_t *io) {
     if (argc > 1 && (!strcasecmp(argv[1], "/renew") || !strcmp(argv[1], "-r"))) {

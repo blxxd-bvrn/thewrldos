@@ -120,6 +120,7 @@ pub unsafe fn lx_file_put(f: *mut LxFile) {
         FD_DSP => { super::dsp::dsp_release((*f).obj); (*f).obj = null_mut(); }
         _ => super::ipc::lx_ipc_release(f),
     }
+    if (*f).ty == FD_FILE { super::locks::on_file_free(f); }
     kfree((*f).pdata as *mut c_void); zfree(f);
 }
 unsafe fn file_new(ty: c_int) -> *mut LxFile { let f = znew::<LxFile>(); (*f).ty = ty; (*f).refs = 1; f }
@@ -446,6 +447,7 @@ unsafe fn file_read(p: *mut LxProc, f: *mut LxFile, buf: u64, n: u64, at: i64) -
             k
         }
         FD_FILE => {
+            if !(*f).node.is_null() { super::locks::filemap_before_io((*f).node); }
             let (data, size): (*const u8, u64) = if !(*f).node.is_null() { ((*(*f).node).data(), (*(*f).node).size() as u64) } else { ((*f).pdata, (*f).plen as u64) };
             let pos = if at >= 0 { at as u64 } else { (*f).pos };
             if data.is_null() || pos >= size { return 0; }
@@ -483,6 +485,7 @@ unsafe fn file_write(p: *mut LxProc, f: *mut LxFile, buf: u64, n: u64, at: i64) 
             if (*f).node.is_null() { return -EACCES; }               /* generated /proc files are read-only */
             if (*f).oflags & O_ACCMODE == 0 { return -EBADF; }
             let v = (*f).node;
+            super::locks::filemap_before_io(v);
             let vsize = (*v).size() as u64;
             let pos = if at >= 0 { at as u64 } else if (*f).oflags & O_APPEND != 0 { vsize } else { (*f).pos };
             if pos.wrapping_add(n) > 0x7FFF_FFFF || pos.wrapping_add(n) > (*p).rlim[1][0] { return -EFBIG; }   /* RLIMIT_FSIZE */
@@ -502,6 +505,7 @@ unsafe fn file_write(p: *mut LxProc, f: *mut LxFile, buf: u64, n: u64, at: i64) 
                 kfree(b as *mut c_void);
                 if ok == 0 { return -ENOSPC; }
             }
+            super::locks::filemap_wrote(v, pos, src, n);
             if at < 0 { (*f).pos = pos + n; }
             n as i64
         }
@@ -593,7 +597,7 @@ pub unsafe fn lx_sys_file(t: *mut LxThread, nr: i64, r: *mut Regs, handled: &mut
         85 => do_open(p, AT_FDCWD, a0, 0o1101, a1 as c_int),
         3 => {
             let f = fdg(a0); if f.is_null() { return -EBADF; }
-            (*p).fds[a0 as usize] = null_mut(); lx_file_put(f); 0
+            (*p).fds[a0 as usize] = null_mut(); super::locks::on_close(p, f); lx_file_put(f); 0
         }
         319 => {                                                                /* memfd_create */
             let name = tryr!(ustr(a0, 80));
@@ -801,7 +805,7 @@ pub unsafe fn lx_sys_file(t: *mut LxThread, nr: i64, r: *mut Regs, handled: &mut
             let ok = vfs_write_node(n, b as *const c_void, ns as u32); kfree(b as *mut c_void);
             if ok != 0 { 0 } else { -ENOSPC }
         }
-        74 | 75 => if fdg(a0).is_null() { -EBADF } else { 0 },                  /* fsync, fdatasync */
+        74 | 75 => { let f = fdg(a0); if f.is_null() { -EBADF } else { super::locks::fsync(f) } }   /* fsync, fdatasync */
         137 | 138 => {                                                         /* statfs, fstatfs */
             let mut sf = [0u64; 15];
             sf[0] = 0xEF53; sf[1] = 4096; sf[2] = 1 << 20; sf[3] = 1 << 19; sf[4] = 1 << 19; sf[5] = 1 << 20; sf[6] = 1 << 19; sf[8] = 255; sf[9] = 4096;

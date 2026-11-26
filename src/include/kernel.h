@@ -17,7 +17,8 @@
 #define OS_EXE_DESC "32-bit (x86)"
 #define OS_MACHINE "i686"
 #endif
-#define OS_VERSION  "1.0"
+#define OS_VERSION  "Pre-Alpha 1"
+#define OS_VERSION_NUM "0.1"   /* where a number is wanted: uname -r */
 #define OS_BUILD    "2600"
 extern char computer_name[32];
 

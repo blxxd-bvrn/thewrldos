@@ -299,7 +299,7 @@ static void term_task(void *arg) {
         con_puts(con, "\n\x1b[93m[Process finished] Press any key to close this window...\x1b[0m");
         con->getkey(con);
     } else {
-        con_printf(con, "%s [Version %s.%s]\n(C) THE WRLD OS project. Type 'help' for a list of commands.\n\n", OS_NAME, OS_VERSION, OS_BUILD);
+        con_printf(con, "%s [Version %s (Build %s)]\n(C) THE WRLD OS project. Type 'help' for a list of commands.\n\n", OS_NAME, OS_VERSION, OS_BUILD);
         sh_interactive(con, j->cwd[0] ? j->cwd : USER_HOME);
     }
     kfree(j);

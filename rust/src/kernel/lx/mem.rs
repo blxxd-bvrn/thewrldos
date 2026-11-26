@@ -217,7 +217,7 @@ pub unsafe fn pte_lookup(vm: *mut Uvm, va: u64) -> *mut u64 {
 
 /// fork(): a private copy of every mapping, and of every page that is resident. Mappings of
 /// a shared object keep pointing at its pages, so parent and child go on sharing them.
-/// MAP_SHARED of an ordinary file is still a private snapshot.
+/// MAP_SHARED of an ordinary file maps the file's shared pages (locks.rs), so it is shared too.
 pub unsafe fn uvm_clone(src: *mut Uvm) -> *mut Uvm {
     let dst = uvm_new();
     if dst.is_null() { return null_mut(); }
@@ -299,7 +299,7 @@ pub unsafe fn uvm_free(vm: *mut Uvm) {
     while !(*vm).vmas.is_null() {
         let v = (*vm).vmas;
         let n = (*v).next;
-        if !(*v).shm.is_null() { shm_unref((*v).shm); }
+        if !(*v).shm.is_null() { let o = (*v).shm; shm_unref(o); if !(*v).fnode.is_null() { super::locks::filemap_unmapped((*v).fnode, o); } }
         zfree(v);
         (*vm).vmas = n;
     }
@@ -361,7 +361,7 @@ pub unsafe fn uvm_unmap(vm: *mut Uvm, start: u64, len: u64) -> i64 {
         if (*v).start >= start && (*v).end <= end {
             *pp = (*v).next;
             free_range_pages(vm, (*v).start, (*v).end);
-            if !(*v).shm.is_null() { shm_unref((*v).shm); }
+            if !(*v).shm.is_null() { let o = (*v).shm; shm_unref(o); if !(*v).fnode.is_null() { super::locks::filemap_unmapped((*v).fnode, o); } }
             zfree(v);
         } else { pp = ptr::addr_of_mut!((*v).next); }
     }
