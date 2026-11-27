@@ -11,3 +11,4 @@ disk64.img
 rust/target/
 build-vm/
 build-vm.log
+rust/tests/glsl/

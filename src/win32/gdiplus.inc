@@ -230,17 +230,23 @@ static GpStatus WINAPI GdipCreateHBITMAPFromBitmap(void *img, uintptr_t *out, ui
     gpimage_t *i = IMG(img);
     if (!i || !out) return GpInvalidParameter;
     *out = 0;
-    gdiobj_t *o = newobj(OBJ_BITMAP);
-    o->bmp = canvas_new(i->c->w, i->c->h);
-    if (!o->bmp) { w32_free(P, o); return GpOutOfMemory; }
+    /* a 32-bit top-down DIB section, as GDI+ makes: GetObject gives the program its pixels */
+    BIH bi = { 40, i->c->w, -i->c->h, 1, 32, 0, 0, 0, 0, 0, 0 };
+    void *bits = NULL;
+    gdiobj_t *o = OBJ(CreateDIBSection(0, &bi, 0, &bits, 0, 0));
+    if (!o || !bits) return GpOutOfMemory;
+    /* premultiplied ARGB with the alpha kept; a background colour (other than black) fills in
+     * where the picture is not opaque, as GDI+ does */
+    uint32_t *d = bits;
+    bool fill = (bg & 0xFFFFFF) != 0;
     for (int y = 0; y < i->c->h; y++)
         for (int x = 0; x < i->c->w; x++) {
             uint32_t s = i->c->px[y * i->c->stride + x], a = s >> 24;
-            uint32_t r = (((s >> 16) & 255) * a + ((bg >> 16) & 255) * (255 - a)) / 255;
-            uint32_t g = (((s >> 8) & 255) * a + ((bg >> 8) & 255) * (255 - a)) / 255;
-            uint32_t b = ((s & 255) * a + (bg & 255) * (255 - a)) / 255;
-            o->bmp->px[y * o->bmp->stride + x] = 0xFF000000u | r << 16 | g << 8 | b;
+            uint32_t r = ((s >> 16) & 255) * a / 255, g = ((s >> 8) & 255) * a / 255, b = (s & 255) * a / 255;
+            if (fill && a != 255) { r += ((bg >> 16) & 255) * (255 - a) / 255; g += ((bg >> 8) & 255) * (255 - a) / 255; b += (bg & 255) * (255 - a) / 255; a = 255; }
+            d[(size_t)y * i->c->w + x] = a << 24 | r << 16 | g << 8 | b;
         }
+    dib_in(o);
     *out = (uintptr_t)o;
     return GpOk;
 }

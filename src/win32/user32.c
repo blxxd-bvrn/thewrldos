@@ -314,7 +314,24 @@ static BOOL WINAPI StretchBlt(HDC dst, int x, int y, int w, int h, HDC src, int 
     dc_t *d = DC(dst), *s = DC(src); if (!d || !s || !w || !h) return 0;
     if (s != d) dc_src(s);
     rect_t sv; dc_begin(d, &sv);
-    for (int j = 0; j < h; j++) for (int i = 0; i < w; i++) put_pixel(d->surf, d->ox + x + i, d->oy + y + j, get_pixel(s->surf, s->ox + sx + i * sw / w, s->oy + sy + j * sh / h));
+    /* negative sizes mirror; only the part inside the clip is visited, one row at a time */
+    if (w < 0) { x += w; w = -w; sx += sw; sw = -sw; }
+    if (h < 0) { y += h; h = -h; sy += sh; sh = -sh; }
+    canvas_t *dc = d->surf, *sc = s->surf;
+    rect_t cl = dc->clip;
+    int x0 = MAX(d->ox + x, cl.x), x1 = MIN(d->ox + x + w, cl.x + cl.w), y0 = MAX(d->oy + y, cl.y), y1 = MIN(d->oy + y + h, cl.y + cl.h);
+    for (int py = y0; py < y1; py++) {
+        int j = py - (d->oy + y);
+        int syy = s->oy + sy + (int)((int64_t)j * sh / h) - (sh < 0 ? 1 : 0);
+        if (syy < 0 || syy >= sc->h) continue;
+        const uint32_t *srow = sc->px + (size_t)syy * sc->stride;
+        uint32_t *drow = dc->px + (size_t)py * dc->stride;
+        for (int px = x0; px < x1; px++) {
+            int i = px - (d->ox + x);
+            int sxx = s->ox + sx + (int)((int64_t)i * sw / w) - (sw < 0 ? 1 : 0);
+            if (sxx >= 0 && sxx < sc->w) drow[px] = srow[sxx];
+        }
+    }
     dc_end(d, sv);
     return 1;
 }

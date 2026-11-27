@@ -1462,6 +1462,19 @@ device manager's job is to say what the computer has and which driver runs it.
       (`glReadPixels`, `glDrawPixels`, `glScissor`, `glCopyTexSubImage2D`), packed pixel formats
       and row-length unpacking, render-to-texture with `GL_EXT_framebuffer_object`, one-unit
       `GL_ARB_multitexture`, and vsync through `WGL_EXT_swap_control` (60 frames/s at most).
+    - **OpenGL 2.1 and GLSL** (`src/win32/gl2.inc`, `glsl.inc`, compiler in `rust/src/glsl`):
+      shader and program objects (OpenGL 2.0 names and `GL_ARB_shader_objects`), uniforms,
+      attributes, buffer objects, vertex array objects and generic vertex attributes. GLSL 1.10
+      to 4.x and ES source compiles to the shader IR the Direct3D 10 engine already runs:
+      functions are inlined, and the compatibility built-ins are there (`gl_Vertex`,
+      `gl_MultiTexCoord0`-`7`, `gl_ModelViewProjectionMatrix`, `gl_NormalMatrix`,
+      `gl_LightSource`, `gl_FrontLightProduct`, `gl_FrontLightModelProduct`, `gl_TexCoord`,
+      `gl_FrontColor`, `gl_FragColor`, `gl_FragCoord` and the rest). Draws with a program run the
+      vertex shader per vertex and the fragment shader per pixel on the processor, with GL's
+      depth functions, alpha test, blend factors and equations, colour masks and texture wrap
+      modes. It is an interpreter, so a scene that shades a few million pixels a frame is slow
+      (CoronaKO, for one, draws its world at about one frame a second on a fast machine).
+      Not there yet: geometry shaders, shadow comparisons, derivatives, cube maps.
     - **Direct3D 9** (`d3d9.dll`, fixed function): `Direct3DCreate9`, devices, `Clear`,
       `Present`, transforms, viewport, material, one directional light, render and sampler
       states, flexible vertex formats (`XYZ` or pre-transformed `XYZRHW`, normal, diffuse, one

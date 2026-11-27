@@ -9,8 +9,9 @@
  * Beyond 1.1 there are the extensions SDL's OpenGL renderer and similar 2D
  * layers use: framebuffer objects that render into a texture
  * (GL_EXT_framebuffer_object), packed pixel formats, scissoring, and swap
- * control (WGL_EXT_swap_control). Shaders (OpenGL 2.0 and later) are not
- * available: wglGetProcAddress returns NULL for them, as on a 1.1 driver. */
+ * control (WGL_EXT_swap_control). OpenGL 2.x's buffer objects, vertex arrays and
+ * generic attributes are in gl2.inc; shaders (GLSL) and the programmable pipeline in
+ * glsl.inc. */
 #include "w32.h"
 #include "r3d.h"
 
@@ -24,12 +25,13 @@ typedef double GLdouble, GLclampd;
 typedef unsigned char GLboolean, GLubyte;
 
 #define GLMAGIC 0x474C4358
-enum { EN_DEPTH = 1, EN_LIGHTING = 2, EN_TEX2D = 4, EN_BLEND = 8, EN_CULL = 16, EN_LIGHT0 = 32, EN_COLORMAT = 64, EN_SCISSOR = 128 };
+enum { EN_DEPTH = 1, EN_LIGHTING = 2, EN_TEX2D = 4, EN_BLEND = 8, EN_CULL = 16, EN_LIGHT0 = 32, EN_COLORMAT = 64, EN_SCISSOR = 128, EN_ALPHA = 256 };
 enum { CS_VERTEX = 1, CS_NORMAL = 2, CS_COLOR = 4, CS_TEX = 8 };
-typedef struct { GLint size; GLenum type; GLsizei stride; const void *ptr; } arr_t;
+typedef struct { GLint size; GLenum type; GLsizei stride; const void *ptr; GLuint buf; } arr_t;
+struct gl2;
 typedef struct { int prim; GLuint tex; r3d_vertex_t *v; int n; } batch_t;
 typedef struct { batch_t *b; int n, cap; bool used; } dlist_t;
-typedef struct { canvas_t *c; bool linear; bool used; } gltex_t;
+typedef struct { canvas_t *c; bool linear; bool used; GLenum wrap_s, wrap_t; } gltex_t;
 #define NTEX 512
 #define NLIST 256
 #define NFBO 64
@@ -69,7 +71,9 @@ typedef struct glctx {
     GLuint *selbuf; int selsize, selpos, hits; bool sel_overflow;
     GLuint names[64]; int nnames;
     bool hit; float hit_min, hit_max;
+    struct gl2 *x;                              /* OpenGL 2+ state (gl2.inc), made on first use */
 } glctx_t;
+#include "gl2types.inc"
 
 /* the current context of each task (a program's threads each have their own) */
 static struct { task_t *t; glctx_t *c; } current[32];
@@ -82,6 +86,20 @@ static void set_current(glctx_t *c) {
 #define G glctx_t *g = CUR(); if (!g) return
 #define GV(v) glctx_t *g = CUR(); if (!g) return v
 static void err(glctx_t *g, GLenum e) { if (!g->error) g->error = e; }
+static struct gl2 *X(glctx_t *g);
+/* glsl.inc: the state the shading language's built-in uniforms read, and the programmable path */
+static void ff_light(glctx_t *g, GLenum light, GLenum p, const GLfloat *v);
+static void ff_material(glctx_t *g, GLenum face, GLenum p, const GLfloat *v);
+static void ff_light_model(glctx_t *g, GLenum p, const GLfloat *v);
+static void ff_alpha(glctx_t *g, GLenum f, GLclampf r);
+static void ff_multitex(glctx_t *g, GLenum unit, const float *v, int n);
+static bool sl_active(glctx_t *g);
+static void sl_imm_vertex(glctx_t *g, float x, float y, float z, float w);
+static bool sl_imm_end(glctx_t *g, int prim);
+static bool sl_draw_r3d(glctx_t *g, int prim, const r3d_vertex_t *v, int n);
+static void sl_texcoord_pointer(glctx_t *g, int unit, GLint size, GLenum type, GLsizei stride, const void *p);
+static void sl_texcoord_array(glctx_t *g, int unit, bool on);
+static void sl_frame_done(glctx_t *g);
 
 /* ---------------- buffers ---------------- */
 static bool ensure_buffers(glctx_t *g) {
@@ -189,7 +207,7 @@ static void WINAPI glViewport(GLint x, GLint y, GLsizei w, GLsizei h) { G; g->vx
 static uint32_t en_bit(GLenum cap) {
     switch (cap) {
     case 0x0B71: return EN_DEPTH; case 0x0B50: return EN_LIGHTING; case 0x0DE1: return EN_TEX2D; case 0x0BE2: return EN_BLEND;
-    case 0x0B44: return EN_CULL; case 0x4000: return EN_LIGHT0; case 0x0B57: return EN_COLORMAT; case 0x0C11: return EN_SCISSOR;
+    case 0x0B44: return EN_CULL; case 0x4000: return EN_LIGHT0; case 0x0B57: return EN_COLORMAT; case 0x0C11: return EN_SCISSOR; case 0x0BC0: return EN_ALPHA;
     }
     return 0;                                                       /* fog, normalize, dithering...: accepted, no effect */
 }
@@ -211,11 +229,11 @@ static GLboolean WINAPI glIsEnabled(GLenum cap) { GV(0); return (g->en & en_bit(
 static void WINAPI glCullFace(GLenum m) { G; g->cull_face = m; }
 static void WINAPI glFrontFace(GLenum m) { G; g->front_face = m; }
 static void WINAPI glDepthMask(GLboolean f) { G; g->depth_mask = f; }
-static void WINAPI glDepthFunc(GLenum f) { (void)f; }
+static void WINAPI glDepthFunc(GLenum f);
 static void WINAPI glShadeModel(GLenum m) { (void)m; }
 static void WINAPI glHint(GLenum a, GLenum b) { (void)a; (void)b; }
-static void WINAPI glBlendFunc(GLenum a, GLenum b) { (void)a; (void)b; }       /* SRC_ALPHA, ONE_MINUS_SRC_ALPHA */
-static void WINAPI glAlphaFunc(GLenum f, GLclampf r) { (void)f; (void)r; }
+static void WINAPI glBlendFunc(GLenum a, GLenum b);
+static void WINAPI glAlphaFunc(GLenum f, GLclampf r) { G; ff_alpha(g, f, r); }
 static void WINAPI glPolygonMode(GLenum a, GLenum b) { (void)a; (void)b; }
 static void WINAPI glLineWidth(GLfloat w) { (void)w; }
 static void WINAPI glPointSize(GLfloat s) { (void)s; }
@@ -247,6 +265,7 @@ static void WINAPI glClear(GLbitfield m) {
 }
 static void WINAPI glLightfv(GLenum light, GLenum p, const GLfloat *v) {
     G;
+    ff_light(g, light, p, v);
     if (light != 0x4000) return;                                    /* one light: GL_LIGHT0 */
     if (p == 0x1203) {                                              /* GL_POSITION: to eye space now, as GL does */
         const float *m = g->mv[g->mvd].m;
@@ -256,19 +275,20 @@ static void WINAPI glLightfv(GLenum light, GLenum p, const GLfloat *v) {
     } else if (p == 0x1200) g->light_amb = (v[0] + v[1] + v[2]) / 3;
     else if (p == 0x1201) g->light_dif = (v[0] + v[1] + v[2]) / 3;
 }
-static void WINAPI glLightf(GLenum l, GLenum p, GLfloat v) { (void)l; (void)p; (void)v; }
-static void WINAPI glLightModelfv(GLenum p, const GLfloat *v) { G; if (p == 0x0B53) g->model_amb = (v[0] + v[1] + v[2]) / 3; }
+static void WINAPI glLightf(GLenum l, GLenum p, GLfloat v) { G; ff_light(g, l, p, &v); }
+static void WINAPI glLightModelfv(GLenum p, const GLfloat *v) { G; ff_light_model(g, p, v); if (p == 0x0B53) g->model_amb = (v[0] + v[1] + v[2]) / 3; }
 static void WINAPI glLightModeli(GLenum p, GLint v) { (void)p; (void)v; }
-static void WINAPI glMaterialfv(GLenum face, GLenum p, const GLfloat *v) { G; (void)face; if (p == 0x1201 || p == 0x1602) memcpy(g->mat_dif, v, 16); }
-static void WINAPI glMaterialf(GLenum face, GLenum p, GLfloat v) { (void)face; (void)p; (void)v; }
+static void WINAPI glMaterialfv(GLenum face, GLenum p, const GLfloat *v) { G; ff_material(g, face, p, v); if (p == 0x1201 || p == 0x1602) memcpy(g->mat_dif, v, 16); }
+static void WINAPI glMaterialf(GLenum face, GLenum p, GLfloat v) { G; ff_material(g, face, p, &v); }
 static void WINAPI glColorMaterial(GLenum face, GLenum mode) { (void)face; (void)mode; }
 static GLenum WINAPI glGetError(void) { GV(0); GLenum e = g->error; g->error = 0; return e; }
 static const GLubyte *WINAPI glGetString(GLenum n) {
     switch (n) {
     case 0x1F00: return (const GLubyte *)"THE WRLD OS";
     case 0x1F01: return (const GLubyte *)"WRLD 3D (software)";
-    case 0x1F02: return (const GLubyte *)"1.1 WRLD 3D";
-    case 0x1F03: return (const GLubyte *)"GL_EXT_bgra GL_EXT_packed_pixels GL_ARB_texture_non_power_of_two GL_EXT_framebuffer_object GL_ARB_multitexture GL_EXT_blend_func_separate GL_EXT_blend_minmax";
+    case 0x1F02: return (const GLubyte *)"2.1 WRLD 3D";
+    case 0x8B8C: return (const GLubyte *)"1.20";
+    case 0x1F03: return (const GLubyte *)"GL_EXT_bgra GL_EXT_packed_pixels GL_ARB_texture_non_power_of_two GL_EXT_framebuffer_object GL_ARB_multitexture GL_EXT_blend_func_separate GL_EXT_blend_minmax GL_ARB_shader_objects GL_ARB_shading_language_100 GL_ARB_vertex_shader GL_ARB_fragment_shader GL_ARB_vertex_buffer_object GL_ARB_vertex_array_object GL_ARB_texture_mirrored_repeat GL_EXT_texture_edge_clamp GL_ARB_texture_border_clamp";
     }
     return NULL;
 }
@@ -278,11 +298,21 @@ static void WINAPI glGetIntegerv(GLenum n, GLint *v) {
     else if (n == 0x0D33) v[0] = 2048;
     else if (n == 0x0BA0) v[0] = g->mode;
     else if (n == 0x8CA6) v[0] = (GLint)g->fbo_bound;                /* GL_FRAMEBUFFER_BINDING */
-    else if (n == 0x8069) v[0] = (GLint)g->bound;                    /* GL_TEXTURE_BINDING_2D */
+    else if (n == 0x8069) { struct gl2 *x = X(g); v[0] = x && g->active_unit >= 0 && g->active_unit < 16 ? (GLint)x->unit_tex[g->active_unit] : (GLint)g->bound; }                    /* GL_TEXTURE_BINDING_2D */
     else if (n == 0x0C10) memcpy(v, g->sc, 16);                      /* GL_SCISSOR_BOX */
     else if (n == 0x0CF5) v[0] = g->unpack_align; else if (n == 0x0D05) v[0] = g->pack_align;
     else if (n == 0x0CF2) v[0] = g->unpack_row; else if (n == 0x0D02) v[0] = g->pack_row;
-    else if (n == 0x84E2 || n == 0x8872) v[0] = 1;                   /* texture units */
+    else if (n == 0x84E2) v[0] = 1;                                  /* fixed-function texture units */
+    else if (n == 0x8872 || n == 0x8B4C || n == 0x8B4D) v[0] = 16;   /* texture image units for shaders */
+    else if (n == 0x8869) v[0] = 16;                                 /* GL_MAX_VERTEX_ATTRIBS */
+    else if (n == 0x8B4A || n == 0x8B49) v[0] = 1024;                /* uniform components */
+    else if (n == 0x8B4B) v[0] = 64;                                 /* GL_MAX_VARYING_FLOATS */
+    else if (n == 0x8DFB || n == 0x8DFD) v[0] = 256;                 /* uniform vectors */
+    else if (n == 0x8DFC) v[0] = 16;                                 /* varying vectors */
+    else if (n == 0x821B) v[0] = 2; else if (n == 0x821C) v[0] = 1;  /* GL_MAJOR/MINOR_VERSION */
+    else if (n == 0x85B5) { struct gl2 *x = X(g); v[0] = x ? (GLint)x->vao_bound : 0; }   /* GL_VERTEX_ARRAY_BINDING */
+    else if (n == 0x8894) { struct gl2 *x = X(g); v[0] = x ? (GLint)x->abo : 0; }       /* GL_ARRAY_BUFFER_BINDING */
+    else if (n == 0x84E0) v[0] = 0x84C0 + g->active_unit;             /* GL_ACTIVE_TEXTURE */
     else if (n == 0x0D3A) { v[0] = 2048; v[1] = 2048; }              /* GL_MAX_VIEWPORT_DIMS */
     else v[0] = 0;
 }
@@ -372,8 +402,23 @@ static void WINAPI glDeleteTextures(GLsizei n, const GLuint *t) {
     G;
     for (int i = 0; i < n; i++) if (t[i] && t[i] < NTEX) { if (g->tex[t[i]].c) canvas_free(g->tex[t[i]].c); memset(&g->tex[t[i]], 0, sizeof(gltex_t)); }
 }
-static void WINAPI glBindTexture(GLenum target, GLuint t) { G; (void)target; if (g->active_unit) return; if (t < NTEX) { g->bound = t; if (t) { g->tex[t].used = true; } } }
-static void WINAPI glTexParameteri(GLenum target, GLenum p, GLint v) { G; (void)target; if ((p == 0x2800 || p == 0x2801) && g->bound < NTEX) g->tex[g->bound].linear = v != 0x2600 && v != 0x2700; }
+static void WINAPI glBindTexture(GLenum target, GLuint t) {
+    G; (void)target;
+    if (t >= NTEX) return;
+    if (t) g->tex[t].used = true;
+    struct gl2 *x = X(g);
+    if (x && g->active_unit >= 0 && g->active_unit < 16) x->unit_tex[g->active_unit] = t;
+    if (!g->active_unit) g->bound = t;                                /* the fixed-function path textures from unit 0 */
+}
+static void WINAPI glTexParameteri(GLenum target, GLenum p, GLint v) {
+    G; (void)target;
+    /* the texture bound to the active unit */
+    GLuint t = g->bound;
+    if (g->active_unit > 0 && g->active_unit < 16 && g->x) t = g->x->unit_tex[g->active_unit];
+    if (t >= NTEX) return;
+    if (p == 0x2800 || p == 0x2801) g->tex[t].linear = v != 0x2600 && v != 0x2700;   /* GL_NEAREST, GL_NEAREST_MIPMAP_NEAREST */
+    else if (p == 0x2802) g->tex[t].wrap_s = v; else if (p == 0x2803) g->tex[t].wrap_t = v;
+}
 static void WINAPI glTexParameterf(GLenum target, GLenum p, GLfloat v) { glTexParameteri(target, p, (GLint)v); }
 static void WINAPI glTexEnvi(GLenum a, GLenum b, GLint c) { (void)a; (void)b; (void)c; }
 static void WINAPI glTexEnvf(GLenum a, GLenum b, GLfloat c) { (void)a; (void)b; (void)c; }
@@ -462,10 +507,10 @@ static void WINAPI glGetPointerv(GLenum n, void **v) {
     *v = n == 0x808E ? (void *)g->va.ptr : n == 0x808F ? (void *)g->na.ptr : n == 0x8090 ? (void *)g->ca.ptr : n == 0x8092 ? (void *)g->ta.ptr : NULL;
 }
 static void WINAPI glGetTexImage(GLenum target_, GLint level, GLenum fmt, GLenum type, void *out) { (void)target_; (void)level; (void)fmt; (void)type; (void)out; }
-static void WINAPI glBlendFuncSeparate(GLenum a, GLenum b, GLenum c, GLenum d) { (void)a; (void)b; (void)c; (void)d; }
-static void WINAPI glBlendEquation(GLenum m) { (void)m; }
-static void WINAPI glBlendEquationSeparate(GLenum a, GLenum b) { (void)a; (void)b; }
-static void WINAPI glColorMask(GLboolean r, GLboolean gg, GLboolean b, GLboolean a) { (void)r; (void)gg; (void)b; (void)a; }
+static void WINAPI glBlendFuncSeparate(GLenum a, GLenum b, GLenum c, GLenum d);
+static void WINAPI glBlendEquation(GLenum m);
+static void WINAPI glBlendEquationSeparate(GLenum a, GLenum b);
+static void WINAPI glColorMask(GLboolean r, GLboolean gg, GLboolean b, GLboolean a);
 static void WINAPI glStencilFunc(GLenum f, GLint r, GLuint m) { (void)f; (void)r; (void)m; }
 static void WINAPI glStencilOp(GLenum a, GLenum b, GLenum c) { (void)a; (void)b; (void)c; }
 static void WINAPI glClearStencil(GLint s) { (void)s; }
@@ -482,8 +527,13 @@ static void WINAPI glTexCoord2f(GLfloat s, GLfloat t);
  * are ignored. GL_MAX_TEXTURE_UNITS says 1. */
 static void WINAPI glActiveTexture(GLenum u) { G; g->active_unit = (int)(u - 0x84C0); }
 static void WINAPI glClientActiveTexture(GLenum u) { G; g->client_unit = (int)(u - 0x84C0); }
-static void WINAPI glMultiTexCoord2f(GLenum u, GLfloat s_, GLfloat t_) { if (u == 0x84C0) glTexCoord2f(s_, t_); }
-static void WINAPI glMultiTexCoord2fv(GLenum u, const GLfloat *v) { if (u == 0x84C0) glTexCoord2f(v[0], v[1]); }
+static void WINAPI glMultiTexCoord2f(GLenum u, GLfloat s_, GLfloat t_) { G; float v[2] = { s_, t_ }; ff_multitex(g, u, v, 2); if (u == 0x84C0) glTexCoord2f(s_, t_); }
+static void WINAPI glMultiTexCoord1f(GLenum u, GLfloat s_) { glMultiTexCoord2f(u, s_, 0); }
+static void WINAPI glMultiTexCoord3f(GLenum u, GLfloat s_, GLfloat t_, GLfloat r_) { G; float v[3] = { s_, t_, r_ }; ff_multitex(g, u, v, 3); if (u == 0x84C0) glTexCoord2f(s_, t_); }
+static void WINAPI glMultiTexCoord4f(GLenum u, GLfloat s_, GLfloat t_, GLfloat r_, GLfloat q_) { G; float v[4] = { s_, t_, r_, q_ }; ff_multitex(g, u, v, 4); if (u == 0x84C0) glTexCoord2f(s_, t_); }
+static void WINAPI glMultiTexCoord3fv(GLenum u, const GLfloat *v) { glMultiTexCoord3f(u, v[0], v[1], v[2]); }
+static void WINAPI glMultiTexCoord4fv(GLenum u, const GLfloat *v) { glMultiTexCoord4f(u, v[0], v[1], v[2], v[3]); }
+static void WINAPI glMultiTexCoord2fv(GLenum u, const GLfloat *v) { glMultiTexCoord2f(u, v[0], v[1]); }
 
 /* ---------------- framebuffer objects (GL_EXT_framebuffer_object) ---------------- */
 static void WINAPI glGenFramebuffers(GLsizei n, GLuint *out) {
@@ -574,6 +624,7 @@ static void sel_test(glctx_t *g, const r3d_vertex_t *v, int n) {
 }
 static void draw_batch(glctx_t *g, int prim, GLuint texid, const r3d_vertex_t *v, int n) {
     if (g->render_mode == GL_SELECT) { if (n > 0) sel_test(g, v, n); return; }
+    if (sl_draw_r3d(g, prim, v, n)) return;
     tgt_t tg;
     g->tex_bracket = false;
     if (n <= 0 || !target(g, &tg)) return;
@@ -640,10 +691,12 @@ static r3d_vertex_t make_vertex(glctx_t *g, float x, float y, float z, float w) 
     v.color = to_argb(lit && !(g->en & EN_COLORMAT) ? g->mat_dif : g->col);
     return v;
 }
-static void WINAPI glBegin(GLenum mode) { G; g->tex_bracket = false; g->prim = (int)mode; g->vn = 0; }
-static void WINAPI glEnd(void) { G; if (g->prim >= 0) emit(g, g->prim, g->vb, g->vn); g->prim = -1; g->vn = 0; }
+static void sl_begin(glctx_t *g);
+static void WINAPI glBegin(GLenum mode) { G; g->tex_bracket = false; g->prim = (int)mode; g->vn = 0; sl_begin(g); }
+static void WINAPI glEnd(void) { G; if (g->prim >= 0 && !(!g->compiling && sl_imm_end(g, g->prim))) emit(g, g->prim, g->vb, g->vn); g->prim = -1; g->vn = 0; }
 static void add_vertex(glctx_t *g, float x, float y, float z, float w) {
     if (g->prim < 0) return;
+    if (!g->compiling && sl_active(g)) sl_imm_vertex(g, x, y, z, w);
     if (g->vn == g->vcap) { g->vcap = g->vcap ? g->vcap * 2 : 256; g->vb = krealloc(g->vb, sizeof(r3d_vertex_t) * g->vcap); }
     g->vb[g->vn++] = make_vertex(g, x, y, z, w);
 }
@@ -680,12 +733,12 @@ static void WINAPI glRecti(GLint a, GLint b, GLint c, GLint d) { glRectf((float)
 
 /* vertex arrays */
 static uint32_t cs_bit(GLenum a) { return a == 0x8074 ? CS_VERTEX : a == 0x8075 ? CS_NORMAL : a == 0x8076 ? CS_COLOR : a == 0x8078 ? CS_TEX : 0; }
-static void WINAPI glEnableClientState(GLenum a) { G; g->cs |= cs_bit(a); }
-static void WINAPI glDisableClientState(GLenum a) { G; g->cs &= ~cs_bit(a); }
-static void WINAPI glVertexPointer(GLint s, GLenum t, GLsizei st, const void *p) { G; g->va = (arr_t){ s, t, st, p }; }
-static void WINAPI glNormalPointer(GLenum t, GLsizei st, const void *p) { G; g->na = (arr_t){ 3, t, st, p }; }
-static void WINAPI glColorPointer(GLint s, GLenum t, GLsizei st, const void *p) { G; g->ca = (arr_t){ s, t, st, p }; }
-static void WINAPI glTexCoordPointer(GLint s, GLenum t, GLsizei st, const void *p) { G; if (g->client_unit) return; g->ta = (arr_t){ s, t, st, p }; }
+static void WINAPI glEnableClientState(GLenum a) { G; if (a == 0x8078 && g->client_unit) { sl_texcoord_array(g, g->client_unit, true); return; } g->cs |= cs_bit(a); }
+static void WINAPI glDisableClientState(GLenum a) { G; if (a == 0x8078 && g->client_unit) { sl_texcoord_array(g, g->client_unit, false); return; } g->cs &= ~cs_bit(a); }
+static void WINAPI glVertexPointer(GLint s, GLenum t, GLsizei st, const void *p) { G; g->va = (arr_t){ s, t, st, p, X(g) ? X(g)->abo : 0 }; }
+static void WINAPI glNormalPointer(GLenum t, GLsizei st, const void *p) { G; g->na = (arr_t){ 3, t, st, p, X(g) ? X(g)->abo : 0 }; }
+static void WINAPI glColorPointer(GLint s, GLenum t, GLsizei st, const void *p) { G; g->ca = (arr_t){ s, t, st, p, X(g) ? X(g)->abo : 0 }; }
+static void WINAPI glTexCoordPointer(GLint s, GLenum t, GLsizei st, const void *p) { G; if (g->client_unit) { sl_texcoord_pointer(g, g->client_unit, s, t, st, p); return; } g->ta = (arr_t){ s, t, st, p, X(g) ? X(g)->abo : 0 }; }
 static int type_size(GLenum t) { return t == 0x1400 || t == 0x1401 ? 1 : t == 0x1402 || t == 0x1403 ? 2 : t == 0x140A ? 8 : 4; }
 static float fetch(const arr_t *a, int i, int c) {
     if (c >= a->size) return c == 3 ? 1.0f : 0.0f;
@@ -709,18 +762,45 @@ static void array_element(glctx_t *g, int i) {
     if (g->cs & CS_VERTEX) add_vertex(g, fetch(&g->va, i, 0), fetch(&g->va, i, 1), g->va.size > 2 ? fetch(&g->va, i, 2) : 0, 1);
 }
 static void WINAPI glArrayElement(GLint i) { G; array_element(g, i); }
+#include "gl2.inc"
+#include "glsl.inc"
+/* the legacy arrays may live in buffer objects: point them at the buffers' memory for one draw */
+static bool arrays_resolve(glctx_t *g, arr_t save[4]) {
+    arr_t *a[4] = { &g->va, &g->na, &g->ca, &g->ta };
+    for (int i = 0; i < 4; i++) save[i] = *a[i];
+    struct gl2 *x = X(g);
+    for (int i = 0; i < 4; i++) if (a[i]->buf) {
+        a[i]->ptr = x ? resolve_ptr(x, a[i]->buf, (uintptr_t)a[i]->ptr) : NULL; a[i]->buf = 0;
+        if (!a[i]->ptr && i == 0) { for (int k = 0; k < 4; k++) *a[k] = save[k]; return false; }
+        if (!a[i]->ptr) g->cs &= ~(i == 1 ? CS_NORMAL : i == 2 ? CS_COLOR : CS_TEX);
+    }
+    return true;
+}
+static void arrays_restore(glctx_t *g, const arr_t save[4], uint32_t cs) { g->va = save[0]; g->na = save[1]; g->ca = save[2]; g->ta = save[3]; g->cs = cs; }
 static void WINAPI glDrawArrays(GLenum mode, GLint first, GLsizei count) {
-    G; if (!(g->cs & CS_VERTEX)) return;
+    G;
+    if (sl_draw(g, mode, first, count, 0, NULL)) return;
+    if (!(g->cs & CS_VERTEX)) return;
+    arr_t save[4]; uint32_t cs = g->cs;
+    if (!arrays_resolve(g, save)) return;
     glBegin(mode); for (int i = 0; i < count; i++) array_element(g, first + i); glEnd();
+    arrays_restore(g, save, cs);
 }
 static void WINAPI glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *idx) {
-    G; if (!(g->cs & CS_VERTEX)) return;
+    G;
+    if (sl_draw(g, mode, 0, count, type, idx)) return;
+    if (!(g->cs & CS_VERTEX)) return;
+    struct gl2 *x = X(g);
+    if (x && cur_vao(x)->ebo) { idx = resolve_ptr(x, cur_vao(x)->ebo, (uintptr_t)idx); if (!idx) return; }
+    arr_t save[4]; uint32_t cs = g->cs;
+    if (!arrays_resolve(g, save)) return;
     glBegin(mode);
     for (int i = 0; i < count; i++) {
         int k = type == 0x1401 ? ((const uint8_t *)idx)[i] : type == 0x1403 ? ((const uint16_t *)idx)[i] : (int)((const uint32_t *)idx)[i];
         array_element(g, k);
     }
     glEnd();
+    arrays_restore(g, save, cs);
 }
 
 /* display lists (geometry only) */
@@ -834,6 +914,7 @@ BOOL WINAPI w32_SwapBuffers(HDC dc) {
     glctx_t *g = CUR();
     if (g && (g->hwnd == hwnd || !hwnd)) {
         present(g);
+        sl_frame_done(g);
         if (g->swap_interval > 0) {                                 /* "vsync": at most one frame per 60 Hz refresh */
             uint32_t frame = 1000 * g->swap_interval / 60, now = timer_ticks();
             if (now - g->last_swap < frame) task_sleep(frame - (now - g->last_swap));
@@ -876,6 +957,7 @@ static BOOL WINAPI wglDeleteContext(HANDLE h) {
     for (int i = 0; i < NFBO; i++) kfree(g->fbo[i].depth);
     if (g->back) canvas_free(g->back);
     kfree(g->depth); kfree(g->vb);
+    gl2_free(g);
     g->magic = 0; kfree(g);
     return 1;
 }
@@ -887,6 +969,25 @@ static const char *WINAPI wglGetExtensionsStringEXT(void) { return wglGetExtensi
 static BOOL WINAPI wglSwapIntervalEXT(int n) { GV(0); g->swap_interval = MAX(n, 0); return 1; }
 static int WINAPI wglGetSwapIntervalEXT(void) { GV(0); return g->swap_interval; }
 static const struct { const char *name; void *fn; } gl_ext[] = {
+#define P_(n) { #n, (void *)n },
+#define PA_(a, n) { a, (void *)n },
+    P_(glCreateShader) PA_("glCreateShaderObject", glCreateShader) P_(glCreateProgram) PA_("glCreateProgramObject", glCreateProgram) P_(glShaderSource) P_(glCompileShader)
+    P_(glAttachShader) PA_("glAttachObject", glAttachShader) P_(glDetachShader) PA_("glDetachObject", glDetachShader) P_(glDeleteShader) P_(glDeleteProgram) PA_("glDeleteObject", glDeleteShader)
+    P_(glLinkProgram) P_(glUseProgram) PA_("glUseProgramObject", glUseProgram) P_(glValidateProgram) P_(glGetShaderiv) P_(glGetProgramiv) P_(glGetObjectParameteriv) P_(glGetObjectParameterfv)
+    P_(glGetShaderInfoLog) PA_("glGetProgramInfoLog", glGetShaderInfoLog) PA_("glGetInfoLog", glGetShaderInfoLog) P_(glGetShaderSource) P_(glGetAttachedShaders) PA_("glGetAttachedObjects", glGetAttachedShaders)
+    P_(glGetHandle) P_(glIsShader) P_(glIsProgram) P_(glBindAttribLocation) P_(glGetAttribLocation) P_(glGetActiveAttrib) P_(glGetActiveUniform) P_(glGetUniformLocation)
+    P_(glUniform1f) P_(glUniform2f) P_(glUniform3f) P_(glUniform4f) P_(glUniform1i) P_(glUniform2i) P_(glUniform3i) P_(glUniform4i) P_(glUniform1ui)
+    P_(glUniform1fv) P_(glUniform2fv) P_(glUniform3fv) P_(glUniform4fv) P_(glUniform1iv) P_(glUniform2iv) P_(glUniform3iv) P_(glUniform4iv)
+    P_(glUniformMatrix2fv) P_(glUniformMatrix3fv) P_(glUniformMatrix4fv) P_(glUniformMatrix2x3fv) P_(glUniformMatrix3x2fv) P_(glUniformMatrix2x4fv) P_(glUniformMatrix4x2fv) P_(glUniformMatrix3x4fv) P_(glUniformMatrix4x3fv)
+    P_(glGetUniformfv) P_(glGetUniformiv) P_(glGetFragDataLocation) P_(glBindFragDataLocation) P_(glDepthRangef) P_(glDrawRangeElements)
+    P_(glMultiTexCoord1f) P_(glMultiTexCoord3f) P_(glMultiTexCoord4f) P_(glMultiTexCoord3fv) P_(glMultiTexCoord4fv)
+    P_(glBindProgram) P_(glProgramLocalParameter4f) P_(glGenPrograms) P_(glDeletePrograms) P_(glProgramString)
+    P_(glGenBuffers) P_(glDeleteBuffers) P_(glIsBuffer) P_(glBindBuffer) P_(glBufferData) P_(glBufferSubData) P_(glGetBufferSubData) P_(glMapBuffer) P_(glMapBufferRange)
+    P_(glUnmapBuffer) P_(glFlushMappedBufferRange) P_(glGetBufferParameteriv) P_(glGetBufferPointerv)
+    P_(glGenVertexArrays) P_(glDeleteVertexArrays) P_(glBindVertexArray) P_(glIsVertexArray)
+    P_(glVertexAttribPointer) P_(glVertexAttribIPointer) P_(glEnableVertexAttribArray) P_(glDisableVertexAttribArray) P_(glVertexAttribDivisor)
+    P_(glVertexAttrib1f) P_(glVertexAttrib2f) P_(glVertexAttrib3f) P_(glVertexAttrib4f) P_(glVertexAttrib1fv) P_(glVertexAttrib2fv) P_(glVertexAttrib3fv) P_(glVertexAttrib4fv)
+    P_(glVertexAttrib4ubv) P_(glVertexAttrib4Nubv) P_(glGetVertexAttribiv) P_(glGetVertexAttribfv) P_(glGetVertexAttribPointerv) P_(glBlendColor)
     { "glGenFramebuffers", (void *)glGenFramebuffers }, { "glDeleteFramebuffers", (void *)glDeleteFramebuffers }, { "glBindFramebuffer", (void *)glBindFramebuffer },
     { "glFramebufferTexture2D", (void *)glFramebufferTexture2D }, { "glCheckFramebufferStatus", (void *)glCheckFramebufferStatus }, { "glIsFramebuffer", (void *)glIsFramebuffer },
     { "glGenRenderbuffers", (void *)glGenRenderbuffers }, { "glDeleteRenderbuffers", (void *)glDeleteRenderbuffers }, { "glBindRenderbuffer", (void *)glBindRenderbuffer },
@@ -962,7 +1063,7 @@ const w32_export_t opengl32_exports[] = {
     E(glTranslatef), E(glTranslated), E(glScalef), E(glScaled), E(glRotatef), E(glRotated), E(glFrustum), E(glOrtho), E(glViewport),
     E(glEnable), E(glDisable), E(glIsEnabled), E(glCullFace), E(glFrontFace), E(glDepthMask), E(glDepthFunc), E(glShadeModel), E(glHint),
     E(glBlendFunc), E(glAlphaFunc), E(glPolygonMode), E(glLineWidth), E(glPointSize), E(glPixelStorei), E(glClearDepth), E(glClearColor), E(glClear),
-    E(glLightfv), E(glLightf), E(glLightModelfv), E(glLightModeli), E(glMaterialfv), E(glMaterialf), E(glColorMaterial),
+    E(glLightfv), E(glLightf), E(glLightModelfv), E(glFogf), E(glFogfv), E(glFogi), E(glFogiv), E(glDepthRange), E(glLightModeli), E(glMaterialfv), E(glMaterialf), E(glColorMaterial),
     E(glGetError), E(glGetString), E(glGetIntegerv), E(glGetFloatv), E(glGetDoublev), E(glFlush), E(glFinish),
     E(glGenTextures), E(glDeleteTextures), E(glBindTexture), E(glTexParameteri), E(glTexParameterf), E(glTexEnvi), E(glTexEnvf), E(glTexImage2D), E(glTexSubImage2D),
     E(glBegin), E(glEnd), E(glVertex2f), E(glVertex2i), E(glVertex2d), E(glVertex3f), E(glVertex3d), E(glVertex3i), E(glVertex3fv), E(glVertex3dv), E(glVertex2fv), E(glVertex4f),
