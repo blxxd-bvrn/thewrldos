@@ -932,6 +932,9 @@ static void cycle_windows(void) {
 extern void app_launch(const char *name, const char *arg);
 extern bool mousekeys_key(key_event_t *e);
 static void handle_key(key_event_t *e) {
+    /* the Alt-tap state (see below), also used to close an open menu with Alt */
+    static bool alt_alone, alt_held;
+    static uint32_t alt_down_at;
     if (mousekeys_key(e)) return;                       /* the keypad moves the pointer (Mouse Keys) */
     if (flip3d_active()) { flip3d_key(e); return; }
     if (e->pressed && wm_active) effect_cancel_window(wm_active);
@@ -960,15 +963,26 @@ static void handle_key(key_event_t *e) {
                 wm_need_redraw = true; return;
             }
             if (e->key == KEY_ENTER) { popup_activate(pm.hot); return; }
-            return;
+            /* Alt or F10 closes the menu, as on Windows (the Alt's release must not reopen it) */
+            if (e->key == KEY_LALT || e->key == KEY_F10) { popup_close(); alt_held = true; alt_alone = false; wm_need_redraw = true; return; }
+            /* a letter picks the next item starting with it; other typing closes the menu and
+             * goes on to the window, so the keyboard never seems dead behind an open menu */
+            if (e->ch > ' ' && !(e->mods & (MOD_CTRL | MOD_ALT))) {
+                char want = e->ch >= 'a' && e->ch <= 'z' ? e->ch - 32 : e->ch;
+                for (int k = 1; k <= pm.n; k++) {
+                    int i = (pm.hot + k + pm.n) % pm.n;
+                    char c = pm.items[i].label[0]; if (c >= 'a' && c <= 'z') c -= 32;
+                    if (c == want && pm.items[i].label[0] != '-' && !(pm.items[i].flags & MI_DISABLED)) { pm.hot = i; popup_activate(i); return; }
+                }
+            }
+            if (e->ch || e->key == KEY_BACKSPACE || e->key == KEY_DELETE || e->key == KEY_TAB) { popup_close(); wm_need_redraw = true; }
+            else return;
         }
     }
     /* Alt pressed and let go on its own, or F10: the active window's menu bar, first menu */
     /* Only a quick tap counts, as on Windows: not with Ctrl, Shift or the Win key held (a VM's
      * Ctrl+Alt "release the mouse" chord used to open the File menu), not a release with no
      * press seen, and not an Alt held down for more than a second. */
-    static bool alt_alone, alt_held;
-    static uint32_t alt_down_at;
     if (e->key == KEY_LALT) {
         if (e->pressed) {
             if (!alt_held) { alt_held = true; alt_alone = !((e->mods | keyboard_mods()) & (MOD_CTRL | MOD_SHIFT)); alt_down_at = timer_ticks(); }
