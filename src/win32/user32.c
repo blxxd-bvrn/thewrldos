@@ -106,6 +106,8 @@ static gdiobj_t *OBJ(uintptr_t h) {
     return o->magic == OBJMAGIC ? o : NULL;
 }
 static dc_t *DC(uintptr_t h) { dc_t *d = (dc_t *)h; if (h < 0x100000 || (h & 3)) return NULL; return d->magic == DCMAGIC ? d : NULL; }
+/* the OS font a DC's selected font is drawn with (gl.c: wglUseFontBitmaps) */
+int w32_dc_font(uintptr_t h) { dc_t *d = DC(h); return d && d->font ? d->font->font : FONT_UI; }
 static void stock_init(void) {
     static const struct { int type; uint32_t col; bool null; } s[] = {
         { OBJ_BRUSH, 0xFFFFFF }, { OBJ_BRUSH, 0xC0C0C0 }, { OBJ_BRUSH, 0x808080 }, { OBJ_BRUSH, 0x404040 }, { OBJ_BRUSH, 0x000000 }, { OBJ_BRUSH, 0, true },
@@ -1122,6 +1124,7 @@ static HANDLE WINAPI BeginDeferWindowPos(int n) { return 1; }
 #include "user32_dlg.inc"
 #include "user32_more.inc"
 #include "comctl.inc"
+#include "gdiplus.inc"
 
 /* for opengl32/d3d9 (gl.c, d3d9.c): the window behind a DC, and a window's client pixels */
 uintptr_t w32_dc_hwnd(uintptr_t hdc) { dc_t *d = DC(hdc); return d && d->win ? (uintptr_t)d->win : 0; }

@@ -359,6 +359,25 @@ static int WINAPI CompareStringW(DWORD lc, DWORD f, const WCHAR *a, int na, cons
 }
 static int WINAPI CompareStringEx(const WCHAR *ln, DWORD f, const WCHAR *a, int na, const WCHAR *b, int nb, void *v, void *r, LPARAM s) { return CompareStringW(0, f, a, na, b, nb); }
 static int WINAPI CompareStringOrdinal(const WCHAR *a, int na, const WCHAR *b, int nb, BOOL ic) { return CompareStringW(0, ic ? 1 : 0, a, na, b, nb); }
+/* the date and time formats of the (one, English) locale, one call of the program's function each */
+typedef BOOL (WINAPI *fmt_enum_w)(WCHAR *);
+typedef BOOL (WINAPI *fmt_enum_a)(char *);
+static BOOL enum_fmts(void *cb, bool wide, const char *const *f) {
+    if (!cb) return 0;
+    for (; *f; f++) {
+        WCHAR w[64]; char a[64];
+        strlcpy(a, *f, sizeof a); a2w(a, w, 64);
+        if (!(wide ? ((fmt_enum_w)cb)(w) : ((fmt_enum_a)cb)(a))) break;
+    }
+    return 1;
+}
+static const char *const time_fmts[] = { "h:mm:ss tt", "hh:mm:ss tt", "H:mm:ss", "HH:mm:ss", NULL };
+static const char *const date_fmts_short[] = { "M/d/yyyy", "M/d/yy", "MM/dd/yy", "MM/dd/yyyy", "yy/MM/dd", "yyyy-MM-dd", "dd-MMM-yy", NULL };
+static const char *const date_fmts_long[] = { "dddd, MMMM d, yyyy", "MMMM d, yyyy", "dddd, d MMMM, yyyy", "d MMMM, yyyy", NULL };
+static BOOL WINAPI EnumTimeFormatsW(void *cb, DWORD lc, DWORD fl) { (void)lc; (void)fl; return enum_fmts(cb, true, time_fmts); }
+static BOOL WINAPI EnumTimeFormatsA(void *cb, DWORD lc, DWORD fl) { (void)lc; (void)fl; return enum_fmts(cb, false, time_fmts); }
+static BOOL WINAPI EnumDateFormatsW(void *cb, DWORD lc, DWORD fl) { (void)lc; return enum_fmts(cb, true, fl & 2 ? date_fmts_long : date_fmts_short); }
+static BOOL WINAPI EnumDateFormatsA(void *cb, DWORD lc, DWORD fl) { (void)lc; return enum_fmts(cb, false, fl & 2 ? date_fmts_long : date_fmts_short); }
 static int WINAPI GetLocaleInfoW(DWORD lc, DWORD t, WCHAR *b, int n) {
     char a[16] = ".";
     switch (t & 0xFFFF) { case 0x0E: strcpy(a, "."); break; case 0x0F: strcpy(a, ","); break; case 0x59: strcpy(a, "en"); break; case 0x5A: strcpy(a, "US"); break; case 0x1004: strcpy(a, "1252"); break; case 0x0B: strcpy(a, "437"); break; }
@@ -627,6 +646,7 @@ static const compat_t compat[] = {
     C("kernel32", QueryDepthSList), CA("kernel32", "RtlInterlockedFlushSList", InterlockedFlushSList), CA("kernel32", "RtlInterlockedPushEntrySList", InterlockedPushEntrySList),
     C("kernel32", GetSystemTimePreciseAsFileTime), C("kernel32", CompareFileTime), C("kernel32", LocalFileTimeToFileTime), C("kernel32", FileTimeToDosDateTime),
     C("kernel32", DosDateTimeToFileTime), C("kernel32", SystemTimeToTzSpecificLocalTime), C("kernel32", TzSpecificLocalTimeToSystemTime),
+    C("kernel32", EnumTimeFormatsW), C("kernel32", EnumTimeFormatsA), C("kernel32", EnumDateFormatsW), C("kernel32", EnumDateFormatsA),
     C("kernel32", GetDateFormatW), C("kernel32", GetTimeFormatW), C("kernel32", GetDateFormatA), C("kernel32", GetTimeFormatA),
     C("kernel32", CompareStringW), C("kernel32", CompareStringEx), C("kernel32", CompareStringOrdinal), C("kernel32", GetLocaleInfoW), C("kernel32", GetLocaleInfoEx),
     C("kernel32", IsValidLocale), C("kernel32", IsValidLocaleName), C("kernel32", EnumSystemLocalesW), C("kernel32", GetUserDefaultLangID), C("kernel32", GetSystemDefaultLCID),

@@ -59,6 +59,16 @@ typedef struct glctx {
     int swap_interval; uint32_t last_swap;
     int active_unit, client_unit;               /* GL_ARB_multitexture: one real unit, 0 */
     bool tex_bracket;                           /* GL_TEXTURE_2D enabled again while on; see glDisable */
+    GLuint list_base;                           /* glListBase, for glCallLists */
+    struct { uint32_t en; float col[4]; bool depth_mask; GLenum cull_face, front_face; float clear[4];
+             int vx, vy, vw, vh, sc[4]; GLuint bound; } attr[16];
+    int attrd;                                  /* glPushAttrib / glPopAttrib */
+    /* selection mode (glRenderMode(GL_SELECT)): nothing is drawn; each name stack that
+     * something drew into while in view becomes a hit record in the program's buffer */
+    GLenum render_mode;
+    GLuint *selbuf; int selsize, selpos, hits; bool sel_overflow;
+    GLuint names[64]; int nnames;
+    bool hit; float hit_min, hit_max;
 } glctx_t;
 
 /* the current context of each task (a program's threads each have their own) */
@@ -419,8 +429,20 @@ static void WINAPI glReadPixels(GLint x, GLint y, GLsizei w, GLsizei h, GLenum f
         }
     }
 }
-static void WINAPI glRasterPos2i(GLint x, GLint y) { G; g->raster[0] = x; g->raster[1] = y; }
-static void WINAPI glRasterPos2f(GLfloat x, GLfloat y) { glRasterPos2i((GLint)x, (GLint)y); }
+/* the raster position: the point through the modelview and projection matrices and the
+ * viewport, in window pixels counted from the bottom left (as OpenGL does) */
+static void raster_pos(glctx_t *g, float x, float y, float z) {
+    const float *P = g->pj[g->pjd].m, *M = g->mv[g->mvd].m;
+    float e[4], c[4], in[4] = { x, y, z, 1 };
+    for (int r = 0; r < 4; r++) e[r] = M[r] * in[0] + M[4 + r] * in[1] + M[8 + r] * in[2] + M[12 + r] * in[3];
+    for (int r = 0; r < 4; r++) c[r] = P[r] * e[0] + P[4 + r] * e[1] + P[8 + r] * e[2] + P[12 + r] * e[3];
+    if (c[3] <= 1e-6f) return;
+    g->raster[0] = (int)(g->vx + (c[0] / c[3] + 1) * 0.5f * g->vw + 0.5f);
+    g->raster[1] = (int)(g->vy + (c[1] / c[3] + 1) * 0.5f * g->vh + 0.5f);
+}
+static void WINAPI glRasterPos2i(GLint x, GLint y) { G; raster_pos(g, (float)x, (float)y, 0); }
+static void WINAPI glRasterPos2f(GLfloat x, GLfloat y) { G; raster_pos(g, x, y, 0); }
+static void WINAPI glRasterPos3f(GLfloat x, GLfloat y, GLfloat z) { G; raster_pos(g, x, y, z); }
 static void WINAPI glDrawPixels(GLsizei w, GLsizei h, GLenum fmt, GLenum type, const void *px) {
     G;
     tgt_t t; if (!px || !target(g, &t)) return;
@@ -516,7 +538,42 @@ static void draw_lines(glctx_t *g, const tgt_t *t, const r3d_vertex_t *v, int n,
     }
     t->c->clip = old;
 }
+/* ---- selection mode ---- */
+#define GL_RENDER 0x1C00
+#define GL_SELECT 0x1C02
+static void sel_flush(glctx_t *g) {
+    if (!g->hit) return;
+    g->hit = false;
+    int need = 3 + g->nnames;
+    if (!g->selbuf || g->selpos + need > g->selsize) { g->sel_overflow = true; return; }
+    GLuint *b = g->selbuf + g->selpos;
+    b[0] = g->nnames;
+    b[1] = (GLuint)(CLAMP(g->hit_min, 0.0f, 1.0f) * 4294967295.0f);
+    b[2] = (GLuint)(CLAMP(g->hit_max, 0.0f, 1.0f) * 4294967295.0f);
+    for (int i = 0; i < g->nnames; i++) b[3 + i] = g->names[i];
+    g->selpos += need; g->hits++;
+}
+/* a primitive in selection mode: a hit when any part of it is inside the view volume
+ * (its corners' bounding box against the clip square), with its depth range */
+static void sel_test(glctx_t *g, const r3d_vertex_t *v, int n) {
+    const float *P = g->pj[g->pjd].m, *M = g->mv[g->mvd].m;
+    float x0 = 2, y0 = 2, x1 = -2, y1 = -2, z0 = 2, z1 = -2; bool any = false;
+    for (int i = 0; i < n; i++) {
+        float e[4], c[4], in[4] = { v[i].x, v[i].y, v[i].z, v[i].w ? v[i].w : 1 };
+        for (int r = 0; r < 4; r++) e[r] = M[r] * in[0] + M[4 + r] * in[1] + M[8 + r] * in[2] + M[12 + r] * in[3];
+        for (int r = 0; r < 4; r++) c[r] = P[r] * e[0] + P[4 + r] * e[1] + P[8 + r] * e[2] + P[12 + r] * e[3];
+        if (c[3] <= 1e-6f) continue;
+        float nx = c[0] / c[3], ny = c[1] / c[3], nz = c[2] / c[3];
+        x0 = MIN(x0, nx); x1 = MAX(x1, nx); y0 = MIN(y0, ny); y1 = MAX(y1, ny); z0 = MIN(z0, nz); z1 = MAX(z1, nz);
+        any = true;
+    }
+    if (!any || x1 < -1 || x0 > 1 || y1 < -1 || y0 > 1 || z1 < -1 || z0 > 1) return;
+    float d0 = (CLAMP(z0, -1, 1) + 1) / 2, d1 = (CLAMP(z1, -1, 1) + 1) / 2;
+    if (!g->hit) { g->hit = true; g->hit_min = d0; g->hit_max = d1; }
+    else { g->hit_min = MIN(g->hit_min, d0); g->hit_max = MAX(g->hit_max, d1); }
+}
 static void draw_batch(glctx_t *g, int prim, GLuint texid, const r3d_vertex_t *v, int n) {
+    if (g->render_mode == GL_SELECT) { if (n > 0) sel_test(g, v, n); return; }
     tgt_t tg;
     g->tex_bracket = false;
     if (n <= 0 || !target(g, &tg)) return;
@@ -678,13 +735,86 @@ static GLuint WINAPI glGenLists(GLsizei n) {
 static void free_list(dlist_t *l) { for (int i = 0; i < l->n; i++) kfree(l->b[i].v); kfree(l->b); l->b = NULL; l->n = l->cap = 0; }
 static void WINAPI glNewList(GLuint list, GLenum mode) { G; if (list && list < NLIST) { free_list(&g->lists[list]); g->lists[list].used = true; g->compiling = list; g->compile_exec = mode == 0x1301; } }
 static void WINAPI glEndList(void) { G; g->compiling = 0; }
+/* wglUseFontBitmaps: a list holding one character, drawn at the raster position in the
+ * current colour with the OS font the DC had (n holds the font), then the raster moves on */
+#define PRIM_GLYPH 100
+static void draw_glyph(glctx_t *g, uint32_t ch, int font) {
+    if (g->render_mode == GL_SELECT) return;
+    tgt_t t; if (!target(g, &t)) return;
+    char s[5]; int k = 0;
+    if (ch < 0x80) s[k++] = (char)ch;
+    else if (ch < 0x800) { s[k++] = (char)(0xC0 | (ch >> 6)); s[k++] = (char)(0x80 | (ch & 0x3F)); }
+    else { s[k++] = (char)(0xE0 | (ch >> 12)); s[k++] = (char)(0x80 | ((ch >> 6) & 0x3F)); s[k++] = (char)(0x80 | (ch & 0x3F)); }
+    s[k] = 0;
+    /* the raster position is the glyph's baseline origin, counted from the bottom */
+    int base = t.flip ? g->raster[1] : t.h - 1 - g->raster[1];
+    uint32_t col = 0xFF000000u | ((uint32_t)(CLAMP(g->col[0], 0, 1) * 255) << 16) | ((uint32_t)(CLAMP(g->col[1], 0, 1) * 255) << 8) | (uint32_t)(CLAMP(g->col[2], 0, 1) * 255);
+    rect_t old = canvas_push_clip(t.c, scissor_rect(g, &t));
+    draw_text(t.c, font, g->raster[0], base - font_ascent(font) + 1, s, col);
+    t.c->clip = old;
+    g->raster[0] += text_width(font, s);
+}
 static void WINAPI glCallList(GLuint list) {
     G; if (!list || list >= NLIST) return;
     dlist_t *l = &g->lists[list];
-    for (int i = 0; i < l->n; i++) draw_batch(g, l->b[i].prim, l->b[i].tex ? l->b[i].tex : g->bound, l->b[i].v, l->b[i].n);
+    for (int i = 0; i < l->n; i++) {
+        if (l->b[i].prim == PRIM_GLYPH) { draw_glyph(g, l->b[i].tex, l->b[i].n); continue; }
+        draw_batch(g, l->b[i].prim, l->b[i].tex ? l->b[i].tex : g->bound, l->b[i].v, l->b[i].n);
+    }
+}
+static void WINAPI glListBase(GLuint base) { G; g->list_base = base; }
+static void WINAPI glCallLists(GLsizei n, GLenum type, const void *lists) {
+    G; if (!lists || n <= 0) return;
+    for (GLsizei i = 0; i < n; i++) {
+        long v;
+        switch (type) {
+        case 0x1400: v = ((const int8_t *)lists)[i]; break;      /* GL_BYTE */
+        case 0x1401: v = ((const uint8_t *)lists)[i]; break;     /* GL_UNSIGNED_BYTE */
+        case 0x1402: v = ((const int16_t *)lists)[i]; break;
+        case 0x1403: v = ((const uint16_t *)lists)[i]; break;
+        case 0x1404: v = ((const int32_t *)lists)[i]; break;
+        case 0x1405: v = (long)((const uint32_t *)lists)[i]; break;
+        case 0x1406: v = (long)((const float *)lists)[i]; break;
+        default: err(g, 0x0500); return;
+        }
+        glCallList((GLuint)(g->list_base + v));
+    }
 }
 static void WINAPI glDeleteLists(GLuint list, GLsizei n) { G; for (GLuint i = list; i < list + (GLuint)n && i < NLIST; i++) { free_list(&g->lists[i]); g->lists[i].used = false; } }
 static GLboolean WINAPI glIsList(GLuint list) { GV(0); return list && list < NLIST && g->lists[list].used; }
+
+/* ---- attribute stack, clip planes, colour index arrays ---- */
+static void WINAPI glPushAttrib(GLbitfield mask) {
+    G; (void)mask;
+    if (g->attrd >= 16) { err(g, 0x0503); return; }                      /* GL_STACK_OVERFLOW */
+    typeof(g->attr[0]) *a = &g->attr[g->attrd++];
+    a->en = g->en; memcpy(a->col, g->col, sizeof a->col); a->depth_mask = g->depth_mask; a->cull_face = g->cull_face; a->front_face = g->front_face;
+    memcpy(a->clear, g->clear, sizeof a->clear); a->vx = g->vx; a->vy = g->vy; a->vw = g->vw; a->vh = g->vh; memcpy(a->sc, g->sc, sizeof a->sc); a->bound = g->bound;
+}
+static void WINAPI glPopAttrib(void) {
+    G;
+    if (g->attrd <= 0) { err(g, 0x0504); return; }                       /* GL_STACK_UNDERFLOW */
+    typeof(g->attr[0]) *a = &g->attr[--g->attrd];
+    g->en = a->en; memcpy(g->col, a->col, sizeof a->col); g->depth_mask = a->depth_mask; g->cull_face = a->cull_face; g->front_face = a->front_face;
+    memcpy(g->clear, a->clear, sizeof a->clear); g->vx = a->vx; g->vy = a->vy; g->vw = a->vw; g->vh = a->vh; memcpy(g->sc, a->sc, sizeof a->sc); g->bound = a->bound;
+}
+static void WINAPI glClipPlane(GLenum plane, const GLdouble *eq) { (void)plane; (void)eq; }   /* user clip planes are not applied */
+static void WINAPI glIndexPointer(GLenum type, GLsizei stride, const void *p) { (void)type; (void)stride; (void)p; }   /* colour index mode is not used in RGBA */
+static void WINAPI glColor3i(GLint r, GLint gg, GLint b) { glColor3f(r / 2147483647.0f, gg / 2147483647.0f, b / 2147483647.0f); }
+/* ---- selection ---- */
+static void WINAPI glSelectBuffer(GLsizei size, GLuint *buf) { G; g->selbuf = buf; g->selsize = size > 0 ? size : 0; }
+static GLint WINAPI glRenderMode(GLenum mode) {
+    GV(0);
+    GLint r = 0;
+    if (g->render_mode == GL_SELECT) { sel_flush(g); r = g->sel_overflow ? -1 : g->hits; }
+    g->render_mode = mode == GL_SELECT ? GL_SELECT : GL_RENDER;
+    if (mode == GL_SELECT) { g->selpos = g->hits = 0; g->sel_overflow = false; g->nnames = 0; g->hit = false; }
+    return r;
+}
+static void WINAPI glInitNames(void) { G; sel_flush(g); g->nnames = 0; }
+static void WINAPI glPushName(GLuint name) { G; sel_flush(g); if (g->nnames < 64) g->names[g->nnames++] = name; else err(g, 0x0503); }
+static void WINAPI glPopName(void) { G; sel_flush(g); if (g->nnames > 0) g->nnames--; else err(g, 0x0504); }
+static void WINAPI glLoadName(GLuint name) { G; sel_flush(g); if (g->nnames > 0) g->names[g->nnames - 1] = name; else err(g, 0x0502); }
 
 /* ---------------- WGL and pixel formats (gdi32) ---------------- */
 typedef struct { WORD size, version; DWORD flags; BYTE type, color_bits, rbits, rshift, gbits, gshift, bbits, bshift, abits, ashift, accum, ar, ag, ab, aa, depth, stencil, aux, layer, res; DWORD lmask, vmask, dmask; } PFD;
@@ -776,6 +906,24 @@ static void *WINAPI wglGetProcAddress(const char *name) {
     return NULL;                                                        /* shaders and the rest of OpenGL 2+ */
 }
 static BOOL WINAPI wglShareLists(HANDLE a, HANDLE b) { (void)a; (void)b; return 0; }
+extern int w32_dc_font(uintptr_t hdc);
+static BOOL WINAPI wglUseFontBitmapsW(HDC dc, DWORD first, DWORD count, DWORD base) {
+    GV(0);
+    int font = w32_dc_font((uintptr_t)dc);
+    for (DWORD i = 0; i < count; i++) {
+        DWORD list = base + i;
+        if (!list || list >= NLIST) continue;
+        dlist_t *l = &g->lists[list];
+        free_list(l);
+        l->used = true;
+        l->b = kzalloc(sizeof(batch_t));
+        if (!l->b) return 0;
+        l->b[0].prim = PRIM_GLYPH; l->b[0].tex = first + i; l->b[0].n = font; l->b[0].v = NULL;
+        l->n = l->cap = 1;
+    }
+    return 1;
+}
+static BOOL WINAPI wglUseFontBitmapsA(HDC dc, DWORD first, DWORD count, DWORD base) { return wglUseFontBitmapsW(dc, first, count, base); }
 static BOOL WINAPI wglSwapLayerBuffers(HDC dc, UINT planes) { (void)planes; return w32_SwapBuffers(dc); }
 
 /* ---------------- glu32 ---------------- */
@@ -784,6 +932,12 @@ static void WINAPI gluPerspective(GLdouble fovy, GLdouble aspect, GLdouble n, GL
     glFrustum(-t * aspect, t * aspect, -t, t, n, f);
 }
 static void WINAPI gluOrtho2D(GLdouble l, GLdouble r, GLdouble b, GLdouble t) { glOrtho(l, r, b, t, -1, 1); }
+/* the picking region: the small box around (x, y) fills the view */
+static void WINAPI gluPickMatrix(GLdouble x, GLdouble y, GLdouble dx, GLdouble dy, GLint *vp) {
+    if (dx <= 0 || dy <= 0 || !vp) return;
+    glTranslated((vp[2] - 2 * (x - vp[0])) / dx, (vp[3] - 2 * (y - vp[1])) / dy, 0);
+    glScaled(vp[2] / dx, vp[3] / dy, 1.0);
+}
 static void WINAPI gluLookAt(GLdouble ex, GLdouble ey, GLdouble ez, GLdouble cx, GLdouble cy, GLdouble cz, GLdouble ux, GLdouble uy, GLdouble uz) {
     float f[3] = { (float)(cx - ex), (float)(cy - ey), (float)(cz - ez) };
     float l = r3d_sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]); if (l <= 0) return;
@@ -816,12 +970,13 @@ const w32_export_t opengl32_exports[] = {
     E(glNormal3f), E(glNormal3d), E(glNormal3fv), E(glTexCoord2f), E(glTexCoord2d), E(glTexCoord2fv), E(glRectf),
     E(glEnableClientState), E(glDisableClientState), E(glVertexPointer), E(glNormalPointer), E(glColorPointer), E(glTexCoordPointer),
     E(glArrayElement), E(glDrawArrays), E(glDrawElements),
-    E(glPixelStoref), E(glScissor), E(glCopyTexSubImage2D), E(glReadBuffer), E(glDrawBuffer), E(glReadPixels), E(glRasterPos2i), E(glRasterPos2f), E(glDrawPixels),
+    E(glPixelStoref), E(glScissor), E(glCopyTexSubImage2D), E(glReadBuffer), E(glDrawBuffer), E(glReadPixels), E(glRasterPos2i), E(glRasterPos2f), E(glRasterPos3f), E(glDrawPixels), E(glListBase), E(glCallLists), E(glPushAttrib), E(glPopAttrib),
+    E(glClipPlane), E(glIndexPointer), E(glColor3i), E(glSelectBuffer), E(glRenderMode), E(glInitNames), E(glPushName), E(glPopName), E(glLoadName),
     E(glGetBooleanv), E(glGetPointerv), E(glGetTexImage), E(glColorMask), E(glStencilFunc), E(glStencilOp), E(glClearStencil), E(glTexParameteriv), E(glTexParameterfv),
     E(glTexEnvfv), E(glTexEnviv), E(glTexImage1D), E(glIsTexture), E(glColor4ubv), E(glTexCoord2i), E(glRecti),
     E(glGenLists), E(glNewList), E(glEndList), E(glCallList), E(glDeleteLists), E(glIsList),
-    E(wglCreateContext), E(wglMakeCurrent), E(wglDeleteContext), E(wglGetCurrentContext), E(wglGetCurrentDC), E(wglGetProcAddress), E(wglShareLists), E(wglSwapLayerBuffers),
+    E(wglCreateContext), E(wglMakeCurrent), E(wglDeleteContext), E(wglGetCurrentContext), E(wglGetCurrentDC), E(wglGetProcAddress), E(wglShareLists), E(wglSwapLayerBuffers), E(wglUseFontBitmapsW), E(wglUseFontBitmapsA),
 };
 const int opengl32_count = ARRAY_LEN(opengl32_exports);
-const w32_export_t glu32_exports[] = { E(gluPerspective), E(gluOrtho2D), E(gluLookAt), E(gluBuild2DMipmaps), E(gluErrorString) };
+const w32_export_t glu32_exports[] = { E(gluPerspective), E(gluOrtho2D), E(gluPickMatrix), E(gluLookAt), E(gluBuild2DMipmaps), E(gluErrorString) };
 const int glu32_count = ARRAY_LEN(glu32_exports);

@@ -467,6 +467,8 @@ static void *builtin_import(w32_proc_t *p, const char *dll, const char *name) {
     if (!fn) fn = w32_compat_find(dll, name);
     return fn;
 }
+/* a function of one of the OS's own DLLs, for code inside them that calls another (gdiplus.inc) */
+void *w32_builtin(const char *dll, const char *name) { return builtin_import(w32_cur(), dll, name); }
 /* imports: pe_bind_imports (rust/src/pe.rs) walks the table and writes the import address
  * table; these say what each DLL and each entry binds to */
 typedef struct { w32_proc_t *p; int unresolved; } bind_ctx_t;
