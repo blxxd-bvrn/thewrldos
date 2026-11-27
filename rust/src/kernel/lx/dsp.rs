@@ -30,6 +30,33 @@ struct Dsp {
     last: [i16; 2],                                  /* the previous input frame, for interpolation */
     part: [u8; 4], npart: c_int,                     /* the bytes of a frame split across two writes */
     written: u64,                                    /* bytes taken from the program */
+    /* with every mixer stream taken (stream < 0) the device still opens, silent: frames queue
+     * here and drain at the mixer's rate, so a player keeps real time instead of failing */
+    silent_q: i64,
+    silent_t: u32,
+}
+const SILENT_RING: i64 = 16384;
+unsafe fn silent_drain(d: &mut Dsp) {
+    let now = timer_ticks();
+    let ms = now.wrapping_sub(d.silent_t) as i64;
+    if ms > 0 { d.silent_q = (d.silent_q - ms * audio_rate() as i64 / 1000).max(0); d.silent_t = now; }
+}
+unsafe fn st_write(d: &mut Dsp, pcm: *const i16, frames: c_int) -> c_int {
+    if d.stream >= 0 { return audio_stream_write(d.stream, pcm, frames); }
+    silent_drain(d);
+    let n = (frames as i64).min(SILENT_RING - d.silent_q).max(0);
+    d.silent_q += n;
+    n as c_int
+}
+unsafe fn st_room(d: &mut Dsp) -> c_int {
+    if d.stream >= 0 { return audio_stream_room(d.stream); }
+    silent_drain(d);
+    (SILENT_RING - d.silent_q) as c_int
+}
+unsafe fn st_queued(d: &mut Dsp) -> c_int {
+    if d.stream >= 0 { return audio_stream_queued(d.stream); }
+    silent_drain(d);
+    d.silent_q as c_int
 }
 fn bpf(d: &Dsp) -> c_int { (if d.fmt == AFMT_U8 { 1 } else { 2 }) * d.chans }
 
@@ -38,12 +65,17 @@ pub unsafe fn dsp_open(err: &mut i64) -> *mut c_void {
     let d = znew::<Dsp>();
     if d.is_null() { *err = -ENOMEM; return ptr::null_mut(); }
     (*d).stream = audio_stream_open();
-    if (*d).stream < 0 { zfree(d); *err = -EBUSY; return ptr::null_mut(); }
+    if (*d).stream < 0 {
+        /* every stream is in use (a web page can hold several paused players): open silent
+         * rather than fail, which would stop the video that wanted it */
+        klog(b"dsp: every mixer stream is busy, this player is silent\0".as_ptr() as *const c_char);
+        (*d).silent_t = timer_ticks();
+    }
     (*d).rate = 8000; (*d).chans = 1; (*d).fmt = AFMT_U8;   /* OSS's defaults */
     d as *mut c_void
 }
-pub unsafe fn dsp_release(o: *mut c_void) { let d = o as *mut Dsp; if d.is_null() { return; } audio_stream_close((*d).stream); zfree(d); }
-pub unsafe fn dsp_writable(o: *mut c_void) -> bool { let d = o as *mut Dsp; !d.is_null() && audio_stream_room((*d).stream) >= 512 }
+pub unsafe fn dsp_release(o: *mut c_void) { let d = o as *mut Dsp; if d.is_null() { return; } if (*d).stream >= 0 { audio_stream_close((*d).stream); } zfree(d); }
+pub unsafe fn dsp_writable(o: *mut c_void) -> bool { let d = o as *mut Dsp; !d.is_null() && st_room(&mut *d) >= 512 }
 
 /// One input frame as 16-bit stereo.
 unsafe fn frame_at(d: &Dsp, src: *const u8, i: c_int) -> [i16; 2] {
@@ -77,7 +109,7 @@ unsafe fn put_frames(d: *mut Dsp, src: *const u8, n: c_int, nonblock: bool, stop
         if nb == 512 || d.phase >= limit {
             let mut at = 0usize;
             while at < nb {
-                let k = audio_stream_write(d.stream, buf.as_ptr().add(at * 2), (nb - at) as c_int);
+                let k = st_write(d, buf.as_ptr().add(at * 2), (nb - at) as c_int);
                 if k < 0 { *stopped = true; return -EIO; }
                 at += k as usize;
                 if at < nb {
@@ -96,7 +128,7 @@ unsafe fn put_frames(d: *mut Dsp, src: *const u8, n: c_int, nonblock: bool, stop
 pub unsafe fn dsp_write(o: *mut c_void, src: *const u8, n: u64, nonblock: bool) -> i64 {
     let d = o as *mut Dsp;
     if d.is_null() { return -EBADF; }
-    if nonblock && audio_stream_room((*d).stream) < 512 { return -EAGAIN; }
+    if nonblock && st_room(&mut *d) < 512 { return -EAGAIN; }
     let fb = bpf(&*d);
     let mut done = 0u64;
     if (*d).npart != 0 {                                 /* finish a frame begun in the last write */
@@ -153,7 +185,7 @@ pub unsafe fn dsp_ioctl(o: *mut c_void, cmd: u64, arg: u64, vm: *mut Uvm) -> i64
         SNDCTL_DSP_RESET | SNDCTL_DSP_POST | SNDCTL_DSP_NONBLOCK => { d.npart = 0; 0 }
         SNDCTL_DSP_SYNC => {                             /* until what was written has played (at most 2 s) */
             let t0 = timer_ticks();
-            while audio_stream_queued(d.stream) > 16 * 512 && timer_ticks().wrapping_sub(t0) < 2000 { task_sleep(10); }
+            while st_queued(d) > 16 * 512 && timer_ticks().wrapping_sub(t0) < 2000 { task_sleep(10); }
             0
         }
         SNDCTL_DSP_SPEED => {
@@ -183,12 +215,14 @@ pub unsafe fn dsp_ioctl(o: *mut c_void, cmd: u64, arg: u64, vm: *mut Uvm) -> i64
         SNDCTL_DSP_GETTRIGGER => put(&[2]),              /* output on */
         SNDCTL_DSP_GETCAPS => put(&[1 | 0x1000 | 0x2000]),
         SNDCTL_DSP_GETOSPACE => {
-            let room = to_bytes(d, audio_stream_room(d.stream));
+            let r = st_room(d);
+            let room = to_bytes(d, r);
             put(&[room / FRAGSIZE, 16384 * 4 / FRAGSIZE, FRAGSIZE, room])
         }
-        SNDCTL_DSP_GETODELAY => put(&[to_bytes(d, audio_stream_queued(d.stream))]),
+        SNDCTL_DSP_GETODELAY => { let q = st_queued(d); put(&[to_bytes(d, q)]) }
         SNDCTL_DSP_GETOPTR => {
-            let played = d.written as i64 - to_bytes(d, audio_stream_queued(d.stream)) as i64;
+            let q = st_queued(d);
+            let played = d.written as i64 - to_bytes(d, q) as i64;
             let pl = if played > 0 { played } else { 0 };
             put(&[pl as i32, 0, (pl % (FRAGSIZE as i64 * 16)) as i32])
         }

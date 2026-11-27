@@ -986,7 +986,7 @@ static void vsnd_refill(void) {
  * 16-bit stereo frames at the mixer's rate that the mixer drains as it plays. */
 static char off_reason[96];                    /* defined with the device code below */
 static char audio_hint_text[400];              /* advice when the card is not HD Audio or does not play */
-#define NSTREAM 4
+#define NSTREAM 16                             /* a web page can hold several players open at once */
 #define SRING 16384                            /* frames: a third of a second at 48 kHz */
 typedef struct { bool open; uint32_t rd, wr; int16_t buf[SRING * 2]; } stream_t;
 static stream_t streams[NSTREAM];
