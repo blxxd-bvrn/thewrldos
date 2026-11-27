@@ -504,9 +504,22 @@ GST_SCANNER_DIR := /usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0
 GST_PLUGINS := coreelements typefindfunctions playback app audioconvert audioresample videoconvertscale volume autodetect \
                audiofx isomp4 matroska vpx opus opusparse openh264 faad videoparsersbad audioparsers codecalpha ossaudio \
                vorbis flac mpg123 ogg subenc subparse debugutilsbad deinterlace videofilter
-# the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
-# replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
-LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)
+# OpenGL ES for Linux programs, drawn on the CPU (the OS has no GPU driver for them): Mesa's llvmpipe
+# behind glvnd's libEGL/libGLESv2, from the build machine's libegl-mesa0, mesa-libgallium and libgles2.
+# WebKit paints pages on the CPU either way, but some pages switch it to its composited mode, whose
+# compositor (ThreadedCompositor) needs a GL context for every frame; without one such a page stops
+# updating (it happened on YouTube). About 190 MB with LLVM.
+# Without Mesa on the build machine: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub) that opens
+# displays and refuses contexts, so WebKit at least starts and draws ordinary pages.
+MESA_EGL := /usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0
+LXMESA := $(if $(LXWEBKITGTK),$(if $(wildcard $(MESA_EGL)),y))
+LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/$(if $(LXMESA),.egl-mesa,.egl-stub))
+$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-mesa: $(LXGTK) $(LXWEBKITGTK)
+	@mkdir -p $(dir $@) $(LXROOT)/Linux/usr/share/glvnd/egl_vendor.d
+	@for l in libEGL.so.1 libGLESv2.so.2 libGLdispatch.so.0 libEGL_mesa.so.0; do cp -L /usr/lib/x86_64-linux-gnu/$$l $(dir $@); done
+	@for lib in $$(ldd $(MESA_EGL) /usr/lib/x86_64-linux-gnu/libGLESv2.so.2 | awk '/=> \// { print $$3 }' | sort -u); do cp -L $$lib $(dir $@); done
+	cp /usr/share/glvnd/egl_vendor.d/50_mesa.json $(LXROOT)/Linux/usr/share/glvnd/egl_vendor.d/
+	@touch $@
 $(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub: samples/linux-webkitgtk/stub/libEGL.c $(LXGTK) $(LXWEBKITGTK)
 	gcc -shared -fPIC -O2 -Wall -fvisibility=hidden -Wl,-soname,libEGL.so.1 -o $(dir $@)libEGL.so.1 $< -ldl
 	@touch $@

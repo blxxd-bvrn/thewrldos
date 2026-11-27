@@ -144,6 +144,8 @@ pub struct Sh {
     cwd: Vec<u8>,
     /// oldest first; listed newest first, as the C list was
     vars: Vec<(Vec<u8>, Vec<u8>)>,
+    /// names given to `export`: these variables go to the Linux programs the shell starts
+    exports: Vec<Vec<u8>>,
     funcs: Vec<(Vec<u8>, Option<Rc<Node>>)>,
     status: i32,
     argv: Vec<Vec<u8>>,
@@ -177,7 +179,7 @@ fn is_devnull(t: &[u8]) -> bool { t == b"/dev/null" || t.eq_ignore_ascii_case(b"
 
 impl Sh {
     unsafe fn new(con: *mut Console, cwd: Option<&[u8]>) -> Sh {
-        let mut s = Sh { con, cwd: USER_HOME.to_vec(), vars: Vec::new(), funcs: Vec::new(), status: 0, argv: Vec::new(),
+        let mut s = Sh { con, cwd: USER_HOME.to_vec(), vars: Vec::new(), exports: Vec::new(), funcs: Vec::new(), status: 0, argv: Vec::new(),
                          brk: 0, cont: 0, ret: false, exiting: false, exit_code: 0, depth: 0, script_name: None };
         if let Some(c) = cwd {
             let d = resolve(c, None);
@@ -490,7 +492,18 @@ unsafe fn lx_run(s: &Sh, path: &[u8], argv: &[Vec<u8>], io: &Io) -> i32 {
     ptrs.push(null_mut());
     let p = cvec(path);
     let mut err = [0u8; 256];
-    let pid = lx_spawn(p.as_ptr() as *const c_char, argv.len() as c_int, ptrs.as_mut_ptr(), null_mut(), io.inp, io.out, err.as_mut_ptr() as *mut c_char, 256);
+    /* the environment: Linux's usual defaults, then what was exported in this shell */
+    let mut env: Vec<Vec<u8>> = [&b"PATH=/usr/local/bin:/usr/bin:/bin"[..], b"HOME=/home/user", b"USER=user", b"LOGNAME=user",
+                                 b"SHELL=/bin/sh", b"TERM=dumb", b"LANG=C.UTF-8", b"PWD=/"].iter().map(|e| e.to_vec()).collect();
+    for name in &s.exports {
+        let Some(v) = s.vars.iter().rev().find(|(k, _)| k == name).map(|(_, v)| v.clone()) else { continue };
+        env.retain(|e| !(e.len() > name.len() && e.starts_with(name) && e[name.len()] == b'='));
+        env.push(cat(&[name, b"=", &v]));
+    }
+    let mut ebufs: Vec<Vec<u8>> = env.iter().map(|e| cvec(e)).collect();
+    let mut eptrs: Vec<*mut c_char> = ebufs.iter_mut().map(|b| b.as_mut_ptr() as *mut c_char).collect();
+    eptrs.push(null_mut());
+    let pid = lx_spawn(p.as_ptr() as *const c_char, argv.len() as c_int, ptrs.as_mut_ptr(), eptrs.as_mut_ptr(), io.inp, io.out, err.as_mut_ptr() as *mut c_char, 256);
     if pid < 0 { errm(io, &cat(&[&argv[0], b": ", sl::cstr(&err), b"\n"])); return 126; }
     wait_pid(s, pid)
 }
@@ -944,7 +957,10 @@ unsafe fn b_date(_s: &mut Sh, a: &mut Vec<Vec<u8>>, io: &Io) -> i32 {
     0
 }
 unsafe fn b_export(s: &mut Sh, a: &mut Vec<Vec<u8>>, _io: &Io) -> i32 {
-    for x in a.iter().skip(1) { if let Some(eq) = x.iter().position(|&c| c == b'=') { s.var_set(&x[..eq], &x[eq + 1..]); } }
+    for x in a.iter().skip(1) {
+        let name = match x.iter().position(|&c| c == b'=') { Some(eq) => { s.var_set(&x[..eq], &x[eq + 1..]); &x[..eq] } None => &x[..] };
+        if !name.is_empty() && !s.exports.iter().any(|e| e == name) { s.exports.push(name.to_vec()); }
+    }
     0
 }
 unsafe fn b_unset(s: &mut Sh, a: &mut Vec<Vec<u8>>, _io: &Io) -> i32 { for x in a.iter().skip(1) { s.var_unset(x); } 0 }

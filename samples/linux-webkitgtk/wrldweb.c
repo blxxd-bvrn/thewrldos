@@ -809,7 +809,9 @@ static void activate(GtkApplication *app, gpointer d) {
     webkit_web_context_register_uri_scheme(wctx, "wrld", wrld_scheme, NULL, NULL);
     webkit_security_manager_register_uri_scheme_as_local(webkit_web_context_get_security_manager(wctx), "wrld");
     wsettings = webkit_settings_new();
-    webkit_settings_set_hardware_acceleration_policy(wsettings, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    /* pages are painted on the CPU; WebKit composites (through Mesa's llvmpipe) only the pages that
+     * need it. WRLDWEB_ACCEL=1 composites every page, to test that path. */
+    webkit_settings_set_hardware_acceleration_policy(wsettings, g_getenv("WRLDWEB_ACCEL") ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
     webkit_settings_set_enable_smooth_scrolling(wsettings, FALSE);   /* fewer repaints on the CPU */
     webkit_settings_set_enable_developer_extras(wsettings, FALSE);
     ab_init();
@@ -974,6 +976,9 @@ int main(int argc, char **argv) {
     /* composited pages (a video, some animations) travel in shared memory, drawn on the CPU */
     g_setenv("WEBKIT_DMABUF_RENDERER_FORCE_SHM", "1", FALSE);
     g_setenv("WEBKIT_SKIA_ENABLE_CPU_RENDERING", "1", FALSE);
+    /* GL for the pages WebKit composites: Mesa's llvmpipe on the CPU, straight away (no GPU to look for) */
+    g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", FALSE);
+    g_setenv("GALLIUM_DRIVER", "llvmpipe", FALSE);
     /* GStreamer's ORC writes machine code to a file it maps twice (writable and executable);
      * on THE WRLD OS a shared mapping of a file is a private copy, so use ORC's C versions */
     g_setenv("ORC_CODE", "backup", FALSE);

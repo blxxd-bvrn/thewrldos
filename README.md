@@ -1127,6 +1127,12 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     at once (`samples/linux-webkitgtk/wrldweb-search.h`, through the browser's proxy when one
     is set), merges the results one from each in turn without duplicates, and shows them on
     its own page; when neither answers it offers links to search on either site directly.
+  - **OpenGL ES on the CPU:** pages are painted on the CPU, but some (YouTube's watch page among
+    them) make WebKit switch to its composited mode, whose compositor needs a GL context for every
+    frame. Mesa's llvmpipe (`libEGL_mesa`, `libgallium`, LLVM; about 190 MB, from the build machine's
+    `libegl-mesa0`/`libgles2`) provides one; before, such a page froze after its first frame while
+    its scripts kept running. Without Mesa on the build machine a stand-in `libEGL` is used.
+    `export WRLDWEB_ACCEL=1` before starting the browser composites every page (for testing).
   - **A page that stops responding** shows a bar above it: *Wait* keeps waiting, *Reload page*
     stops that page's web process and loads it again, so one stuck page no longer leaves the
     browser frozen. The browser writes its messages (with GStreamer's warnings, for video) to
@@ -1138,6 +1144,9 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     files for the page). The window device gains requests for
     these (`WRLDWIN_CLIP_SET/GET`, `WRLDWIN_DROP_GET`) and `WRLDWIN_OPEN`, which asks THE WRLD
     OS to open a file as a double-click would.
+  `lxthreads` lists every Linux thread with its CPU time and the system call it waits in (saved to
+  `C:\WRLD\Temp\lxthreads.txt`; run it twice on a frozen program). Variables given to `export`
+  reach the Linux programs the Command Prompt starts.
   `lxtrace on` in the Command Prompt logs every Linux system call to the serial port (with
   the path of calls that take one), and
   `guiprof on` logs how long each window takes to paint, every 2 seconds.
