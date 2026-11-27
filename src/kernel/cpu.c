@@ -130,6 +130,7 @@ static void pic_unmask(int irq) {
     outb(port, inb(port) & ~(1 << irq));
 }
 
+void idt_set_gate(int n, uintptr_t off) { idt_set(n, off, 0x8E); }   /* smp.c's wake-up interrupt */
 void idt_init(void) {
     for (int i = 0; i < 48; i++) idt_set(i, (uintptr_t)isr_table[i], 0x8E);
     idt_set(128, (uintptr_t)isr128, 0xEE);

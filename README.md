@@ -1475,6 +1475,11 @@ device manager's job is to say what the computer has and which driver runs it.
       modes. Shaders run as machine code (below); a scene that shades over a million pixels a
       frame is still slow on the processor, so 3D games run at a few frames a second at best.
       Not there yet: geometry shaders, shadow comparisons, derivatives, cube maps.
+    - **Several processors** (`src/kernel/smp.c`): the other processors of the machine start
+      at boot as 3D workers (16 at most; `nosmp` on the kernel command line leaves them
+      asleep). The kernel still schedules tasks on the first processor; a GLSL draw sets its
+      triangles up there and then every processor rasterises and shades its own bands of 8
+      rows, so a 4-processor virtual machine draws about 2.5 times as fast.
     - **Shader machine code** (`rust/src/jit.rs`): Direct3D 10 and GLSL shaders are compiled
       once to x86 SSE code (both editions; the 32-bit one when the processor has SSE2) instead
       of being interpreted, 4 to 11 times faster. Arithmetic, comparisons, logic, conversions,

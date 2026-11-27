@@ -137,6 +137,7 @@ void kmain(uint32_t magic, uint32_t mbaddr) {
     char vendor[16], brand[52]; cpu_get_info(vendor, brand);
     klog("cpu: %s (%s)", brand, vendor);
     acpi_init();
+    { extern void smp_init(void); smp_init(); }     /* the other processors, as 3D workers */
     video_init();
     pci_dev_t devs[32]; int nd = pci_scan(devs, 32);
     for (int i = 0; i < nd; i++) klog("pci %02x:%02x.%x %04x:%04x %s", devs[i].bus, devs[i].dev, devs[i].fn, devs[i].vendor, devs[i].device, pci_class_name(devs[i].cls, devs[i].sub));

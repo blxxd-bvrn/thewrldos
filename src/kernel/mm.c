@@ -392,7 +392,7 @@ void mm_initrd_consumed(const uint8_t *upto) {
     irq_restore(f);
 }
 uintptr_t w32_dll_area; uint32_t w32_dll_area_size;
-bool boot_verbose, boot_safe_mode, boot_force_lapic;
+bool boot_verbose, boot_safe_mode, boot_force_lapic, boot_nosmp;
 
 void mm_init(void) {
     /* 4..16 MiB is reserved for Win32 process images; the kernel itself is loaded at 16 MiB */
@@ -431,6 +431,7 @@ void mm_init(void) {
         if (strstr(cmd, "verbose")) boot_verbose = true;
         if (strstr(cmd, "safe")) boot_safe_mode = true;
         if (strstr(cmd, "lapic")) boot_force_lapic = true;
+        if (strstr(cmd, "nosmp")) boot_nosmp = true;
         extern bool boot_setup_mode; extern uint32_t boot_root_serial;
         if (strstr(cmd, "setup")) boot_setup_mode = true;
         const char *r = strstr(cmd, "root=");

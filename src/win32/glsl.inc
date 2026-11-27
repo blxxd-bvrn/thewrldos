@@ -9,6 +9,7 @@
  * of the compatibility profile (gl_ModelViewProjectionMatrix, gl_LightSource and the
  * rest) are filled in from GL state at each draw. */
 #include "dxbc.h"
+#include "smp.h"
 static void WINAPI glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *idx);
 
 typedef struct { char name[96]; uint32_t gltype; int32_t count, reg, stride, location; } glsl_var_t;
@@ -704,7 +705,17 @@ typedef struct {
     bool cull_front, cull_back, front_ccw_screen, depth_test, depth_write, blend, alpha_test, any_mask;
     GLenum dfunc;
     pv_t poly[2][12];
+    /* the draw's triangles, set up on this processor and rasterised by every worker */
+    struct sl_tri *tris; int ntris, captris;
+    float *pool; size_t npool, cappool;
+    int np, lreg[SLV * 4], lcomp[SLV * 4]; uint8_t lpers[SLV * 4];   /* interpolated lanes */
+    int nflat, freg_flat[SLV], kflat[SLV];                          /* flat varyings */
+    struct sl_wk *wk; int nwk;
 } pipe_t;
+/* one triangle: its rows, edges, z and 1/w planes; its lane planes and flat values in the pool */
+typedef struct sl_tri { int x0, x1, y0, y1; float vx[3], vy[3]; float zo, zdx, zdy, io, idx, idy; uint32_t front; size_t off; } sl_tri_t;
+/* one worker's registers */
+typedef struct sl_wk { pipe_t *P; dxbc_exec_t fx; vec4_t fin[DX_MAX_REG], fout[DX_MAX_REG]; uint32_t pixels; } sl_wk_t;
 
 static bool vertex_slot(pipe_t *P, int slot, uint32_t index, const fatvert_t *imm, float *out) {
     glctx_t *g = P->g; struct gl2 *x = g->x; struct glsl_state *s = P->s;
@@ -783,16 +794,17 @@ static bool test_depth(GLenum f, float z, float cur) {
 }
 static bool test_alpha(GLenum f, float a, float ref) { return test_depth(f, a, ref); }
 /* one fragment at canvas (x, y) whose inputs are set: run the shader, test, blend, write */
-static void fragment(pipe_t *P, int x, int y, float z) {
+static void fragment(sl_wk_t *W, int x, int y, float z) {
+    pipe_t *P = W->P;
     float *dz = P->t.depth + (size_t)y * P->t.w + x;       /* holds 1 - z: 0 is the far plane */
     if (P->depth_test && !test_depth(P->dfunc, z, 1 - *dz)) return;
-    if (P->fpos >= 0) { vec4_t *r = &P->fin[P->fpos]; r->f[0] = x + .5f; r->f[1] = (P->t.flip ? y : P->t.h - 1 - y) + .5f; r->f[2] = z; }
-    if (!dxbc_exec_run(&P->fx)) return;
-    const float *c = P->fout[P->o->target_reg].f;
+    if (P->fpos >= 0) { vec4_t *r = &W->fin[P->fpos]; r->f[0] = x + .5f; r->f[1] = (P->t.flip ? y : P->t.h - 1 - y) + .5f; r->f[2] = z; }
+    if (!dxbc_exec_run(&W->fx)) return;
+    const float *c = W->fout[P->o->target_reg].f;
     float src[4]; for (int i = 0; i < 4; i++) src[i] = c[i] != c[i] ? 0 : CLAMP(c[i], 0, 1);
     if (P->alpha_test && !test_alpha(P->s->alpha_func, src[3], P->s->alpha_ref)) return;
     if (P->depth_write) *dz = 1 - z;
-    P->s->pixels++;
+    W->pixels++;
     if (!P->any_mask) return;
     uint32_t *px = P->t.c->px + (size_t)y * P->t.c->stride + x;
     float out[4];
@@ -823,72 +835,110 @@ static void sl_yield(void) {
     if (sl_partial_g && sl_partial_g->x && sl_partial_g->x->sl && !sl_partial_g->x->sl->frames && !sl_partial_g->fbo_bound && t - sl_partial_g->x->sl->frame_start > 1000 && t - sl_partial_at >= 1000) { sl_partial_at = t; present(sl_partial_g); }
 }
 /* plane equations of z, 1/w and every varying lane the fragment shader reads, set up once
- * per triangle; each pixel that passes the depth test evaluates them at its centre */
+ * per triangle (here, on the boot processor); the workers evaluate them at each pixel */
 static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *c) {
     float area = (b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y);
     if (area == 0 || area != area) return;
     bool cw = area > 0;
     bool front = P->front_ccw_screen ? !cw : cw;
     if ((front && P->cull_front) || (!front && P->cull_back)) return;
-    if (P->fface >= 0) P->fin[P->fface].u[0] = front ? ~0u : 0;
     if (!cw) { const sv_t *t = b; b = c; c = t; area = -area; }
     int x0 = (int)MAX((float)P->clip.x, MIN(a->x, MIN(b->x, c->x)));
     int x1 = (int)MIN((float)(P->clip.x + P->clip.w), MAX(a->x, MAX(b->x, c->x)) + 1);
     int y0 = (int)MAX((float)P->clip.y, MIN(a->y, MIN(b->y, c->y)));
     int y1 = (int)MIN((float)(P->clip.y + P->clip.h), MAX(a->y, MAX(b->y, c->y)) + 1);
     if (x0 >= x1 || y0 >= y1) return;
+    size_t need = (size_t)P->np * 3 + (size_t)P->nflat * 4;
+    if (P->ntris == P->captris) {
+        int nc = P->captris ? P->captris * 2 : 256;
+        sl_tri_t *n = krealloc(P->tris, sizeof(sl_tri_t) * nc); if (!n) return;
+        P->tris = n; P->captris = nc;
+    }
+    if (P->npool + need > P->cappool) {
+        size_t nc = MAX(P->cappool * 2, P->npool + need + 4096);
+        float *n = krealloc(P->pool, sizeof(float) * nc); if (!n) return;
+        P->pool = n; P->cappool = nc;
+    }
+    sl_tri_t *T = &P->tris[P->ntris++];
+    T->x0 = x0; T->x1 = x1; T->y0 = y0; T->y1 = y1; T->front = front ? ~0u : 0; T->off = P->npool;
+    T->vx[0] = a->x; T->vx[1] = b->x; T->vx[2] = c->x; T->vy[0] = a->y; T->vy[1] = b->y; T->vy[2] = c->y;
     float inv = 1.0f / area;
     /* barycentric weights of a and b as planes over the screen: w = o + dx * x + dy * y */
     float w0dx = (b->y - c->y) * inv, w0dy = (c->x - b->x) * inv, w0o = (b->x * c->y - c->x * b->y) * inv;
     float w1dx = (c->y - a->y) * inv, w1dy = (a->x - c->x) * inv, w1o = (c->x * a->y - a->x * c->y) * inv;
     #define PLANE(va, vb, vc, o_, dx_, dy_) do { float da_ = (va) - (vc), db_ = (vb) - (vc); \
         dx_ = w0dx * da_ + w1dx * db_; dy_ = w0dy * da_ + w1dy * db_; o_ = (vc) + w0o * da_ + w1o * db_; } while (0)
-    float zo, zdx, zdy, io, idx, idy;
-    PLANE(a->z, b->z, c->z, zo, zdx, zdy);
-    PLANE(a->iw, b->iw, c->iw, io, idx, idy);
-    float po[SLV * 4], pdx[SLV * 4], pdy[SLV * 4]; float *dst[SLV * 4]; uint8_t pers[SLV * 4]; int np = 0;
-    vec4_t *in = P->fin;
-    for (int k = 0; k < P->nvar; k++) {
-        if (P->flat[k]) { in[P->freg[k]] = P->flatv[k]; continue; }
-        for (int i = 0; i < 4; i++) if (P->lanes[k] & (1u << i)) {
-            PLANE(a->v[k].f[i], b->v[k].f[i], c->v[k].f[i], po[np], pdx[np], pdy[np]);
-            dst[np] = &in[P->freg[k]].f[i]; pers[np] = !P->noper[k]; np++;
-        }
+    PLANE(a->z, b->z, c->z, T->zo, T->zdx, T->zdy);
+    PLANE(a->iw, b->iw, c->iw, T->io, T->idx, T->idy);
+    float *pl = P->pool + P->npool;
+    for (int i = 0; i < P->np; i++) {
+        int k = P->lcomp[i] >> 2, cc = P->lcomp[i] & 3;
+        PLANE(a->v[k].f[cc], b->v[k].f[cc], c->v[k].f[cc], pl[3 * i], pl[3 * i + 1], pl[3 * i + 2]);
     }
     #undef PLANE
-    for (int y = y0; y < y1; y++) {
-        sl_yield();
+    float *fl = pl + 3 * P->np;
+    for (int i = 0; i < P->nflat; i++) memcpy(fl + 4 * i, P->flatv[P->kflat[i]].f, 16);
+    P->npool += need;
+}
+/* rows go to the workers in bands of 8: worker w takes the bands whose number is w mod n */
+#define SL_BAND 3
+static void raster_tri(sl_wk_t *W, const sl_tri_t *T, int w, int n) {
+    pipe_t *P = W->P;
+    vec4_t *in = W->fin;
+    const float *pl = P->pool + T->off, *fl = pl + 3 * P->np;
+    bool set = false;
+    for (int y = T->y0; y < T->y1; y++) {
+        int band = y >> SL_BAND;
+        if (n > 1 && band % n != w) {
+            int nb = band + ((w - band % n) + n) % n;
+            y = (nb << SL_BAND) - 1;
+            continue;
+        }
+        if (w == 0) sl_yield();
         float py = y + .5f;
         /* the span of this row inside all three edges */
-        float lo = (float)x0, hi = (float)x1 - 1;
-        const sv_t *v[3] = { a, b, c };
+        float lo = (float)T->x0, hi = (float)T->x1 - 1;
         bool empty = false;
         for (int i = 0; i < 3 && !empty; i++) {
-            const sv_t *p = v[i], *q = v[(i + 1) % 3];
-            float ex = q->x - p->x, ey = q->y - p->y;
-            float k = ex * (py - p->y);
-            if (ey > 0) { float lim = (k / ey) + p->x - .5f; hi = MIN(hi, lim); }
-            else if (ey < 0) { float lim = (k / ey) + p->x - .5f; lo = MAX(lo, lim); }
+            int j = i == 2 ? 0 : i + 1;
+            float ex = T->vx[j] - T->vx[i], ey = T->vy[j] - T->vy[i];
+            float k = ex * (py - T->vy[i]);
+            if (ey > 0) { float lim = (k / ey) + T->vx[i] - .5f; hi = MIN(hi, lim); }
+            else if (ey < 0) { float lim = (k / ey) + T->vx[i] - .5f; lo = MAX(lo, lim); }
             else if (k < 0) empty = true;
         }
         if (empty) continue;
         int xs = (int)lo; if ((float)xs < lo) xs++;
         int xe = (int)hi; if ((float)xe > hi) xe--;
-        xs = MAX(xs, x0); xe = MIN(xe, x1 - 1);
+        xs = MAX(xs, T->x0); xe = MIN(xe, T->x1 - 1);
         if (xs > xe) continue;
+        if (!set) {
+            set = true;
+            if (P->fface >= 0) in[P->fface].u[0] = T->front;
+            for (int i = 0; i < P->nflat; i++) memcpy(in[P->freg_flat[i]].f, fl + 4 * i, 16);
+        }
         float px0 = xs + .5f;
-        float z = zo + zdx * px0 + zdy * py, iw = io + idx * px0 + idy * py;
+        float z = T->zo + T->zdx * px0 + T->zdy * py, iw = T->io + T->idx * px0 + T->idy * py;
         float *dz = P->t.depth + (size_t)y * P->t.w;
-        for (int x = xs; x <= xe; x++, z += zdx, iw += idx) {
+        for (int x = xs; x <= xe; x++, z += T->zdx, iw += T->idx) {
             if (z < 0 || z > 1) continue;
             if (P->depth_test && !test_depth(P->dfunc, z, 1 - dz[x])) continue;
             float px = x + .5f;
             float wcorr = iw != 0 ? 1.0f / iw : 0;
-            for (int i = 0; i < np; i++) { float val = po[i] + pdx[i] * px + pdy[i] * py; *dst[i] = pers[i] ? val * wcorr : val; }
-            if (P->fpos >= 0) P->fin[P->fpos].f[3] = iw;
-            fragment(P, x, y, z);
+            for (int i = 0; i < P->np; i++) {
+                float val = pl[3 * i] + pl[3 * i + 1] * px + pl[3 * i + 2] * py;
+                in[P->lreg[i]].f[P->lcomp[i] & 3] = P->lpers[i] ? val * wcorr : val;
+            }
+            if (P->fpos >= 0) in[P->fpos].f[3] = iw;
+            fragment(W, x, y, z);
         }
     }
+}
+static void raster_job(void *arg, int w, int n) {
+    pipe_t *P = arg;
+    sl_wk_t *W = &P->wk[w < P->nwk ? w : 0];
+    if (w >= P->nwk) return;
+    for (int i = 0; i < P->ntris; i++) raster_tri(W, &P->tris[i], w, n);
 }
 static void to_screen(pipe_t *P, const pv_t *v, sv_t *s) {
     float iw = 1.0f / v->pos[3];
@@ -942,10 +992,11 @@ static void draw_point_sv(pipe_t *P, const sv_t *s) {
     int x = (int)s->x, y = (int)s->y;
     if (x < P->clip.x || y < P->clip.y || x >= P->clip.x + P->clip.w || y >= P->clip.y + P->clip.h || s->z < 0 || s->z > 1) return;
     float w = s->iw != 0 ? 1 / s->iw : 0;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) P->fin[P->freg[k]].f[i] = P->flat[k] ? s->v[k].f[i] : s->v[k].f[i] * (P->noper[k] ? 1 : w);
-    if (P->fpos >= 0) P->fin[P->fpos].f[3] = s->iw;
-    if (P->fface >= 0) P->fin[P->fface].u[0] = ~0u;
-    fragment(P, x, y, s->z);
+    sl_wk_t *W = &P->wk[0];
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) W->fin[P->freg[k]].f[i] = P->flat[k] ? s->v[k].f[i] : s->v[k].f[i] * (P->noper[k] ? 1 : w);
+    if (P->fpos >= 0) W->fin[P->fpos].f[3] = s->iw;
+    if (P->fface >= 0) W->fin[P->fface].u[0] = ~0u;
+    fragment(W, x, y, s->z);
 }
 static void draw_line_pv(pipe_t *P, const pv_t *a, const pv_t *b) {
     pv_t c0 = *a, c1 = *b;
@@ -1015,11 +1066,30 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
     P->blend = (g->en & EN_BLEND) != 0;
     P->alpha_test = (g->en & EN_ALPHA) != 0;
     P->any_mask = g->x->cmask[0] || g->x->cmask[1] || g->x->cmask[2] || g->x->cmask[3];
+    /* the lanes that are interpolated, and the flat varyings */
+    for (int k = 0; k < P->nvar; k++) {
+        if (P->flat[k]) { P->freg_flat[P->nflat] = P->freg[k]; P->kflat[P->nflat++] = k; continue; }
+        for (int i = 0; i < 4; i++) if (P->lanes[k] & (1u << i)) { P->lreg[P->np] = P->freg[k]; P->lcomp[P->np] = k << 2 | i; P->lpers[P->np] = !P->noper[k]; P->np++; }
+    }
     if (!dxbc_exec_init(&P->vx, o->u[1]->shader, &P->env[1], P->vin, P->vout)) return false;
-    if (!dxbc_exec_init(&P->fx, o->u[0]->shader, &P->env[0], P->fin, P->fout)) { dxbc_exec_fini(&P->vx); return false; }
+    /* one set of fragment registers per worker (the other processors take rows too) */
+    P->nwk = MAX(1, smp_workers_n);
+    P->wk = kzalloc(sizeof(sl_wk_t) * P->nwk);
+    if (!P->wk) { dxbc_exec_fini(&P->vx); return false; }
+    for (int i = 0; i < P->nwk; i++) {
+        P->wk[i].P = P;
+        if (!dxbc_exec_init(&P->wk[i].fx, o->u[0]->shader, &P->env[0], P->wk[i].fin, P->wk[i].fout)) {
+            for (int k = 0; k < i; k++) dxbc_exec_fini(&P->wk[k].fx);
+            kfree(P->wk); dxbc_exec_fini(&P->vx); return false;
+        }
+    }
     return true;
 }
-static void pipe_free(pipe_t *P) { dxbc_exec_fini(&P->vx); dxbc_exec_fini(&P->fx); kfree(P); }
+static void pipe_free(pipe_t *P) {
+    dxbc_exec_fini(&P->vx);
+    for (int i = 0; i < P->nwk; i++) dxbc_exec_fini(&P->wk[i].fx);
+    kfree(P->wk); kfree(P->tris); kfree(P->pool); kfree(P);
+}
 /* assemble primitives of `mode` from n vertices (already through the vertex shader) */
 static void assemble(pipe_t *P, GLenum mode, pv_t **v, int n) {
     #define FLAT(p) do { for (int k_ = 0; k_ < P->nvar; k_++) if (P->flat[k_]) P->flatv[k_] = (p)->v[k_]; } while (0)
@@ -1067,6 +1137,8 @@ static void sl_run(glctx_t *g, sl_obj_t *o, GLenum mode, int first, int count, G
         list[i] = done[s] == 1 ? &cache[s] : NULL;
     }
     assemble(P, mode, list, count);
+    if (P->ntris) smp_run(raster_job, P);
+    for (int i = 0; i < P->nwk; i++) P->s->pixels += P->wk[i].pixels;
     kfree(cache); kfree(done); kfree(list);
     pipe_free(P);
 }

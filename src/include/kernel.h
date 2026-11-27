@@ -87,6 +87,8 @@ bool timer_using_lapic(void);         /* true when IRQ0 no longer comes from the
 uint32_t timer_ticks(void);           /* milliseconds since boot */
 extern volatile uint32_t idle_ticks;
 extern bool boot_force_lapic;         /* "lapic" on the kernel command line */
+extern bool boot_nosmp;               /* "nosmp": leave the other processors asleep */
+void idt_set_gate(int n, uintptr_t handler);
 typedef struct { int year, month, day, hour, minute, second, weekday; } rtc_time_t;
 void rtc_read(rtc_time_t *t);
 void rtc_now(rtc_time_t *t);          /* rtc + timezone offset applied */
