@@ -59,6 +59,18 @@ const _: () = assert!(core::mem::size_of::<KUcontext>() == 304);
 const _: () = assert!(core::mem::size_of::<RtSigFrame>() == 440);
 const SIGFRAME_ALLOC: u64 = 512;                     /* frame, plus room for a restorer stub */
 
+/* The interrupted code's FPU, SSE and AVX registers go into the frame (uc_mcontext.fpstate)
+ * and come back on rt_sigreturn. Without this a handler, and the C library it calls (memcpy
+ * uses SSE/AVX), left its own values in the vector registers of the code it interrupted:
+ * JavaScriptCore's garbage collector stops threads with a signal, and JIT code that kept a
+ * number or a copy in xmm registers carried on with garbage (wrong results, crashes).
+ * The kernel saved that state on entry (FPU_SAVE in src/arch/x86_64/lx.asm and isr.asm) at
+ * (regs - 1088) & ~63: 512 bytes of FXSAVE, or 832 of XSAVE (x87, SSE, AVX) when AVX is on. */
+extern "C" { static fpu_xsave: u8; }
+const FP_BYTES: u64 = 832;
+unsafe fn fpu_area(r: *const Regs) -> *mut u8 { (((r as u64) - 1088) & !63) as *mut u8 }
+unsafe fn fpu_len() -> usize { if ptr::read_volatile(ptr::addr_of!(fpu_xsave)) != 0 { 832 } else { 512 } }
+
 /* ---------------- user memory ---------------- */
 unsafe fn uwritable(vm: *mut Uvm, a: u64, n: u64) -> bool {
     if a < USER_LO || a.wrapping_add(n) > USER_HI || a.wrapping_add(n) < a { return false; }
@@ -175,8 +187,9 @@ unsafe fn push_frame(th: *mut LxThread, r: *mut Regs, sig: c_int, a: *mut SigAct
         let top = (*th).alt_sp.wrapping_add((*th).alt_size as u64);
         if sp < (*th).alt_sp || sp >= top { sp = top; on_alt = true; }
     }
-    if sp < 128 + SIGFRAME_ALLOC + 64 { return false; }
-    let top = ((sp - 128 - SIGFRAME_ALLOC) & !15) - 8;
+    if sp < 128 + FP_BYTES + SIGFRAME_ALLOC + 128 { return false; }
+    let fp_at = (sp - 128 - FP_BYTES) & !63;                     /* the saved vector registers, above the frame */
+    let top = ((fp_at - SIGFRAME_ALLOC) & !15) - 8;
     let restart = (*th).sys_eintr && (*a).flags & SA_RESTART != 0 && r.int_no == 0x100 &&
                   !((*th).sys_nr == 34 || (*th).sys_nr == 128 || (*th).sys_nr == 130);
     let saved_rip = if restart { r.eip.wrapping_sub(2) } else { r.eip };
@@ -195,8 +208,9 @@ unsafe fn push_frame(th: *mut LxThread, r: *mut Regs, sig: c_int, a: *mut SigAct
         rdi: r.edi, rsi: r.esi, rbp: r.ebp, rbx: r.ebx, rdx: r.edx, rax: saved_rax, rcx: r.ecx,
         rsp: r.esp, rip: saved_rip, eflags: r.eflags,
         csgsfs: (r.cs & 0xFFFF) | ((r.ss & 0xFFFF) << 48), err: r.err_code, trapno: r.int_no,
-        oldmask: 0, cr2: a_, fpstate: 0, reserved1: [0; 8],
+        oldmask: 0, cr2: a_, fpstate: fp_at, reserved1: [0; 8],
     };
+    if !uwrite((*p).vm, fp_at, fpu_area(r as *const Regs), fpu_len() as u64) { return false; }
     let mut restore = (*th).sigmask;
     if (*th).sig_suspend { restore = (*th).sig_suspend_old; (*th).sig_suspend = false; }
     let mut active = (*th).sigmask | (*a).mask;
@@ -295,6 +309,24 @@ pub unsafe fn lx_rt_sigreturn(r: *mut Regs) -> i64 {
     r.edx = mc.rdx; r.ecx = mc.rcx;
     r.eip = mc.rip; r.esp = mc.rsp; r.eflags = mc.eflags;
     r.cs = 0x2B; r.ss = 0x23;                        /* the only user selectors we have */
+    if mc.fpstate != 0 {
+        /* the interrupted code's vector registers, into the area FPU_RESTORE loads on the way out */
+        let n = fpu_len();
+        let mut fp = [0u8; 832];
+        if uread((*p).vm, fp.as_mut_ptr(), mc.fpstate, n as u64) {
+            let area = fpu_area(r as *const Regs);
+            /* MXCSR bits the processor does not have would fault in FXRSTOR/XRSTOR */
+            let mask = { let m = u32::from_le_bytes([*area.add(28), *area.add(29), *area.add(30), *area.add(31)]); if m == 0 { 0xFFBF } else { m } };
+            let mx = u32::from_le_bytes([fp[24], fp[25], fp[26], fp[27]]) & mask;
+            fp[24..28].copy_from_slice(&mx.to_le_bytes());
+            ptr::copy_nonoverlapping(fp.as_ptr(), area, 512);   /* x87, MXCSR, xmm0-15 */
+            if n == 832 {
+                ptr::copy_nonoverlapping(fp.as_ptr().add(576), area.add(576), 256);   /* the upper halves of ymm0-15 */
+                let bv = area.add(512) as *mut u64;               /* XSTATE_BV: load all three, not the init state */
+                ptr::write_unaligned(bv, ptr::read_unaligned(bv) | 7);
+            }
+        }
+    }
     (*th).sigmask = f.uc.uc_sigmask & !SIG_UNBLOCKABLE;
     (*th).sig_suspend = false;
     mc.rax as i64
