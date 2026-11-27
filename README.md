@@ -550,7 +550,7 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     wildcards no longer recurse without limit). Output to a pipe or `$(…)` is dropped
     rather than crashing when memory runs out, and `seq` stops at Ctrl+C.
   - **The image decoders (`rust/src/imgdec.rs` and `rust/src/kernel/imgk.rs`, were in
-    `src/apps/imgdec.c` and `accessories.c`):** PNG, GIF, baseline and progressive JPEG and
+    `src/apps/imgdec.c` and what was `accessories.c`):** PNG, GIF, baseline and progressive JPEG and
     BMP, for the desktop wallpaper, the logon screen, the Image Viewer, Paint and the browser.
     `imgdec.c` keeps the format sniffing, the size limits and SVG. Over 1,239 images (the
     system's own wallpapers, avatars and samples, and ImageMagick conversions of three of them
@@ -765,7 +765,7 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     On 24,550 generated base/link pairs the new code matches RFC 3986 (with a one-letter
     "scheme" read as a drive letter, and an empty http path written as "/" as browsers do);
     the C code differed on 6,022, and every pair the C code got right is unchanged.
-  - **WordPad's document readers (`rust/src/wpdoc.rs`, were in `src/apps/wordpad.c`):** Rich
+  - **WordPad's document readers (`rust/src/wpdoc.rs`, were in `src/apps/accessories/wordpad.c`):** Rich
     Text (files, the undo snapshots and the rich clipboard), and the zip and XML of `.docx` and
     `.odt`. They build a list of paragraphs (text, a character style per byte, alignment,
     bullet, spacing, indents) that WordPad copies into its own document; the editor, the
@@ -2035,8 +2035,11 @@ src/usb            USB host controllers (xhci, ehci, uhci, ohci), enumeration, H
 src/gui            graphics, text layout with bidi and
                    script itemisation (text.c), the software path rasteriser (raster.c),
                    globe + wordmark, themes, window manager, widgets, desktop, screens
-src/apps           explorer, notepad, wordpad, terminal, control panel, accessories, launcher, setup,
-                   browser (fetching for scripts in domnet.c, the page arena in html.c), image format dispatch (imgdec.c)
+src/apps           explorer, terminal, control panel, launcher, setup, system windows (system.c: Task Manager,
+                   About, Properties), browser (fetching for scripts in domnet.c, the page arena in html.c),
+                   image format dispatch (imgdec.c)
+src/apps/accessories  Notepad, WordPad, Paint, Calculator, Image Viewer (one file each)
+src/apps/games     Solitaire, Minesweeper, Orbit Pinball, WRLD Sentinel, Snake, Pong (one file each)
 src/js             JavaScript glue (engine.c) and the browser environment (prelude.js)
 src/tls            HTTPS glue for Mbed TLS (tls.c) and the root certificates (root_certs.c)
 src/shell          the shell's system commands (shcmds.c: network, display, sound, devices, packages...;
