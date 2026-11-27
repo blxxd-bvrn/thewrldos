@@ -210,7 +210,21 @@ unsafe fn push_frame(th: *mut LxThread, r: *mut Regs, sig: c_int, a: *mut SigAct
         csgsfs: (r.cs & 0xFFFF) | ((r.ss & 0xFFFF) << 48), err: r.err_code, trapno: r.int_no,
         oldmask: 0, cr2: a_, fpstate: fp_at, reserved1: [0; 8],
     };
-    if !uwrite((*p).vm, fp_at, fpu_area(r as *const Regs), fpu_len() as u64) { return false; }
+    {
+        /* XSAVE leaves a component the program has not touched since its last reset (XSTATE_BV bit
+         * clear) unwritten: the save area holds whatever was on the kernel stack there. Write the
+         * reset values instead, so rt_sigreturn (which loads all three components) restores them. */
+        let n = fpu_len();
+        let mut fp = [0u8; 832];
+        ptr::copy_nonoverlapping(fpu_area(r as *const Regs), fp.as_mut_ptr(), n);
+        if n == 832 {
+            let bv = u64::from_le_bytes([fp[512], fp[513], fp[514], fp[515], fp[516], fp[517], fp[518], fp[519]]);
+            if bv & 1 == 0 { for b in &mut fp[0..24] { *b = 0; } fp[0] = 0x7f; fp[1] = 0x03; for b in &mut fp[32..160] { *b = 0; } }   /* x87: FCW 0x037F */
+            if bv & 2 == 0 { for b in &mut fp[160..416] { *b = 0; } }                                                                  /* xmm0-15 */
+            if bv & 4 == 0 { for b in &mut fp[576..832] { *b = 0; } }                                                                  /* upper halves of ymm0-15 */
+        }
+        if !uwrite((*p).vm, fp_at, fp.as_ptr(), n as u64) { return false; }
+    }
     let mut restore = (*th).sigmask;
     if (*th).sig_suspend { restore = (*th).sig_suspend_old; (*th).sig_suspend = false; }
     let mut active = (*th).sigmask | (*a).mask;

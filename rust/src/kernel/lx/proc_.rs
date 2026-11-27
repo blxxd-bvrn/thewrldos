@@ -753,6 +753,21 @@ pub unsafe extern "C" fn lx_exception(r: *mut Regs, cr2: usize) -> CBool {
         if !v.is_null() && !(*v).fnode.is_null() {
             lxlog!("linux: pid {}:   in {} + {:x}", (*p).pid, B(node_name((*v).fnode)), (*r).eip.wrapping_sub((*v).start).wrapping_add((*v).foff));
         }
+        lxlog!("linux: pid {}:   rax {:x} rbx {:x} rcx {:x} rdx {:x} rsi {:x} rdi {:x} rbp {:x} rsp {:x}", (*p).pid,
+               (*r).eax, (*r).ebx, (*r).ecx, (*r).edx, (*r).esi, (*r).edi, (*r).ebp, (*r).esp);
+        lxlog!("linux: pid {}:   r8 {:x} r9 {:x} r10 {:x} r11 {:x} r12 {:x} r13 {:x} r14 {:x} r15 {:x}", (*p).pid,
+               (*r).r8, (*r).r9, (*r).r10, (*r).r11, (*r).r12, (*r).r13, (*r).r14, (*r).r15);
+        if (*r).int_no == 14 {
+            /* the mappings on either side of the faulting address */
+            let (mut below, mut above): (*mut Vma, *mut Vma) = (null_mut(), null_mut());
+            let mut v = (*(*p).vm).vmas;
+            while !v.is_null() { if (*v).start <= cr2 { below = v; } else if above.is_null() { above = v; } v = (*v).next; }
+            for (what, v) in [("below", below), ("above", above)] {
+                if v.is_null() { continue; }
+                let name = if (*v).fnode.is_null() { B(b"(anonymous)") } else { B(node_name((*v).fnode)) };
+                lxlog!("linux: pid {}:   mapping {} {:x}-{:x} prot {} flags {:x} shm {} {}", (*p).pid, what, (*v).start, (*v).end, (*v).prot, (*v).flags, !(*v).shm.is_null(), name);
+            }
+        }
         if uvm_check((*p).vm, (*r).eip, 12, false) {
             let c = core::slice::from_raw_parts((*r).eip as *const u8, 12);
             lxlog!("linux: pid {}:   code {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}", (*p).pid,

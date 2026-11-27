@@ -123,6 +123,16 @@ static const char *css =
  * here, GSK_RENDERER=cairo). Without this, a page that must be composited, such as one
  * playing a video, crashes the browser. This definition in the program takes the place
  * of GTK's for WebKit's question. */
+/* the hypervisor's name (CPUID leaf 0x40000000): "TCGTCGTCGTCG" for QEMU's emulated processor */
+#include <cpuid.h>
+static gboolean under_qemu_tcg(void) {
+    unsigned a, b, c, d;
+    __cpuid(1, a, b, c, d);
+    if (!(c & (1u << 31))) return FALSE;                  /* no hypervisor */
+    __cpuid(0x40000000, a, b, c, d);
+    char v[13]; memcpy(v, &b, 4); memcpy(v + 4, &c, 4); memcpy(v + 8, &d, 4); v[12] = 0;
+    return strcmp(v, "TCGTCGTCGTCG") == 0;
+}
 __attribute__((visibility("default"), noinline)) gboolean gdk_display_prepare_gl(GdkDisplay *d, GError **e) {
     /* only WebKit gets the yes: GTK asks too, and believing it has GL changes how it sets
      * itself up (its fonts come out wrong); everyone else gets GTK's own answer */
@@ -988,6 +998,10 @@ int main(int argc, char **argv) {
     /* GL for the pages WebKit composites: Mesa's llvmpipe on the CPU, straight away (no GPU to look for) */
     g_setenv("LIBGL_ALWAYS_SOFTWARE", "1", FALSE);
     g_setenv("GALLIUM_DRIVER", "llvmpipe", FALSE);
+    /* Under QEMU's emulated processor (TCG) llvmpipe's AVX2 code goes wrong: its gathers read wild
+     * addresses and every composited page crashes (Mesa notes LLVM trouble on "buggy qemu cpu setups").
+     * There it is limited to SSE4.1; real processors and hardware virtual machines keep AVX2. */
+    if (under_qemu_tcg()) g_setenv("GALLIUM_OVERRIDE_CPU_CAPS", "sse4.1", FALSE);
     /* GStreamer's ORC writes machine code to a file it maps twice (writable and executable);
      * on THE WRLD OS a shared mapping of a file is a private copy, so use ORC's C versions */
     g_setenv("ORC_CODE", "backup", FALSE);

@@ -1134,7 +1134,8 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     its scripts kept running. With Mesa every page is composited, as WebKit does by default (a web
     process sets up GL only when acceleration is on); without it a stand-in `libEGL` is used and
     pages are painted without compositing. `export WRLDWEB_ACCEL=0` (or `1`) before starting the
-    browser overrides that; the log says which mode it chose.
+    browser overrides that; the log says which mode it chose. WebGL works too. Under QEMU's emulated
+    processor (TCG) llvmpipe is kept to SSE4.1, because its AVX2 code crashes there.
   - **A page that stops responding** shows a bar above it: *Wait* keeps waiting, *Reload page*
     stops that page's web process and loads it again, so one stuck page no longer leaves the
     browser frozen. The browser writes its messages (with GStreamer's warnings, for video) to
