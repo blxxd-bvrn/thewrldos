@@ -809,9 +809,18 @@ static void activate(GtkApplication *app, gpointer d) {
     webkit_web_context_register_uri_scheme(wctx, "wrld", wrld_scheme, NULL, NULL);
     webkit_security_manager_register_uri_scheme_as_local(webkit_web_context_get_security_manager(wctx), "wrld");
     wsettings = webkit_settings_new();
-    /* pages are painted on the CPU; WebKit composites (through Mesa's llvmpipe) only the pages that
-     * need it. WRLDWEB_ACCEL=1 composites every page, to test that path. */
-    webkit_settings_set_hardware_acceleration_policy(wsettings, g_getenv("WRLDWEB_ACCEL") ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+    /* With Mesa (OpenGL ES on the CPU, llvmpipe) every page is composited, as WebKit does by default:
+     * a web process sets up its GL display only when acceleration is on, and some pages (YouTube's)
+     * switch WebKit to its compositor anyway, which then had no GL and never drew a frame. Without
+     * Mesa (the stand-in libEGL) pages are painted without compositing. WRLDWEB_ACCEL=0 or 1 overrides. */
+    {
+        const char *acc = g_getenv("WRLDWEB_ACCEL");
+        gboolean gl = g_file_test("/usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0", G_FILE_TEST_EXISTS);
+        gboolean accel = acc ? strcmp(acc, "0") != 0 : gl;
+        webkit_settings_set_hardware_acceleration_policy(wsettings, accel ? WEBKIT_HARDWARE_ACCELERATION_POLICY_ALWAYS : WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER);
+        g_message("wrldweb: %s", accel ? "pages composited with OpenGL ES on the CPU (Mesa llvmpipe)"
+                                       : gl ? "compositing off (WRLDWEB_ACCEL=0)" : "no OpenGL (Mesa not installed): pages painted without compositing");
+    }
     webkit_settings_set_enable_smooth_scrolling(wsettings, FALSE);   /* fewer repaints on the CPU */
     webkit_settings_set_enable_developer_extras(wsettings, FALSE);
     ab_init();
