@@ -263,6 +263,31 @@ static int b_ps(const char *cwd, int argc, char **argv, io_t *io) {
     }
     return 0;
 }
+/* lxthreads: every Linux thread, what it waits for and its CPU time; also saved to
+ * C:\WRLD\Temp\lxthreads.txt (for a frozen program: run it twice, a few seconds apart) */
+#ifdef __x86_64__
+extern bool lx_task_info(task_t *t, char *out, int cap);
+#else
+static bool lx_task_info(task_t *t, char *out, int cap) { (void)t; (void)out; (void)cap; return false; }   /* no Linux programs here */
+#endif
+static int b_lxthreads(const char *cwd, int argc, char **argv, io_t *io) {
+    (void)cwd; (void)argc; (void)argv;
+    int cap = 64 * 1024, n = 0;
+    char *b = kmalloc(cap);
+    if (!b) return 1;
+    n += snprintf(b + n, cap - n, "Linux threads at %u ms\r\n  TID  CPU(ms)  NAME            WHAT\r\n", timer_ticks());
+    for (task_t *t = task_list(); t && n < cap - 300; t = t->next) {
+        char info[200];
+        if (t->kind != 4 || !lx_task_info(t, info, sizeof info)) continue;
+        n += snprintf(b + n, cap - n, "%5d %8u  %s%s\r\n", t->pid, t->cpu_ms, info, t->state == TASK_READY ? "  [ready]" : "");
+    }
+    out_s(io, b);
+    vfs_mkdir_p("C:\\WRLD\\Temp");
+    vfs_write_file("C:\\WRLD\\Temp\\lxthreads.txt", b, n);
+    out_s(io, "(saved to C:\\WRLD\\Temp\\lxthreads.txt)\n");
+    kfree(b);
+    return 0;
+}
 static int b_kill(const char *cwd, int argc, char **argv, io_t *io) {
     int rc = 0;
     for (int i = 1; i < argc; i++) { if (argv[i][0] == '-') continue; int pid = atoi(argv[i]); if (!task_kill(pid)) { err_f(io, "kill: (%d) - No such process\n", pid); rc = 1; } }
@@ -474,7 +499,7 @@ static const struct { const char *name; shcmd_fn fn; } cmds[] = {
     { "uname", b_uname }, { "ver", b_ver }, { "whoami", b_whoami }, { "hostname", b_hostname },
     { "ipconfig", b_ipconfig }, { "ifconfig", b_ipconfig }, { "ping", b_ping }, { "nslookup", b_nslookup },
     { "wget", b_wget }, { "curl", b_wget }, { "sha256sum", b_sha256sum }, { "js", b_js }, { "display", b_display },
-    { "play", b_play }, { "volume", b_volume }, { "sndinfo", b_sndinfo }, { "ps", b_ps }, { "tasklist", b_ps },
+    { "play", b_play }, { "volume", b_volume }, { "sndinfo", b_sndinfo }, { "ps", b_ps }, { "tasklist", b_ps }, { "lxthreads", b_lxthreads },
     { "kill", b_kill }, { "taskkill", b_kill }, { "free", b_free }, { "mem", b_free }, { "sync", b_sync },
     { "uptime", b_uptime }, { "dmesg", b_dmesg }, { "beep", b_beep }, { "mount", b_mount }, { "hdiutil", b_hdiutil },
     { "open", b_open }, { "start", b_open },

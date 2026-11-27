@@ -610,7 +610,7 @@ static BUILTINS_A: &[Bi] = &[
 ];
 #[cfg(target_arch = "x86_64")]
 static BUILTINS_X64: &[Bi] = &[
-    c(b"lxtrace", Some("log Linux system calls (on/off)")),
+    c(b"lxtrace", Some("log Linux system calls (on/off)")), c(b"lxthreads", Some("what each Linux thread is waiting for (saved to C:\\WRLD\\Temp\\lxthreads.txt)")),
     c(b"dpkg", Some("install/remove .deb packages (-i -r -l -L -I)")), c(b"rpm", Some("install/remove .rpm packages (-i -e -qa)")),
     c(b"apt", Some("apt install ./FILE.deb, remove, list")), c(b"apt-get", None),
 ];

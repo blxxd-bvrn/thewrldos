@@ -278,6 +278,7 @@ pub struct LxThread {
     pub sys_nr: u32,                                /* number of the system call in progress */
     pub in_sys: i64,                                /* the call being run right now (-1: none), and its arguments */
     pub in_args: [u64; 3],
+    pub sys_since: u32,                             /* when that call began (timer ms), for lxthreads */
     pub sys_eintr: bool,                            /* ... and it returned -EINTR (SA_RESTART) */
     pub sig_frame: bool,                            /* a frame was just pushed on this return */
     pub sig_suspend: bool,                          /* sigsuspend: restore an older mask after the handler */

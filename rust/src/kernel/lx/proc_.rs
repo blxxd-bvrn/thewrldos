@@ -634,6 +634,38 @@ pub unsafe extern "C" fn lx_task_syscall(t: *mut Task, out: *mut c_char, cap: c_
     bprintf(o, format_args!("Linux system call {}({:x}, {:x}, {:x})", (*th).in_sys, (*th).in_args[0], (*th).in_args[1], (*th).in_args[2]));
     1
 }
+/// For "lxthreads": a Linux thread's name, process and what it is doing (the system call it
+/// waits in, with its arguments and for how long, or running its own code).
+#[no_mangle]
+pub unsafe extern "C" fn lx_task_info(t: *mut Task, out: *mut c_char, cap: c_int) -> CBool {
+    let th = lx_of(t);
+    if th.is_null() || cap <= 0 { return 0; }
+    let o = core::slice::from_raw_parts_mut(out as *mut u8, cap as usize);
+    let comm = &(*th).comm;
+    let n = comm.iter().position(|&c| c == 0).unwrap_or(16);
+    let name = core::str::from_utf8(&comm[..n]).unwrap_or("?");
+    let pid = if (*th).proc_.is_null() { 0 } else { (*(*th).proc_).pid };
+    if (*th).in_sys < 0 { bprintf(o, format_args!("{:<15} proc {:<4} running its own code", name, pid)); return 1; }
+    let nr = (*th).in_sys;
+    let sname = match nr {
+        0 => "read", 1 => "write", 7 => "poll", 9 => "mmap", 16 => "ioctl", 23 => "select", 24 => "sched_yield",
+        35 => "nanosleep", 43 => "accept", 44 => "sendto", 45 => "recvfrom", 46 => "sendmsg", 47 => "recvmsg",
+        61 => "wait4", 202 => "futex", 230 => "clock_nanosleep", 232 => "epoll_wait", 270 => "pselect6",
+        271 => "ppoll", 281 => "epoll_pwait", 288 => "accept4", 299 => "recvmmsg", 307 => "sendmmsg", 441 => "epoll_pwait2",
+        _ => "",
+    };
+    let [a, b, c] = (*th).in_args;
+    let ms = timer_ticks().wrapping_sub((*th).sys_since);
+    if nr == 202 {
+        let op = match b & 0x7f { 0 => "WAIT", 1 => "WAKE", 9 => "WAIT_BITSET", 10 => "WAKE_BITSET", 6 => "LOCK_PI", _ => "op" };
+        bprintf(o, format_args!("{:<15} proc {:<4} futex {} {:x} val {} for {} ms", name, pid, op, a, c as i64, ms));
+    } else if sname.is_empty() {
+        bprintf(o, format_args!("{:<15} proc {:<4} syscall {}({:x}, {:x}, {:x}) for {} ms", name, pid, nr, a, b, c, ms));
+    } else {
+        bprintf(o, format_args!("{:<15} proc {:<4} {}({:x}, {:x}, {:x}) for {} ms", name, pid, sname, a, b, c, ms));
+    }
+    1
+}
 /// "lxtrace on" in the Command Prompt: every system call to the log.
 #[no_mangle]
 pub static mut lx_strace: CBool = 0;
@@ -643,7 +675,7 @@ pub unsafe extern "C" fn lx_syscall_c(r: *mut Regs) {
     let th = lx_current();
     let nr = (*r).eax;
     let (a0, a1, a2) = ((*r).edi, (*r).esi, (*r).edx);
-    if !th.is_null() { (*th).in_sys = nr as i64; (*th).in_args = [a0, a1, a2]; }
+    if !th.is_null() { (*th).in_sys = nr as i64; (*th).in_args = [a0, a1, a2]; (*th).sys_since = timer_ticks(); }
     let v = super::sys::lx_syscall(r);
     if !th.is_null() { (*th).in_sys = -1; }
     if lx_strace != 0 && !th.is_null() && nr != 24 && nr != 228 {   /* not sched_yield / clock_gettime: too many */
