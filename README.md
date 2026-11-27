@@ -1472,9 +1472,15 @@ device manager's job is to say what the computer has and which driver runs it.
       `gl_FrontColor`, `gl_FragColor`, `gl_FragCoord` and the rest). Draws with a program run the
       vertex shader per vertex and the fragment shader per pixel on the processor, with GL's
       depth functions, alpha test, blend factors and equations, colour masks and texture wrap
-      modes. It is an interpreter, so a scene that shades a few million pixels a frame is slow
-      (CoronaKO, for one, draws its world at about one frame a second on a fast machine).
+      modes. Shaders run as machine code (below); a scene that shades over a million pixels a
+      frame is still slow on the processor, so 3D games run at a few frames a second at best.
       Not there yet: geometry shaders, shadow comparisons, derivatives, cube maps.
+    - **Shader machine code** (`rust/src/jit.rs`): Direct3D 10 and GLSL shaders are compiled
+      once to x86 SSE code (both editions; the 32-bit one when the processor has SSE2) instead
+      of being interpreted, 4 to 11 times faster. Arithmetic, comparisons, logic, conversions,
+      rounding, texture sampling and control flow are compiled; the rest (sines, logarithms,
+      integer division) calls the interpreter for that one instruction, so results are the same
+      bits either way. Host tests compare the two on every shader they run.
     - **Direct3D 9** (`d3d9.dll`, fixed function): `Direct3DCreate9`, devices, `Clear`,
       `Present`, transforms, viewport, material, one directional light, render and sampler
       states, flexible vertex formats (`XYZ` or pre-transformed `XYZRHW`, normal, diffuse, one

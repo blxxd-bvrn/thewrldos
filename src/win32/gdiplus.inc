@@ -230,8 +230,9 @@ static GpStatus WINAPI GdipCreateHBITMAPFromBitmap(void *img, uintptr_t *out, ui
     gpimage_t *i = IMG(img);
     if (!i || !out) return GpInvalidParameter;
     *out = 0;
-    /* a 32-bit top-down DIB section, as GDI+ makes: GetObject gives the program its pixels */
-    BIH bi = { 40, i->c->w, -i->c->h, 1, 32, 0, 0, 0, 0, 0, 0 };
+    /* a 32-bit bottom-up DIB section, as GDI+ makes: GetObject gives the program its pixels,
+     * last row first (programs hand them to glTexImage2D as they are) */
+    BIH bi = { 40, i->c->w, i->c->h, 1, 32, 0, 0, 0, 0, 0, 0 };
     void *bits = NULL;
     gdiobj_t *o = OBJ(CreateDIBSection(0, &bi, 0, &bits, 0, 0));
     if (!o || !bits) return GpOutOfMemory;
@@ -244,7 +245,7 @@ static GpStatus WINAPI GdipCreateHBITMAPFromBitmap(void *img, uintptr_t *out, ui
             uint32_t s = i->c->px[y * i->c->stride + x], a = s >> 24;
             uint32_t r = ((s >> 16) & 255) * a / 255, g = ((s >> 8) & 255) * a / 255, b = (s & 255) * a / 255;
             if (fill && a != 255) { r += ((bg >> 16) & 255) * (255 - a) / 255; g += ((bg >> 8) & 255) * (255 - a) / 255; b += (bg & 255) * (255 - a) / 255; a = 255; }
-            d[(size_t)y * i->c->w + x] = a << 24 | r << 16 | g << 8 | b;
+            d[(size_t)(i->c->h - 1 - y) * i->c->w + x] = a << 24 | r << 16 | g << 8 | b;
         }
     dib_in(o);
     *out = (uintptr_t)o;

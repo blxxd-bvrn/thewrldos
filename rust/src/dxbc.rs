@@ -309,6 +309,7 @@ fn word(d: &[u8], at: usize) -> u32 {
 #[no_mangle] pub unsafe extern "C" fn dxbc_writes_depth(s: *const Shader) -> CBool { (*s).writes_depth }
 #[no_mangle] pub unsafe extern "C" fn dxbc_free(s: *mut Shader) {
     if s.is_null() { return; }
+    crate::jit::forget(s);
     kfree((*s).ins as *mut c_void); kfree((*s).pool as *mut c_void); kfree((*s).icb as *mut c_void); kfree(s as *mut c_void);
 }
 
@@ -980,13 +981,15 @@ pub unsafe extern "C" fn dxbc_exec_init(r: *mut Exec, s: *const Shader, env: *co
     let need = sh.ntemps.max(1) as usize + sh.xt_total.max(0) as usize;
     let rb = core::mem::size_of::<Vec4>() * need;
     let bindings = core::mem::size_of::<*const u32>() * sh.npool.max(0) as usize;
-    let storage = kmalloc(rb + bindings);
+    let storage = kmalloc(rb + bindings + 16);
     if storage.is_null() { return 0; }
     let e = &mut *r;
     e.storage = storage; e.shader = s; e.env = env; e.inp = inp; e.out = out;
     e.r = storage as *mut Vec4; e.x = e.r.add(sh.ntemps.max(1) as usize);
     e.bound = (storage as *mut u8).add(rb) as *mut *const u32;
     ptr::write_bytes(e.r as *mut u8, 0, rb);
+    /* machine code for this shader, if it compiles (jit.rs): kept after the bindings */
+    *((storage as *mut u8).add(rb + bindings) as *mut usize) = match crate::jit::get(s) { Some(f) => f as usize, None => 0 };
     let envr = &*env;
     for (i, o) in sh.pool().iter().enumerate() {
         *e.bound.add(i) = if o.direct != 0 {
@@ -1013,8 +1016,211 @@ pub unsafe extern "C" fn dxbc_exec_fini(r: *mut Exec) {
     if !r.is_null() { kfree((*r).storage); ptr::write_bytes(r, 0, 1); }
 }
 
+/// One instruction of the interpreter; the next pc. (The JIT calls it, through
+/// `dxbc_exec_step`, for the instructions it does not compile itself.)
+#[inline(always)]
+unsafe fn exec_ins(run: &Run, exec: *mut Exec, ins: &Ins, pc: i32, nins: i32, env: &Env) -> i32 {
+    let mut v = Vec4::default();
+    let mut sat = ins.sat != 0;
+    let mut next_pc = pc + 1;
+    let mask = ins.mask as u32;
+    let o = &ins.o;
+    macro_rules! each { (|$i:ident| $body:expr) => {
+        if mask == 1 { let $i = 0usize; $body; }
+        else if mask == 15 { for $i in 0..4usize { $body; } }
+        else { for $i in 0..4usize { if mask & (1 << $i) != 0 { $body; } } }
+    } }
+    macro_rules! out { () => { run.store(o[0], v, sat) } }
+    macro_rules! cond { ($k:expr) => { (run.src_i(o[$k]).u[0] != 0) as u8 } }
+    macro_rules! fbin { (|$a:ident, $b:ident| $e:expr) => {{ let $a = run.src_f(o[1]); let $b = run.src_f(o[2]); each!(|i| v.setf(i, { let ($a, $b) = ($a.f(i), $b.f(i)); $e })); out!(); }} }
+    macro_rules! fun { (|$a:ident| $e:expr) => {{ let $a = run.src_f(o[1]); each!(|i| v.setf(i, { let $a = $a.f(i); $e })); out!(); }} }
+    macro_rules! fcmp { (|$a:ident, $b:ident| $e:expr) => {{ let $a = run.src_f(o[1]); let $b = run.src_f(o[2]); each!(|i| v.u[i] = if { let ($a, $b) = ($a.f(i), $b.f(i)); $e } { !0 } else { 0 }); sat = false; out!(); }} }
+    macro_rules! ibin { (|$a:ident, $b:ident| $e:expr) => {{ let $a = run.src_i(o[1]); let $b = run.src_i(o[2]); each!(|i| v.u[i] = { let ($a, $b) = ($a.u[i], $b.u[i]); $e }); out!(); }} }
+    macro_rules! iun { (|$a:ident| $e:expr) => {{ let $a = run.src_i(o[1]); each!(|i| v.u[i] = { let $a = $a.u[i]; $e }); out!(); }} }
+    match ins.op {
+        OP_MOV => { v = run.src_f(o[1]); out!(); }
+        OP_MOVC => { let c = run.src_i(o[1]); let _a = run.src_f(o[1]); let b = run.src_f(o[2]); let cc = run.src_f(o[3]); each!(|i| v.u[i] = if c.u[i] != 0 { b.u[i] } else { cc.u[i] }); out!(); }
+        OP_ADD => fbin!(|a, b| fadd(a, b)),
+        OP_MUL => fbin!(|a, b| fmul(a, b)),
+        OP_DIV => fbin!(|a, b| fdiv(a, b)),
+        OP_MAD => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let c = run.src_f(o[3]); each!(|i| v.setf(i, fadd(fmul(a.f(i), b.f(i)), c.f(i)))); out!(); }
+        OP_MIN => fbin!(|a, b| if b != b || a < b { a } else { b }),
+        OP_MAX => fbin!(|a, b| if b != b || a > b { a } else { b }),
+        OP_DP2 => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let d = fadd(fmul(a.f(0), b.f(0)), fmul(a.f(1), b.f(1))); each!(|i| v.setf(i, d)); out!(); }
+        OP_DP3 => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let d = fadd(fadd(fmul(a.f(0), b.f(0)), fmul(a.f(1), b.f(1))), fmul(a.f(2), b.f(2))); each!(|i| v.setf(i, d)); out!(); }
+        OP_DP4 => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let d = fadd(fadd(fadd(fmul(a.f(0), b.f(0)), fmul(a.f(1), b.f(1))), fmul(a.f(2), b.f(2))), fmul(a.f(3), b.f(3))); each!(|i| v.setf(i, d)); out!(); }
+        OP_RSQ => fun!(|a| fdiv(1.0, libm(0, a))),
+        OP_SQRT => fun!(|a| libm(0, a)),
+        OP_EXP => fun!(|a| libm(3, a)),
+        OP_LOG => fun!(|a| libm(4, a)),
+        OP_FRC => fun!(|a| fr(a)),
+        OP_ROUND_NE => fun!(|a| round32(a, 0)),
+        OP_ROUND_NI => fun!(|a| round32(a, 1)),
+        OP_ROUND_PI => fun!(|a| round32(a, 2)),
+        OP_ROUND_Z => fun!(|a| round32(a, 3)),
+        OP_SINCOS => {
+            let a = run.src_f(o[2]);
+            let d0 = run.op(o[0] as usize);
+            if d0.ty != T_NULL {
+                for i in 0..4 { if d0.mask & (1 << i) != 0 { v.setf(i, libm(1, a.f(i))); } }
+                run.store(o[0], v, sat);
+            }
+            let d1 = run.op(o[1] as usize);
+            if d1.ty != T_NULL {
+                for i in 0..4 { if d1.mask & (1 << i) != 0 { v.setf(i, libm(2, a.f(i))); } }
+                run.store(o[1], v, sat);
+            }
+        }
+        OP_DERIV_RTX | OP_DERIV_RTY => { out!(); }
+        OP_EQ => fcmp!(|a, b| a == b),
+        OP_NE => fcmp!(|a, b| a != b),
+        OP_LT => fcmp!(|a, b| a < b),
+        OP_GE => fcmp!(|a, b| a >= b),
+        OP_IEQ => ibin!(|a, b| if a as i32 == b as i32 { !0 } else { 0 }),
+        OP_INE => ibin!(|a, b| if a as i32 != b as i32 { !0 } else { 0 }),
+        OP_ILT => ibin!(|a, b| if (a as i32) < b as i32 { !0 } else { 0 }),
+        OP_IGE => ibin!(|a, b| if a as i32 >= b as i32 { !0 } else { 0 }),
+        OP_ULT => ibin!(|a, b| if a < b { !0 } else { 0 }),
+        OP_UGE => ibin!(|a, b| if a >= b { !0 } else { 0 }),
+        OP_AND => ibin!(|a, b| a & b),
+        OP_OR => ibin!(|a, b| a | b),
+        OP_XOR => ibin!(|a, b| a ^ b),
+        OP_NOT => iun!(|a| !a),
+        OP_IADD => ibin!(|a, b| a.wrapping_add(b)),
+        OP_INEG => iun!(|a| 0u32.wrapping_sub(a)),
+        OP_IMAD | OP_UMAD => { let a = run.src_i(o[1]); let b = run.src_i(o[2]); let c = run.src_i(o[3]); each!(|i| v.u[i] = a.u[i].wrapping_mul(b.u[i]).wrapping_add(c.u[i])); out!(); }
+        OP_IMAX => ibin!(|a, b| if a as i32 > b as i32 { a } else { b }),
+        OP_IMIN => ibin!(|a, b| if (a as i32) < b as i32 { a } else { b }),
+        OP_UMAX => ibin!(|a, b| if a > b { a } else { b }),
+        OP_UMIN => ibin!(|a, b| if a < b { a } else { b }),
+        OP_ISHL => ibin!(|a, b| a << (b & 31)),
+        OP_ISHR => ibin!(|a, b| ((a as i32) >> (b & 31)) as u32),
+        OP_USHR => ibin!(|a, b| a >> (b & 31)),
+        OP_IMUL | OP_UMUL => {
+            let a = run.src_i(o[2]); let b = run.src_i(o[3]);
+            let (mut hi, mut lo) = (Vec4::default(), Vec4::default());
+            each!(|i| if ins.op == OP_IMUL { let p = a.i(i) as i64 * b.i(i) as i64; hi.u[i] = ((p as u64) >> 32) as u32; lo.u[i] = p as u32; }
+                      else { let p = a.u[i] as u64 * b.u[i] as u64; hi.u[i] = (p >> 32) as u32; lo.u[i] = p as u32; });
+            run.store(o[0], hi, false); run.store(o[1], lo, false);
+        }
+        OP_UDIV => {
+            let a = run.src_i(o[2]); let b = run.src_i(o[3]);
+            let (mut q, mut m) = (Vec4::default(), Vec4::default());
+            each!(|i| { q.u[i] = if b.u[i] != 0 { a.u[i] / b.u[i] } else { !0 }; m.u[i] = if b.u[i] != 0 { a.u[i] % b.u[i] } else { !0 }; });
+            run.store(o[0], q, false); run.store(o[1], m, false);
+        }
+        OP_ITOF => { let a = run.src_i(o[1]); each!(|i| v.setf(i, a.i(i) as f32)); out!(); }
+        OP_UTOF => { let a = run.src_i(o[1]); each!(|i| v.setf(i, a.u[i] as f32)); out!(); }
+        OP_FTOI => { let a = run.src_f(o[1]); each!(|i| { let f = a.f(i); v.u[i] = (if f != f { 0 } else if f >= 2147483648.0 { 0x7FFF_FFFF } else if f <= -2147483648.0 { i32::MIN } else { f as i32 }) as u32; }); out!(); }
+        OP_FTOU => { let a = run.src_f(o[1]); each!(|i| { let f = a.f(i); v.u[i] = if !(f > 0.0) { 0 } else if f >= 4294967296.0 { 0xFFFF_FFFF } else { f as u32 }; }); out!(); }
+        OP_RCP => fun!(|a| fdiv(1.0, a)),
+        OP_F32TOF16 => { let a = run.src_f(o[1]); each!(|i| v.u[i] = half_bits(a.u[i])); sat = false; out!(); }
+        OP_F16TOF32 => iun!(|a| float_bits(a)),
+        OP_COUNTBITS => iun!(|a| a.count_ones()),
+        OP_BFREV => iun!(|a| a.reverse_bits()),
+        OP_FIRSTBIT_HI => iun!(|a| if a != 0 { a.leading_zeros() } else { !0 }),
+        OP_FIRSTBIT_LO => iun!(|a| if a != 0 { a.trailing_zeros() } else { !0 }),
+        OP_FIRSTBIT_SHI => iun!(|a| { let x = if (a as i32) < 0 { !a } else { a }; if x != 0 { x.leading_zeros() } else { !0 } }),
+        OP_UADDC | OP_USUBB => {
+            let a = run.src_i(o[2]); let b = run.src_i(o[3]); let mut flags = Vec4::default();
+            each!(|i| if ins.op == OP_UADDC { v.u[i] = a.u[i].wrapping_add(b.u[i]); flags.u[i] = (v.u[i] < a.u[i]) as u32; }
+                      else { v.u[i] = a.u[i].wrapping_sub(b.u[i]); flags.u[i] = (a.u[i] < b.u[i]) as u32; });
+            run.store(o[0], v, false); run.store(o[1], flags, false);
+        }
+        OP_UBFE | OP_IBFE => {
+            let a = run.src_i(o[1]); let b = run.src_i(o[2]); let c = run.src_i(o[3]);
+            each!(|i| { let offset = b.u[i] & 31; let width = core::cmp::min(a.u[i] & 31, 32 - offset);
+                let mut bits = if width != 0 { (c.u[i] >> offset) & ((1u32 << width).wrapping_sub(1)) } else { 0 };
+                if ins.op == OP_IBFE && width != 0 { let sign = 1u32 << (width - 1); bits = (bits ^ sign).wrapping_sub(sign); }
+                v.u[i] = bits; });
+            out!();
+        }
+        OP_BFI => {
+            let a = run.src_i(o[1]); let b = run.src_i(o[2]); let c = run.src_i(o[3]); let d = run.src_i(o[4]);
+            each!(|i| { let offset = b.u[i] & 31; let width = core::cmp::min(a.u[i] & 31, 32 - offset);
+                let m = if width != 0 { ((1u32 << width).wrapping_sub(1)) << offset } else { 0 };
+                v.u[i] = ((c.u[i] << offset) & m) | (d.u[i] & !m); });
+            out!();
+        }
+        OP_SWAPC => {
+            let a = run.src_i(o[2]); let b = run.src_i(o[3]); let c = run.src_i(o[4]); let mut other = Vec4::default();
+            each!(|i| { v.u[i] = if a.u[i] != 0 { c.u[i] } else { b.u[i] }; other.u[i] = if a.u[i] != 0 { b.u[i] } else { c.u[i] }; });
+            run.store(o[0], v, false); run.store(o[1], other, false);
+        }
+        OP_SAMPLE | OP_SAMPLE_L | OP_SAMPLE_B => {
+            let a = run.src_f(o[1]);
+            let (t, sm) = (run.op(o[2] as usize), run.op(o[3] as usize));
+            let lod = if ins.op == OP_SAMPLE_L { run.src_f(o[4]).f(0) } else { 0.0 };
+            let mut px = [0f32; 4];
+            let uv = [a.f(0), a.f(1), a.f(2), a.f(3)];
+            if env.sample.is_some() { dxbc_sample(env, t.idx[0], sm.idx[0], uv.as_ptr(), &lod, px.as_mut_ptr()); }
+            each!(|i| v.setf(i, px[t.swz[i] as usize & 3]));
+            out!();
+        }
+        OP_LD => {
+            let a = run.src_i(o[1]);
+            let t = run.op(o[2] as usize);
+            let mut px = [0f32; 4];
+            let xy = [a.i(0), a.i(1), a.i(2), a.i(3)];
+            if let Some(f) = env.load { f(env.ctx, t.idx[0], xy.as_ptr(), px.as_mut_ptr()); }
+            each!(|i| v.setf(i, px[t.swz[i] as usize & 3]));
+            out!();
+        }
+        OP_RESINFO => {
+            let t = run.op(o[2] as usize);
+            let mut dim = [1u32; 4];
+            if let Some(f) = env.size { f(env.ctx, t.idx[0], dim.as_mut_ptr()); }
+            let mut raw = Vec4::default();
+            for i in 0..4 {
+                if ins.ret_type == 2 { raw.u[i] = dim[i]; }
+                else if ins.ret_type == 1 { raw.setf(i, if dim[i] != 0 { 1.0f32 / dim[i] as f32 } else { 0.0 }); }
+                else { raw.setf(i, dim[i] as f32); }
+            }
+            each!(|i| v.u[i] = raw.u[t.swz[i] as usize & 3]);
+            out!();
+        }
+        OP_IF => { if cond!(0) != ins.nonzero { next_pc = ins.jump; } }
+        OP_ELSE => { next_pc = ins.jump; }            /* reached from the "then" part: skip to endif */
+        OP_ENDIF | OP_NOP | OP_LOOP => {}
+        OP_ENDLOOP | OP_BREAK | OP_CONTINUE => { next_pc = ins.jump; }
+        OP_BREAKC | OP_CONTINUEC => { if cond!(0) == ins.nonzero { next_pc = ins.jump; } }
+        OP_DISCARD => { if cond!(0) == ins.nonzero { (*exec).discard = 1; next_pc = nins; } }
+        OP_RET => { next_pc = nins; }
+        OP_RETC => { if cond!(0) == ins.nonzero { next_pc = nins; } }
+        OP_BLOCK => { (*exec).block = ins.jump; }
+        OP_BRANCH => { (*exec).previous_block = (*exec).block; next_pc = if ins.nops == 0 || cond!(0) != 0 { ins.jump } else { ins.alt }; }
+        OP_PHI => {
+            let pb = (*exec).previous_block;
+            v = if pb == ins.jump { run.src_i(o[1]) } else if pb == ins.alt { run.src_i(o[2]) } else { ZERO4 };
+            out!();
+        }
+        _ => {}
+    }
+    next_pc
+}
+/// Run the instruction at pc on an initialised context; the next pc, or -1 after a discard.
+#[no_mangle]
+pub unsafe extern "C" fn dxbc_exec_step(exec: *mut Exec, pc: c_int) -> c_int {
+    let s = &*(*exec).shader; let env = &*(*exec).env;
+    let run = Run { s, pool: s.pool(), e: exec, env };
+    if pc < 0 || pc >= s.nins { return -1; }
+    let n = exec_ins(&run, exec, s.ins().get_unchecked(pc as usize), pc, s.nins, env);
+    if (*exec).discard != 0 { -1 } else { n }
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn dxbc_exec_run(exec: *mut Exec) -> CBool {
+    let s = &*(*exec).shader;
+    {
+        let rb = core::mem::size_of::<Vec4>() * (s.ntemps.max(1) as usize + s.xt_total.max(0) as usize);
+        let bindings = core::mem::size_of::<*const u32>() * s.npool.max(0) as usize;
+        let f = *(((*exec).storage as *const u8).add(rb + bindings) as *const usize);
+        if f != 0 { return (core::mem::transmute::<usize, crate::jit::JitFn>(f))(exec) as CBool; }
+    }
+    interp_run(exec)
+}
+/// The interpreter itself (what runs when there is no machine code).
+pub(crate) unsafe fn interp_run(exec: *mut Exec) -> CBool {
     let s = &*(*exec).shader;
     let env = &*(*exec).env;
     let run = Run { s, pool: s.pool(), e: exec, env };
@@ -1033,183 +1239,7 @@ pub unsafe extern "C" fn dxbc_exec_run(exec: *mut Exec) -> CBool {
         let b = budget; budget -= 1;
         if b <= 0 { break; }
         let ins = code.get_unchecked(pc as usize);
-        let mut v = Vec4::default();
-        let mut sat = ins.sat != 0;
-        let mut next_pc = pc + 1;
-        let mask = ins.mask as u32;
-        let o = &ins.o;
-        macro_rules! each { (|$i:ident| $body:expr) => {
-            if mask == 1 { let $i = 0usize; $body; }
-            else if mask == 15 { for $i in 0..4usize { $body; } }
-            else { for $i in 0..4usize { if mask & (1 << $i) != 0 { $body; } } }
-        } }
-        macro_rules! out { () => { run.store(o[0], v, sat) } }
-        macro_rules! cond { ($k:expr) => { (run.src_i(o[$k]).u[0] != 0) as u8 } }
-        macro_rules! fbin { (|$a:ident, $b:ident| $e:expr) => {{ let $a = run.src_f(o[1]); let $b = run.src_f(o[2]); each!(|i| v.setf(i, { let ($a, $b) = ($a.f(i), $b.f(i)); $e })); out!(); }} }
-        macro_rules! fun { (|$a:ident| $e:expr) => {{ let $a = run.src_f(o[1]); each!(|i| v.setf(i, { let $a = $a.f(i); $e })); out!(); }} }
-        macro_rules! fcmp { (|$a:ident, $b:ident| $e:expr) => {{ let $a = run.src_f(o[1]); let $b = run.src_f(o[2]); each!(|i| v.u[i] = if { let ($a, $b) = ($a.f(i), $b.f(i)); $e } { !0 } else { 0 }); sat = false; out!(); }} }
-        macro_rules! ibin { (|$a:ident, $b:ident| $e:expr) => {{ let $a = run.src_i(o[1]); let $b = run.src_i(o[2]); each!(|i| v.u[i] = { let ($a, $b) = ($a.u[i], $b.u[i]); $e }); out!(); }} }
-        macro_rules! iun { (|$a:ident| $e:expr) => {{ let $a = run.src_i(o[1]); each!(|i| v.u[i] = { let $a = $a.u[i]; $e }); out!(); }} }
-        match ins.op {
-            OP_MOV => { v = run.src_f(o[1]); out!(); }
-            OP_MOVC => { let c = run.src_i(o[1]); let _a = run.src_f(o[1]); let b = run.src_f(o[2]); let cc = run.src_f(o[3]); each!(|i| v.u[i] = if c.u[i] != 0 { b.u[i] } else { cc.u[i] }); out!(); }
-            OP_ADD => fbin!(|a, b| fadd(a, b)),
-            OP_MUL => fbin!(|a, b| fmul(a, b)),
-            OP_DIV => fbin!(|a, b| fdiv(a, b)),
-            OP_MAD => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let c = run.src_f(o[3]); each!(|i| v.setf(i, fadd(fmul(a.f(i), b.f(i)), c.f(i)))); out!(); }
-            OP_MIN => fbin!(|a, b| if b != b || a < b { a } else { b }),
-            OP_MAX => fbin!(|a, b| if b != b || a > b { a } else { b }),
-            OP_DP2 => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let d = fadd(fmul(a.f(0), b.f(0)), fmul(a.f(1), b.f(1))); each!(|i| v.setf(i, d)); out!(); }
-            OP_DP3 => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let d = fadd(fadd(fmul(a.f(0), b.f(0)), fmul(a.f(1), b.f(1))), fmul(a.f(2), b.f(2))); each!(|i| v.setf(i, d)); out!(); }
-            OP_DP4 => { let a = run.src_f(o[1]); let b = run.src_f(o[2]); let d = fadd(fadd(fadd(fmul(a.f(0), b.f(0)), fmul(a.f(1), b.f(1))), fmul(a.f(2), b.f(2))), fmul(a.f(3), b.f(3))); each!(|i| v.setf(i, d)); out!(); }
-            OP_RSQ => fun!(|a| fdiv(1.0, libm(0, a))),
-            OP_SQRT => fun!(|a| libm(0, a)),
-            OP_EXP => fun!(|a| libm(3, a)),
-            OP_LOG => fun!(|a| libm(4, a)),
-            OP_FRC => fun!(|a| fr(a)),
-            OP_ROUND_NE => fun!(|a| round32(a, 0)),
-            OP_ROUND_NI => fun!(|a| round32(a, 1)),
-            OP_ROUND_PI => fun!(|a| round32(a, 2)),
-            OP_ROUND_Z => fun!(|a| round32(a, 3)),
-            OP_SINCOS => {
-                let a = run.src_f(o[2]);
-                let d0 = run.op(o[0] as usize);
-                if d0.ty != T_NULL {
-                    for i in 0..4 { if d0.mask & (1 << i) != 0 { v.setf(i, libm(1, a.f(i))); } }
-                    run.store(o[0], v, sat);
-                }
-                let d1 = run.op(o[1] as usize);
-                if d1.ty != T_NULL {
-                    for i in 0..4 { if d1.mask & (1 << i) != 0 { v.setf(i, libm(2, a.f(i))); } }
-                    run.store(o[1], v, sat);
-                }
-            }
-            OP_DERIV_RTX | OP_DERIV_RTY => { out!(); }
-            OP_EQ => fcmp!(|a, b| a == b),
-            OP_NE => fcmp!(|a, b| a != b),
-            OP_LT => fcmp!(|a, b| a < b),
-            OP_GE => fcmp!(|a, b| a >= b),
-            OP_IEQ => ibin!(|a, b| if a as i32 == b as i32 { !0 } else { 0 }),
-            OP_INE => ibin!(|a, b| if a as i32 != b as i32 { !0 } else { 0 }),
-            OP_ILT => ibin!(|a, b| if (a as i32) < b as i32 { !0 } else { 0 }),
-            OP_IGE => ibin!(|a, b| if a as i32 >= b as i32 { !0 } else { 0 }),
-            OP_ULT => ibin!(|a, b| if a < b { !0 } else { 0 }),
-            OP_UGE => ibin!(|a, b| if a >= b { !0 } else { 0 }),
-            OP_AND => ibin!(|a, b| a & b),
-            OP_OR => ibin!(|a, b| a | b),
-            OP_XOR => ibin!(|a, b| a ^ b),
-            OP_NOT => iun!(|a| !a),
-            OP_IADD => ibin!(|a, b| a.wrapping_add(b)),
-            OP_INEG => iun!(|a| 0u32.wrapping_sub(a)),
-            OP_IMAD | OP_UMAD => { let a = run.src_i(o[1]); let b = run.src_i(o[2]); let c = run.src_i(o[3]); each!(|i| v.u[i] = a.u[i].wrapping_mul(b.u[i]).wrapping_add(c.u[i])); out!(); }
-            OP_IMAX => ibin!(|a, b| if a as i32 > b as i32 { a } else { b }),
-            OP_IMIN => ibin!(|a, b| if (a as i32) < b as i32 { a } else { b }),
-            OP_UMAX => ibin!(|a, b| if a > b { a } else { b }),
-            OP_UMIN => ibin!(|a, b| if a < b { a } else { b }),
-            OP_ISHL => ibin!(|a, b| a << (b & 31)),
-            OP_ISHR => ibin!(|a, b| ((a as i32) >> (b & 31)) as u32),
-            OP_USHR => ibin!(|a, b| a >> (b & 31)),
-            OP_IMUL | OP_UMUL => {
-                let a = run.src_i(o[2]); let b = run.src_i(o[3]);
-                let (mut hi, mut lo) = (Vec4::default(), Vec4::default());
-                each!(|i| if ins.op == OP_IMUL { let p = a.i(i) as i64 * b.i(i) as i64; hi.u[i] = ((p as u64) >> 32) as u32; lo.u[i] = p as u32; }
-                          else { let p = a.u[i] as u64 * b.u[i] as u64; hi.u[i] = (p >> 32) as u32; lo.u[i] = p as u32; });
-                run.store(o[0], hi, false); run.store(o[1], lo, false);
-            }
-            OP_UDIV => {
-                let a = run.src_i(o[2]); let b = run.src_i(o[3]);
-                let (mut q, mut m) = (Vec4::default(), Vec4::default());
-                each!(|i| { q.u[i] = if b.u[i] != 0 { a.u[i] / b.u[i] } else { !0 }; m.u[i] = if b.u[i] != 0 { a.u[i] % b.u[i] } else { !0 }; });
-                run.store(o[0], q, false); run.store(o[1], m, false);
-            }
-            OP_ITOF => { let a = run.src_i(o[1]); each!(|i| v.setf(i, a.i(i) as f32)); out!(); }
-            OP_UTOF => { let a = run.src_i(o[1]); each!(|i| v.setf(i, a.u[i] as f32)); out!(); }
-            OP_FTOI => { let a = run.src_f(o[1]); each!(|i| { let f = a.f(i); v.u[i] = (if f != f { 0 } else if f >= 2147483648.0 { 0x7FFF_FFFF } else if f <= -2147483648.0 { i32::MIN } else { f as i32 }) as u32; }); out!(); }
-            OP_FTOU => { let a = run.src_f(o[1]); each!(|i| { let f = a.f(i); v.u[i] = if !(f > 0.0) { 0 } else if f >= 4294967296.0 { 0xFFFF_FFFF } else { f as u32 }; }); out!(); }
-            OP_RCP => fun!(|a| fdiv(1.0, a)),
-            OP_F32TOF16 => { let a = run.src_f(o[1]); each!(|i| v.u[i] = half_bits(a.u[i])); sat = false; out!(); }
-            OP_F16TOF32 => iun!(|a| float_bits(a)),
-            OP_COUNTBITS => iun!(|a| a.count_ones()),
-            OP_BFREV => iun!(|a| a.reverse_bits()),
-            OP_FIRSTBIT_HI => iun!(|a| if a != 0 { a.leading_zeros() } else { !0 }),
-            OP_FIRSTBIT_LO => iun!(|a| if a != 0 { a.trailing_zeros() } else { !0 }),
-            OP_FIRSTBIT_SHI => iun!(|a| { let x = if (a as i32) < 0 { !a } else { a }; if x != 0 { x.leading_zeros() } else { !0 } }),
-            OP_UADDC | OP_USUBB => {
-                let a = run.src_i(o[2]); let b = run.src_i(o[3]); let mut flags = Vec4::default();
-                each!(|i| if ins.op == OP_UADDC { v.u[i] = a.u[i].wrapping_add(b.u[i]); flags.u[i] = (v.u[i] < a.u[i]) as u32; }
-                          else { v.u[i] = a.u[i].wrapping_sub(b.u[i]); flags.u[i] = (a.u[i] < b.u[i]) as u32; });
-                run.store(o[0], v, false); run.store(o[1], flags, false);
-            }
-            OP_UBFE | OP_IBFE => {
-                let a = run.src_i(o[1]); let b = run.src_i(o[2]); let c = run.src_i(o[3]);
-                each!(|i| { let offset = b.u[i] & 31; let width = core::cmp::min(a.u[i] & 31, 32 - offset);
-                    let mut bits = if width != 0 { (c.u[i] >> offset) & ((1u32 << width).wrapping_sub(1)) } else { 0 };
-                    if ins.op == OP_IBFE && width != 0 { let sign = 1u32 << (width - 1); bits = (bits ^ sign).wrapping_sub(sign); }
-                    v.u[i] = bits; });
-                out!();
-            }
-            OP_BFI => {
-                let a = run.src_i(o[1]); let b = run.src_i(o[2]); let c = run.src_i(o[3]); let d = run.src_i(o[4]);
-                each!(|i| { let offset = b.u[i] & 31; let width = core::cmp::min(a.u[i] & 31, 32 - offset);
-                    let m = if width != 0 { ((1u32 << width).wrapping_sub(1)) << offset } else { 0 };
-                    v.u[i] = ((c.u[i] << offset) & m) | (d.u[i] & !m); });
-                out!();
-            }
-            OP_SWAPC => {
-                let a = run.src_i(o[2]); let b = run.src_i(o[3]); let c = run.src_i(o[4]); let mut other = Vec4::default();
-                each!(|i| { v.u[i] = if a.u[i] != 0 { c.u[i] } else { b.u[i] }; other.u[i] = if a.u[i] != 0 { b.u[i] } else { c.u[i] }; });
-                run.store(o[0], v, false); run.store(o[1], other, false);
-            }
-            OP_SAMPLE | OP_SAMPLE_L | OP_SAMPLE_B => {
-                let a = run.src_f(o[1]);
-                let (t, sm) = (run.op(o[2] as usize), run.op(o[3] as usize));
-                let lod = if ins.op == OP_SAMPLE_L { run.src_f(o[4]).f(0) } else { 0.0 };
-                let mut px = [0f32; 4];
-                let uv = [a.f(0), a.f(1), a.f(2), a.f(3)];
-                if env.sample.is_some() { dxbc_sample(env, t.idx[0], sm.idx[0], uv.as_ptr(), &lod, px.as_mut_ptr()); }
-                each!(|i| v.setf(i, px[t.swz[i] as usize & 3]));
-                out!();
-            }
-            OP_LD => {
-                let a = run.src_i(o[1]);
-                let t = run.op(o[2] as usize);
-                let mut px = [0f32; 4];
-                let xy = [a.i(0), a.i(1), a.i(2), a.i(3)];
-                if let Some(f) = env.load { f(env.ctx, t.idx[0], xy.as_ptr(), px.as_mut_ptr()); }
-                each!(|i| v.setf(i, px[t.swz[i] as usize & 3]));
-                out!();
-            }
-            OP_RESINFO => {
-                let t = run.op(o[2] as usize);
-                let mut dim = [1u32; 4];
-                if let Some(f) = env.size { f(env.ctx, t.idx[0], dim.as_mut_ptr()); }
-                let mut raw = Vec4::default();
-                for i in 0..4 {
-                    if ins.ret_type == 2 { raw.u[i] = dim[i]; }
-                    else if ins.ret_type == 1 { raw.setf(i, if dim[i] != 0 { 1.0f32 / dim[i] as f32 } else { 0.0 }); }
-                    else { raw.setf(i, dim[i] as f32); }
-                }
-                each!(|i| v.u[i] = raw.u[t.swz[i] as usize & 3]);
-                out!();
-            }
-            OP_IF => { if cond!(0) != ins.nonzero { next_pc = ins.jump; } }
-            OP_ELSE => { next_pc = ins.jump; }            /* reached from the "then" part: skip to endif */
-            OP_ENDIF | OP_NOP | OP_LOOP => {}
-            OP_ENDLOOP | OP_BREAK | OP_CONTINUE => { next_pc = ins.jump; }
-            OP_BREAKC | OP_CONTINUEC => { if cond!(0) == ins.nonzero { next_pc = ins.jump; } }
-            OP_DISCARD => { if cond!(0) == ins.nonzero { (*exec).discard = 1; next_pc = nins; } }
-            OP_RET => { next_pc = nins; }
-            OP_RETC => { if cond!(0) == ins.nonzero { next_pc = nins; } }
-            OP_BLOCK => { (*exec).block = ins.jump; }
-            OP_BRANCH => { (*exec).previous_block = (*exec).block; next_pc = if ins.nops == 0 || cond!(0) != 0 { ins.jump } else { ins.alt }; }
-            OP_PHI => {
-                let pb = (*exec).previous_block;
-                v = if pb == ins.jump { run.src_i(o[1]) } else if pb == ins.alt { run.src_i(o[2]) } else { ZERO4 };
-                out!();
-            }
-            _ => {}
-        }
-        pc = next_pc;
+        pc = exec_ins(&run, exec, ins, pc, nins, env);
     }
     ((*exec).discard == 0 && budget >= 0) as CBool
 }

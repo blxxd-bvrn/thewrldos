@@ -252,7 +252,7 @@ static uint32_t to_argb(const float *c) {
     return ((uint32_t)a << 24) | (r << 16) | (gg << 8) | b;
 }
 static void WINAPI glClear(GLbitfield m) {
-    G; g->tex_bracket = false;
+    G;
     tgt_t t; if (!target(g, &t)) return;
     rect_t r = scissor_rect(g, &t);
     if (r.w <= 0 || r.h <= 0) return;
@@ -278,7 +278,7 @@ static void WINAPI glLightfv(GLenum light, GLenum p, const GLfloat *v) {
 static void WINAPI glLightf(GLenum l, GLenum p, GLfloat v) { G; ff_light(g, l, p, &v); }
 static void WINAPI glLightModelfv(GLenum p, const GLfloat *v) { G; ff_light_model(g, p, v); if (p == 0x0B53) g->model_amb = (v[0] + v[1] + v[2]) / 3; }
 static void WINAPI glLightModeli(GLenum p, GLint v) { (void)p; (void)v; }
-static void WINAPI glMaterialfv(GLenum face, GLenum p, const GLfloat *v) { G; ff_material(g, face, p, v); if (p == 0x1201 || p == 0x1602) memcpy(g->mat_dif, v, 16); }
+static void WINAPI glMaterialfv(GLenum face, GLenum p, const GLfloat *v) { G; ff_material(g, face, p, v); if ((face == 0x0404 || face == 0x0408) && (p == 0x1201 || p == 0x1602)) memcpy(g->mat_dif, v, 16); }
 static void WINAPI glMaterialf(GLenum face, GLenum p, GLfloat v) { G; ff_material(g, face, p, &v); }
 static void WINAPI glColorMaterial(GLenum face, GLenum mode) { (void)face; (void)mode; }
 static GLenum WINAPI glGetError(void) { GV(0); GLenum e = g->error; g->error = 0; return e; }
@@ -685,7 +685,7 @@ static void emit(glctx_t *g, int prim, const r3d_vertex_t *v, int n) {
 static r3d_vertex_t make_vertex(glctx_t *g, float x, float y, float z, float w) {
     r3d_vertex_t v;
     v.x = x; v.y = y; v.z = z; v.w = w;
-    v.u = g->tc[0]; v.v = 1 - g->tc[1];                             /* GL's v = 0 is the bottom row */
+    v.u = g->tc[0]; v.v = g->tc[1];                                 /* t = 0 is the first row given to glTexImage2D, which is canvas row 0 */
     v.nx = g->nrm[0]; v.ny = g->nrm[1]; v.nz = g->nrm[2];
     bool lit = (g->en & EN_LIGHTING) && (g->en & EN_LIGHT0);
     v.color = to_argb(lit && !(g->en & EN_COLORMAT) ? g->mat_dif : g->col);

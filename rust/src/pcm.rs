@@ -111,7 +111,7 @@ pub fn open(d: &[u8]) -> R<(Pcm, Info)> {
             if ba < head { small_block = true; }
             f.block = ba;
             let per = 4 * f.ch as u32;
-            f.spb = if f.enc == Enc::Ima { ba.wrapping_sub(head) * 8 / per + 1 } else { ba.wrapping_sub(head) * 8 / per + 2 };
+            f.spb = if f.enc == Enc::Ima { ba.wrapping_sub(head).wrapping_mul(8) / per + 1 } else { ba.wrapping_sub(head).wrapping_mul(8) / per + 2 };
             let blocks = f.len / ba + (f.len % ba != 0) as u32;
             f.frames = blocks.wrapping_mul(f.spb);
             f.bits = 4;

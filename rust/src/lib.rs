@@ -37,6 +37,7 @@ pub mod usbdesc;
 pub mod dxbc;
 pub mod dxil;
 pub mod glsl;
+pub mod jit;
 pub mod lxpath;
 pub mod pcm;
 pub mod adblock;

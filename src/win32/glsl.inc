@@ -111,6 +111,7 @@ static void ff_light(glctx_t *g, GLenum light, GLenum p, const GLfloat *v) {
 }
 static void ff_material(glctx_t *g, GLenum face, GLenum p, const GLfloat *v) {
     GS;
+    if (face != 0x0404 && face != 0x0405 && face != 0x0408) { err(g, 0x0500); return; }   /* GL_INVALID_ENUM: the call does nothing */
     for (int f = 0; f < 2; f++) {
         if ((f == 0 && face == 0x0405) || (f == 1 && face == 0x0404)) continue;
         switch (p) {
@@ -636,22 +637,44 @@ static void texel_rgba(canvas_t *c, int x, int y, float *o) {
     uint32_t v = c->px[(size_t)y * c->stride + x];
     o[0] = ((v >> 16) & 255) / 255.0f; o[1] = ((v >> 8) & 255) / 255.0f; o[2] = (v & 255) / 255.0f; o[3] = (v >> 24) / 255.0f;
 }
+/* bilinear (or nearest) sampling in fixed point: 8-bit weights, whole texels read once */
+static inline int fl_int(float f) { int i = (int)f; return i - ((float)i > f); }
+static inline int wrapi(int i, int n, GLenum mode) {
+    if ((unsigned)i < (unsigned)n) return i;
+    return wrap_coord(i, n, mode);
+}
 static void sl_sample(void *ctx, int ti, int si, const float *uv, float lod, float *out) {
     (void)si; (void)lod;
     gltex_t *t; canvas_t *c = unit_texture(ctx, ti, &t);
     if (!c) { out[0] = out[1] = out[2] = 0; out[3] = 1; return; }
     float fx = uv[0] * c->w - 0.5f, fy = uv[1] * c->h - 0.5f;
-    if (!(fx == fx)) fx = 0;
-    if (!(fy == fy)) fy = 0;
-    fx = CLAMP(fx, -1e6f, 1e6f); fy = CLAMP(fy, -1e6f, 1e6f);
+    if (!(fx > -1e6f && fx < 1e6f)) fx = 0;
+    if (!(fy > -1e6f && fy < 1e6f)) fy = 0;
     GLenum ws = t->wrap_s ? t->wrap_s : 0x2901, wt = t->wrap_t ? t->wrap_t : 0x2901;
-    int x0 = (int)fx; if ((float)x0 > fx) x0--;
-    int y0 = (int)fy; if ((float)y0 > fy) y0--;
-    if (!t->linear) { int x = wrap_coord((int)(fx + 0.5f) - ((fx + 0.5f) < 0 && (int)(fx + 0.5f) != fx + 0.5f), c->w, ws), y = wrap_coord((int)(fy + 0.5f) - ((fy + 0.5f) < 0 && (int)(fy + 0.5f) != fy + 0.5f), c->h, wt); texel_rgba(c, x, y, out); return; }
-    float ax = fx - x0, ay = fy - y0, p[4][4];
-    int xa = wrap_coord(x0, c->w, ws), xb = wrap_coord(x0 + 1, c->w, ws), ya = wrap_coord(y0, c->h, wt), yb = wrap_coord(y0 + 1, c->h, wt);
-    texel_rgba(c, xa, ya, p[0]); texel_rgba(c, xb, ya, p[1]); texel_rgba(c, xa, yb, p[2]); texel_rgba(c, xb, yb, p[3]);
-    for (int i = 0; i < 4; i++) { float top = p[0][i] + (p[1][i] - p[0][i]) * ax, bot = p[2][i] + (p[3][i] - p[2][i]) * ax; out[i] = top + (bot - top) * ay; }
+    int w = c->w, h = c->h;
+    bool p2 = ws == 0x2901 && wt == 0x2901 && !(w & (w - 1)) && !(h & (h - 1));
+    const uint32_t *px = c->px; int stride = c->stride;
+    if (!t->linear) {
+        int x = fl_int(fx + 0.5f), y = fl_int(fy + 0.5f);
+        if (p2) { x &= w - 1; y &= h - 1; } else { x = wrapi(x, w, ws); y = wrapi(y, h, wt); }
+        uint32_t v = px[(size_t)y * stride + x];
+        const float k = 1.0f / 255;
+        out[0] = ((v >> 16) & 255) * k; out[1] = ((v >> 8) & 255) * k; out[2] = (v & 255) * k; out[3] = (v >> 24) * k;
+        return;
+    }
+    int x0 = fl_int(fx), y0 = fl_int(fy);
+    int ax = (int)((fx - x0) * 256), ay = (int)((fy - y0) * 256);
+    int xa, xb, ya, yb;
+    if (p2) { xa = x0 & (w - 1); xb = (x0 + 1) & (w - 1); ya = y0 & (h - 1); yb = (y0 + 1) & (h - 1); }
+    else { xa = wrapi(x0, w, ws); xb = wrapi(x0 + 1, w, ws); ya = wrapi(y0, h, wt); yb = wrapi(y0 + 1, h, wt); }
+    uint32_t p00 = px[(size_t)ya * stride + xa], p10 = px[(size_t)ya * stride + xb], p01 = px[(size_t)yb * stride + xa], p11 = px[(size_t)yb * stride + xb];
+    const float k = 1.0f / (255.0f * 65536.0f);
+    for (int ch = 0; ch < 4; ch++) {
+        int sh = ch == 3 ? 24 : 16 - 8 * ch;
+        uint32_t a = (p00 >> sh) & 255, b = (p10 >> sh) & 255, cc = (p01 >> sh) & 255, d = (p11 >> sh) & 255;
+        uint32_t top = a * (256 - ax) + b * ax, bot = cc * (256 - ax) + d * ax;
+        out[ch] = (top * (256 - ay) + bot * ay) * k;
+    }
 }
 static void sl_load(void *ctx, int ti, const int32_t *xy, float *out) {
     gltex_t *t; canvas_t *c = unit_texture(ctx, ti, &t);
@@ -673,7 +696,7 @@ typedef struct {
     dxbc_env_t env[2]; sctx_t sc[2];
     dxbc_exec_t vx, fx;
     vec4_t vin[DX_MAX_REG], vout[DX_MAX_REG], fin[DX_MAX_REG], fout[DX_MAX_REG];
-    int nvar; int vreg[SLV], freg[SLV]; uint8_t flat[SLV], noper[SLV];
+    int nvar; int vreg[SLV], freg[SLV]; uint8_t flat[SLV], noper[SLV], lanes[SLV];
     vec4_t flatv[SLV];
     int fpos, fface;
     tgt_t t; rect_t clip;
@@ -791,14 +814,16 @@ static void fragment(pipe_t *P, int x, int y, float z) {
 }
 /* kernel tasks share the processor by yielding: a long draw lets the desktop run every few ms */
 static uint32_t sl_last_yield;
-/* a frame that takes longer than a second is shown as it is drawn, once a second, rather
- * than leaving the window as it was */
+/* the first frame, if it takes longer than a second, is shown as it is drawn, once a
+ * second, rather than leaving the window empty */
 static uint32_t sl_partial_at; static glctx_t *sl_partial_g;
 static void sl_yield(void) {
     uint32_t t = timer_ticks();
     if (t - sl_last_yield >= 8) { task_yield(); sl_last_yield = t = timer_ticks(); }
-    if (sl_partial_g && sl_partial_g->x && sl_partial_g->x->sl && !sl_partial_g->fbo_bound && t - sl_partial_g->x->sl->frame_start > 1000 && t - sl_partial_at >= 1000) { sl_partial_at = t; present(sl_partial_g); }
+    if (sl_partial_g && sl_partial_g->x && sl_partial_g->x->sl && !sl_partial_g->x->sl->frames && !sl_partial_g->fbo_bound && t - sl_partial_g->x->sl->frame_start > 1000 && t - sl_partial_at >= 1000) { sl_partial_at = t; present(sl_partial_g); }
 }
+/* plane equations of z, 1/w and every varying lane the fragment shader reads, set up once
+ * per triangle; each pixel that passes the depth test evaluates them at its centre */
 static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *c) {
     float area = (b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y);
     if (area == 0 || area != area) return;
@@ -813,7 +838,24 @@ static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *
     int y1 = (int)MIN((float)(P->clip.y + P->clip.h), MAX(a->y, MAX(b->y, c->y)) + 1);
     if (x0 >= x1 || y0 >= y1) return;
     float inv = 1.0f / area;
+    /* barycentric weights of a and b as planes over the screen: w = o + dx * x + dy * y */
+    float w0dx = (b->y - c->y) * inv, w0dy = (c->x - b->x) * inv, w0o = (b->x * c->y - c->x * b->y) * inv;
+    float w1dx = (c->y - a->y) * inv, w1dy = (a->x - c->x) * inv, w1o = (c->x * a->y - a->x * c->y) * inv;
+    #define PLANE(va, vb, vc, o_, dx_, dy_) do { float da_ = (va) - (vc), db_ = (vb) - (vc); \
+        dx_ = w0dx * da_ + w1dx * db_; dy_ = w0dy * da_ + w1dy * db_; o_ = (vc) + w0o * da_ + w1o * db_; } while (0)
+    float zo, zdx, zdy, io, idx, idy;
+    PLANE(a->z, b->z, c->z, zo, zdx, zdy);
+    PLANE(a->iw, b->iw, c->iw, io, idx, idy);
+    float po[SLV * 4], pdx[SLV * 4], pdy[SLV * 4]; float *dst[SLV * 4]; uint8_t pers[SLV * 4]; int np = 0;
     vec4_t *in = P->fin;
+    for (int k = 0; k < P->nvar; k++) {
+        if (P->flat[k]) { in[P->freg[k]] = P->flatv[k]; continue; }
+        for (int i = 0; i < 4; i++) if (P->lanes[k] & (1u << i)) {
+            PLANE(a->v[k].f[i], b->v[k].f[i], c->v[k].f[i], po[np], pdx[np], pdy[np]);
+            dst[np] = &in[P->freg[k]].f[i]; pers[np] = !P->noper[k]; np++;
+        }
+    }
+    #undef PLANE
     for (int y = y0; y < y1; y++) {
         sl_yield();
         float py = y + .5f;
@@ -824,30 +866,25 @@ static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *
         for (int i = 0; i < 3 && !empty; i++) {
             const sv_t *p = v[i], *q = v[(i + 1) % 3];
             float ex = q->x - p->x, ey = q->y - p->y;
-            /* inside: ex * (py - p->y) - ey * (px - p->x) >= 0 (clockwise, y down) */
             float k = ex * (py - p->y);
-            if (ey > 0) { float lim = (k / ey) + p->x - .5f; hi = MIN(hi, lim); }          /* px <= ... */
-            else if (ey < 0) { float lim = (k / ey) + p->x - .5f; lo = MAX(lo, lim); }    /* px >= ... */
+            if (ey > 0) { float lim = (k / ey) + p->x - .5f; hi = MIN(hi, lim); }
+            else if (ey < 0) { float lim = (k / ey) + p->x - .5f; lo = MAX(lo, lim); }
             else if (k < 0) empty = true;
         }
         if (empty) continue;
         int xs = (int)lo; if ((float)xs < lo) xs++;
         int xe = (int)hi; if ((float)xe > hi) xe--;
         xs = MAX(xs, x0); xe = MIN(xe, x1 - 1);
-        for (int x = xs; x <= xe; x++) {
-            float px = x + .5f;
-            float w0 = ((b->x - px) * (c->y - py) - (c->x - px) * (b->y - py)) * inv;
-            float w1 = ((c->x - px) * (a->y - py) - (a->x - px) * (c->y - py)) * inv;
-            float w2 = 1 - w0 - w1;
-            float z = w0 * a->z + w1 * b->z + w2 * c->z;
+        if (xs > xe) continue;
+        float px0 = xs + .5f;
+        float z = zo + zdx * px0 + zdy * py, iw = io + idx * px0 + idy * py;
+        float *dz = P->t.depth + (size_t)y * P->t.w;
+        for (int x = xs; x <= xe; x++, z += zdx, iw += idx) {
             if (z < 0 || z > 1) continue;
-            float iw = w0 * a->iw + w1 * b->iw + w2 * c->iw;
+            if (P->depth_test && !test_depth(P->dfunc, z, 1 - dz[x])) continue;
+            float px = x + .5f;
             float wcorr = iw != 0 ? 1.0f / iw : 0;
-            for (int k = 0; k < P->nvar; k++) {
-                if (P->flat[k]) { in[P->freg[k]] = P->flatv[k]; continue; }
-                float m = P->noper[k] ? 1 : wcorr;
-                for (int i = 0; i < 4; i++) in[P->freg[k]].f[i] = (w0 * a->v[k].f[i] + w1 * b->v[k].f[i] + w2 * c->v[k].f[i]) * m;
-            }
+            for (int i = 0; i < np; i++) { float val = po[i] + pdx[i] * px + pdy[i] * py; *dst[i] = pers[i] ? val * wcorr : val; }
             if (P->fpos >= 0) P->fin[P->fpos].f[3] = iw;
             fragment(P, x, y, z);
         }
@@ -956,6 +993,7 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
         P->vreg[P->nvar] = src; P->freg[P->nvar] = fi[i].reg;
         int ip = dxbc_interpolation(o->u[0]->shader, fi[i].reg);
         P->flat[P->nvar] = ip == 1; P->noper[P->nvar] = ip == 4;
+        P->lanes[P->nvar] = dxbc_read_mask(o->u[0]->shader, fi[i].reg) & 15;
         P->nvar++;
     }
     /* viewport, depth range, scissor */
@@ -1085,7 +1123,7 @@ static bool sl_draw_r3d(glctx_t *g, int prim, const r3d_vertex_t *rv, int n) {
         v->a[SL_COLOR][0] = ((c >> 16) & 255) / 255.0f; v->a[SL_COLOR][1] = ((c >> 8) & 255) / 255.0f; v->a[SL_COLOR][2] = (c & 255) / 255.0f; v->a[SL_COLOR][3] = (c >> 24) / 255.0f;
         v->a[SL_COLOR2][0] = v->a[SL_COLOR2][1] = v->a[SL_COLOR2][2] = 0; v->a[SL_COLOR2][3] = 1; v->a[SL_FOG][0] = 0;
         for (int u = 0; u < 8; u++) memcpy(v->a[SL_TEX0 + u], s->tc[u], 16);
-        v->a[SL_TEX0][0] = rv[i].u; v->a[SL_TEX0][1] = 1 - rv[i].v; v->a[SL_TEX0][2] = 0; v->a[SL_TEX0][3] = 1;
+        v->a[SL_TEX0][0] = rv[i].u; v->a[SL_TEX0][1] = rv[i].v; v->a[SL_TEX0][2] = 0; v->a[SL_TEX0][3] = 1;
         for (int k = 0; k < NATTR; k++) memcpy(v->a[SL_GEN0 + k], g->x->cur[k], 16);
         memcpy(v->a[SL_GEN0], pos, 16);
     }
