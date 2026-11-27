@@ -1798,7 +1798,7 @@ device manager's job is to say what the computer has and which driver runs it.
     on Now Playing, Space, Left/Right to seek and Up/Down to change the visualisation.
   - Opening any of these files opens it in the player. My Music has three original sample
     tracks (synthesised by `tools/gen_music.py`) and My Videos a short MPEG-1 clip.
-- **Others:** Calculator, Paint (BMP open/save), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
+- **Others:** Calculator, Paint (selections with cut/copy/paste, undo/redo, text, airbrush, filled shapes, zoom with a grid, flip/rotate/stretch/canvas size/crop; opens BMP/PNG/JPEG/GIF, saves BMP/PNG), Image Viewer (PNG/JPEG/GIF/BMP), Snake,
   Minesweeper, Pong, WRLD Security Center, Administrative Tools, Properties, Run, About, Setup.
 - **Games** (Start > All Programs > Games), all original, mouse or keyboard:
   - **Solitaire**: Klondike with cards drawn by the OS (draw one or three, undo, scoring, a

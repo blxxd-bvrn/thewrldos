@@ -355,7 +355,8 @@ static uint32_t png_crc(const uint8_t *d, size_t n, uint32_t c) {
 }
 static void put32be(uint8_t *p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v; }
 /* a PNG (RGBA, stored zlib blocks) or a BMP (32-bit) of the picture, in a new buffer */
-static uint8_t *encode_image(canvas_t *c, bool png, uint32_t *len) {
+uint8_t *image_encode(canvas_t *c, bool png, uint32_t *len);   /* also Paint's PNG writer */
+uint8_t *image_encode(canvas_t *c, bool png, uint32_t *len) {
     int w = c->w, h = c->h;
     if (!png) {
         uint32_t n = 54 + (uint32_t)w * h * 4;
@@ -414,7 +415,7 @@ static GpStatus WINAPI GdipSaveImageToFile(void *img, const WCHAR *name, const g
     bool png = !memcmp(clsid, &clsid_png, sizeof(guid_t)), bmp = !memcmp(clsid, &clsid_bmp, sizeof(guid_t));
     if (!png && !bmp) return GpUnknownImageFormat;
     uint32_t len = 0;
-    uint8_t *data = encode_image(i->c, png, &len);
+    uint8_t *data = image_encode(i->c, png, &len);
     if (!data) return GpOutOfMemory;
     createfilew_t cf = (createfilew_t)w32_builtin("kernel32.dll", "CreateFileW");
     writefile_t wf = (writefile_t)w32_builtin("kernel32.dll", "WriteFile");
@@ -438,7 +439,7 @@ static GpStatus WINAPI GdipSaveImageToStream(void *img, void *stream, const guid
     bool png = !memcmp(clsid, &clsid_png, sizeof(guid_t));
     if (!png && memcmp(clsid, &clsid_bmp, sizeof(guid_t))) return GpUnknownImageFormat;
     uint32_t len = 0;
-    uint8_t *data = encode_image(i->c, png, &len);
+    uint8_t *data = image_encode(i->c, png, &len);
     if (!data) return GpOutOfMemory;
     typedef HRESULT_T (WINAPI *write_t)(void *, const void *, ULONG, ULONG *);
     ULONG put = 0;
