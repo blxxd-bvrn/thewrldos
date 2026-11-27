@@ -280,6 +280,7 @@ static int b_lxthreads(const char *cwd, int argc, char **argv, io_t *io) {
         char info[200];
         if (t->kind != 4 || !lx_task_info(t, info, sizeof info)) continue;
         n += snprintf(b + n, cap - n, "%5d %8u  %s%s\r\n", t->pid, t->cpu_ms, info, t->state == TASK_READY ? "  [ready]" : "");
+        klog("lxthreads %5d %8u  %s%s", t->pid, t->cpu_ms, info, t->state == TASK_READY ? "  [ready]" : "");
     }
     out_s(io, b);
     vfs_mkdir_p("C:\\WRLD\\Temp");

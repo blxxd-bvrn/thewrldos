@@ -634,6 +634,24 @@ pub unsafe extern "C" fn lx_task_syscall(t: *mut Task, out: *mut c_char, cap: c_
     bprintf(o, format_args!("Linux system call {}({:x}, {:x}, {:x})", (*th).in_sys, (*th).in_args[0], (*th).in_args[1], (*th).in_args[2]));
     1
 }
+/// What a poll waits on, in a few words ("fd 5 eventfd, fd 9 socket"), kept for lxthreads.
+unsafe fn poll_note(th: *mut LxThread, fds: u64, n: u64) {
+    let p = (*th).proc_;
+    let o = &mut (*th).in_note;
+    let mut at = 0usize;
+    for i in 0..n.min(3) {
+        let Some(pf) = uget::<[i32; 2]>((*p).vm, fds.wrapping_add(i * 8)) else { break };
+        let f = if pf[0] < 0 { core::ptr::null_mut() } else { super::fs::lx_fd_get(p, pf[0] as i64) };
+        let kind = if f.is_null() { "?" } else { match (*f).ty { FD_PIPE => "pipe", FD_SOCKET => "sock", FD_EVENTFD => "evfd", FD_TIMERFD => "tmfd", FD_WINDOW => "win", FD_EPOLL => "epoll", FD_DSP => "dsp", _ => "file" } };
+        let mut tmp = [0u8; 16];
+        bprintf(&mut tmp, format_args!("{}{}:{}", if i > 0 { " " } else { "" }, pf[0], kind));
+        let s = &tmp[..tmp.iter().position(|&c| c == 0).unwrap_or(tmp.len())];
+        if at + s.len() + 1 >= o.len() { break; }
+        o[at..at + s.len()].copy_from_slice(s);
+        at += s.len();
+    }
+    o[at] = 0;
+}
 /// For "lxthreads": a Linux thread's name, process and what it is doing (the system call it
 /// waits in, with its arguments and for how long, or running its own code).
 #[no_mangle]
@@ -661,6 +679,10 @@ pub unsafe extern "C" fn lx_task_info(t: *mut Task, out: *mut c_char, cap: c_int
         bprintf(o, format_args!("{:<15} proc {:<4} futex {} {:x} val {} for {} ms", name, pid, op, a, c as i64, ms));
     } else if sname.is_empty() {
         bprintf(o, format_args!("{:<15} proc {:<4} syscall {}({:x}, {:x}, {:x}) for {} ms", name, pid, nr, a, b, c, ms));
+    } else if (*th).in_note[0] != 0 {
+        let note = &(*th).in_note;
+        let ln = note.iter().position(|&c| c == 0).unwrap_or(note.len());
+        bprintf(o, format_args!("{:<15} proc {:<4} {}([{}], {}, {}) for {} ms", name, pid, sname, core::str::from_utf8(&note[..ln]).unwrap_or("?"), b, c as i32, ms));
     } else {
         bprintf(o, format_args!("{:<15} proc {:<4} {}({:x}, {:x}, {:x}) for {} ms", name, pid, sname, a, b, c, ms));
     }
@@ -675,7 +697,11 @@ pub unsafe extern "C" fn lx_syscall_c(r: *mut Regs) {
     let th = lx_current();
     let nr = (*r).eax;
     let (a0, a1, a2) = ((*r).edi, (*r).esi, (*r).edx);
-    if !th.is_null() { (*th).in_sys = nr as i64; (*th).in_args = [a0, a1, a2]; (*th).sys_since = timer_ticks(); }
+    if !th.is_null() {
+        (*th).in_sys = nr as i64; (*th).in_args = [a0, a1, a2]; (*th).sys_since = timer_ticks();
+        (*th).in_note[0] = 0;
+        if (nr == 7 || nr == 271) && !(*th).proc_.is_null() { poll_note(th, a0, a1); }
+    }
     let v = super::sys::lx_syscall(r);
     if !th.is_null() { (*th).in_sys = -1; }
     if lx_strace != 0 && !th.is_null() && nr != 24 && nr != 228 {   /* not sched_yield / clock_gettime: too many */
