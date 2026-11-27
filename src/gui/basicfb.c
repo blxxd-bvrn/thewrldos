@@ -137,21 +137,31 @@ static bool changed(basicfb_t *f, const uint32_t *src, uint32_t stride, int x, i
     return false;
 }
 void basicfb_present(basicfb_t *f, const uint32_t *src, uint32_t stride) {
+    if (!f) return;
+    basicfb_present_region(f, src, stride, 0, 0, f->mode.width, f->mode.height);
+}
+void basicfb_present_region(basicfb_t *f, const uint32_t *src, uint32_t stride, int rx, int ry, int rw, int rh) {
     if (!f || !f->ready || !src || stride < f->mode.width) return;
     int width = f->mode.width, height = f->mode.height;
+    /* the tiles (16 rows by 32 columns, on the same grid as a full present) that cover the region */
+    int y0 = ry < 0 ? 0 : (ry / 16) * 16, y1 = ry + rh > height ? height : ry + rh;
+    int x0 = rx < 0 ? 0 : (rx / 32) * 32, x1 = rx + rw > width ? width : rx + rw;
+    if (rw <= 0 || rh <= 0) { y0 = y1 = 0; }
     uint32_t generation = f->invalidations;
     f->bytes_last = 0; f->regions_last = f->tiles_last = 0; f->frames++;
     int left = width, top = height, right = 0, bottom = 0;
     if (!f->shadow || !f->have_frame) {
         write_rect(f, 0, 0, width, height, src, stride);
         left = top = 0; right = width; bottom = height;
-    } else for (int y = 0; y < height; y += 16) {
+    } else for (int y = y0; y < y1; y += 16) {
         int h = height - y < 16 ? height - y : 16, run = -1;
-        for (int x = 0; x <= width; x += 32) {
+        int xe = x1 < width ? ((x1 + 31) / 32) * 32 : width;      /* the end of the last tile in the region */
+        if (xe > width) xe = width;
+        for (int x = x0; x <= xe; x += 32) {
             int w = width - x < 32 ? width - x : 32;
-            bool dirty = x < width && changed(f, src, stride, x, y, w, h);
+            bool dirty = x < xe && changed(f, src, stride, x, y, w, h);
             if (dirty) { f->tiles_last++; if (run < 0) run = x; }
-            if ((!dirty || x + w == width) && run >= 0) {
+            if ((!dirty || x + w >= xe) && run >= 0) {
                 int end = dirty ? x + w : x;
                 write_rect(f, run, y, end - run, h, src + (size_t)y * stride + run, stride);
                 if (run < left) left = run; if (y < top) top = y; if (end > right) right = end; if (y + h > bottom) bottom = y + h;

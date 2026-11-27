@@ -101,6 +101,7 @@ void wm_begin_resize(window_t *w, int edges);
 void wm_set_skinned(window_t *w, bool on);   /* switch between the app's frame and the system frame */
 void wm_set_title(window_t *w, const char *t);
 void wm_invalidate(window_t *w);
+void wm_redraw_rect(rect_t r);     /* repaint only this part of the screen (e.g. a drag inside the sidebar) */
 void wm_redraw_all(void);
 void wm_resize_client(window_t *w, int cw, int ch);
 void wm_center(window_t *w);

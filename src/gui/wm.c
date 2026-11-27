@@ -646,8 +646,24 @@ bool flip3d_animating(void);
 void flip3d_key(key_event_t *e);
 void flip3d_mouse(int x, int y, int pressed, int wheel);
 bool flip3d_paint(canvas_t *screen);
-static void compose(void) {
+/* a repaint of part of the screen: composed with the screen clipped to it (desktop, windows and
+ * taskbar each draw only what falls inside), then presented as usual */
+static rect_t dmg;
+static bool dmg_on;
+void wm_redraw_rect(rect_t r) {
+    if (r.w <= 0 || r.h <= 0) return;
+    if (dmg_on) {
+        int x0 = MIN(dmg.x, r.x), y0 = MIN(dmg.y, r.y);
+        int x1 = MAX(dmg.x + dmg.w, r.x + r.w), y1 = MAX(dmg.y + dmg.h, r.y + r.h);
+        dmg = R(x0, y0, x1 - x0, y1 - y0);
+    } else dmg = r;
+    dmg_on = true;
+}
+static void compose_clipped(const rect_t *clip);
+static void compose(void) { compose_clipped(NULL); }
+static void compose_clipped(const rect_t *clip) {
     gui_composes++;
+    if (clip && flip3d_active()) clip = NULL;
     if (flip3d_active()) {                       /* Flip 3D draws the whole screen */
         canvas_reset_clip(&screen);
         if (flip3d_paint(&screen)) {
@@ -658,6 +674,7 @@ static void compose(void) {
         }
     }
     canvas_reset_clip(&screen);
+    if (clip) canvas_push_clip(&screen, *clip);
     desktop_paint(&screen);
     for (int i = 0; i < nwin; i++) {
         window_t *w = wins[i];
@@ -682,7 +699,9 @@ static void compose(void) {
     shell_paint_overlays(&screen);
     popup_paint(&screen);
     paint_file_drag(&screen);
-    gfx_present(current_cursor(), wm_mouse_x, wm_mouse_y);
+    canvas_reset_clip(&screen);
+    if (clip) gfx_present_region(current_cursor(), wm_mouse_x, wm_mouse_y, *clip);
+    else gfx_present(current_cursor(), wm_mouse_x, wm_mouse_y);
     wm_need_redraw = false;
 }
 
@@ -1207,9 +1226,12 @@ void wm_run(void) {
             run_paint(w);
         }
         if (ndying) reap_windows();
-        if (wm_need_redraw) {
+        if (wm_need_redraw || dmg_on) {
             uint64_t t0 = gui_profile ? rdtsc() : 0;
-            compose();
+            bool part = !wm_need_redraw;
+            rect_t r = dmg;
+            dmg_on = false;
+            compose_clipped(part ? &r : NULL);
             if (gui_profile) { prof_compose_t += rdtsc() - t0; prof_compose_n++; }
         }
         prof_report();

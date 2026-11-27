@@ -116,6 +116,7 @@ int wordmark_width(int style);
 /* cursor + presentation */
 enum { CURSOR_ARROW, CURSOR_IBEAM, CURSOR_HAND, CURSOR_SIZE_NS, CURSOR_SIZE_EW, CURSOR_SIZE_NWSE, CURSOR_SIZE_NESW, CURSOR_BUSY, CURSOR_MOVE, CURSOR_CROSS, CURSOR_COUNT };
 void gfx_present(int cursor, int mx, int my);
+void gfx_present_region(int cursor, int mx, int my, rect_t r);   /* only r changed (and the cursor) */
 void gfx_move_cursor(int cursor, int mx, int my);
 /* cursor sets: folders under C:\WRLD\Cursors with Windows .cur files */
 int cursor_set_count(void);

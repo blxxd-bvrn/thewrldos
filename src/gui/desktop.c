@@ -551,6 +551,10 @@ static void side_click(int h) {
 static int side_order[ST_N] = { 0, 1, 2, 3, 4, 5, 6 };
 static int side_ty[ST_N] = { -1, -1, -1, -1, -1, -1, -1 };      /* where each tile is drawn now */
 static struct { bool pending, active, settling; int t, y, y0, off; } side_drag;
+static int side_x(void);
+static int tb_y(void);
+/* during a drag only the sidebar column changes: repaint just that */
+static void side_redraw(void) { wm_redraw_rect(R(side_x(), 0, SIDE_W, tb_y())); }
 static void side_order_load(void) {
     static bool done;
     if (done) return;
@@ -678,9 +682,34 @@ static void side_paint_tile(canvas_t *c, int t, int ix, int by, int iw) {
         draw_text_ellipsis(c, FONT_SMALL, bx + 6, yy + 18, bw - 12, side_memo[0] ? "Open memo" : "", dim);
     }
 }
+/* While a tile is held the sidebar's background (the Aero glass blur, the gradients, the user banner)
+ * cannot change, so it is drawn once and reused for every frame of the drag. */
+static canvas_t *side_bg_cache;
+static bool side_bg_valid;
+static void side_paint_background(canvas_t *c, int h);
+static void side_paint_tiles(canvas_t *c, int ix, int iw, int by, int h, uint32_t top, uint32_t bot, uint32_t text, uint32_t dim, uint32_t h1, uint32_t h2);
 static void paint_sidebar_panel(canvas_t *c) {
     side_search_run();
     int x = 0, h = c->h;
+    uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
+    if (!side_drag.pending) side_bg_valid = false;
+    if (side_drag.pending && side_bg_valid && side_bg_cache && side_bg_cache->h == h) blit(c, 0, 0, side_bg_cache, 0, 0, SIDE_W, h);
+    else {
+        side_paint_background(c, h);
+        if (side_drag.pending) {
+            if (!side_bg_cache) side_bg_cache = canvas_new(SIDE_W, h); else canvas_resize(side_bg_cache, SIDE_W, h);
+            if (side_bg_cache) { blit(side_bg_cache, 0, 0, c, 0, 0, SIDE_W, h); side_bg_valid = true; }
+        }
+    }
+    int ix = x + 6, iw = SIDE_W - 12, by = 6;
+    uint32_t banner_bg = side_bg_at(by + SIDE_HDR, h), banner_text = theme_text_on(banner_bg);
+    draw_text(c, FONT_SMALL, ix + 6, by + SIDE_HDR - 31, "welcome", mix(banner_text, banner_bg, 50));
+    draw_text_ellipsis(c, FONT_LARGE_BOLD, ix + 6, by + SIDE_HDR - 20, iw - 12, user_name, banner_text);
+    by += SIDE_HDR + 8;
+    side_paint_tiles(c, ix, iw, by, h, top, bot, text, dim, h1, h2);
+}
+static void side_paint_background(canvas_t *c, int h) {
+    int x = 0;
     uint32_t top, bot, text, dim, h1, h2; side_colors(&top, &bot, &text, &dim, &h1, &h2);
     if (T.classic) {
         fill_rect(c, x, 0, SIDE_W, h, T.face);
@@ -705,10 +734,23 @@ static void paint_sidebar_panel(canvas_t *c) {
     draw_rect(c, ix, by, iw, SIDE_HDR, T.classic ? T.face_dark : mix(T.sm_accent, BLACK, 40));
     if (!T.classic) { hline(c, ix, by + SIDE_HDR - 1, iw, T.sm_accent); blend_rect(c, ix, by + SIDE_HDR, iw, 1, WHITE, 50); }
     if (side_hot == 1 && !T.classic) fill_round_rect_blend(c, ix, by, iw, SIDE_HDR, 3, WHITE, 20);
-    uint32_t banner_bg = side_bg_at(by + SIDE_HDR, h), banner_text = theme_text_on(banner_bg);
-    draw_text(c, FONT_SMALL, ix + 6, by + SIDE_HDR - 31, "welcome", mix(banner_text, banner_bg, 50));
-    draw_text_ellipsis(c, FONT_LARGE_BOLD, ix + 6, by + SIDE_HDR - 20, iw - 12, user_name, banner_text);
-    by += SIDE_HDR + 8;
+}
+/* While a tile is held the tiles' contents do not change either: each is drawn once, kept, and
+ * copied to wherever it is for the rest of the drag (text and icons are the costly part). */
+static canvas_t *side_tile_img[ST_N];
+static bool side_tile_img_ok[ST_N];
+static void side_paint_tile_cached(canvas_t *c, int t, int x, int y, int iw) {
+    int th = SIDE_TILE_HEAD + side_body_h(t) + 2;
+    if (!side_drag.active) { side_tile_img_ok[t] = false; side_paint_tile(c, t, x, y, iw); return; }
+    if (side_tile_img_ok[t] && side_tile_img[t] && side_tile_img[t]->h == th) { blit(c, x, y, side_tile_img[t], 0, 0, iw, th); return; }
+    side_paint_tile(c, t, x, y, iw);
+    if (x < 0 || y < 0 || x + iw > c->w || y + th > c->h) return;      /* only a tile drawn whole is kept */
+    if (!side_tile_img[t]) side_tile_img[t] = canvas_new(iw, th); else canvas_resize(side_tile_img[t], iw, th);
+    if (side_tile_img[t]) { blit(side_tile_img[t], 0, 0, c, x, y, iw, th); side_tile_img_ok[t] = true; }
+}
+static void side_paint_tiles(canvas_t *c, int ix, int iw, int by, int h, uint32_t top, uint32_t bot, uint32_t text, uint32_t dim, uint32_t h1, uint32_t h2) {
+    (void)h1; (void)h2;
+    if (!side_drag.active) for (int t = 0; t < ST_N; t++) side_tile_img_ok[t] = false;
     /* the tiles in their order; while one is dragged it floats under the pointer, the others
      * slide apart to leave room where it would land, and slide back when it is let go */
     side_order_load();
@@ -724,11 +766,12 @@ static void paint_sidebar_panel(canvas_t *c) {
         int tileh = SIDE_TILE_HEAD + bh + 2;
         /* ease towards the place in the list */
         if (side_ty[t] < 0 || !side_drag.settling) side_ty[t] = by;
-        else if (side_ty[t] != by) { int d = by - side_ty[t]; side_ty[t] += d / 3 ? d / 3 : d; wm_need_redraw = true; }
+        else if (side_ty[t] != by) { int d = by - side_ty[t]; side_ty[t] += d / 3 ? d / 3 : d; side_redraw(); }
         int ty = side_ty[t];
         if (!side_under) side_under = canvas_new(iw + 2, SIDE_TILE_HEAD + side_body_h(ST_SEARCH) + 5);
         if (side_alpha[t] < 255) blit(side_under, 0, 0, c, ix, ty, iw + 2, tileh + 2);
-        side_paint_tile(c, t, ix, ty, iw);
+        if (side_alpha[t] < 255) side_paint_tile(c, t, ix, ty, iw);
+        else side_paint_tile_cached(c, t, ix, ty, iw);
         if (side_alpha[t] < 255 && side_under) {
             canvas_t under = *side_under; under.h = tileh + 2;
             blit_alpha(c, ix, ty, &under, 255 - side_alpha[t]);
@@ -745,7 +788,7 @@ static void paint_sidebar_panel(canvas_t *c) {
         /* the tile itself, lifted: a deeper shadow, a little to the left */
         int fy = CLAMP(side_drag.y - side_drag.off, 0, h - dh), fx = ix - 4;
         blend_rect(c, fx + 5, fy + 6, iw, dh, BLACK, 70);
-        side_paint_tile(c, side_drag.t, fx, fy, iw);
+        side_paint_tile_cached(c, side_drag.t, fx, fy, iw);
     }
     /* add tile */
     if (by + 20 <= h - 2) {
@@ -937,8 +980,10 @@ static void paint_dicons(canvas_t *c) {
 }
 void desktop_paint(canvas_t *c) {
     if (dgen != vfs_generation) desktop_refresh();
-    if (wallpaper) memcpy(c->px, wallpaper->px, SCREEN_W * SCREEN_H * 4);
-    else gfx_clear(c, desktop_color);
+    rect_t cl = c->clip;                      /* a partial repaint copies only its part of the wallpaper */
+    if (wallpaper && cl.x == 0 && cl.y == 0 && cl.w == SCREEN_W && cl.h == SCREEN_H && c->stride == SCREEN_W) memcpy(c->px, wallpaper->px, SCREEN_W * SCREEN_H * 4);
+    else if (wallpaper) { for (int y = cl.y; y < cl.y + cl.h && y < wallpaper->h; y++) memcpy(c->px + y * c->stride + cl.x, wallpaper->px + y * wallpaper->stride + cl.x, MIN(cl.w, wallpaper->w - cl.x) * 4); }
+    else fill_rect(c, cl.x, cl.y, cl.w, cl.h, desktop_color);
     paint_dicons(c);
     paint_sidebar(c);
 }
@@ -2005,7 +2050,7 @@ bool shell_mouse(int type, int x, int y, int btn) {
         if (type == ME_MOVE) {
             side_drag.y = y;
             if (!side_drag.active && ABSDIFF(y, side_drag.y0) > 4) { side_drag.active = side_drag.settling = true; }
-            if (side_drag.active) wm_need_redraw = true;
+            if (side_drag.active) side_redraw();
             return true;
         }
         if (type == ME_UP) {

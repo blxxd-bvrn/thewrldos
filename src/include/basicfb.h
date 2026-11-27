@@ -31,4 +31,6 @@ void basicfb_invalidate(basicfb_t *);
  * write()'s source starts at the requested destination rectangle's origin. */
 void basicfb_write(basicfb_t *, int x, int y, int w, int h, const uint32_t *, uint32_t stride);
 void basicfb_present(basicfb_t *, const uint32_t *, uint32_t stride);
+/* the same, looking for changes only inside x, y, w, h (the caller knows nothing else changed) */
+void basicfb_present_region(basicfb_t *, const uint32_t *, uint32_t stride, int x, int y, int w, int h);
 #endif

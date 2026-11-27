@@ -1229,6 +1229,19 @@ void gfx_present(int kind, int mx, int my) {
     cursor_save(r, true);
     cur_x = mx; cur_y = my; cur_kind = kind;
 }
+void gfx_present_region(int kind, int mx, int my, rect_t r) {
+    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
+    if (!display.have_frame) { gfx_present(kind, mx, my); return; }
+    rect_t c = cursor_rect(kind, mx, my), old = cursor_rect(cur_kind, cur_x, cur_y);
+    /* the region, and where the cursor was and is */
+    int x0 = MIN(r.x, MIN(c.x, old.x)), y0 = MIN(r.y, MIN(c.y, old.y));
+    int x1 = MAX(r.x + r.w, MAX(c.x + c.w, old.x + old.w)), y1 = MAX(r.y + r.h, MAX(c.y + c.h, old.y + old.h));
+    cursor_save(c, false);
+    fb_draw_cursor(kind, mx, my);
+    basicfb_present_region(&display, screen.px, screen.stride, x0, y0, x1 - x0, y1 - y0);
+    cursor_save(c, true);
+    cur_x = mx; cur_y = my; cur_kind = kind;
+}
 void gfx_move_cursor(int kind, int mx, int my) {
     if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
     if (mx == cur_x && my == cur_y && kind == cur_kind) return;
