@@ -58,7 +58,7 @@ struct glsl_state {
     float lm_amb[4];
     struct { float color[4], density, start, end; } fog;
     GLenum alpha_func; float alpha_ref;
-    uint32_t frames, frame_start, draws, pixels;   /* the first frames with shaders are logged, for speed reports */
+    uint32_t frames, frame_start, draws, pixels;
     float depth_near, depth_far;
 };
 
@@ -705,18 +705,21 @@ typedef struct {
     bool cull_front, cull_back, front_ccw_screen, depth_test, depth_write, blend, alpha_test, any_mask;
     GLenum dfunc;
     pv_t poly[2][12];
-    /* the draw's triangles, set up on this processor and rasterised by every worker */
-    struct sl_tri *tris; int ntris, captris;
-    float *pool; size_t npool, cappool;
+    /* the draw's triangles: each worker sets up a share into its bin, then every worker
+     * rasterises all bins, in order */
+    struct sl_bin *bins;
     int np, lreg[SLV * 4], lcomp[SLV * 4]; uint8_t lpers[SLV * 4];   /* interpolated lanes */
     int nflat, freg_flat[SLV], kflat[SLV];                          /* flat varyings */
     struct sl_wk *wk; int nwk;
 } pipe_t;
 /* one triangle: its rows, edges, z and 1/w planes; its lane planes and flat values in the pool */
 typedef struct sl_tri { int x0, x1, y0, y1; float vx[3], vy[3]; float zo, zdx, zdy, io, idx, idy; uint32_t front; size_t off; } sl_tri_t;
+typedef struct sl_bin { sl_tri_t *tris; int n, cap; float *pool; size_t npool, cappool; bool grow, overflow; pv_t poly[2][12]; vec4_t flatv[SLV]; } sl_bin_t;
+typedef struct { const pv_t *a, *b, *c; } sl_tri3_t;
+static void draw_tri(pipe_t *P, sl_bin_t *B, const pv_t *a, const pv_t *b, const pv_t *c);
 /* one worker's registers */
-typedef struct sl_wk { pipe_t *P; dxbc_exec_t fx; vec4_t fin[DX_MAX_REG], fout[DX_MAX_REG]; uint32_t pixels; } sl_wk_t;
 
+typedef struct sl_wk { pipe_t *P; dxbc_exec_t fx, vx; vec4_t fin[DX_MAX_REG], fout[DX_MAX_REG], vin[DX_MAX_REG], vout[DX_MAX_REG]; uint32_t pixels; } sl_wk_t;
 static bool vertex_slot(pipe_t *P, int slot, uint32_t index, const fatvert_t *imm, float *out) {
     glctx_t *g = P->g; struct gl2 *x = g->x; struct glsl_state *s = P->s;
     if (imm) { memcpy(out, imm->a[slot], 16); return true; }
@@ -755,18 +758,18 @@ static bool vertex_slot(pipe_t *P, int slot, uint32_t index, const fatvert_t *im
     if (slot == SL_COLOR && (tmp.type == 0x1401 || tmp.type == 0x1400) && tmp.size == 4 && 0) {}
     return true;
 }
-static bool run_vertex(pipe_t *P, uint32_t index, const fatvert_t *imm, pv_t *o) {
+static bool run_vertex(pipe_t *P, struct sl_wk *W, uint32_t index, const fatvert_t *imm, pv_t *o) {
     sl_obj_t *ob = P->o;
     for (int r = 0; r < DX_MAX_REG; r++) {
         int sl = ob->in_slot[r];
         if (sl < 0) continue;
-        if (sl == SL_VERTEXID) { P->vin[r].u[0] = index; continue; }
-        if (sl == SL_INSTANCEID) { P->vin[r].u[0] = 0; continue; }
-        if (!vertex_slot(P, sl, index, imm, P->vin[r].f)) return false;
+        if (sl == SL_VERTEXID) { W->vin[r].u[0] = index; continue; }
+        if (sl == SL_INSTANCEID) { W->vin[r].u[0] = 0; continue; }
+        if (!vertex_slot(P, sl, index, imm, W->vin[r].f)) return false;
     }
-    if (!dxbc_exec_run(&P->vx)) return false;
-    memcpy(o->pos, P->vout[ob->pos_reg].f, 16);
-    for (int k = 0; k < P->nvar; k++) o->v[k] = P->vout[P->vreg[k]];
+    if (!dxbc_exec_run(&W->vx)) return false;
+    memcpy(o->pos, W->vout[ob->pos_reg].f, 16);
+    for (int k = 0; k < P->nvar; k++) o->v[k] = W->vout[P->vreg[k]];
     return true;
 }
 static float blend_f(GLenum f, int ch, const float *s, const float *d, const float *bc) {
@@ -836,7 +839,7 @@ static void sl_yield(void) {
 }
 /* plane equations of z, 1/w and every varying lane the fragment shader reads, set up once
  * per triangle (here, on the boot processor); the workers evaluate them at each pixel */
-static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *c) {
+static void shade_triangle(pipe_t *P, sl_bin_t *B, const sv_t *a, const sv_t *b, const sv_t *c) {
     float area = (b->x - a->x) * (c->y - a->y) - (c->x - a->x) * (b->y - a->y);
     if (area == 0 || area != area) return;
     bool cw = area > 0;
@@ -849,18 +852,14 @@ static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *
     int y1 = (int)MIN((float)(P->clip.y + P->clip.h), MAX(a->y, MAX(b->y, c->y)) + 1);
     if (x0 >= x1 || y0 >= y1) return;
     size_t need = (size_t)P->np * 3 + (size_t)P->nflat * 4;
-    if (P->ntris == P->captris) {
-        int nc = P->captris ? P->captris * 2 : 256;
-        sl_tri_t *n = krealloc(P->tris, sizeof(sl_tri_t) * nc); if (!n) return;
-        P->tris = n; P->captris = nc;
+    /* the other processors cannot allocate: a full bin is redone on this one */
+    if (B->n == B->cap || B->npool + need > B->cappool) {
+        if (!B->grow) { B->overflow = true; return; }
+        if (B->n == B->cap) { int nc = B->cap ? B->cap * 2 : 256; sl_tri_t *n = krealloc(B->tris, sizeof(sl_tri_t) * nc); if (!n) return; B->tris = n; B->cap = nc; }
+        if (B->npool + need > B->cappool) { size_t nc = MAX(B->cappool * 2, B->npool + need + 4096); float *n = krealloc(B->pool, sizeof(float) * nc); if (!n) return; B->pool = n; B->cappool = nc; }
     }
-    if (P->npool + need > P->cappool) {
-        size_t nc = MAX(P->cappool * 2, P->npool + need + 4096);
-        float *n = krealloc(P->pool, sizeof(float) * nc); if (!n) return;
-        P->pool = n; P->cappool = nc;
-    }
-    sl_tri_t *T = &P->tris[P->ntris++];
-    T->x0 = x0; T->x1 = x1; T->y0 = y0; T->y1 = y1; T->front = front ? ~0u : 0; T->off = P->npool;
+    sl_tri_t *T = &B->tris[B->n++];
+    T->x0 = x0; T->x1 = x1; T->y0 = y0; T->y1 = y1; T->front = front ? ~0u : 0; T->off = B->npool;
     T->vx[0] = a->x; T->vx[1] = b->x; T->vx[2] = c->x; T->vy[0] = a->y; T->vy[1] = b->y; T->vy[2] = c->y;
     float inv = 1.0f / area;
     /* barycentric weights of a and b as planes over the screen: w = o + dx * x + dy * y */
@@ -870,22 +869,22 @@ static void shade_triangle(pipe_t *P, const sv_t *a, const sv_t *b, const sv_t *
         dx_ = w0dx * da_ + w1dx * db_; dy_ = w0dy * da_ + w1dy * db_; o_ = (vc) + w0o * da_ + w1o * db_; } while (0)
     PLANE(a->z, b->z, c->z, T->zo, T->zdx, T->zdy);
     PLANE(a->iw, b->iw, c->iw, T->io, T->idx, T->idy);
-    float *pl = P->pool + P->npool;
+    float *pl = B->pool + B->npool;
     for (int i = 0; i < P->np; i++) {
         int k = P->lcomp[i] >> 2, cc = P->lcomp[i] & 3;
         PLANE(a->v[k].f[cc], b->v[k].f[cc], c->v[k].f[cc], pl[3 * i], pl[3 * i + 1], pl[3 * i + 2]);
     }
     #undef PLANE
     float *fl = pl + 3 * P->np;
-    for (int i = 0; i < P->nflat; i++) memcpy(fl + 4 * i, P->flatv[P->kflat[i]].f, 16);
-    P->npool += need;
+    for (int i = 0; i < P->nflat; i++) memcpy(fl + 4 * i, B->flatv[P->kflat[i]].f, 16);
+    B->npool += need;
 }
 /* rows go to the workers in bands of 8: worker w takes the bands whose number is w mod n */
 #define SL_BAND 3
-static void raster_tri(sl_wk_t *W, const sl_tri_t *T, int w, int n) {
+static void raster_tri(sl_wk_t *W, const sl_bin_t *B, const sl_tri_t *T, int w, int n) {
     pipe_t *P = W->P;
     vec4_t *in = W->fin;
-    const float *pl = P->pool + T->off, *fl = pl + 3 * P->np;
+    const float *pl = B->pool + T->off, *fl = pl + 3 * P->np;
     bool set = false;
     for (int y = T->y0; y < T->y1; y++) {
         int band = y >> SL_BAND;
@@ -934,11 +933,37 @@ static void raster_tri(sl_wk_t *W, const sl_tri_t *T, int w, int n) {
         }
     }
 }
+/* the vertex shader on the vertices a draw uses, split between the workers */
+typedef struct { pipe_t *P; pv_t *cache; uint8_t *done; uint32_t lo, span; const fatvert_t *imm; } vjob_t;
+static void vertex_job(void *arg, int w, int n) {
+    vjob_t *J = arg; pipe_t *P = J->P;
+    if (w >= P->nwk) return;
+    sl_wk_t *W = &P->wk[w];
+    uint32_t a = (uint32_t)((uint64_t)J->span * w / n), b = (uint32_t)((uint64_t)J->span * (w + 1) / n);
+    for (uint32_t s = a; s < b; s++) {
+        if (!J->done[s]) continue;                       /* 1: used by the draw */
+        if (w == 0 && !(s & 63)) sl_yield();
+        uint32_t k = J->lo + s;
+        J->done[s] = run_vertex(P, W, k, J->imm ? &J->imm[k] : NULL, &J->cache[s]) ? 2 : 3;
+    }
+}
+typedef struct { pipe_t *P; const sl_tri3_t *tri; int ntri; } sjob_t;
+static void setup_job(void *arg, int w, int n) {
+    sjob_t *J = arg; pipe_t *P = J->P;
+    if (w >= P->nwk) return;
+    sl_bin_t *B = &P->bins[w];
+    int a = (int)((int64_t)J->ntri * w / n), b = (int)((int64_t)J->ntri * (w + 1) / n);
+    for (int i = a; i < b && !B->overflow; i++) {
+        if (w == 0 && !(i & 255)) sl_yield();
+        for (int k = 0; k < P->nvar; k++) if (P->flat[k]) B->flatv[k] = J->tri[i].c->v[k];
+        draw_tri(P, B, J->tri[i].a, J->tri[i].b, J->tri[i].c);
+    }
+}
 static void raster_job(void *arg, int w, int n) {
     pipe_t *P = arg;
     sl_wk_t *W = &P->wk[w < P->nwk ? w : 0];
     if (w >= P->nwk) return;
-    for (int i = 0; i < P->ntris; i++) raster_tri(W, &P->tris[i], w, n);
+    for (int b = 0; b < P->nwk; b++) { const sl_bin_t *B = &P->bins[b]; for (int i = 0; i < B->n; i++) raster_tri(W, B, &B->tris[i], w, n); }
 }
 static void to_screen(pipe_t *P, const pv_t *v, sv_t *s) {
     float iw = 1.0f / v->pos[3];
@@ -947,11 +972,15 @@ static void to_screen(pipe_t *P, const pv_t *v, sv_t *s) {
     s->y = P->t.flip ? gy : P->t.h - gy;
     s->z = P->zn + (v->pos[2] * iw + 1) * 0.5f * (P->zf - P->zn);
     s->iw = iw;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) s->v[k].f[i] = P->flat[k] ? v->v[k].f[i] : v->v[k].f[i] * (P->noper[k] ? 1 : iw);
+    for (int k = 0; k < P->nvar; k++) {
+        if (P->flat[k]) { s->v[k] = v->v[k]; continue; }
+        float m = P->noper[k] ? 1 : iw;
+        for (int i = 0; i < 4; i++) if (P->lanes[k] & (1u << i)) s->v[k].f[i] = v->v[k].f[i] * m;
+    }
 }
 static void lerp_pv(pipe_t *P, const pv_t *a, const pv_t *b, float t, pv_t *o) {
     for (int i = 0; i < 4; i++) o->pos[i] = a->pos[i] + (b->pos[i] - a->pos[i]) * t;
-    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) o->v[k].f[i] = a->v[k].f[i] + (b->v[k].f[i] - a->v[k].f[i]) * t;
+    for (int k = 0; k < P->nvar; k++) for (int i = 0; i < 4; i++) if (P->lanes[k] & (1u << i)) o->v[k].f[i] = a->v[k].f[i] + (b->v[k].f[i] - a->v[k].f[i]) * t;
 }
 static float clip_dist(const pv_t *v, int plane) {
     switch (plane) {
@@ -961,7 +990,7 @@ static float clip_dist(const pv_t *v, int plane) {
     default: return v->pos[3] - 1e-6f;
     }
 }
-static void draw_tri(pipe_t *P, const pv_t *a, const pv_t *b, const pv_t *c) {
+static void draw_tri(pipe_t *P, sl_bin_t *B, const pv_t *a, const pv_t *b, const pv_t *c) {
     const pv_t *in[3] = { a, b, c };
     bool all_in = true;
     for (int i = 0; i < 3; i++) {
@@ -969,8 +998,8 @@ static void draw_tri(pipe_t *P, const pv_t *a, const pv_t *b, const pv_t *c) {
         for (int p = 0; p < 7; p++) if (!(clip_dist(in[i], p) >= 0)) all_in = false;
     }
     sv_t s[12];
-    if (all_in) { for (int i = 0; i < 3; i++) to_screen(P, in[i], &s[i]); shade_triangle(P, &s[0], &s[1], &s[2]); return; }
-    pv_t *src = P->poly[0], *dst = P->poly[1];
+    if (all_in) { for (int i = 0; i < 3; i++) to_screen(P, in[i], &s[i]); shade_triangle(P, B, &s[0], &s[1], &s[2]); return; }
+    pv_t *src = B->poly[0], *dst = B->poly[1];
     for (int i = 0; i < 3; i++) src[i] = *in[i];
     int n = 3;
     for (int p = 0; p < 7; p++) {
@@ -985,7 +1014,7 @@ static void draw_tri(pipe_t *P, const pv_t *a, const pv_t *b, const pv_t *c) {
         if (n < 3) return;
     }
     for (int i = 0; i < n; i++) to_screen(P, &src[i], &s[i]);
-    for (int i = 1; i + 1 < n; i++) shade_triangle(P, &s[0], &s[i], &s[i + 1]);
+    for (int i = 1; i + 1 < n; i++) shade_triangle(P, B, &s[0], &s[i], &s[i + 1]);
 }
 /* lines and points: one pixel wide, varyings interpolated along the line */
 static void draw_point_sv(pipe_t *P, const sv_t *s) {
@@ -1079,7 +1108,12 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
     for (int i = 0; i < P->nwk; i++) {
         P->wk[i].P = P;
         if (!dxbc_exec_init(&P->wk[i].fx, o->u[0]->shader, &P->env[0], P->wk[i].fin, P->wk[i].fout)) {
-            for (int k = 0; k < i; k++) dxbc_exec_fini(&P->wk[k].fx);
+            for (int k = 0; k < i; k++) { dxbc_exec_fini(&P->wk[k].fx); dxbc_exec_fini(&P->wk[k].vx); }
+            kfree(P->wk); dxbc_exec_fini(&P->vx); return false;
+        }
+        if (!dxbc_exec_init(&P->wk[i].vx, o->u[1]->shader, &P->env[1], P->wk[i].vin, P->wk[i].vout)) {
+            dxbc_exec_fini(&P->wk[i].fx);
+            for (int k = 0; k < i; k++) { dxbc_exec_fini(&P->wk[k].fx); dxbc_exec_fini(&P->wk[k].vx); }
             kfree(P->wk); dxbc_exec_fini(&P->vx); return false;
         }
     }
@@ -1087,13 +1121,16 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
 }
 static void pipe_free(pipe_t *P) {
     dxbc_exec_fini(&P->vx);
-    for (int i = 0; i < P->nwk; i++) dxbc_exec_fini(&P->wk[i].fx);
-    kfree(P->wk); kfree(P->tris); kfree(P->pool); kfree(P);
+    for (int i = 0; i < P->nwk; i++) { dxbc_exec_fini(&P->wk[i].fx); dxbc_exec_fini(&P->wk[i].vx); }
+    if (P->bins) for (int i = 0; i < P->nwk; i++) { kfree(P->bins[i].tris); kfree(P->bins[i].pool); }
+    kfree(P->bins); kfree(P->wk); kfree(P);
 }
-/* assemble primitives of `mode` from n vertices (already through the vertex shader) */
-static void assemble(pipe_t *P, GLenum mode, pv_t **v, int n) {
+/* assemble primitives of `mode` from n vertices (already through the vertex shader):
+ * points and lines are drawn now; triangles go to tri[] (the third vertex provokes flat
+ * values) and *ntri counts them */
+static void assemble(pipe_t *P, GLenum mode, pv_t **v, int n, sl_tri3_t *tri, int *ntri) {
     #define FLAT(p) do { for (int k_ = 0; k_ < P->nvar; k_++) if (P->flat[k_]) P->flatv[k_] = (p)->v[k_]; } while (0)
-    #define TRI(a, b, c) do { if (v[a] && v[b] && v[c]) { FLAT(v[c]); draw_tri(P, v[a], v[b], v[c]); } } while (0)
+    #define TRI(a_, b_, c_) do { if (v[a_] && v[b_] && v[c_]) { tri[*ntri].a = v[a_]; tri[*ntri].b = v[b_]; tri[*ntri].c = v[c_]; (*ntri)++; } } while (0)
     switch (mode) {
     case 0: for (int i = 0; i < n; i++) if (v[i]) { FLAT(v[i]); draw_point_pv(P, v[i]); } break;
     case 1: for (int i = 0; i + 1 < n; i += 2) if (v[i] && v[i + 1]) { FLAT(v[i + 1]); draw_line_pv(P, v[i], v[i + 1]); } break;
@@ -1130,14 +1167,48 @@ static void sl_run(glctx_t *g, sl_obj_t *o, GLenum mode, int first, int count, G
     uint8_t *done = kzalloc(span);
     pv_t **list = kmalloc(sizeof(pv_t *) * count);
     if (!cache || !done || !list) { kfree(cache); kfree(done); kfree(list); pipe_free(P); return; }
+    /* mark the vertices used, shade them on all workers, then list them in draw order */
+    for (int i = 0; i < count; i++) {
+        uint32_t k = imm ? (uint32_t)i : idx ? (type == 0x1401 ? idx[i] : type == 0x1403 ? ((const uint16_t *)idx)[i] : ((const uint32_t *)idx)[i]) : (uint32_t)(first + i);
+        done[k - lo] = 1;
+    }
+    vjob_t vj = { P, cache, done, lo, span, imm };
+    if (span >= 64) smp_run(vertex_job, &vj); else vertex_job(&vj, 0, 1);
     for (int i = 0; i < count; i++) {
         uint32_t k = imm ? (uint32_t)i : idx ? (type == 0x1401 ? idx[i] : type == 0x1403 ? ((const uint16_t *)idx)[i] : ((const uint32_t *)idx)[i]) : (uint32_t)(first + i);
         uint32_t s = k - lo;
-        if (!done[s]) done[s] = run_vertex(P, k, imm ? &imm[k] : NULL, &cache[s]) ? 1 : 2;
-        list[i] = done[s] == 1 ? &cache[s] : NULL;
+        list[i] = done[s] == 2 ? &cache[s] : NULL;
     }
-    assemble(P, mode, list, count);
-    if (P->ntris) smp_run(raster_job, P);
+    sl_tri3_t *tri = mode >= 4 ? kmalloc(sizeof(sl_tri3_t) * (size_t)(count * 2 + 4)) : NULL;
+    int ntri = 0;
+    if (mode < 4 || tri) assemble(P, mode, list, count, tri, &ntri);
+    bool any = false;
+    if (ntri) {
+        /* each worker's bin, sized for its share of triangles (clipping can add a few) */
+        size_t need = (size_t)P->np * 3 + (size_t)P->nflat * 4;
+        P->bins = kzalloc(sizeof(sl_bin_t) * P->nwk);
+        bool ok = P->bins != NULL;
+        for (int w = 0; ok && w < P->nwk; w++) {
+            sl_bin_t *B = &P->bins[w];
+            B->cap = ntri / P->nwk * 2 + 64; B->cappool = (size_t)B->cap * MAX(need, 1);
+            B->tris = kmalloc(sizeof(sl_tri_t) * B->cap); B->pool = kmalloc(sizeof(float) * B->cappool);
+            if (!B->tris || !B->pool) ok = false;
+        }
+        if (ok) {
+            sjob_t sj = { P, tri, ntri };
+            if (ntri >= 32) smp_run(setup_job, &sj); else setup_job(&sj, 0, 1);
+            bool over = false;
+            for (int w = 0; w < P->nwk; w++) over |= P->bins[w].overflow;
+            if (over) {                                   /* again, all on this processor, growing as needed */
+                for (int w = 0; w < P->nwk; w++) { P->bins[w].n = 0; P->bins[w].npool = 0; P->bins[w].overflow = false; }
+                P->bins[0].grow = true;
+                setup_job(&sj, 0, 1);
+            }
+            any = true;
+        }
+    }
+    if (any) smp_run(raster_job, P);
+    kfree(tri);
     for (int i = 0; i < P->nwk; i++) P->s->pixels += P->wk[i].pixels;
     kfree(cache); kfree(done); kfree(list);
     pipe_free(P);

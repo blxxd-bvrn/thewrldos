@@ -320,18 +320,19 @@ static BOOL WINAPI StretchBlt(HDC dst, int x, int y, int w, int h, HDC src, int 
     canvas_t *dc = d->surf, *sc = s->surf;
     rect_t cl = dc->clip;
     int x0 = MAX(d->ox + x, cl.x), x1 = MIN(d->ox + x + w, cl.x + cl.w), y0 = MAX(d->oy + y, cl.y), y1 = MIN(d->oy + y + h, cl.y + cl.h);
-    for (int py = y0; py < y1; py++) {
+    /* the source column of each destination column, worked out once (no division per pixel) */
+    int cols = x1 - x0;
+    int *map = cols > 0 ? kmalloc(sizeof(int) * cols) : NULL;
+    if (map) for (int px = x0; px < x1; px++) { int i = px - (d->ox + x); map[px - x0] = s->ox + sx + (int)((int64_t)i * sw / w) - (sw < 0 ? 1 : 0); }
+    for (int py = y0; map && py < y1; py++) {
         int j = py - (d->oy + y);
         int syy = s->oy + sy + (int)((int64_t)j * sh / h) - (sh < 0 ? 1 : 0);
         if (syy < 0 || syy >= sc->h) continue;
         const uint32_t *srow = sc->px + (size_t)syy * sc->stride;
         uint32_t *drow = dc->px + (size_t)py * dc->stride;
-        for (int px = x0; px < x1; px++) {
-            int i = px - (d->ox + x);
-            int sxx = s->ox + sx + (int)((int64_t)i * sw / w) - (sw < 0 ? 1 : 0);
-            if (sxx >= 0 && sxx < sc->w) drow[px] = srow[sxx];
-        }
+        for (int px = x0; px < x1; px++) { int sxx = map[px - x0]; if ((unsigned)sxx < (unsigned)sc->w) drow[px] = srow[sxx]; }
     }
+    kfree(map);
     dc_end(d, sv);
     return 1;
 }

@@ -1477,9 +1477,11 @@ device manager's job is to say what the computer has and which driver runs it.
       Not there yet: geometry shaders, shadow comparisons, derivatives, cube maps.
     - **Several processors** (`src/kernel/smp.c`): the other processors of the machine start
       at boot as 3D workers (16 at most; `nosmp` on the kernel command line leaves them
-      asleep). The kernel still schedules tasks on the first processor; a GLSL draw sets its
-      triangles up there and then every processor rasterises and shades its own bands of 8
-      rows, so a 4-processor virtual machine draws about 2.5 times as fast.
+      asleep). The kernel still schedules tasks on the first processor. A GLSL draw is split
+      three ways: every processor runs the vertex shader on a share of the vertices, clips and
+      sets up a share of the triangles into its own list, then rasterises and shades its own
+      bands of 8 rows from all the lists in draw order. A 4-processor virtual machine draws
+      about 3.7 times as fast as one.
     - **Shader machine code** (`rust/src/jit.rs`): Direct3D 10 and GLSL shaders are compiled
       once to x86 SSE code (both editions; the 32-bit one when the processor has SSE2) instead
       of being interpreted, 4 to 11 times faster. Arithmetic, comparisons, logic, conversions,
