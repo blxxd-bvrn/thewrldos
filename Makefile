@@ -503,7 +503,7 @@ GST_DIR := /usr/lib/x86_64-linux-gnu/gstreamer-1.0
 GST_SCANNER_DIR := /usr/lib/x86_64-linux-gnu/gstreamer1.0/gstreamer-1.0
 GST_PLUGINS := coreelements typefindfunctions playback app audioconvert audioresample videoconvertscale volume autodetect \
                audiofx isomp4 matroska vpx opus opusparse openh264 faad videoparsersbad audioparsers codecalpha ossaudio \
-               vorbis flac mpg123 ogg subenc subparse debugutilsbad
+               vorbis flac mpg123 ogg subenc subparse debugutilsbad deinterlace videofilter
 # the OS has no GPU driver for Linux programs: a stand-in libEGL.so.1 (samples/linux-webkitgtk/stub)
 # replaces glvnd's, so WebKit gets the EGL display it insists on and renders on the CPU
 LXEGL := $(if $(LXWEBKITGTK),$(LXROOT)/Linux/usr/lib/x86_64-linux-gnu/.egl-stub)

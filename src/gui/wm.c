@@ -964,12 +964,20 @@ static void handle_key(key_event_t *e) {
         }
     }
     /* Alt pressed and let go on its own, or F10: the active window's menu bar, first menu */
-    static bool alt_alone;
+    /* Only a quick tap counts, as on Windows: not with Ctrl, Shift or the Win key held (a VM's
+     * Ctrl+Alt "release the mouse" chord used to open the File menu), not a release with no
+     * press seen, and not an Alt held down for more than a second. */
+    static bool alt_alone, alt_held;
+    static uint32_t alt_down_at;
     if (e->key == KEY_LALT) {
-        if (e->pressed) { alt_alone = true; return; }
-        if (alt_alone && wm_active && wm_active->nmenus && !pm.open) { alt_alone = false; open_menubar(wm_active, 0); pm.hot = 0; wm_need_redraw = true; return; }
-        alt_alone = false;
-    } else if (e->pressed) alt_alone = false;
+        if (e->pressed) {
+            if (!alt_held) { alt_held = true; alt_alone = !((e->mods | keyboard_mods()) & (MOD_CTRL | MOD_SHIFT)); alt_down_at = timer_ticks(); }
+            return;
+        }
+        bool tap = alt_held && alt_alone && timer_ticks() - alt_down_at < 1000 && !(keyboard_mods() & (MOD_CTRL | MOD_SHIFT));
+        alt_alone = alt_held = false;
+        if (tap && wm_active && wm_active->nmenus && !pm.open) { open_menubar(wm_active, 0); pm.hot = 0; wm_need_redraw = true; return; }
+    } else if (e->pressed || e->key == KEY_LCTRL || e->key == KEY_LSHIFT || e->key == KEY_RSHIFT || e->key == KEY_WIN) alt_alone = false;
     if (e->pressed && e->key == KEY_F10 && !(e->mods & (MOD_SHIFT | MOD_CTRL | MOD_ALT)) && wm_active && wm_active->nmenus && !pm.open) {
         open_menubar(wm_active, 0); pm.hot = 0; wm_need_redraw = true; return;
     }
