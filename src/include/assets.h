@@ -102,6 +102,7 @@ enum {
     ICON_CARDS = 75,
     ICON_PINBALL = 76,
     ICON_FPS = 77,
-    ICON_COUNT = 78
+    ICON_ZIP_FOLDER = 78,
+    ICON_COUNT = 79
 };
 #endif

@@ -596,7 +596,7 @@ static BUILTINS_A: &[Bi] = &[
     r(b"date", b_date, Some("show date (+FORMAT)")), c(b"uname", Some("system name (-a)")), c(b"ver", Some("OS version")),
     c(b"whoami", None), c(b"hostname", None), c(b"ipconfig", Some("network configuration (/renew, /dns A.B.C.D)")), c(b"ifconfig", None),
     c(b"ping", Some("send ICMP echo requests")), c(b"nslookup", Some("look up a host name")),
-    c(b"wget", Some("download a URL (http/https)")), r(b"unzip", b_unzip, Some("extract a .zip archive (unzip FILE [-d DIR] [-l])")), c(b"sha256sum", Some("SHA-256 of files")), c(b"js", Some("run JavaScript (js FILE or js -e CODE)")), c(b"display", Some("show or change the screen resolution")),
+    c(b"wget", Some("download a URL (http/https)")), r(b"unzip", b_unzip, Some("extract a .zip or .rar archive (unzip FILE [-d DIR] [-l])")), r(b"unrar", b_unzip, Some("extract a .rar or .zip archive (unrar x|e|l FILE [DIR])")), c(b"sha256sum", Some("SHA-256 of files")), c(b"js", Some("run JavaScript (js FILE or js -e CODE)")), c(b"display", Some("show or change the screen resolution")),
     c(b"play", Some("play a sound file (WAV, FLAC, MP3...)")), c(b"volume", Some("show or set the volume (0-100, mute)")), c(b"sndinfo", Some("sound card diagnostics")), c(b"curl", Some("print a URL")), c(b"ps", Some("list processes")), c(b"tasklist", None),
     c(b"kill", Some("terminate a process")), c(b"taskkill", None), c(b"free", Some("memory usage")), c(b"sync", Some("write changes to the system disk now")), c(b"mem", None),
     c(b"uptime", None), c(b"dmesg", Some("kernel log")), r(b"export", b_export, Some("set variables")), r(b"set", b_env, None),
@@ -1138,54 +1138,149 @@ unsafe fn b_xargs(s: &mut Sh, a: &mut Vec<Vec<u8>>, io: &Io) -> i32 {
     v.extend(d.split(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c)).filter(|w| !w.is_empty()).map(|w| w.to_vec()));
     match find_builtin(&v[0]) { Some(Bf::R(f)) => f(s, &mut v, io), Some(Bf::C) => call_c(s, &v, io), None => run_external(s, &mut v, io) }
 }
-/// unzip ARCHIVE [-d DIR] [-l]: stored and deflated members
+/// unzip ARCHIVE [-d DIR] [-l], unrar x|e|l ARCHIVE [DIR]: ZIP and RAR archives (crate::unarc)
 unsafe fn b_unzip(s: &mut Sh, a: &mut Vec<Vec<u8>>, io: &Io) -> i32 {
-    let (mut zip, mut dest, mut list) = (None, None, false);
+    let cmd = a[0].clone();
+    let rar = cmd.eq_ignore_ascii_case(b"unrar");
+    let (mut zip, mut dest, mut list, mut flat) = (None, None, false, false);
     let mut i = 1;
     while i < a.len() {
         match a[i].as_slice() {
             b"-d" if i + 1 < a.len() => { i += 1; dest = Some(a[i].clone()); }
-            b"-l" => list = true,
-            b"-o" | b"-q" => {}
-            _ => zip = Some(a[i].clone()),
+            b"-l" | b"l" | b"lb" | b"v" if !(zip.is_none() && !rar && a[i] != b"-l") => list = true,
+            b"x" if rar && zip.is_none() => {}
+            b"e" if rar && zip.is_none() => flat = true,
+            b"-o" | b"-q" | b"-y" | b"-o+" => {}
+            x if zip.is_none() => zip = Some(x.to_vec()),
+            x => dest = Some(x.to_vec()),
         }
         i += 1;
     }
-    let Some(zip) = zip else { errm(io, b"usage: unzip ARCHIVE [-d DIR] [-l]\n"); return 1 };
+    let usage: &[u8] = if rar { b"usage: unrar x|e|l ARCHIVE [DIR]\n" } else { b"usage: unzip ARCHIVE [-d DIR] [-l]\n" };
+    let Some(zip) = zip else { errm(io, usage); return 1 };
     let z = resolve(&zip, Some(&s.cwd));
-    if z.is_null() || (*z).dir != 0 || (*z).size < 22 { errm(io, &cat(&[b"unzip: cannot open ", &zip, b"\n"])); return 1; }
+    if z.is_null() || (*z).dir != 0 { errm(io, &cat(&[&cmd, b": cannot open ", &zip, b"\n"])); return 1; }
     let d = node_data(z).to_vec();
-    let Some(entries) = sl::zip_entries(&d) else { errm(io, &cat(&[b"unzip: ", &zip, b" is not a zip archive\n"])); return 1 };
+    if list {
+        let (mut files, mut bytes) = (0u32, 0u64);
+        let r = crate::unarc::list(&d, &mut |m| {
+            if !m.dir { out(io, &cat(&[alloc::format!("{:12}  ", m.size).as_bytes(), m.name, b"\n"])); files += 1; bytes += m.size; }
+            true
+        });
+        if let Err(e) = r { errm(io, &cat(&[&cmd, b": ", &zip, b": ", e.text().as_bytes(), b"\n"])); return 1; }
+        out(io, alloc::format!("{} file(s), {} KB\n", files, bytes / 1024).as_bytes());
+        return 0;
+    }
     let mut root = match &dest { Some(x) if has_drive(x) => vp::lcpy(x, 512), Some(x) => vp::join(&s.cwd, x, 512), None => vp::lcpy(&s.cwd, 512) };
     vp::normalize(&mut root);
-    if !list && !mkdirs(&root) { errm(io, &cat(&[b"unzip: cannot create ", &root, b"\n"])); return 1; }
-    let (mut files, mut bytes, mut rc) = (0u32, 0u64, 0);
-    for e in entries {
-        if list { out(io, &cat(&[alloc::format!("{:10}  ", e.usize).as_bytes(), &e.name, b"\n"])); files += 1; bytes += e.usize as u64; continue; }
-        let mut full = vp::join(&root, &e.name, 512);
-        if full.last() == Some(&b'\\') { full.pop(); mkdirs(&full); continue; }
-        let dir = vp::dirname(&full, 512);
-        if !mkdirs(&dir) { errm(io, &cat(&[b"unzip: cannot create ", &dir, b"\n"])); rc = 1; continue; }
-        let Some(src) = e.data else {
-            if e.method != 0 || e.usize != 0 { errm(io, &cat(&[b"unzip: ", &e.name, b": truncated\n"])); rc = 1; }
-            continue;
-        };
-        let mut buf = Vec::new();
-        if buf.try_reserve_exact(e.usize.max(1) as usize).is_err() { errm(io, &cat(&[b"unzip: out of memory for ", &e.name, b"\n"])); rc = 1; continue; }
-        buf.resize(e.usize as usize, 0);
-        let ok = match e.method {
-            0 => { if src.len() == buf.len() { buf.copy_from_slice(src); true } else { false } }
-            8 => crate::inflate::inflate_raw(src, &mut buf).is_ok_and(|r| r.written == buf.len()),
-            _ => false,
-        };
-        let fc = cvec(&full);
-        if !ok { errm(io, &cat(&[b"unzip: ", &e.name, alloc::format!(": unsupported or damaged entry (method {})\n", e.method).as_bytes()])); rc = 1; }
-        else if vfs_write_file(fc.as_ptr() as *const c_char, buf.as_ptr() as *const c_void, buf.len() as u32).is_null() { errm(io, &cat(&[b"unzip: cannot write ", &full, b"\n"])); rc = 1; }
-        else { files += 1; bytes += buf.len() as u64; }
+    let mut st = ArcStatus::zeroed();
+    let n = extract_into(&d, &root, flat, &mut st, Some(io));
+    if n < 0 { errm(io, &cat(&[&cmd, b": ", &zip, b": ", sl::cstr(&st.error), b"\n"])); return 1; }
+    out(io, alloc::format!("extracted {} file(s){}\n", st.files, if st.failed > 0 { alloc::format!(", {} failed", st.failed) } else { alloc::string::String::new() }).as_bytes());
+    if st.failed > 0 { 1 } else { 0 }
+}
+
+/// How an extraction is going, shared with Explorer's Extract dialog (src/apps/extract.c).
+#[repr(C)]
+pub struct ArcStatus {
+    pub percent: c_int,
+    pub files: c_int,
+    pub failed: c_int,
+    pub done: CBool,
+    pub cancel: CBool,
+    pub current: [u8; 160],
+    /// the archive's own problem (when the result is -1), or the first member that failed
+    pub error: [u8; 256],
+}
+impl ArcStatus { fn zeroed() -> ArcStatus { ArcStatus { percent: 0, files: 0, failed: 0, done: 0, cancel: 0, current: [0; 160], error: [0; 256] } } }
+fn set_cstr(dst: &mut [u8], s: &[u8]) { let n = s.len().min(dst.len() - 1); dst[..n].copy_from_slice(&s[..n]); dst[n] = 0; }
+
+/// Progress inside the member being decoded: the archive span it covers, and its size
+static mut ARC_ST: *mut ArcStatus = null_mut();
+static mut ARC_SPAN: (usize, usize, usize, u64) = (0, 0, 1, 1);
+fn arc_tick(done: u64) {
+    unsafe {
+        if !ARC_ST.is_null() {
+            let (a, b, total, size) = ARC_SPAN;
+            let at = a + ((b.saturating_sub(a)) as u64 * done.min(size) / size.max(1)) as usize;
+            (*ARC_ST).percent = (at as u64 * 100 / total.max(1) as u64) as c_int;
+        }
         task_yield();
     }
-    out(io, alloc::format!("{}{} file(s), {} KB\n", if list { "" } else { "extracted " }, files, bytes / 1024).as_bytes());
-    rc
+}
+
+/// Extracts archive bytes `d` into the folder `root` (made where missing); with `flat`, every
+/// file goes straight into `root`. Returns the files written, or -1 when the archive itself
+/// could not be read (the reason is in st.error).
+unsafe fn extract_into(d: &[u8], root: &[u8], flat: bool, st: &mut ArcStatus, io: Option<&Io>) -> i32 {
+    crate::unarc::set_tick(arc_tick);
+    if !mkdirs(root) { set_cstr(&mut st.error, &cat(&[b"cannot create the folder ", root])); return -1; }
+    ARC_ST = st as *mut ArcStatus;
+    let total = d.len().max(1);
+    let mut last_at = 0usize;
+    // the span of the next member is known only once it is handed over; until then the
+    // tick estimates within [last member end, archive end]
+    ARC_SPAN = (0, total, total, u64::MAX);
+    let r = crate::unarc::extract(d, &mut |m| {
+        let name = if flat { match m.name.iter().rposition(|&c| c == b'\\') { Some(k) => &m.name[k + 1..], None => m.name } } else { m.name };
+        set_cstr(&mut st.current, name);
+        st.percent = (m.at as u64 * 100 / total as u64) as c_int;
+        ARC_SPAN = (m.at, total, total, u64::MAX);
+        last_at = m.at;
+        let full = vp::join(root, name, 512);
+        let fail = |st: &mut ArcStatus, why: &[u8]| {
+            st.failed += 1;
+            if st.error[0] == 0 { set_cstr(&mut st.error, &cat(&[name, b": ", why])); }
+            if let Some(io) = io { errm(io, &cat(&[name, b": ", why, b"\n"])); }
+        };
+        if m.dir { if !flat && !mkdirs(&full) { fail(st, b"cannot create the folder"); } }
+        else {
+            match &m.data {
+                Err(e) => fail(st, e.text().as_bytes()),
+                Ok(v) => {
+                    let dir = vp::dirname(&full, 512);
+                    if !mkdirs(&dir) { fail(st, b"cannot create its folder"); }
+                    else if v.len() > u32::MAX as usize || vfs_write_file(cvec(&full).as_ptr() as *const c_char, v.as_ptr() as *const c_void, v.len() as u32).is_null() { fail(st, b"cannot be written (is the disk full?)"); }
+                    else { st.files += 1; }
+                }
+            }
+        }
+        task_yield();
+        st.cancel == 0
+    });
+    ARC_ST = null_mut();
+    let _ = last_at;
+    match r {
+        Ok(_) => { st.percent = 100; st.files }
+        Err(e) => { set_cstr(&mut st.error, e.text().as_bytes()); -1 }
+    }
+}
+
+/// For Explorer: extracts the archive at `arc` into `dest`, updating `st` as it goes (run it
+/// on its own task; it yields often). Sets st.done at the end.
+#[no_mangle]
+pub unsafe extern "C" fn archive_extract(arc: *const c_char, dest: *const c_char, st: *mut ArcStatus) -> c_int {
+    if st.is_null() { return -1; }
+    let st = &mut *st;
+    let (a, dst) = (cbytes(arc).to_vec(), cbytes(dest).to_vec());
+    let z = resolve(&a, None);
+    let n = if z.is_null() || (*z).dir != 0 { set_cstr(&mut st.error, b"the archive could not be opened"); -1 }
+        else {
+            let mut d = Vec::new();
+            let src = node_data(z);
+            if d.try_reserve_exact(src.len()).is_err() { set_cstr(&mut st.error, b"not enough memory to open the archive"); -1 }
+            else { d.extend_from_slice(src); let mut root = vp::lcpy(&dst, 512); vp::normalize(&mut root); extract_into(&d, &root, false, st, None) }
+        };
+    st.done = 1;
+    n
+}
+
+/// For Explorer: 1 when `path` is a ZIP or RAR archive this OS can open.
+#[no_mangle]
+pub unsafe extern "C" fn archive_detect(path: *const c_char) -> CBool {
+    let z = resolve(cbytes(path), None);
+    if z.is_null() || (*z).dir != 0 { return 0; }
+    crate::unarc::kind(node_data(z)).is_some() as CBool
 }
 /// Every folder of an absolute path ("C:\a\b"), made where missing.
 unsafe fn mkdirs(path: &[u8]) -> bool {

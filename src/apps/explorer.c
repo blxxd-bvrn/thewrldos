@@ -280,6 +280,7 @@ static void ctx_cb(void *ctx, int id) {
     case 20: about_open(); break;
     case 21: wm_close(w); break;
     case 22: if (it && it->node && !it->node->dir) notepad_open(it->path); break;
+    case 23: if (it && it->node && !it->node->dir) extract_open(it->path); break;
     }
     w->dirty = true;
 }
@@ -297,6 +298,9 @@ static void show_ctx(window_t *w, int sx, int sy) {
         }
         static menu_item_t m[] = { { "Open", 1, 0 }, { "Edit with Notepad", 22, 0 }, { "-", 0, 0 }, { "Cut", 6, 0 }, { "Copy", 5, 0 }, { "-", 0, 0 }, { "Delete", 2, 0 }, { "Rename", 3, 0 }, { "-", 0, 0 }, { "Properties", 4, 0 } };
         bool ro = it->node && (it->node->readonly || (it->node->parent && it->node->parent->readonly));
+        /* archives: "Extract All..." in place of "Edit with Notepad" */
+        bool arc = it->node && !it->node->dir && archive_is_known(it->path);
+        m[1] = arc ? (menu_item_t){ "Extract All...", 23, 0 } : (menu_item_t){ "Edit with Notepad", 22, 0 };
         m[1].flags = it->node && !it->node->dir ? 0 : MI_DISABLED;
         m[3].flags = m[6].flags = m[7].flags = ro || !it->node ? MI_DISABLED : 0;
         popup_menu(sx, sy, m, 10, ctx_cb, w);

@@ -565,6 +565,17 @@ def ic_package():
     line(i, [(22, 66), (38, 72)], hexc("#FFF2D8"), 3)
     poly(i, [(42, 2), (58, 2), (58, 22), (68, 22), (50, 42), (32, 22), (42, 22)], hexc("#7CE07C"), hexc("#1E8E1E"), ol=hexc("#106010"), ow=1.4)
     return i
+def ic_zip_folder():
+    """a compressed (zipped or RAR) folder: a folder closed with a zipper down its front"""
+    i = new()
+    folder_shape(i, back="#D9A93A", front1="#FFE69A", front2="#EDB848")
+    rect(i, 43, 38, 55, 86, hexc("#E9ECF2"), hexc("#9AA2B0"), ol=hexc("#5E6676"), ow=1.2)
+    for y in range(41, 84, 5):
+        rect(i, 44, y, 49, y + 2.4, hexc("#FFFFFF"), hexc("#8C94A4"))
+        rect(i, 49, y + 2.5, 54, y + 4.9, hexc("#FFFFFF"), hexc("#8C94A4"))
+    rect(i, 41, 48, 57, 62, hexc("#F6F8FB"), hexc("#7F8898"), r=2, ol=hexc("#4E5666"), ow=1.4)
+    rect(i, 46, 62, 52, 74, hexc("#C9CFDA"), hexc("#6E7788"), r=2, ol=hexc("#4E5666"), ow=1.2)
+    return i
 def ic_browser():
     """The WRLD Browser: the globe with a cyan orbit ring"""
     i = new(); logo_globe(i, 10, 10, 90, 90)
@@ -696,6 +707,7 @@ ICONS = [
     ("browser", ic_browser), ("stop", ic_stop), ("refresh", ic_refresh), ("home", ic_home), ("lock", ic_lock),
     ("media_player", ic_media_player), ("music_file", ic_music_file), ("package", ic_package), ("wordpad", ic_wordpad),
     ("drive_cd", ic_drive_cd), ("drive_usb", ic_drive_usb), ("cards", ic_cards), ("pinball", ic_pinball), ("fps", ic_fps),
+    ("zip_folder", ic_zip_folder),
 ]
 SIZES = [48, 32, 16]
 

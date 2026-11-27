@@ -324,11 +324,14 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     `C:\Samples\JavaScript demo.html` (linked from the home page).
   - The home page links to sites that work well, such as Wikipedia, Hacker News, CNN Lite and
     68k.news.
-  - It has DuckDuckGo search; you can also type words in the address bar to search.
+  - It has DuckDuckGo search; you can also type words in the address bar to search (the
+    WebKit browser of the 64-bit edition uses The WRLD Web, below).
   - `C:\Samples\Welcome.html` shows everything it can render.
 - **Command Prompt** examples:
   - `ipconfig`, `ping example.com`, `nslookup example.com`;
   - `wget https://example.com/file.zip` downloads a file; `curl URL` prints it;
+  - `unzip file.zip` or `unrar x file.rar [folder]` extracts an archive (`-l` / `unrar l` lists
+    it);
   - `theme list`, `theme aero`, `theme plex 200`, `theme saturation -40`, `theme lightness 20`;
   - `js -e "[1,2,3].map(x => x * x)"` or `js script.js` runs JavaScript;
   - `open control personalization` opens Control Panel at Personalization;
@@ -363,7 +366,17 @@ You can also start Setup from the **Install THE WRLD OS** icon on the live deskt
     but WebKit does not yet hand it to the page as files, so drag-and-drop uploads do not work
     yet (use the page's Browse button). Inside the browser, text, links and pictures drag and
     drop as on any desktop.
+  - onto empty space on the desktop: desktop icons stay where you drop them, snapped to the
+    grid, as on Windows without Auto Arrange (kept in `C:\WRLD\deskpos.txt`); the others fill
+    the free grid cells from the top left.
   A right-click during the drag cancels it.
+- **Archives (ZIP and RAR)**: double-click a `.zip` or `.rar` file, or right-click it and
+  choose *Extract All...*. *Extract Compressed Folder* suggests a folder next to the archive
+  named after it, shows a progress bar and the file being extracted (Cancel keeps what is
+  done), then opens the folder. It reads ZIP (stored and deflated, ZIP64, self-extracting and
+  padded archives) and RAR from version 2.9 to 7, solid archives included, with RAR's PPMd
+  text compression and its filters for programs, pictures and sound. Archives that need a
+  password or are split into parts (`.part1.rar`, `.r00`) are reported, not extracted.
 
 ## What's inside
 
@@ -703,6 +716,18 @@ The kernel is moving from C to Rust one module at a time. `rust/` is a `no_std` 
     look the same pixel for pixel on both editions. Fixed: a path with numbers after `Z`
     (`M0 0Z 5 5`) and a huge or infinite angle (`rotate(1e10)`) froze the browser in endless
     loops, and an exponent such as `1e-12147483647` took seconds.
+  - **Archives (`rust/src/unarc.rs`, `rust/src/ppmd.rs`):** ZIP and RAR extraction for
+    Explorer's *Extract All...* (`src/apps/extract.c`) and the `unzip` / `unrar` commands,
+    written for this project from the formats' published descriptions (decompression only):
+    RAR 2.9-4.x's LZ coder, its PPMd variant H model and its standard filters (x86 E8/E8E9,
+    Itanium, delta, RGB, audio), RAR 5/7's LZ coder and filters (delta, x86, ARM), and a ZIP
+    reader with ZIP64, prefixes and a local-header fallback. Every member's CRC-32 is checked,
+    names are made safe (no drive letters or `..`), and the decoders give other tasks the
+    processor every 256 KB because kernel tasks are not preempted. Tested on the host with
+    libarchive's test archives (BSD licence; `WRLD_RAR_TESTS=folder cargo test unarc`), on
+    both 64-bit and 32-bit targets: every RAR 2.9-5 sample decodes with a matching checksum,
+    including a 241 MB solid PPMd/LZ stream, and the deliberately damaged ones are refused
+    without a crash.
   - **Audio files and the ad blocker (`rust/src/pcm.rs`, `rust/src/adblock.rs`; were
     `src/media/pcm.c` and `src/apps/adblock.c`):** the media player's WAV (PCM, float, A-law,
     mu-law, IMA and Microsoft ADPCM), AIFF/AIFC and Sun .au reader, and the browser's ad
@@ -1097,6 +1122,15 @@ programs run in ring 3 and call the kernel with Linux's system call numbers.
     the time left, where the file goes and the transfer rate, "Close this dialog box when
     download completes", and Open / Open Folder. Run keeps the file in `C:\WRLD\Temp\Downloads`
     and opens it when it is complete.
+  - **The WRLD Web** is the search page (`wrld://web`): the search box, the start page and
+    words typed in the address bar go there. It asks DuckDuckGo's and Brave's HTML result pages
+    at once (`samples/linux-webkitgtk/wrldweb-search.h`, through the browser's proxy when one
+    is set), merges the results one from each in turn without duplicates, and shows them on
+    its own page; when neither answers it offers links to search on either site directly.
+  - **A page that stops responding** shows a bar above it: *Wait* keeps waiting, *Reload page*
+    stops that page's web process and loads it again, so one stuck page no longer leaves the
+    browser frozen. The browser writes its messages (with GStreamer's warnings, for video) to
+    `C:\WRLD\Temp\wrldweb.log`.
   - **Clipboard and drag and drop** go through `wrldcomp` (wl_data_device,
     `samples/linux-wayland/wrldcomp-data.h`): a copy in a program becomes THE WRLD OS's
     clipboard and the other way round, drags inside a program work, and files dropped on the
@@ -2038,5 +2072,10 @@ docs/screenshots/  the screenshots in this README
   unmodified; the licence text is at the top of each source file.
 - Root certificates: the Mozilla CA certificate store, as shipped in Debian/Ubuntu's
   `ca-certificates` package.
+- Archives: the PPMd compression algorithm by Dmitry Shkarin (public domain), which RAR uses
+  for text; the decoder in `rust/src/ppmd.rs` was written for this project. RAR is a format of
+  RARLAB; THE WRLD OS only extracts it and contains no RARLAB code. The RAR and ZIP archives the
+  tests read come from libarchive's test suite (BSD licence) and are downloaded for testing,
+  not shipped.
 - Everything else (kernel, drivers, network stack, browser, DOM, ad blocker, GUI, applications,
   Win32 subsystem, shell, artwork) was written for this project.

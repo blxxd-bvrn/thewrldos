@@ -15,6 +15,8 @@ int file_icon(vnode_t *n);
 const char *file_type_name(vnode_t *n);
 
 void explorer_open(const char *path);
+void extract_open(const char *archive);       /* Extract Compressed Folder (src/apps/extract.c) */
+bool archive_is_known(const char *path);      /* a .zip or .rar it can extract */
 bool shell_drop_files(const char *dir, const char *paths, bool copy);   /* move / copy dropped files into a folder */
 void notepad_open(const char *path);
 void terminal_open(const char *script, const char *cwd);

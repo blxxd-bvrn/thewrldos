@@ -84,6 +84,7 @@ int file_icon(vnode_t *n) {
     if (!strcasecmp(e, "sh") || !strcasecmp(e, "bash") || !strcasecmp(e, "bat") || !strcasecmp(e, "cmd")) return ICON_SCRIPT;
     if (!strcasecmp(e, "dmg") || !strcasecmp(e, "img") || !strcasecmp(e, "iso")) return ICON_DMG;
     if (!strcasecmp(e, "deb") || !strcasecmp(e, "rpm")) return ICON_PACKAGE;
+    if (!strcasecmp(e, "zip") || !strcasecmp(e, "rar") || !strcasecmp(e, "cbz") || !strcasecmp(e, "cbr")) return ICON_ZIP_FOLDER;
     if (!strcasecmp(e, "wrldstyle") || !strcasecmp(e, "wrldlogon")) return ICON_CP_APPEARANCE;
     if (!strcasecmp(e, "wav") || !strcasecmp(e, "mp3") || !strcasecmp(e, "wma") || !strcasecmp(e, "m3u")) return ICON_MUSIC_FILE;
     if (!strcasecmp(e, "bmp") || !strcasecmp(e, "png") || !strcasecmp(e, "jpg") || !strcasecmp(e, "jpeg") || !strcasecmp(e, "gif")) return ICON_IMAGE_FILE;
@@ -113,6 +114,9 @@ const char *file_type_name(vnode_t *n) {
     if (!strcasecmp(e, "dmg")) return "Apple Disk Image";
     if (!strcasecmp(e, "deb")) return "Debian Software Package";
     if (!strcasecmp(e, "rpm")) return "RPM Software Package";
+    if (!strcasecmp(e, "zip")) return "Compressed (zipped) Folder";
+    if (!strcasecmp(e, "rar")) return "RAR Archive";
+    if (!strcasecmp(e, "cbz") || !strcasecmp(e, "cbr")) return "Comic Book Archive";
     if (!strcasecmp(e, "bmp")) return "Bitmap Image";
     if (!strcasecmp(e, "dll")) return "Application Extension";
     if (!strcasecmp(e, "lnk")) return "Shortcut";
@@ -206,6 +210,8 @@ bool shell_open(const char *path, const char *cwd) {
         else { char root[4] = { l, ':', '\\', 0 }; notify_balloon("Disk image mounted", msg); explorer_open(root); }
     } else if (!strcasecmp(e, "deb") || !strcasecmp(e, "rpm")) {
         pkg_installer_open(full);
+    } else if (!strcasecmp(e, "zip") || !strcasecmp(e, "rar") || !strcasecmp(e, "cbz") || !strcasecmp(e, "cbr")) {
+        extract_open(full);
     } else if (mdec_known_ext(e)) {
         mediaplayer_open(full);
     } else if (!strcasecmp(e, "wrldlogon")) {

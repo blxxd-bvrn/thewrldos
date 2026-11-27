@@ -41,6 +41,8 @@ pub mod pcm;
 pub mod adblock;
 pub mod http;
 pub mod wpdoc;
+pub mod unarc;
+pub mod ppmd;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]
 pub mod html;
 #[cfg(any(feature = "kernel", feature = "htmldoc"))]

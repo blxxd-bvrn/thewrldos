@@ -968,6 +968,7 @@ static void desk_ctx_cb(void *ctx, int id) {
     case 11: { char p[256]; for (int k = 1; k < 100; k++) { snprintf(p, sizeof p, USER_DESKTOP "\\New Folder%s", k == 1 ? "" : ""); if (k > 1) snprintf(p, sizeof p, USER_DESKTOP "\\New Folder (%d)", k); if (!vfs_resolve(p, NULL)) { vfs_create(p, NULL, true); break; } } desktop_refresh(); break; }
     case 12: { char p[256]; for (int k = 1; k < 100; k++) { if (k == 1) snprintf(p, sizeof p, USER_DESKTOP "\\New Text Document.txt"); else snprintf(p, sizeof p, USER_DESKTOP "\\New Text Document (%d).txt", k); if (!vfs_resolve(p, NULL)) { vfs_create(p, NULL, false); break; } } desktop_refresh(); break; }
     case 13: control_open("personalization"); break;
+    case 15: if (i >= 0 && dicons[i].node) extract_open(dicons[i].path); break;
     case 14: { extern void recycle_empty(void); recycle_empty(); break; }
     }
 }
@@ -1042,6 +1043,10 @@ void desktop_mouse(int type, int x, int y, int btn) {
                 static menu_item_t rb[] = { { "Open", 1, 0 }, { "Empty Recycle Bin", 14, 0 } };
                 if (!strcmp(dicons[i].path, "::recycle")) popup_menu(x, y, rb, 2, desk_ctx_cb, (void *)(uintptr_t)i);
                 else if (!dicons[i].node) { static menu_item_t m2[] = { { "Open", 1, 0 }, { "-", 0, 0 }, { "Properties", 4, 0 } }; popup_menu(x, y, m2, 3, desk_ctx_cb, (void *)(uintptr_t)i); }
+                else if (!dicons[i].node->dir && archive_is_known(dicons[i].path)) {
+                    static menu_item_t ma[] = { { "Open", 1, 0 }, { "Extract All...", 15, 0 }, { "-", 0, 0 }, { "Delete", 2, 0 }, { "Rename", 3, 0 }, { "-", 0, 0 }, { "Properties", 4, 0 } };
+                    popup_menu(x, y, ma, 7, desk_ctx_cb, (void *)(uintptr_t)i);
+                }
                 else popup_menu(x, y, m, 6, desk_ctx_cb, (void *)(uintptr_t)i);
             } else {
                 static menu_item_t m[] = { { "Refresh", 10, 0 }, { "-", 0, 0 }, { "New Folder", 11, 0 }, { "New Text Document", 12, 0 }, { "-", 0, 0 }, { "Properties", 13, 0 } };
