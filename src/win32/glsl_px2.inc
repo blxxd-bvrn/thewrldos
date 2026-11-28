@@ -142,6 +142,66 @@ static inline void PX(frag_out)(sl_wk_t *W, int x, int y, float z, const float *
     if (!P->t.flip) nv |= 0xFF000000u;                  /* the window has no alpha */
     *px = nv;
 }
+#ifndef SL_X87
+/* the output stage for four pixels at once, as component vectors: the same operations as
+ * frag_out lane by lane (MIN, MAX and CLAMP keep their operand order, so the bits match) */
+static inline __m128 PX(clamp4)(__m128 v) { return _mm_min_ps(_mm_set1_ps(1), _mm_max_ps(_mm_setzero_ps(), v)); }
+static inline __m128 PX(bf4)(GLenum f, int ch, const __m128 *S, const __m128 *D, const float *bc) {
+    __m128 one = _mm_set1_ps(1);
+    switch (f) {
+    case 0: return _mm_setzero_ps(); case 1: return one;
+    case 0x0300: return S[ch]; case 0x0301: return _mm_sub_ps(one, S[ch]);
+    case 0x0302: return S[3]; case 0x0303: return _mm_sub_ps(one, S[3]);
+    case 0x0304: return D[3]; case 0x0305: return _mm_sub_ps(one, D[3]);
+    case 0x0306: return D[ch]; case 0x0307: return _mm_sub_ps(one, D[ch]);
+    case 0x0308: return ch == 3 ? one : _mm_min_ps(S[3], _mm_sub_ps(one, D[3]));
+    case 0x8001: return _mm_set1_ps(bc[ch]); case 0x8002: return _mm_set1_ps(1 - bc[ch]);
+    case 0x8003: return _mm_set1_ps(bc[3]); case 0x8004: return _mm_set1_ps(1 - bc[3]);
+    }
+    return one;
+}
+static inline __m128 PX(eq4)(GLenum e, __m128 a, __m128 b) {
+    switch (e) { case 0x800A: return _mm_sub_ps(a, b); case 0x800B: return _mm_sub_ps(b, a); case 0x8007: return _mm_min_ps(a, b); case 0x8008: return _mm_max_ps(a, b); }
+    return _mm_add_ps(a, b);
+}
+/* pixels x..x+3 of row y whose bits are in keep, colours c (component vectors) */
+static inline void PX(out4)(sl_wk_t *W, int x, int y, const float *zq, const float *c, uint32_t keep) {
+    pipe_t *P = W->P;
+    __m128 S[4];
+    for (int i = 0; i < 4; i++) { __m128 v = _mm_loadu_ps(c + 4 * i); S[i] = PX(clamp4)(_mm_and_ps(v, _mm_cmpord_ps(v, v))); }
+    if (P->alpha_test) {
+        float a[4]; _mm_storeu_ps(a, S[3]);
+        for (int l = 0; l < 4; l++) if ((keep & (1u << l)) && !PX(test_alpha)(P->s->alpha_func, a[l], P->s->alpha_ref)) keep &= ~(1u << l);
+    }
+    if (!keep) return;
+    float *dz = P->t.depth + (size_t)y * P->t.w + x;
+    if (P->depth_write) for (int l = 0; l < 4; l++) if (keep & (1u << l)) dz[l] = 1 - zq[l];
+    W->pixels += __builtin_popcount(keep);
+    if (!P->any_mask) return;
+    uint32_t *px = P->t.c->px + (size_t)y * P->t.c->stride + x;
+    /* a partial quad touches only its own pixels: the next ones may be another worker's */
+    __m128i old;
+    if (keep == 15) old = _mm_loadu_si128((const __m128i *)px);
+    else { uint32_t o[4] = { 0, 0, 0, 0 }; for (int l = 0; l < 4; l++) if (keep & (1u << l)) o[l] = px[l]; old = _mm_loadu_si128((const __m128i *)o); }
+    __m128i m255 = _mm_set1_epi32(255);
+    __m128i oc[4] = { _mm_and_si128(_mm_srli_epi32(old, 16), m255), _mm_and_si128(_mm_srli_epi32(old, 8), m255), _mm_and_si128(old, m255), _mm_srli_epi32(old, 24) };
+    struct gl2 *gx = P->g->x;
+    __m128 O[4];
+    if (P->blend) {
+        __m128 D[4], k255 = _mm_set1_ps(255.0f);
+        for (int i = 0; i < 4; i++) D[i] = _mm_div_ps(_mm_cvtepi32_ps(oc[i]), k255);
+        for (int i = 0; i < 3; i++) O[i] = PX(eq4)(gx->beq, _mm_mul_ps(S[i], PX(bf4)(gx->bsrc, i, S, D, gx->blend_color)), _mm_mul_ps(D[i], PX(bf4)(gx->bdst, i, S, D, gx->blend_color)));
+        O[3] = PX(eq4)(gx->beq_a, _mm_mul_ps(S[3], PX(bf4)(gx->bsrc_a, 3, S, D, gx->blend_color)), _mm_mul_ps(D[3], PX(bf4)(gx->bdst_a, 3, S, D, gx->blend_color)));
+    } else for (int i = 0; i < 4; i++) O[i] = S[i];
+    __m128i ch[4];
+    for (int i = 0; i < 4; i++)
+        ch[i] = gx->cmask[i] ? _mm_cvttps_epi32(_mm_add_ps(_mm_mul_ps(PX(clamp4)(O[i]), _mm_set1_ps(255.0f)), _mm_set1_ps(0.5f))) : oc[i];
+    __m128i nv = _mm_or_si128(_mm_or_si128(_mm_slli_epi32(ch[0], 16), _mm_slli_epi32(ch[1], 8)), _mm_or_si128(ch[2], _mm_slli_epi32(ch[3], 24)));
+    if (!P->t.flip) nv = _mm_or_si128(nv, _mm_set1_epi32((int)0xFF000000u));
+    if (keep == 15) _mm_storeu_si128((__m128i *)px, nv);
+    else { uint32_t o[4]; _mm_storeu_si128((__m128i *)o, nv); for (int l = 0; l < 4; l++) if (keep & (1u << l)) px[l] = o[l]; }
+}
+#endif
 /* a row's pixels xs..xe, four at a time: those inside the depth range that pass the
  * depth test are interpolated into the component vectors and shaded together */
 /* not static: its float arguments then pass the standard way into the SSE copy */
@@ -173,11 +233,31 @@ SL_ENTRY void PX(raster_quads)(sl_wk_t *W, const sl_tri_t *T, const float *pl, i
             for (int l = 0; l < 4; l++) { o[l] = px0 + l; o[4 + l] = fy; o[8 + l] = zq[l]; o[12 + l] = wq[l]; }
         }
         uint32_t keep = dxbc_quad_run(W->q, live);
+        if (!keep) continue;
+#ifndef SL_X87
+#ifdef SL_VERIFY
+        {   /* both ways on the same pixels: the four-pixel output must match frag_out */
+            uint32_t *px = P->t.c->px + (size_t)y * P->t.c->stride + x; float *dzz = dz + x;
+            uint32_t sp[4], sv[4], a[4]; float sz[4], zv[4], zs[4]; uint32_t pv = W->pixels;
+            for (int l = 0; l < 4; l++) if (keep & (1u << l)) { sp[l] = px[l]; sz[l] = dzz[l]; }
+            PX(out4)(W, x, y, zq, qo, keep);
+            for (int l = 0; l < 4; l++) if (keep & (1u << l)) { sv[l] = px[l]; zv[l] = dzz[l]; px[l] = sp[l]; dzz[l] = sz[l]; }
+            uint32_t pv4 = W->pixels; W->pixels = pv;
+            for (int l = 0; l < 4; l++) if (keep & (1u << l)) { float cc[4] = { qo[l], qo[4 + l], qo[8 + l], qo[12 + l] }; PX(frag_out)(W, x + l, y, zq[l], cc); a[l] = px[l]; zs[l] = dzz[l]; }
+            static int bad;
+            for (int l = 0; l < 4; l++) if ((keep & (1u << l)) && (a[l] != sv[l] || memcmp(&zs[l], &zv[l], 4)) && bad < 20) { bad++; klog("verify: pixel %d,%d frag_out %08x out4 %08x", x + l, y, a[l], sv[l]); }
+            if (pv4 != W->pixels && bad < 20) { bad++; klog("verify: counts %u %u", pv4, W->pixels); }
+        }
+#else
+        PX(out4)(W, x, y, zq, qo, keep);
+#endif
+#else
         for (int l = 0; l < 4; l++) {
             if (!(keep & (1u << l))) continue;
             float c[4] = { qo[l], qo[4 + l], qo[8 + l], qo[12 + l] };
             PX(frag_out)(W, x + l, y, zq[l], c);
         }
+#endif
     }
 }
 /* not static: called from the one-processor code, with its stack */

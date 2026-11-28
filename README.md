@@ -1491,7 +1491,8 @@ device manager's job is to say what the computer has and which driver runs it.
       compile run pixel by pixel in the interpreter, so results are the same bits as before. The pixel code around it
       (walking the rows, interpolation, tests, blending, texture filtering, clipping and
       triangle setup;
-      `src/win32/glsl_px*.inc`) is compiled twice, once for SSE: the 32-bit edition uses
+      `src/win32/glsl_px*.inc`; the tests, blending and colour writes also four pixels at a
+      time) is compiled twice, once for SSE: the 32-bit edition uses
       that copy where SSE2 is. Together with the processors, CoronaKO draws about twice as
       fast again.
     - **Uniform work once per draw** (`rust/src/hoist.rs`): when a GLSL program links,
