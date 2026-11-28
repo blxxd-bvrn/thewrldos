@@ -178,7 +178,7 @@ void shell_wallpaper_changed(void) {
 
 /* ---------------- account pictures ----------------
  * The 71 photographs in C:\WRLD\Avatars are decoded once into 96x96 cached
- * thumbnails; draw_user_picture() masks one to a circle at the size asked
+ * thumbnails; draw_user_picture() draws one, whole, at the size asked
  * for, so the log-on tile, the Start menu and the account page all use it. */
 #define AVATAR_CACHE 128
 static canvas_t *avatar_cache[72];                      /* the 71 photographs and the custom picture */
@@ -240,14 +240,10 @@ void draw_user_picture(canvas_t *c, int id, int size, int x, int y)
 {
     if (size <= 0) return;
     canvas_t *a = avatar_thumb(id);
-    if (!a) { fill_round_rect(c, x, y, size, size, MAX(2, size / 8), HEX(0xA8B8C8)); return; }
-    /* a rounded-box cutout, the way Windows XP framed account pictures */
-    int rad = MAX(2, size / 8);
+    if (!a) { fill_rect(c, x, y, size, size, HEX(0xA8B8C8)); return; }
+    /* the whole square picture: the rounded frames around it (log-on tile, Start menu,
+     * account page) are drawn by the callers, a little larger */
     for (int yy = 0; yy < size; yy++) for (int xx = 0; xx < size; xx++) {
-        int cx = xx < rad ? rad : (xx >= size - rad ? size - 1 - rad : xx);
-        int cy = yy < rad ? rad : (yy >= size - rad ? size - 1 - rad : yy);
-        int dx = xx - cx, dy = yy - cy;
-        if (dx * dx + dy * dy > rad * rad) continue;
         int sx = xx * AVATAR_CACHE / size, sy = yy * AVATAR_CACHE / size;
         put_pixel(c, x + xx, y + yy, a->px[sy * a->stride + sx]);
     }

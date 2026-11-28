@@ -1521,7 +1521,7 @@ static const struct { const char *name; int off; } zones[] = {
     { "(GMT+08:00) Beijing, Hong Kong, Singapore, Perth", 480 }, { "(GMT+09:00) Osaka, Seoul, Tokyo", 540 }, { "(GMT+10:00) Brisbane, Melbourne, Sydney", 600 },
     { "(GMT+12:00) Auckland, Wellington", 720 },
 };
-typedef struct { int page; char name[32], org[48], comp[32], pass[32], pass2[32]; int tz, tzscroll, pic, picscroll, style, stylescroll; char err[96]; bool finish; } oobe_t;
+typedef struct { int page; char name[32], org[48], comp[32], pass[32], pass2[32], hint[64]; int tz, tzscroll, pic, picscroll, style, stylescroll; char err[96]; bool finish; } oobe_t;
 #define OOBE_PAGES 6                       /* welcome, time zone, name, computer name, look, picture */
 static oobe_t O;
 static window_t ow;
@@ -1599,8 +1599,10 @@ static void oobe_paint(window_t *w) {
         if (ui_password(w, R(bx + 120, by + 118, 320, 22), O.pass, sizeof O.pass)) O.finish = true;
         draw_text(s, FONT_UI, bx + 20, by + 158, "Confirm:", BLACK);
         if (ui_password(w, R(bx + 120, by + 154, 320, 22), O.pass2, sizeof O.pass2)) O.finish = true;
-        draw_text(s, FONT_SMALL, bx + 120, by + 182, "Leave both boxes empty to sign in without a password.", HEX(0x505050));
-        if (O.pass[0] && strcmp(O.pass, O.pass2)) draw_text(s, FONT_UI, bx + 120, by + 200, "The passwords do not match.", HEX(0xC02020));
+        draw_text(s, FONT_UI, bx + 20, by + 194, "Password hint:", BLACK);
+        if (ui_textbox(w, R(bx + 120, by + 190, 320, 22), O.hint, sizeof O.hint)) O.finish = true;
+        draw_text(s, FONT_SMALL, bx + 120, by + 218, "Leave the passwords empty to sign in without one. The hint helps you remember it.", HEX(0x505050));
+        if (O.pass[0] && strcmp(O.pass, O.pass2)) draw_text(s, FONT_UI, bx + 120, by + 236, "The passwords do not match.", HEX(0xC02020));
         if (O.pass[0] && strcmp(O.pass, O.pass2)) next_ok = false;
         if (!O.name[0]) next_ok = false;
         break;
@@ -1826,6 +1828,7 @@ void setup_oobe(void) {
     strlcpy(user_name, O.name, sizeof user_name);
     strlcpy(computer_name, O.comp, sizeof computer_name);
     password_set(O.pass);
+    settings_set("password_hint", O.pass[0] ? O.hint : "");
     user_picture = O.pic;
     settings_set("organization", O.org);
     static const char *tasks[] = { "Installing Start menu items...", "Registering components...", "Saving settings...", "Removing any temporary files used..." };

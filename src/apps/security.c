@@ -22,7 +22,7 @@ enum { PG_HOME, PG_FIREWALL, PG_ACCOUNT, PG_WEB };
 enum { ST_GOOD, ST_WARN, ST_BAD };
 typedef struct {
     int page, open;                     /* page shown; which essential is expanded (-1 none) */
-    char port[8], p1[32], p2[32];
+    char port[8], p1[32], p2[32], hint[64]; bool hint_loaded;
     char msg[96]; uint32_t msg_until; bool msg_bad;
 } sec_t;
 
@@ -300,13 +300,17 @@ static void page_account(window_t *w, sec_t *s, int x0) {
     draw_text(c, FONT_UI, x0 + 8, y + 4, "New password:", T.text);
     ui_password(w, R(x0 + 130, y, 220, 22), s->p1, sizeof s->p1); y += 30;
     draw_text(c, FONT_UI, x0 + 8, y + 4, "Type it again:", T.text);
-    ui_password(w, R(x0 + 130, y, 220, 22), s->p2, sizeof s->p2); y += 34;
+    ui_password(w, R(x0 + 130, y, 220, 22), s->p2, sizeof s->p2); y += 30;
+    if (!s->hint_loaded) { const char *h = settings_get("password_hint"); strlcpy(s->hint, h ? h : "", sizeof s->hint); s->hint_loaded = true; }
+    draw_text(c, FONT_UI, x0 + 8, y + 4, "Password hint:", T.text);
+    ui_textbox(w, R(x0 + 130, y, 220, 22), s->hint, sizeof s->hint);
+    draw_text(c, FONT_SMALL, x0 + 358, y + 5, "The log-on screen's ? shows it to anyone.", T.gray_text); y += 34;
     if (ui_button(w, R(x0 + 130, y, 130, 26), user_password[0] ? "Change password" : "Create password")) {
         if (!s->p1[0]) flash(s, "Type a password first.", true);
         else if (strcmp(s->p1, s->p2)) flash(s, "The two passwords are different. Type them again.", true);
-        else { password_set(s->p1); s->p1[0] = s->p2[0] = 0; settings_save(); flash(s, "Password saved. The log-on screen will ask for it.", false); }
+        else { password_set(s->p1); settings_set("password_hint", s->hint); s->p1[0] = s->p2[0] = 0; settings_save(); flash(s, "Password saved. The log-on screen will ask for it.", false); }
     }
-    if (user_password[0] && ui_button(w, R(x0 + 268, y, 140, 26), "Remove password")) { password_set(""); settings_save(); flash(s, "Password removed.", false); }
+    if (user_password[0] && ui_button(w, R(x0 + 268, y, 140, 26), "Remove password")) { password_set(""); settings_set("password_hint", ""); s->hint[0] = 0; settings_save(); flash(s, "Password removed.", false); }
     y += 44;
     y = section(c, x0, y, cw, "How the password is kept");
     draw_text_wrapped(c, FONT_UI, x0 + 8, y, cw - 16, "THE WRLD OS keeps only a salted digest of the password in C:\\WRLD\\wrld.ini, so the password itself is never written to the disk. "

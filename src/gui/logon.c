@@ -444,6 +444,29 @@ static void power_glyph(canvas_t *c, int cx, int cy, uint32_t col, uint32_t bg) 
     fill_rect(c, cx - 2, cy - 6, 5, 4, bg);              /* gap at the top for the stroke */
     vline(c, cx, cy - 7, 6, col);
 }
+/* the Help and Settings panel, both layouts */
+static void help_panel(canvas_t *c, const logon_skin_t *s, logon_state_t *st, int px, int py) {
+    const uint32_t *k = s->col;
+    {
+        rect_t r = R(px, py, 304, 176);
+        fill_round_rect_blend(c, r.x + 3, r.y + 4, r.w, r.h, 8, BLACK, 70);
+        fill_round_rect(c, r.x, r.y, r.w, r.h, 8, WHITE);
+        gradient_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 7, k[LC_PANEL_TOP], k[LC_PANEL_BOTTOM]);
+        uint32_t pt = k[LC_PANEL_TEXT];
+        draw_text(c, FONT_UI_BOLD, r.x + 14, r.y + 12, "Help and Settings", pt);
+        int y = r.y + 32;
+        y += draw_text_wrapped(c, FONT_UI, r.x + 14, y, r.w - 28,
+            "Click your name, type your password and press Enter. To make your own look for this screen, "
+            "use Logon Skin Maker after you sign in.", pt, 2) + 10;
+        int cur = logon_skin_current_index(), cnt = logon_skin_count();
+        char b[96]; snprintf(b, sizeof b, "Logon skin: %s (%d of %d)", logon_skin_get(cur)->name, cur + 1, cnt);
+        draw_text_ellipsis(c, FONT_UI_BOLD, r.x + 14, y, r.w - 28, b, pt);
+        st->hit[HIT_NEXT_SKIN] = R(r.x + 14, r.y + r.h - 40, 110, 28);
+        pill(c, st->hit[HIT_NEXT_SKIN], "Next skin", s, st->hot == HIT_NEXT_SKIN);
+        st->hit[HIT_HELP_CLOSE] = R(r.x + r.w - 90, r.y + r.h - 40, 76, 28);
+        pill(c, st->hit[HIT_HELP_CLOSE], "Close", s, st->hot == HIT_HELP_CLOSE);
+    }
+}
 static void signin_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st) {
     int W = c->w, H = c->h;
     const uint32_t *k = s->col;
@@ -553,29 +576,31 @@ static void signin_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st)
         draw_text(c, FONT_DISPLAY_BI, W - bw - 18, H - 46, s->brand, k[LC_TEXT]);
     }
 
-    /* the Help and Settings panel */
-    if (st->help && s->show_help) {
-        rect_t r = R(W - 318, 38, 304, 176);
-        fill_round_rect_blend(c, r.x + 3, r.y + 4, r.w, r.h, 8, BLACK, 70);
-        fill_round_rect(c, r.x, r.y, r.w, r.h, 8, WHITE);
-        gradient_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 7, k[LC_PANEL_TOP], k[LC_PANEL_BOTTOM]);
-        uint32_t pt = k[LC_PANEL_TEXT];
-        draw_text(c, FONT_UI_BOLD, r.x + 14, r.y + 12, "Help and Settings", pt);
-        int y = r.y + 32;
-        y += draw_text_wrapped(c, FONT_UI, r.x + 14, y, r.w - 28,
-            "Click your name, type your password and press Enter. To make your own look for this screen, "
-            "use Logon Skin Maker after you sign in.", pt, 2) + 10;
-        int cur = logon_skin_current_index(), cnt = logon_skin_count();
-        char b[96]; snprintf(b, sizeof b, "Logon skin: %s (%d of %d)", logon_skin_get(cur)->name, cur + 1, cnt);
-        draw_text_ellipsis(c, FONT_UI_BOLD, r.x + 14, y, r.w - 28, b, pt);
-        st->hit[HIT_NEXT_SKIN] = R(r.x + 14, r.y + r.h - 40, 110, 28);
-        pill(c, st->hit[HIT_NEXT_SKIN], "Next skin", s, st->hot == HIT_NEXT_SKIN);
-        st->hit[HIT_HELP_CLOSE] = R(r.x + r.w - 90, r.y + r.h - 40, 76, 28);
-        pill(c, st->hit[HIT_HELP_CLOSE], "Close", s, st->hot == HIT_HELP_CLOSE);
-    }
+    if (st->help && s->show_help) help_panel(c, s, st, W - 318, 38);
 }
 
 /* ---------------- the classic layout ---------------- */
+/* the selected account: a band in the panel colours from the tile's rounded left end,
+ * fading out to the right, with a light top edge (as XP draws the account being signed in) */
+static void selected_band(canvas_t *c, rect_t t, const uint32_t *k) {
+    int rad = 8, solid = t.w * 55 / 100;
+    for (int i = 0; i < t.w; i++) {
+        int a = i < solid ? 235 : 235 * (t.w - i) / MAX(1, t.w - solid);
+        int inset = 0;
+        if (i < rad) { int d = rad - i; while (inset < rad && (rad - inset) * (rad - inset) + d * d > rad * rad) inset++; }
+        if (inset * 2 >= t.h) continue;
+        for (int y = t.y + inset; y < t.y + t.h - inset; y++)
+            blend_rect(c, t.x + i, y, 1, 1, mix(k[LC_PANEL_TOP], k[LC_PANEL_BOTTOM], (y - t.y) * 255 / MAX(1, t.h - 1)), a);
+        blend_rect(c, t.x + i, t.y + inset, 1, 1, WHITE, a * 90 / 255);
+    }
+}
+/* a small square button with a white edge: the green "sign in" arrow and the blue "?" */
+static void square_button(canvas_t *c, rect_t r, uint32_t top, uint32_t bot, bool hot) {
+    fill_round_rect_blend(c, r.x + 1, r.y + 2, r.w, r.h, 3, BLACK, 60);
+    fill_round_rect(c, r.x, r.y, r.w, r.h, 3, WHITE);
+    gradient_round_rect(c, r.x + 1, r.y + 1, r.w - 2, r.h - 2, 2, hot ? mix(top, WHITE, 60) : top, hot ? mix(bot, WHITE, 40) : bot);
+    fill_round_rect_blend(c, r.x + 2, r.y + 2, r.w - 4, (r.h - 4) / 2, 2, WHITE, 50);
+}
 static void classic_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st) {
     int W = c->w, H = c->h;
     const uint32_t *k = s->col;
@@ -587,7 +612,44 @@ static void classic_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st
     const char *msg = st->logging_in ? (s->title[0] ? s->title : "welcome") : s->subtitle;
     int f = st->logging_in ? FONT_XL : FONT_LARGE;
     draw_text(c, f, W / 2 - 30 - text_width(f, msg), H / 2 - 10, msg, k[LC_TEXT]);
-    if (!st->logging_in) {
+    if (!st->logging_in && st->ask_pw) {
+        /* typing the password: the account on its band, the box, the arrow and the ? */
+        rect_t t = R(W / 2 + 30, H / 2 - 40, 360, 74);
+        st->hit[HIT_USER] = R(t.x, t.y, 70, t.h);
+        selected_band(c, t, k);
+        fill_round_rect(c, t.x + 8, t.y + 10, 54, 54, 5, HEX(0xF0A830));          /* the selected account's gold frame */
+        draw_user_picture(c, user_picture, 48, t.x + 11, t.y + 13);
+        draw_text_ellipsis(c, FONT_LARGE, t.x + 74, t.y + 8, t.w - 90, user_name, k[LC_TEXT]);
+        draw_text(c, FONT_SMALL, t.x + 74, t.y + 33, "Type your password", k[LC_TEXT]);
+        rect_t pr = R(t.x + 70, t.y + 49, 162, 26);
+        st->hit[HIT_PW] = pr;
+        fill_round_rect(c, pr.x, pr.y, pr.w, pr.h, 4, HEX(0x7F9DB9));
+        fill_round_rect(c, pr.x + 1, pr.y + 1, pr.w - 2, pr.h - 2, 3, WHITE);
+        int n = MIN(st->pw_len, (pr.w - 20) / 9), dx = pr.x + 9;
+        for (int i = 0; i < n; i++, dx += 9) fill_circle(c, dx, pr.y + pr.h / 2, 3, BLACK);       /* one dot a character */
+        if ((st->frame / 25) % 2 == 0 || st->preview) fill_rect(c, dx - 3, pr.y + 5, 1, pr.h - 10, BLACK);   /* the caret */
+        rect_t go = R(pr.x + pr.w + 10, pr.y + 1, 24, 24), hp = R(go.x + go.w + 8, go.y, 24, 24);
+        st->hit[HIT_SIGNIN] = go; st->hit[HIT_HINT] = hp;
+        square_button(c, go, HEX(0x58C050), HEX(0x2C8A26), st->hot == HIT_SIGNIN);
+        int ax = go.x + 6, ay = go.y + 12;                                                       /* a white arrow */
+        fill_rect(c, ax, ay - 2, 8, 5, WHITE);
+        for (int i = 0; i < 7; i++) fill_rect(c, ax + 8 + i, ay - 6 + i, 1, 13 - 2 * i, WHITE);
+        square_button(c, hp, HEX(0x5C8CF0), HEX(0x2050C8), st->hot == HIT_HINT);
+        draw_text(c, FONT_UI_BOLD, hp.x + (hp.w - text_width(FONT_UI_BOLD, "?")) / 2, hp.y + (hp.h - font_height(FONT_UI_BOLD)) / 2, "?", WHITE);
+        /* "?": the password hint the account's owner wrote down; a wrong password says so too */
+        const char *hint = settings_get("password_hint");
+        char hb[160];
+        if (st->hint) snprintf(hb, sizeof hb, "Password hint: %s", hint && hint[0] ? hint : "(none was set for this account)");
+        const char *note = st->hint ? hb : st->bad_pw ? "Did you forget your password? Please type it again (letters must be in the right case), or click ? for your hint." : NULL;
+        if (note) {
+            rect_t b = R(pr.x, pr.y + pr.h + 10, 300, 0);
+            b.h = text_wrapped_height(FONT_UI, b.w - 20, note, 2) + 16;
+            fill_round_rect_blend(c, b.x + 2, b.y + 3, b.w, b.h, 6, BLACK, 60);
+            fill_round_rect(c, b.x, b.y, b.w, b.h, 6, HEX(0x808080));
+            fill_round_rect(c, b.x + 1, b.y + 1, b.w - 2, b.h - 2, 5, HEX(0xFFFFE1));       /* a balloon tip, as XP shows */
+            draw_text_wrapped(c, FONT_UI, b.x + 10, b.y + 8, b.w - 20, note, BLACK, 2);
+        }
+    } else if (!st->logging_in) {
         rect_t t = R(W / 2 + 30, H / 2 - 40, 300, 70);
         st->hit[HIT_USER] = t;
         bool hot = st->hot == HIT_USER;
@@ -601,24 +663,27 @@ static void classic_render(canvas_t *c, const logon_skin_t *s, logon_state_t *st
             fill_circle(c, W / 2 + 40 + i * 16, H / 2, 4, mix(k[LC_GLOW2], k[LC_TEXT], a));
         }
     }
-    if (st->ask_pw) {
-        rect_t pr = R(W / 2 + 30, H / 2 + 42, 300, 26);
-        st->hit[HIT_PW] = pr;
-        draw_text(c, FONT_UI, pr.x, pr.y - 18, "Password:", k[LC_TEXT]);
-        fill_rect(c, pr.x, pr.y, pr.w, pr.h, WHITE); draw_rect(c, pr.x, pr.y, pr.w, pr.h, HEX(0x808080));
-        char mask[32]; int n = MIN(st->pw_len, (int)sizeof mask - 1);
-        for (int i = 0; i < n; i++) mask[i] = '*';
-        mask[n] = 0;
-        draw_text(c, FONT_UI, pr.x + 6, pr.y + 5, mask, BLACK);
-        if (st->bad_pw) draw_text(c, FONT_UI, pr.x, pr.y + 30, "Incorrect password.", HEX(0xFFD070));
-        else draw_text(c, FONT_SMALL, pr.x, pr.y + 30, "Press ENTER, or ESC to go back.", k[LC_SUBTEXT]);
+    /* Help and Settings, at the right of the top bar */
+    if (s->show_help) {
+        const char *hl = "Help and Settings";
+        int hw = text_width(FONT_UI_BOLD, hl), hx = W - hw - 26, hy = (CLASSIC_BAR - font_height(FONT_UI_BOLD)) / 2;
+        st->hit[HIT_HELP] = R(hx - 24, hy - 6, hw + 30, font_height(FONT_UI_BOLD) + 12);
+        bool hh = st->hot == HIT_HELP || st->help;
+        fill_circle(c, hx - 12, hy + font_height(FONT_UI_BOLD) / 2, 8, hh ? HEX(0xFFE8A0) : WHITE);
+        draw_text(c, FONT_UI_BOLD, hx - 15, hy, "?", k[LC_BG_TOP]);
+        uint32_t lc = st->hot == HIT_HELP ? mix(k[LC_TEXT], HEX(0xFFE08A), 160) : k[LC_TEXT];
+        draw_text(c, FONT_UI_BOLD, hx, hy, hl, lc); underline(c, FONT_UI_BOLD, hx, hy, hl, -1, lc);
+        if (st->help) help_panel(c, s, st, W - 318, CLASSIC_BAR + 8);
     }
     int bx = 30, by = H - 52;
     st->hit[HIT_POWER] = R(bx, by, 180, 32);
     draw_icon(c, ICON_POWER, 32, bx, by);
     draw_text(c, FONT_UI_BOLD, bx + 40, by + 9, "Turn off computer", st->hot == HIT_POWER ? HEX(0xFFE08A) : k[LC_TEXT]);
-    const char *hint = "After you log on, you can add or change accounts in Control Panel > User Accounts.";
-    if (W >= 760) draw_text(c, FONT_UI, W - text_width(FONT_UI, hint) - 30, H - 44, hint, k[LC_TEXT]);
+    const char *hint1 = "After you log on, you can add or change accounts.", *hint2 = "Just go to Control Panel and click User Accounts.";
+    if (W >= 760) {
+        draw_text(c, FONT_UI, W - text_width(FONT_UI, hint1) - 26, H - 50, hint1, k[LC_TEXT]);
+        draw_text(c, FONT_UI, W - text_width(FONT_UI, hint2) - 26, H - 35, hint2, k[LC_TEXT]);
+    }
     if (st->notice) draw_text(c, FONT_UI_BOLD, 30, H - CLASSIC_BAR - 26, st->notice, HEX(0xFFD070));
 }
 
@@ -833,6 +898,7 @@ void welcome_screen(void) {
                     /* cancelled (or woken from stand by): back to signing in */
                     break;
                 case HIT_HELP: ls.help = !ls.help; break;
+                case HIT_HINT: ls.hint = !ls.hint; break;
                 case HIT_HELP_CLOSE: ls.help = false; break;
                 case HIT_NEXT_SKIN: {
                     int n = logon_skin_count(), i = (logon_skin_current_index() + 1) % MAX(n, 1);

@@ -50,7 +50,7 @@ bool logon_skin_delete(const char *file);
 
 /* Rendering. The screen and the previews in the two apps share this code. */
 enum { HIT_NONE, HIT_USER, HIT_POWER, HIT_HELP, HIT_GUEST, HIT_SIGNIN, HIT_PW,
-       HIT_NEXT_SKIN, HIT_HELP_CLOSE, HIT_COUNT };
+       HIT_NEXT_SKIN, HIT_HELP_CLOSE, HIT_HINT, HIT_COUNT };
 typedef struct {
     int hot;                        /* HIT_* under the pointer */
     bool selected;                  /* sign-in: the user's panel is open */
@@ -59,7 +59,8 @@ typedef struct {
     bool bad_pw;
     bool logging_in;
     int frame;
-    bool help;                      /* sign-in: the Help and Settings panel */
+    bool help;                      /* the Help and Settings panel */
+    bool hint;                      /* classic: the password hint balloon ("?") */
     const char *notice;
     bool preview;                   /* no live clock: a fixed time */
     rect_t hit[HIT_COUNT];          /* filled in by logon_render; w = 0 when absent */
