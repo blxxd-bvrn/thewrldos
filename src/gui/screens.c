@@ -208,10 +208,12 @@ static void close_all_apps(void) {
  * shutdown is cancelled. A program that does not close (busy, or not responding) is ended
  * after a while, as are background programs. shell_shutdown_tick runs every 250 ms. */
 static struct {
-    bool on, reboot, prompted;
+    bool on, reboot;
     int first_new;                  /* windows with this id or higher opened after the request: questions */
     uint32_t quiet_since;           /* since the last question closed (or the request) */
+    int asked[256], nasked;         /* windows whose program asked a question */
 } sd;
+static bool sd_asked(int id) { for (int i = 0; i < sd.nasked; i++) if (sd.asked[i] == id) return true; return false; }
 static void shutdown_finish(void) {
     bool rb = sd.reboot;
     sd.on = false;
@@ -223,13 +225,24 @@ static void shutdown_begin(bool reboot) {
     sd.reboot = reboot;
     if (!wm_window_count()) { shutdown_finish(); return; }             /* nothing open (the welcome screen, too) */
     if (startmenu_is_open()) startmenu_toggle();
-    sd.on = true; sd.prompted = false; sd.quiet_since = timer_ticks();
+    sd.on = true; sd.nasked = 0; sd.quiet_since = timer_ticks();
     int ids[256], n = 0, top = 0;
     for (int i = 0; i < wm_window_count(); i++) { window_t *w = wm_window_at(i); if (!w) continue; top = MAX(top, w->id); if (n < 256) ids[n++] = w->id; }
     sd.first_new = top + 1;
-    /* closing one window can close others: look each up again by its id */
+    /* closing one window can close others: look each up again by its id. A built-in
+     * program asks its question from its close callback: a window that opens during the
+     * call is its question (Windows programs ask later, from their own task: see the tick) */
     for (int k = n - 1; k >= 0; k--)
-        for (int i = 0; i < wm_window_count(); i++) { window_t *w = wm_window_at(i); if (w && w->id == ids[k]) { wm_close(w); break; } }
+        for (int i = 0; i < wm_window_count(); i++) {
+            window_t *w = wm_window_at(i);
+            if (!w || w->id != ids[k]) continue;
+            int id = w->id, before = 0;
+            for (int j = 0; j < wm_window_count(); j++) { window_t *x = wm_window_at(j); if (x) before = MAX(before, x->id); }
+            wm_focus(w);
+            wm_close(w);
+            for (int j = 0; j < wm_window_count(); j++) { window_t *x = wm_window_at(j); if (x && x->id > before && sd.nasked < 256 && !sd_asked(id)) sd.asked[sd.nasked++] = id; }
+            break;
+        }
     shell_shutdown_tick();
 }
 void shell_shutdown_tick(void) {
@@ -237,18 +250,30 @@ void shell_shutdown_tick(void) {
     extern int w32_window_idle(window_t *win, uint32_t ms);
     uint32_t now = timer_ticks();
     int left = 0, questions = 0;
-    bool kept = false;              /* a window still open whose program is no longer closing: it said no */
+    bool kept = false;              /* a window whose program asked, and that stays open now it is answered: "Cancel" */
+    for (int i = 0; i < wm_window_count(); i++) {
+        window_t *q = wm_window_at(i);
+        if (!q || q->id < sd.first_new) continue;
+        questions++;
+        /* a Windows program's question: a window of the same process (its message box has
+         * the program's pid; built-in windows all share the desktop's, so only Windows ones count) */
+        for (int k = 0; k < wm_window_count(); k++) {
+            window_t *w = wm_window_at(k);
+            if (!w || w->id >= sd.first_new || sd_asked(w->id) || sd.nasked >= 256) continue;
+            if (q->pid && q->pid == w->pid && w32_window_idle(w, 0)) sd.asked[sd.nasked++] = w->id;
+        }
+    }
     for (int i = 0; i < wm_window_count(); i++) {
         window_t *w = wm_window_at(i);
-        if (!w) continue;
-        if (w->id >= sd.first_new) { questions++; continue; }
+        if (!w || w->id >= sd.first_new) continue;
         left++;
-        int st = w32_window_idle(w, 1000);
-        if (st == 0 || st == 2) kept = true;          /* built-in programs close at once once answered */
+        if (!sd_asked(w->id)) continue;
+        int st = w32_window_idle(w, 1000);             /* built-in programs close at once when answered; Windows ones once idle */
+        if (st == 0 || st == 2) kept = true;
     }
-    if (questions) { sd.prompted = true; sd.quiet_since = now; return; }
+    if (questions) { sd.quiet_since = now; return; }
     if (!left) { shutdown_finish(); return; }
-    if (sd.prompted && kept && now - sd.quiet_since >= 1000) {              /* the user cancelled a program's question */
+    if (kept && now - sd.quiet_since >= 1000) {                             /* the user cancelled a program's question */
         klog("shutdown: cancelled (a program stayed open)");
         sd.on = false;
         return;
