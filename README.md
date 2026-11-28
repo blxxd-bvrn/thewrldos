@@ -1486,7 +1486,8 @@ device manager's job is to say what the computer has and which driver runs it.
       code that shades four neighbouring pixels of a row at once, one per SSE lane, with each
       register kept as component vectors so swizzles cost nothing. Branches, loops,
       `discard` and `return` run under per-pixel masks; texture reads take one call for the
-      four pixels (the texture looked up once), and the rare instructions it does not
+      four pixels (the texture looked up once, the four channels of each bilinear texel
+      filtered together with SSE2 integer and float instructions, same bits), and the rare instructions it does not
       compile run pixel by pixel in the interpreter, so results are the same bits as before. The pixel code around it
       (walking the rows, interpolation, tests, blending, texture filtering, clipping and
       triangle setup;

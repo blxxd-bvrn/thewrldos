@@ -19,6 +19,7 @@
 #ifdef __i386__
 #pragma GCC target("sse2,fpmath=sse")
 #endif
+#include <emmintrin.h>
 #define PX(n) n##_sse
 #include "glsl_px2.inc"
 #undef PX

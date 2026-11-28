@@ -18,6 +18,13 @@ static inline bool PX(tview)(void *ctx, int ti, PX(tview_t) *v) {
     v->linear = t->linear;
     return true;
 }
+#ifndef SL_X87
+static inline void PX(put4)(__m128 f, float *out, int st) {
+    if (st == 1) { _mm_storeu_ps(out, f); return; }
+    _mm_store_ss(out, f); _mm_store_ss(out + st, _mm_shuffle_ps(f, f, 1));
+    _mm_store_ss(out + 2 * st, _mm_shuffle_ps(f, f, 2)); _mm_store_ss(out + 3 * st, _mm_shuffle_ps(f, f, 3));
+}
+#endif
 /* the texel at (u, v): channels to out[0], out[st], out[2 st], out[3 st] */
 static inline void PX(filter)(const PX(tview_t) *T, float u, float v, float *out, int st) {
     float fx = u * T->w - 0.5f, fy = v * T->h - 0.5f;
@@ -30,6 +37,12 @@ static inline void PX(filter)(const PX(tview_t) *T, float u, float v, float *out
         if (T->p2) { x &= w - 1; y &= h - 1; } else { x = PX(wrapi)(x, w, T->ws); y = PX(wrapi)(y, h, T->wt); }
         uint32_t c = px[(size_t)y * stride + x];
         const float k = 1.0f / 255;
+#ifndef SL_X87
+        /* the four channels at once: bytes to floats, scaled, in R G B A order */
+        __m128 f = _mm_mul_ps(_mm_cvtepi32_ps(_mm_unpacklo_epi16(_mm_unpacklo_epi8(_mm_cvtsi32_si128((int)c), _mm_setzero_si128()), _mm_setzero_si128())), _mm_set1_ps(k));
+        PX(put4)(_mm_shuffle_ps(f, f, _MM_SHUFFLE(3, 0, 1, 2)), out, st);
+        return;
+#endif
         out[0] = ((c >> 16) & 255) * k; out[st] = ((c >> 8) & 255) * k; out[2 * st] = (c & 255) * k; out[3 * st] = (c >> 24) * k;
         return;
     }
@@ -40,6 +53,23 @@ static inline void PX(filter)(const PX(tview_t) *T, float u, float v, float *out
     else { xa = PX(wrapi)(x0, w, T->ws); xb = PX(wrapi)(x0 + 1, w, T->ws); ya = PX(wrapi)(y0, h, T->wt); yb = PX(wrapi)(y0 + 1, h, T->wt); }
     uint32_t p00 = px[(size_t)ya * stride + xa], p10 = px[(size_t)ya * stride + xb], p01 = px[(size_t)yb * stride + xa], p11 = px[(size_t)yb * stride + xb];
     const float k = 1.0f / (255.0f * 65536.0f);
+#ifndef SL_X87
+    /* all four channels at once, the same bits: the horizontal weights in 16-bit lanes
+     * (a * (256 - ax) + b * ax stays below 65536), the vertical step in floats (the sums
+     * stay below 2^24, so every product and sum is exact) */
+    {
+        __m128i z = _mm_setzero_si128();
+        __m128i w = _mm_unpacklo_epi64(_mm_set1_epi16((short)(256 - ax)), _mm_set1_epi16((short)ax));
+        __m128i top = _mm_unpacklo_epi8(_mm_unpacklo_epi32(_mm_cvtsi32_si128((int)p00), _mm_cvtsi32_si128((int)p10)), z);
+        __m128i bot = _mm_unpacklo_epi8(_mm_unpacklo_epi32(_mm_cvtsi32_si128((int)p01), _mm_cvtsi32_si128((int)p11)), z);
+        top = _mm_mullo_epi16(top, w); bot = _mm_mullo_epi16(bot, w);
+        top = _mm_add_epi16(top, _mm_srli_si128(top, 8)); bot = _mm_add_epi16(bot, _mm_srli_si128(bot, 8));
+        __m128 ft = _mm_cvtepi32_ps(_mm_unpacklo_epi16(top, z)), fb = _mm_cvtepi32_ps(_mm_unpacklo_epi16(bot, z));
+        __m128 f = _mm_mul_ps(_mm_add_ps(_mm_mul_ps(ft, _mm_set1_ps((float)(256 - ay))), _mm_mul_ps(fb, _mm_set1_ps((float)ay))), _mm_set1_ps(k));
+        PX(put4)(_mm_shuffle_ps(f, f, _MM_SHUFFLE(3, 0, 1, 2)), out, st);
+        return;
+    }
+#endif
     for (int ch = 0; ch < 4; ch++) {
         int sh = ch == 3 ? 24 : 16 - 8 * ch;
         uint32_t a = (p00 >> sh) & 255, b = (p10 >> sh) & 255, cc = (p01 >> sh) & 255, d = (p11 >> sh) & 255;
