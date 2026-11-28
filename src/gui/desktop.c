@@ -2273,6 +2273,7 @@ bool shell_key(key_event_t *e) {
 }
 static char last_clock[32];
 void shell_tick(void) {
+    shell_shutdown_tick();
     side_sample();
     char b[32]; fmt_clock(b, sizeof b);
     { extern uint32_t gui_composes; static uint32_t lastc, lastt;

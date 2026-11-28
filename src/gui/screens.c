@@ -105,7 +105,8 @@ static void final_screen(const char *msg, bool reboot) {
     gfx_present(CURSOR_ARROW, -100, -100);
     for (;;) hlt();
 }
-void shell_power_action(void *restart) { final_screen(restart ? "Restarting..." : "Shutting down...", restart != NULL); }
+static void shutdown_begin(bool reboot);
+void shell_power_action(void *restart) { shutdown_begin(restart != NULL); }
 static int dialog_loop(const char *title, int kind) {
     /* kind 0: turn off (3 options), 1: log off (2 options). Returns option index or -1 */
     static canvas_t *saved;
@@ -182,8 +183,8 @@ void shell_show_shutdown(void) {
             task_yield(); idle_hlt();                     /* a USB keyboard or mouse must run to wake it */
         }
         wm_redraw_all();
-    } else if (r == 1) final_screen("Shutting down...", false);
-    else if (r == 2) final_screen("Restarting...", true);
+    } else if (r == 1) shutdown_begin(false);
+    else if (r == 2) shutdown_begin(true);
 }
 static void close_all_apps(void) {
     /* Keep the shell, its supervisor and the kernel service tasks running.
@@ -197,6 +198,64 @@ static void close_all_apps(void) {
                        !strcmp(n, "netd") || !strcmp(n, "devmgr") || !strcmp(n, "persistd");
         if (!service) task_kill(t->pid);
         t = nx;
+    }
+}
+/* ---------------- shutting down: programs first ----------------
+ * As on Windows, Turn Off and Restart first ask every open window to close, as its close
+ * button would, while the desktop keeps running: programs save their work or ask about
+ * it. The machine goes off once they have all closed. A question a program asks ("Save
+ * changes?") waits for the user; if the user cancels it and the program stays open, the
+ * shutdown is cancelled. A program that does not close (busy, or not responding) is ended
+ * after a while, as are background programs. shell_shutdown_tick runs every 250 ms. */
+static struct {
+    bool on, reboot, prompted;
+    int first_new;                  /* windows with this id or higher opened after the request: questions */
+    uint32_t quiet_since;           /* since the last question closed (or the request) */
+} sd;
+static void shutdown_finish(void) {
+    bool rb = sd.reboot;
+    sd.on = false;
+    close_all_apps();
+    final_screen(rb ? "Restarting..." : "Shutting down...", rb);
+}
+static void shutdown_begin(bool reboot) {
+    if (sd.on) return;
+    sd.reboot = reboot;
+    if (!wm_window_count()) { shutdown_finish(); return; }             /* nothing open (the welcome screen, too) */
+    if (startmenu_is_open()) startmenu_toggle();
+    sd.on = true; sd.prompted = false; sd.quiet_since = timer_ticks();
+    int ids[256], n = 0, top = 0;
+    for (int i = 0; i < wm_window_count(); i++) { window_t *w = wm_window_at(i); if (!w) continue; top = MAX(top, w->id); if (n < 256) ids[n++] = w->id; }
+    sd.first_new = top + 1;
+    /* closing one window can close others: look each up again by its id */
+    for (int k = n - 1; k >= 0; k--)
+        for (int i = 0; i < wm_window_count(); i++) { window_t *w = wm_window_at(i); if (w && w->id == ids[k]) { wm_close(w); break; } }
+    shell_shutdown_tick();
+}
+void shell_shutdown_tick(void) {
+    if (!sd.on) return;
+    extern int w32_window_idle(window_t *win, uint32_t ms);
+    uint32_t now = timer_ticks();
+    int left = 0, questions = 0;
+    bool kept = false;              /* a window still open whose program is no longer closing: it said no */
+    for (int i = 0; i < wm_window_count(); i++) {
+        window_t *w = wm_window_at(i);
+        if (!w) continue;
+        if (w->id >= sd.first_new) { questions++; continue; }
+        left++;
+        int st = w32_window_idle(w, 1000);
+        if (st == 0 || st == 2) kept = true;          /* built-in programs close at once once answered */
+    }
+    if (questions) { sd.prompted = true; sd.quiet_since = now; return; }
+    if (!left) { shutdown_finish(); return; }
+    if (sd.prompted && kept && now - sd.quiet_since >= 1000) {              /* the user cancelled a program's question */
+        klog("shutdown: cancelled (a program stayed open)");
+        sd.on = false;
+        return;
+    }
+    if (now - sd.quiet_since >= 10000) {                                    /* not closing: ended, as Windows ends hung programs */
+        klog("shutdown: ending %d window(s) that did not close", left);
+        shutdown_finish();
     }
 }
 void shell_logoff(void) {

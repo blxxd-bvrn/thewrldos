@@ -949,7 +949,8 @@ static bool get_msg(w32_proc_t *p, MSG32 *m, bool remove) {
 static BOOL WINAPI GetMessageA(MSG32 *m, HWND h, UINT lo, UINT hi) {
     w32_proc_t *p = P;
     for (;;) {
-        if (get_msg(p, m, true)) return m->message != WM_QUIT;
+        if (get_msg(p, m, true)) { p->idle_since = 0; return m->message != WM_QUIT; }
+        if (!p->idle_since) p->idle_since = timer_ticks() | 1;
         task_sleep(8);
     }
 }
@@ -959,7 +960,12 @@ static BOOL WINAPI PeekMessageA(MSG32 *m, HWND h, UINT lo, UINT hi, UINT rm) {
     task_yield();
     return 0;
 }
-static BOOL WINAPI WaitMessage(void) { w32_proc_t *p = P; MSG32 m; while (!get_msg(p, &m, false)) task_sleep(8); return 1; }
+static BOOL WINAPI WaitMessage(void) {
+    w32_proc_t *p = P; MSG32 m;
+    while (!get_msg(p, &m, false)) { if (!p->idle_since) p->idle_since = timer_ticks() | 1; task_sleep(8); }
+    p->idle_since = 0;
+    return 1;
+}
 /* WM_CHAR comes from TranslateMessage, as on Windows: a key press that IsDialogMessage or an
  * accelerator consumed makes no character */
 static BOOL WINAPI TranslateMessage(const MSG32 *m) {
@@ -1208,6 +1214,16 @@ bool w32_hwnd_client(uintptr_t hwnd, canvas_t **surf, rect_t *client) {
     *surf = t->top->surf;
     *client = w->parent ? R(ox, oy, w->w, w->h) : R(0, 0, t->top->surf->w, t->top->surf->h);
     return true;
+}
+/* For shutting down (screens.c): 0 if win is not a Windows program's window; 1 if its
+ * program is busy or has messages to handle; 2 if it has handled them all and has been
+ * waiting for more for at least ms milliseconds. */
+int w32_window_idle(window_t *win, uint32_t ms) {
+    w32win_t *t = win ? win->w32 : NULL;
+    if (!t || !t->proc) return 0;
+    w32_proc_t *p = t->proc;
+    if (p->qh != p->qt || !p->idle_since) return 1;
+    return timer_ticks() - p->idle_since >= ms ? 2 : 1;
 }
 void w32_user_cleanup(w32_proc_t *p) {
     for (int i = 0; i < 64; i++) if (timers[i].proc == p) timers[i].used = false;

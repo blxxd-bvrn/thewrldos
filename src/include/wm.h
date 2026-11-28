@@ -192,6 +192,7 @@ void shell_show_run(void);
 void shell_show_shutdown(void);
 void shell_logoff(void);
 void shell_power_action(void *restart);   /* NULL = shut down, non-NULL = restart */
+void shell_shutdown_tick(void);           /* shutting down: programs closing (screens.c, from shell_tick) */
 extern int wallpaper_id;
 extern int wallpaper_fit;                    /* 0 crop, 1 scale, 2 stretch */
 extern bool sidebar_open;

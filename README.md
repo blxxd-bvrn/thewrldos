@@ -1703,6 +1703,10 @@ device manager's job is to say what the computer has and which driver runs it.
     including during transitions; covering windows receive the mouse input.
   - Tray balloons; desktop icons with context menus.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
+  - Turn Off and Restart close programs first, as Windows does: every open window is asked to
+    close (as its close button would), with the desktop still running so programs can ask
+    about unsaved work; cancelling such a question cancels the shutdown, and programs that do
+    not close within 10 seconds are ended.
 - **Logon skins**, all `.wrldlogon` files in `C:\WRLD\Resources\Logon Skins`:
   - **Sign In** (the default): your account on the left of a deep blue glass background,
     with the clock, **Power Off** and **Help and Settings** at the top right and

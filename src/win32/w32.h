@@ -102,6 +102,7 @@ struct w32_proc {
     uint32_t last_error;
     MSG32 q[MSGQ]; int qh, qt;
     bool quit_posted; int quit_code;
+    uint32_t idle_since;            /* waiting in GetMessage with nothing to do since then (0: busy) */
     char stdin_buf[1024]; int stdin_len, stdin_pos;
     int argc; char **argv; char **envp; char *acmdln;
     uintptr_t tls_slots[64]; uint64_t tls_used;
