@@ -175,7 +175,9 @@ pub unsafe fn hoist(s: &Shader, slot: i32) -> Option<(*mut Shader, *mut Shader, 
     let (region, uni) = loop {
         let (region, uni) = a.classify(&u);
         let mut nu = u.clone();
-        for pc in 0..n { if !control(ins[pc].op) && !uni[pc] { for t in a.temp_dests(pc) { if t < nt { nu[t] = false; } } } }
+        /* every temporary the main shader still writes (non-uniform instructions, and uniform
+         * ones kept for an output they also write) keeps real values: not recorded */
+        for pc in 0..n { if !control(ins[pc].op) && !a.hoisted(pc, &uni, &u) { for t in a.temp_dests(pc) { if t < nt { nu[t] = false; } } } }
         /* read inside a loop that writes it: its value moves with the iterations */
         for pc in 0..n {
             if a.hoisted(pc, &uni, &nu) { continue; }
@@ -258,7 +260,7 @@ pub unsafe extern "C" fn dxbc_hoist_run(pre: *const Shader, env: *const Env, row
     let mut out = [Vec4::default(); DX_MAX_REG];
     let mut e: Exec = core::mem::zeroed();
     if dxbc_exec_init(&mut e, pre, env, inp.as_ptr(), out.as_mut_ptr()) == 0 { return 0; }
-    dxbc_exec_run(&mut e);
+    if dxbc_exec_run(&mut e) == 0 { dxbc_exec_fini(&mut e); return 0; }     /* the draw then runs the whole shader */
     let base = (*pre).ntemps as usize - nrows as usize;
     for k in 0..nrows as usize { *rows.add(k) = *e.r.add(base + k); }
     dxbc_exec_fini(&mut e);

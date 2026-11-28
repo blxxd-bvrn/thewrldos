@@ -380,4 +380,10 @@ bool mouse_poll(mouse_state_t *st) {
     irq_restore(f);
     return c;
 }
-void mouse_warp(int x, int y) { uint32_t f = irq_save(); ms_x = x; ms_y = y; ms_changed = true; irq_restore(f); }
+/* queued button changes move with the pointer: one taken later must not put it back */
+void mouse_warp(int x, int y) {
+    uint32_t f = irq_save();
+    ms_x = x; ms_y = y; ms_changed = true;
+    for (int i = 0; i < ms_qn; i++) { int k = (ms_qhead + i) % 16; ms_q[k].x = x; ms_q[k].y = y; }
+    irq_restore(f);
+}

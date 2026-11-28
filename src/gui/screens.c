@@ -210,7 +210,7 @@ static void close_all_apps(void) {
 static struct {
     bool on, reboot;
     int first_new;                  /* windows with this id or higher opened after the request: questions */
-    uint32_t quiet_since;           /* since the last question closed (or the request) */
+    uint32_t started, quiet_since;  /* the request; the last question closed (or the request) */
     int asked[256], nasked;         /* windows whose program asked a question */
 } sd;
 static bool sd_asked(int id) { for (int i = 0; i < sd.nasked; i++) if (sd.asked[i] == id) return true; return false; }
@@ -223,9 +223,13 @@ static void shutdown_finish(void) {
 static void shutdown_begin(bool reboot) {
     if (sd.on) return;
     sd.reboot = reboot;
-    if (!wm_window_count()) { shutdown_finish(); return; }             /* nothing open (the welcome screen, too) */
+    /* nothing open; or the welcome screen after Switch User, whose loop is not the desktop's
+     * (no one can answer a program's question there): programs are ended, as Windows does
+     * for users who are not at the screen */
+    extern bool welcome_active;
+    if (!wm_window_count() || welcome_active) { shutdown_finish(); return; }
     if (startmenu_is_open()) startmenu_toggle();
-    sd.on = true; sd.nasked = 0; sd.quiet_since = timer_ticks();
+    sd.on = true; sd.nasked = 0; sd.started = sd.quiet_since = timer_ticks();
     int ids[256], n = 0, top = 0;
     for (int i = 0; i < wm_window_count(); i++) { window_t *w = wm_window_at(i); if (!w) continue; top = MAX(top, w->id); if (n < 256) ids[n++] = w->id; }
     sd.first_new = top + 1;
@@ -271,8 +275,11 @@ void shell_shutdown_tick(void) {
         int st = w32_window_idle(w, 1000);             /* built-in programs close at once when answered; Windows ones once idle */
         if (st == 0 || st == 2) kept = true;
     }
-    if (questions) { sd.quiet_since = now; return; }
-    if (!left) { shutdown_finish(); return; }
+    if (!left) { shutdown_finish(); return; }                               /* windows opened since are ended with the rest */
+    /* questions are waited for, but not for ever: a window that stays open (a program
+     * started meanwhile) must not hold the shutdown back */
+    if (questions && now - sd.started < 120000) { sd.quiet_since = now; return; }
+    if (questions) { klog("shutdown: still open after two minutes; ending programs"); shutdown_finish(); return; }
     if (kept && now - sd.quiet_since >= 1000) {                             /* the user cancelled a program's question */
         klog("shutdown: cancelled (a program stayed open)");
         sd.on = false;

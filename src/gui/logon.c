@@ -779,9 +779,11 @@ static bool try_sign_in(void) {
     ls.bad_pw = true; login_pw[0] = 0;
     return false;
 }
+bool welcome_active;                 /* the welcome screen's own loop runs (not the desktop's) */
 void welcome_screen(void) {
     mouse_state_t ms; key_event_t ke;
     int prev = 0;
+    welcome_active = true;
     usb_input_reset();
     logon_skins_load();
     ls.help = false;
@@ -869,6 +871,7 @@ void welcome_screen(void) {
         if (redraw) { welcome_paint(); present(); }
         task_yield(); hlt();
     }
+    welcome_active = false;
     ls.logging_in = true; ls.hot = HIT_NONE; ls.help = false; ls.bad_pw = false; ls.notice = NULL;
     if (cur_skin->layout == LOGON_LAYOUT_SIGNIN) ls.selected = true;
     for (int f = 0; f < 50; f++) {

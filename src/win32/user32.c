@@ -590,9 +590,8 @@ static void wm_key_cb(window_t *win, key_event_t *e) {
     int vk = vk_of(e);
     if (vk) key_set(vk, e->pressed);
     if (vk != 0x10 && vk != 0x11 && vk != 0x12) {          /* modifiers held during this key, even if their own events did not reach us */
-        keystate[0x10] = keystate[0xA0] = (e->mods & MOD_SHIFT) != 0;
-        keystate[0x11] = keystate[0xA2] = (e->mods & MOD_CTRL) != 0;
-        keystate[0x12] = keystate[0xA4] = (e->mods & MOD_ALT) != 0;
+        bool sh = (e->mods & MOD_SHIFT) != 0, ct = (e->mods & MOD_CTRL) != 0, al = (e->mods & MOD_ALT) != 0;
+        key_set(0x10, sh); key_set(0xA0, sh); key_set(0x11, ct); key_set(0xA2, ct); key_set(0x12, al); key_set(0xA4, al);
     }
     /* the character this key makes, for TranslateMessage to turn into WM_CHAR */
     if (vk && e->pressed) key_char[vk & 0xFF] = e->ch == '\n' ? 13 : e->ch ? (uint8_t)e->ch : vk == 0x0D ? 13 : vk == 8 ? 8 : vk == 9 ? 9 : vk == 0x1B ? 27 : 0;
@@ -956,7 +955,8 @@ static BOOL WINAPI GetMessageA(MSG32 *m, HWND h, UINT lo, UINT hi) {
 }
 static BOOL WINAPI PeekMessageA(MSG32 *m, HWND h, UINT lo, UINT hi, UINT rm) {
     w32_proc_t *p = P;
-    if (get_msg(p, m, rm & 1)) return 1;
+    if (get_msg(p, m, rm & 1)) { if (rm & 1) p->idle_since = 0; return 1; }
+    if (!p->idle_since) p->idle_since = timer_ticks() | 1;      /* polling loops: nothing left to handle */
     task_yield();
     return 0;
 }
@@ -987,7 +987,15 @@ static LRESULT WINAPI CallWindowProcA(void *fn, HWND h, UINT msg, WPARAM wp, LPA
 static DWORD WINAPI GetMessageTime(void) { return timer_ticks(); }
 static DWORD WINAPI GetMessagePos(void) { return (wm_mouse_x & 0xFFFF) | (wm_mouse_y << 16); }
 static BOOL WINAPI InSendMessage(void) { return 0; }
-static DWORD WINAPI MsgWaitForMultipleObjects(DWORD n, HANDLE *h, BOOL all, DWORD ms, DWORD mask) { w32_proc_t *p = P; uint32_t end = timer_ticks() + ms; MSG32 m; while (!get_msg(p, &m, false)) { if (ms != 0xFFFFFFFF && (int32_t)(timer_ticks() - end) >= 0) return 0x102; task_sleep(5); } return n; }
+static DWORD WINAPI MsgWaitForMultipleObjects(DWORD n, HANDLE *h, BOOL all, DWORD ms, DWORD mask) {
+    w32_proc_t *p = P; uint32_t end = timer_ticks() + ms; MSG32 m;
+    while (!get_msg(p, &m, false)) {
+        if (!p->idle_since) p->idle_since = timer_ticks() | 1;
+        if (ms != 0xFFFFFFFF && (int32_t)(timer_ticks() - end) >= 0) return 0x102;
+        task_sleep(5);
+    }
+    return n;
+}
 
 typedef struct { HDC hdc; BOOL erase; RECT32 rc; BOOL restore, incupdate; BYTE res[32]; } PAINTSTRUCT;
 static HDC WINAPI BeginPaint(HWND h, PAINTSTRUCT *ps) {
@@ -1216,8 +1224,8 @@ bool w32_hwnd_client(uintptr_t hwnd, canvas_t **surf, rect_t *client) {
     return true;
 }
 /* For shutting down (screens.c): 0 if win is not a Windows program's window; 1 if its
- * program is busy or has messages to handle; 2 if it has handled them all and has been
- * waiting for more for at least ms milliseconds. */
+ * program has messages to handle (or is busy); 2 if it has handled them all and has found
+ * none since, for at least ms milliseconds (waiting in GetMessage, or polling). */
 int w32_window_idle(window_t *win, uint32_t ms) {
     w32win_t *t = win ? win->w32 : NULL;
     if (!t || !t->proc) return 0;
