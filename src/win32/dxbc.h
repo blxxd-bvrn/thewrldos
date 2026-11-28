@@ -67,6 +67,9 @@ typedef struct dxbc_quad dxbc_quad_t;
 dxbc_quad_t *dxbc_quad_new(const dxbc_shader_t *s, const dxbc_env_t *env, const float *in, float *out);
 void dxbc_quad_free(dxbc_quad_t *q);
 uint32_t dxbc_quad_run(dxbc_quad_t *q, uint32_t live);
+/* a sampler for four lanes at once: texture | sampler << 16, uv and out as four component
+ * vectors (16 floats), lod 4 floats, lanes the bits of the lanes that need a texel */
+void dxbc_quad_sample4(dxbc_quad_t *q, void (*f)(void *ctx, int ts, const float *uv, const float *lod, uint32_t lanes, float *out));
 /* Allocating convenience wrapper. `in`/`out` hold DX_MAX_REG registers (the
  * last output slot holds depth). False on discard, allocation failure or the
  * instruction budget. Draw loops should use exec_init/run/fini instead. */

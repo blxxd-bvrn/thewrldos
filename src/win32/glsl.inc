@@ -678,7 +678,7 @@ typedef struct {
     struct sl_wk *wk; int nwk;
 } pipe_t;
 /* one triangle: its rows, edges, z and 1/w planes; its lane planes and flat values in the pool */
-typedef struct sl_tri { int x0, x1, y0, y1; float vx[3], vy[3]; float zo, zdx, zdy, io, idx, idy; uint32_t front; size_t off; } sl_tri_t;
+typedef struct sl_tri { int x0, x1, y0, y1; float vx[3], vy[3], slope[3]; float zo, zdx, zdy, io, idx, idy; uint32_t front; size_t off; } sl_tri_t;
 typedef struct sl_bin { sl_tri_t *tris; int n, cap; float *pool; size_t npool, cappool; bool grow, overflow; pv_t poly[2][12]; vec4_t flatv[SLV]; } sl_bin_t;
 typedef struct { const pv_t *a, *b, *c; } sl_tri3_t;
 /* one worker's registers */
@@ -728,6 +728,11 @@ static bool vertex_slot(pipe_t *P, int slot, uint32_t index, const fatvert_t *im
     return true;
 }
 /* one fragment at canvas (x, y) whose inputs are set: run the shader, test, blend, write */
+/* rows go to the workers in bands of 8: worker w takes the bands whose number is w mod n */
+#define SL_BAND 3
+static void fragment(sl_wk_t *W, int x, int y, float z);
+static void sl_yield(void);
+static bool sl_sse2(void);
 #define SL_PART 2
 #include "glsl_px.inc"
 #undef SL_PART
@@ -750,66 +755,6 @@ static void sl_yield(void) {
     if (t - sl_last_yield >= 8) { task_yield(); sl_last_yield = t = timer_ticks(); }
     if (sl_partial_g && sl_partial_g->x && sl_partial_g->x->sl && !sl_partial_g->x->sl->frames && !sl_partial_g->fbo_bound && t - sl_partial_g->x->sl->frame_start > 1000 && t - sl_partial_at >= 1000) { sl_partial_at = t; present(sl_partial_g); }
 }
-/* rows go to the workers in bands of 8: worker w takes the bands whose number is w mod n */
-#define SL_BAND 3
-static void raster_tri(sl_wk_t *W, const sl_bin_t *B, const sl_tri_t *T, int w, int n) {
-    pipe_t *P = W->P;
-    vec4_t *in = W->fin;
-    const float *pl = B->pool + T->off, *fl = pl + 3 * P->np;
-    bool set = false;
-    for (int y = T->y0; y < T->y1; y++) {
-        int band = y >> SL_BAND;
-        if (n > 1 && band % n != w) {
-            int nb = band + ((w - band % n) + n) % n;
-            y = (nb << SL_BAND) - 1;
-            continue;
-        }
-        if (w == 0) sl_yield();
-        float py = y + .5f;
-        /* the span of this row inside all three edges */
-        float lo = (float)T->x0, hi = (float)T->x1 - 1;
-        bool empty = false;
-        for (int i = 0; i < 3 && !empty; i++) {
-            int j = i == 2 ? 0 : i + 1;
-            float ex = T->vx[j] - T->vx[i], ey = T->vy[j] - T->vy[i];
-            float k = ex * (py - T->vy[i]);
-            if (ey > 0) { float lim = (k / ey) + T->vx[i] - .5f; hi = MIN(hi, lim); }
-            else if (ey < 0) { float lim = (k / ey) + T->vx[i] - .5f; lo = MAX(lo, lim); }
-            else if (k < 0) empty = true;
-        }
-        if (empty) continue;
-        int xs = (int)lo; if ((float)xs < lo) xs++;
-        int xe = (int)hi; if ((float)xe > hi) xe--;
-        xs = MAX(xs, T->x0); xe = MIN(xe, T->x1 - 1);
-        if (xs > xe) continue;
-        if (!set) {
-            set = true;
-            if (P->fface >= 0) in[P->fface].u[0] = T->front;
-            for (int i = 0; i < P->nflat; i++) memcpy(in[P->freg_flat[i]].f, fl + 4 * i, 16);
-            if (W->q) {
-                float *qi = W->qin;
-                if (P->fface >= 0) for (int l = 0; l < 4; l++) ((uint32_t *)qi)[16 * P->fface + l] = T->front;
-                for (int i = 0; i < P->nflat; i++) for (int c = 0; c < 4; c++) for (int l = 0; l < 4; l++) qi[16 * P->freg_flat[i] + 4 * c + l] = fl[4 * i + c];
-            }
-        }
-        float px0 = xs + .5f;
-        float z = T->zo + T->zdx * px0 + T->zdy * py, iw = T->io + T->idx * px0 + T->idy * py;
-        float *dz = P->t.depth + (size_t)y * P->t.w;
-        if (W->q) { raster_quads_sse(W, T, pl, xs, xe, y, py, z, iw, dz); continue; }
-        for (int x = xs; x <= xe; x++, z += T->zdx, iw += T->idx) {
-            if (z < 0 || z > 1) continue;
-            if (P->depth_test && !test_depth_x87(P->dfunc, z, 1 - dz[x])) continue;
-            float px = x + .5f;
-            float wcorr = iw != 0 ? 1.0f / iw : 0;
-            for (int i = 0; i < P->np; i++) {
-                float val = pl[3 * i] + pl[3 * i + 1] * px + pl[3 * i + 2] * py;
-                in[P->lreg[i]].f[P->lcomp[i] & 3] = P->lpers[i] ? val * wcorr : val;
-            }
-            if (P->fpos >= 0) in[P->fpos].f[3] = iw;
-            fragment(W, x, y, z);
-        }
-    }
-}
 /* the vertex shader on the vertices a draw uses, split between the workers */
 typedef struct { pipe_t *P; pv_t *cache; uint8_t *done; uint32_t lo, span; const fatvert_t *imm; } vjob_t;
 typedef struct { pipe_t *P; const sl_tri3_t *tri; int ntri; } sjob_t;
@@ -817,7 +762,8 @@ static void raster_job(void *arg, int w, int n) {
     pipe_t *P = arg;
     sl_wk_t *W = &P->wk[w < P->nwk ? w : 0];
     if (w >= P->nwk) return;
-    for (int b = 0; b < P->nwk; b++) { const sl_bin_t *B = &P->bins[b]; for (int i = 0; i < B->n; i++) raster_tri(W, B, &B->tris[i], w, n); }
+    void (*rt)(sl_wk_t *, const sl_bin_t *, const sl_tri_t *, int, int) = sl_sse2() ? raster_tri_sse : raster_tri_x87;
+    for (int b = 0; b < P->nwk; b++) { const sl_bin_t *B = &P->bins[b]; for (int i = 0; i < B->n; i++) rt(W, B, &B->tris[i], w, n); }
 }
 /* SSE2 present (the 64-bit edition always has it): the SSE copies of the pixel code run */
 static bool sl_sse2(void) {
@@ -942,7 +888,10 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
         quad = W->q != NULL;
     }
     if (!quad) for (int i = 0; i < P->nwk; i++) { sl_wk_t *W = &P->wk[i]; if (W->q) dxbc_quad_free(W->q); W->q = NULL; }
-    else P->env[0].sample = sl_sample_sse;               /* the four-pixel code needs SSE2 anyway */
+    else {
+        P->env[0].sample = sl_sample_sse;                /* the four-pixel code needs SSE2 anyway */
+        for (int i = 0; i < P->nwk; i++) dxbc_quad_sample4(P->wk[i].q, sl_sample4_sse);
+    }
     return true;
 }
 static void pipe_free(pipe_t *P) {

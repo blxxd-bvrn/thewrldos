@@ -1485,10 +1485,11 @@ device manager's job is to say what the computer has and which driver runs it.
     - **Four pixels at a time** (`rust/src/jit4.rs`): fragment shaders are also compiled to
       code that shades four neighbouring pixels of a row at once, one per SSE lane, with each
       register kept as component vectors so swizzles cost nothing. Branches, loops,
-      `discard` and `return` run under per-pixel masks; texture reads and the rare
-      instructions it does not compile go pixel by pixel through the sampler and the
-      interpreter, so results are the same bits as before. The pixel code around it
-      (interpolation, tests, blending, texture filtering, clipping and triangle setup;
+      `discard` and `return` run under per-pixel masks; texture reads take one call for the
+      four pixels (the texture looked up once), and the rare instructions it does not
+      compile run pixel by pixel in the interpreter, so results are the same bits as before. The pixel code around it
+      (walking the rows, interpolation, tests, blending, texture filtering, clipping and
+      triangle setup;
       `src/win32/glsl_px*.inc`) is compiled twice, once for SSE: the 32-bit edition uses
       that copy where SSE2 is. Together with the processors, CoronaKO draws about twice as
       fast again.

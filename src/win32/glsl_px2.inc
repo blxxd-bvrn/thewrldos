@@ -7,38 +7,59 @@ static inline int PX(wrapi)(int i, int n, GLenum mode) {
     if ((unsigned)i < (unsigned)n) return i;
     return wrap_coord(i, n, mode);
 }
-SL_ENTRY static void PX(sl_sample)(void *ctx, int ti, int si, const float *uv, float lod, float *out) {
-    (void)si; (void)lod;
+/* what filtering needs of a texture, found once per call */
+typedef struct { const uint32_t *px; int w, h, stride; GLenum ws, wt; bool p2, linear; } PX(tview_t);
+static inline bool PX(tview)(void *ctx, int ti, PX(tview_t) *v) {
     gltex_t *t; canvas_t *c = unit_texture(ctx, ti, &t);
-    if (!c) { out[0] = out[1] = out[2] = 0; out[3] = 1; return; }
-    float fx = uv[0] * c->w - 0.5f, fy = uv[1] * c->h - 0.5f;
+    if (!c) return false;
+    v->px = c->px; v->w = c->w; v->h = c->h; v->stride = c->stride;
+    v->ws = t->wrap_s ? t->wrap_s : 0x2901; v->wt = t->wrap_t ? t->wrap_t : 0x2901;
+    v->p2 = v->ws == 0x2901 && v->wt == 0x2901 && !(v->w & (v->w - 1)) && !(v->h & (v->h - 1));
+    v->linear = t->linear;
+    return true;
+}
+/* the texel at (u, v): channels to out[0], out[st], out[2 st], out[3 st] */
+static inline void PX(filter)(const PX(tview_t) *T, float u, float v, float *out, int st) {
+    float fx = u * T->w - 0.5f, fy = v * T->h - 0.5f;
     if (!(fx > -1e6f && fx < 1e6f)) fx = 0;
     if (!(fy > -1e6f && fy < 1e6f)) fy = 0;
-    GLenum ws = t->wrap_s ? t->wrap_s : 0x2901, wt = t->wrap_t ? t->wrap_t : 0x2901;
-    int w = c->w, h = c->h;
-    bool p2 = ws == 0x2901 && wt == 0x2901 && !(w & (w - 1)) && !(h & (h - 1));
-    const uint32_t *px = c->px; int stride = c->stride;
-    if (!t->linear) {
+    int w = T->w, h = T->h, stride = T->stride;
+    const uint32_t *px = T->px;
+    if (!T->linear) {
         int x = PX(fl_int)(fx + 0.5f), y = PX(fl_int)(fy + 0.5f);
-        if (p2) { x &= w - 1; y &= h - 1; } else { x = PX(wrapi)(x, w, ws); y = PX(wrapi)(y, h, wt); }
-        uint32_t v = px[(size_t)y * stride + x];
+        if (T->p2) { x &= w - 1; y &= h - 1; } else { x = PX(wrapi)(x, w, T->ws); y = PX(wrapi)(y, h, T->wt); }
+        uint32_t c = px[(size_t)y * stride + x];
         const float k = 1.0f / 255;
-        out[0] = ((v >> 16) & 255) * k; out[1] = ((v >> 8) & 255) * k; out[2] = (v & 255) * k; out[3] = (v >> 24) * k;
+        out[0] = ((c >> 16) & 255) * k; out[st] = ((c >> 8) & 255) * k; out[2 * st] = (c & 255) * k; out[3 * st] = (c >> 24) * k;
         return;
     }
     int x0 = PX(fl_int)(fx), y0 = PX(fl_int)(fy);
     int ax = (int)((fx - x0) * 256), ay = (int)((fy - y0) * 256);
     int xa, xb, ya, yb;
-    if (p2) { xa = x0 & (w - 1); xb = (x0 + 1) & (w - 1); ya = y0 & (h - 1); yb = (y0 + 1) & (h - 1); }
-    else { xa = PX(wrapi)(x0, w, ws); xb = PX(wrapi)(x0 + 1, w, ws); ya = PX(wrapi)(y0, h, wt); yb = PX(wrapi)(y0 + 1, h, wt); }
+    if (T->p2) { xa = x0 & (w - 1); xb = (x0 + 1) & (w - 1); ya = y0 & (h - 1); yb = (y0 + 1) & (h - 1); }
+    else { xa = PX(wrapi)(x0, w, T->ws); xb = PX(wrapi)(x0 + 1, w, T->ws); ya = PX(wrapi)(y0, h, T->wt); yb = PX(wrapi)(y0 + 1, h, T->wt); }
     uint32_t p00 = px[(size_t)ya * stride + xa], p10 = px[(size_t)ya * stride + xb], p01 = px[(size_t)yb * stride + xa], p11 = px[(size_t)yb * stride + xb];
     const float k = 1.0f / (255.0f * 65536.0f);
     for (int ch = 0; ch < 4; ch++) {
         int sh = ch == 3 ? 24 : 16 - 8 * ch;
         uint32_t a = (p00 >> sh) & 255, b = (p10 >> sh) & 255, cc = (p01 >> sh) & 255, d = (p11 >> sh) & 255;
         uint32_t top = a * (256 - ax) + b * ax, bot = cc * (256 - ax) + d * ax;
-        out[ch] = (top * (256 - ay) + bot * ay) * k;
+        out[ch * st] = (top * (256 - ay) + bot * ay) * k;
     }
+}
+SL_ENTRY static void PX(sl_sample)(void *ctx, int ti, int si, const float *uv, float lod, float *out) {
+    (void)si; (void)lod;
+    PX(tview_t) T;
+    if (!PX(tview)(ctx, ti, &T)) { out[0] = out[1] = out[2] = 0; out[3] = 1; return; }
+    PX(filter)(&T, uv[0], uv[1], out, 1);
+}
+/* four pixels in one call (jit4.rs, dxbc_quad_sample4): coordinates and texels as
+ * component vectors, the texture looked up once */
+SL_ENTRY static void PX(sl_sample4)(void *ctx, int ts, const float *uv, const float *lod, uint32_t lanes, float *out) {
+    (void)lod;
+    PX(tview_t) T;
+    if (!PX(tview)(ctx, ts & 0xFFFF, &T)) { for (int l = 0; l < 4; l++) { out[l] = out[4 + l] = out[8 + l] = 0; out[12 + l] = 1; } return; }
+    for (int l = 0; l < 4; l++) if (lanes & (1u << l)) PX(filter)(&T, uv[l], uv[4 + l], out + l, 4);
 }
 #elif SL_PART == 2
 static inline float PX(blend_f)(GLenum f, int ch, const float *s, const float *d, const float *bc) {
@@ -129,6 +150,68 @@ SL_ENTRY void PX(raster_quads)(sl_wk_t *W, const sl_tri_t *T, const float *pl, i
         }
     }
 }
+/* not static: called from the one-processor code, with its stack */
+SL_ENTRY void PX(raster_tri)(sl_wk_t *W, const sl_bin_t *B, const sl_tri_t *T, int w, int n) {
+    pipe_t *P = W->P;
+    vec4_t *in = W->fin;
+    const float *pl = B->pool + T->off, *fl = pl + 3 * P->np;
+    bool set = false;
+    for (int y = T->y0; y < T->y1; y++) {
+        int band = y >> SL_BAND;
+        if (n > 1 && band % n != w) {
+            int nb = band + ((w - band % n) + n) % n;
+            y = (nb << SL_BAND) - 1;
+            continue;
+        }
+        if (w == 0) sl_yield();
+        float py = y + .5f;
+        /* the span of this row inside all three edges */
+        float lo = (float)T->x0, hi = (float)T->x1 - 1;
+        bool empty = false;
+        for (int i = 0; i < 3 && !empty; i++) {
+            int j = i == 2 ? 0 : i + 1;
+            float ey = T->vy[j] - T->vy[i];
+            if (ey > 0) { float lim = (py - T->vy[i]) * T->slope[i] + T->vx[i] - .5f; hi = MIN(hi, lim); }
+            else if (ey < 0) { float lim = (py - T->vy[i]) * T->slope[i] + T->vx[i] - .5f; lo = MAX(lo, lim); }
+            else if ((T->vx[j] - T->vx[i]) * (py - T->vy[i]) < 0) empty = true;
+        }
+        if (empty) continue;
+        int xs = (int)lo; if ((float)xs < lo) xs++;
+        int xe = (int)hi; if ((float)xe > hi) xe--;
+        xs = MAX(xs, T->x0); xe = MIN(xe, T->x1 - 1);
+        if (xs > xe) continue;
+        if (!set) {
+            set = true;
+            if (P->fface >= 0) in[P->fface].u[0] = T->front;
+            for (int i = 0; i < P->nflat; i++) memcpy(in[P->freg_flat[i]].f, fl + 4 * i, 16);
+            if (W->q) {
+                float *qi = W->qin;
+                if (P->fface >= 0) for (int l = 0; l < 4; l++) ((uint32_t *)qi)[16 * P->fface + l] = T->front;
+                for (int i = 0; i < P->nflat; i++) for (int c = 0; c < 4; c++) for (int l = 0; l < 4; l++) qi[16 * P->freg_flat[i] + 4 * c + l] = fl[4 * i + c];
+            }
+        }
+        float px0 = xs + .5f;
+        float z = T->zo + T->zdx * px0 + T->zdy * py, iw = T->io + T->idx * px0 + T->idy * py;
+        float *dz = P->t.depth + (size_t)y * P->t.w;
+#ifdef SL_X87
+        (void)dz;
+#else
+        if (W->q) { PX(raster_quads)(W, T, pl, xs, xe, y, py, z, iw, dz); continue; }
+#endif
+        for (int x = xs; x <= xe; x++, z += T->zdx, iw += T->idx) {
+            if (z < 0 || z > 1) continue;
+            if (P->depth_test && !PX(test_depth)(P->dfunc, z, 1 - dz[x])) continue;
+            float px = x + .5f;
+            float wcorr = iw != 0 ? 1.0f / iw : 0;
+            for (int i = 0; i < P->np; i++) {
+                float val = pl[3 * i] + pl[3 * i + 1] * px + pl[3 * i + 2] * py;
+                in[P->lreg[i]].f[P->lcomp[i] & 3] = P->lpers[i] ? val * wcorr : val;
+            }
+            if (P->fpos >= 0) in[P->fpos].f[3] = iw;
+            fragment(W, x, y, z);
+        }
+    }
+}
 #else
 /* part 3: the vertex shader stage and triangle setup (clipping, projection, plane equations) */
 static void PX(draw_tri)(pipe_t *P, sl_bin_t *B, const pv_t *a, const pv_t *b, const pv_t *c);
@@ -156,6 +239,7 @@ static void PX(shade_triangle)(pipe_t *P, sl_bin_t *B, const sv_t *a, const sv_t
     sl_tri_t *T = &B->tris[B->n++];
     T->x0 = x0; T->x1 = x1; T->y0 = y0; T->y1 = y1; T->front = front ? ~0u : 0; T->off = B->npool;
     T->vx[0] = a->x; T->vx[1] = b->x; T->vx[2] = c->x; T->vy[0] = a->y; T->vy[1] = b->y; T->vy[2] = c->y;
+    for (int i = 0; i < 3; i++) { int j = i == 2 ? 0 : i + 1; float ey = T->vy[j] - T->vy[i]; T->slope[i] = ey != 0 ? (T->vx[j] - T->vx[i]) / ey : 0; }
     float inv = 1.0f / area;
     /* barycentric weights of a and b as planes over the screen: w = o + dx * x + dy * y */
     float w0dx = (b->y - c->y) * inv, w0dy = (c->x - b->x) * inv, w0o = (b->x * c->y - c->x * b->y) * inv;

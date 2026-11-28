@@ -11,7 +11,9 @@
 #endif
 #endif
 #define PX(n) n##_x87
+#define SL_X87
 #include "glsl_px2.inc"
+#undef SL_X87
 #undef PX
 #pragma GCC push_options
 #ifdef __i386__

@@ -48,6 +48,7 @@ pub struct Quad {
     pub env: *const Env, pub shader: *const Shader,
     pub cbp: [*const Vec4; 14],      // the constant buffers (every row the code reads is there)
     pub code: usize, pub mem: *mut c_void,
+    pub sample4: usize,              // Sample4Fn, or 0: the sampler one lane at a time
     pub budget: i32,
     pub ex: Exec,                    // the interpreter's context for one lane (quad_step)
     pub ain: [Vec4; DX_MAX_REG], pub aout: [Vec4; DX_MAX_REG],
@@ -233,12 +234,43 @@ impl<'a> G4<'a> {
         let o = i.o;
         let t = self.pool[o[2] as usize]; let sm = self.pool[o[3] as usize];
         for c in 0..4 { self.load(o[1], c, 0, false); self.stq(q!(soa) + 16 * c as i32, 0); }
+        if i.op == OP_SAMPLE_L { self.load(o[4], 0, 1, false); } else { self.a.zero(1); }
+        self.stq(q!(lod), 1);
+        /* a sampler for four lanes: one call, coordinates and texels as component vectors
+         * (texels into uv, which that path does not use otherwise) */
+        if X64 { self.a.byte(0x48); }
+        self.a.cmp_m_imm(M::B(EBX, q!(sample4)), 0);
+        let one_by_one = self.a.jfwd(JE);
+        self.ldq(0, q!(m)); self.movmsk(EAX, 0);
+        let ts = (t.idx[0] & 0xFFFF) | (sm.idx[0] << 16);
+        if X64 {
+            self.a.byte(0x41); self.a.byte(0x89); self.a.byte(0xC0);                                        /* mov r8d, eax: lanes */
+            self.a.mov_ld_ptr(EAX, M::B(EBX, q!(env)));
+            self.a.mov_ld_ptr(EDI, M::B(EAX, off_env_ctx()));                                                 /* rdi = ctx */
+            self.a.byte(0xBE); self.a.d32(ts);                                                                /* esi = texture | sampler << 16 */
+            self.a.byte(0x48); self.a.byte(0x8D); self.a.modrm(EDX, M::B(EBX, q!(soa)), 0);                 /* lea rdx, coordinates */
+            self.a.byte(0x48); self.a.byte(0x8D); self.a.modrm(ECX, M::B(EBX, q!(lod)), 0);                 /* lea rcx, lod */
+            self.a.byte(0x4C); self.a.byte(0x8D); self.a.modrm(1, M::B(EBX, q!(uv)), 0);                    /* lea r9, texels */
+            self.a.byte(0xFF); self.a.modrm(2, M::B(EBX, q!(sample4)), 0);                                    /* call [rbx+sample4] */
+        } else {
+            self.a.byte(0x8D); self.a.modrm(ECX, M::B(EBX, q!(uv)), 0); self.a.byte(0x51);                  /* texels */
+            self.a.byte(0x50);                                                                                /* lanes */
+            self.a.byte(0x8D); self.a.modrm(ECX, M::B(EBX, q!(lod)), 0); self.a.byte(0x51);
+            self.a.byte(0x8D); self.a.modrm(ECX, M::B(EBX, q!(soa)), 0); self.a.byte(0x51);
+            self.a.byte(0x68); self.a.d32(ts);
+            self.a.mov_ld_ptr(EAX, M::B(EBX, q!(env)));
+            self.a.byte(0xFF); self.a.modrm(6, M::B(EAX, off_env_ctx()), 0);
+            self.a.byte(0xFF); self.a.modrm(2, M::B(EBX, q!(sample4)), 0);
+            self.a.byte(0x83); self.a.byte(0xC4); self.a.byte(24);
+        }
+        self.reload_files();
+        self.sample_store(pc, i, q!(uv));
+        let done = self.a.jfwd(0);
+        self.a.here(one_by_one);
         for l in 0..4 { for c in 0..4 {
             self.a.mov_ld(EAX, M::B(EBX, q!(soa) + 16 * c + 4 * l));
             self.mov_st(M::B(EBX, q!(uv) + 16 * l + 4 * c), EAX);
         } }
-        if i.op == OP_SAMPLE_L { self.load(o[4], 0, 1, false); } else { self.a.zero(1); }
-        self.stq(q!(lod), 1);
         self.a.zero(7);
         for l in 0..4 { self.stq(q!(tex) + 16 * l, 7); }
         self.a.mov_ld_ptr(EAX, M::B(EBX, q!(env)));
@@ -281,12 +313,19 @@ impl<'a> G4<'a> {
             self.a.mov_ld(EAX, M::B(EBX, q!(tex) + 16 * l + 4 * c));
             self.mov_st(M::B(EBX, q!(soa) + 16 * c + 4 * l), EAX);
         } }
+        self.sample_store(pc, i, q!(soa));
+        self.a.here(done);
+    }
+    /// the texels (component vectors at [ebx+at]) through the texture's swizzle to the destination
+    fn sample_store(&mut self, pc: usize, i: &Ins, at: i32) {
+        let o = i.o;
+        let t = self.pool[o[2] as usize];
         let d = self.pool[o[0] as usize];
         if d.ty == T_NULL { return; }
         let blend = self.blend(pc);
         for c in 0..4 {
             if d.mask & (1 << c) == 0 { continue; }
-            self.ldq(0, q!(soa) + 16 * (t.swz[c] & 3) as i32);
+            self.ldq(0, at + 16 * (t.swz[c] & 3) as i32);
             self.store(o[0], c, 0, i.sat != 0, blend);
         }
     }
@@ -658,6 +697,16 @@ pub unsafe extern "C" fn dxbc_quad_new(s: *const Shader, env: *const Env, inp: *
     if dxbc_exec_init(&mut qq.ex, s, env, qq.ain.as_ptr(), qq.aout.as_mut_ptr()) == 0 { kfree(mem); return core::ptr::null_mut(); }
     q
 }
+/// `sample4(ctx, texture | sampler << 16, uv, lod, lanes, out)`: uv and out are four
+/// component vectors of four lanes (16 floats), lod four floats, lanes a bit per lane that
+/// needs its texel (the others may be left as they are).
+pub type Sample4Fn = unsafe extern "C" fn(*mut c_void, c_int, *const f32, *const f32, u32, *mut f32);
+/// Give the context a sampler for four lanes at once (it must give each lane the texel the
+/// one-lane sampler of the environment would).
+#[no_mangle]
+pub unsafe extern "C" fn dxbc_quad_sample4(q: *mut Quad, f: Option<Sample4Fn>) {
+    if !q.is_null() { (*q).sample4 = f.map_or(0, |f| f as usize); }
+}
 #[no_mangle]
 pub unsafe extern "C" fn dxbc_quad_free(q: *mut Quad) {
     if q.is_null() { return; }
@@ -701,6 +750,15 @@ mod tests {
         let mut out4 = alloc::vec![0f32; DX_MAX_REG * 16];
         let q = unsafe { dxbc_quad_new(sh, &env, inp4.as_ptr(), out4.as_mut_ptr()) };
         assert!(!q.is_null(), "{} does not compile for four lanes", name);
+        /* the four-lane sampler on odd rounds: the same texels, from one call */
+        unsafe extern "C" fn smp4(_c: *mut c_void, ts: c_int, uv: *const f32, lod: *const f32, lanes: u32, o: *mut f32) {
+            for l in 0..4 { if lanes & (1 << l) != 0 {
+                let u = [*uv.add(l), *uv.add(4 + l), *uv.add(8 + l), *uv.add(12 + l)];
+                let mut t = [0f32; 4];
+                smp(core::ptr::null_mut(), ts & 0xFFFF, ts >> 16, u.as_ptr(), *lod.add(l), t.as_mut_ptr());
+                for c in 0..4 { *o.add(4 * c + l) = t[c]; }
+            } }
+        }
         let (mut t1, mut t4) = (0u128, 0u128);
         for round in 0..400 {
             let live: u32 = if round % 5 == 0 { 15 } else { (rnd().to_bits() >> 7) & 15 };
@@ -722,6 +780,7 @@ mod tests {
                 }
             }
             t1 += t.elapsed().as_nanos();
+            unsafe { dxbc_quad_sample4(q, if round & 1 != 0 { Some(smp4) } else { None }) };
             let t = std::time::Instant::now();
             let bits = unsafe { dxbc_quad_run(q, live) };
             t4 += t.elapsed().as_nanos();
