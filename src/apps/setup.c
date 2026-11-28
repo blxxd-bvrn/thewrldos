@@ -14,6 +14,7 @@
 #include "apps.h"
 #include "disk.h"
 #include "audio.h"
+#include "mediadec.h"
 
 bool boot_setup_mode;
 uint32_t boot_root_serial;
@@ -1708,7 +1709,78 @@ static void oobe_paint(window_t *w) {
     }
     O.finish = false;
 }
+/* ---------------- the OOBE's intro and music ----------------
+ * THE WRLD OS animation opens the first start, and Blue Horizon plays under all of it,
+ * from the intro to the last "Welcome" screen, looping. */
+#define OOBE_INTRO "C:\\WRLD\\Media\\Setup\\Intro.mpg"
+#define OOBE_MUSIC "C:\\WRLD\\Media\\Setup\\Blue Horizon.mp3"
+static sound_t *om_snd; static int om_voice = -1;
+static void oobe_music_start(void) {
+    vnode_t *n = vfs_resolve(OOBE_MUSIC, NULL);
+    if (!n || n->dir || !n->size || !audio_present()) return;
+    char err[64];
+    om_snd = sound_load(n->data, n->size, "mp3", err, sizeof err);
+    if (!om_snd) { klog("setup: music: %s", err); return; }
+    om_voice = audio_play(om_snd);
+    klog("setup: Blue Horizon is playing (%s)", om_voice >= 0 ? "started" : "no free voice");
+}
+/* from every OOBE loop (oobe_compose): start the song again when it ends */
+static void oobe_music_tick(void) {
+    if (om_snd && (om_voice < 0 || !audio_voice_active(om_voice, om_snd))) om_voice = audio_play(om_snd);
+}
+static void oobe_music_stop(void) {
+    if (!om_snd) return;
+    if (om_voice >= 0) audio_voice_stop(om_voice, om_snd);
+    sound_free(om_snd); om_snd = NULL; om_voice = -1;
+}
+/* the average colour of a row (or column) of a frame: what fills the screen around it */
+static uint32_t edge_colour(canvas_t *f, bool row, int at) {
+    uint32_t r = 0, g = 0, b = 0, n = row ? f->w : f->h;
+    for (uint32_t i = 0; i < n; i++) { uint32_t p = row ? f->px[at * f->stride + i] : f->px[i * f->stride + at]; r += C_R(p); g += C_G(p); b += C_B(p); }
+    return n ? RGB(r / n, g / n, b / n) : BLACK;
+}
+static void oobe_intro(void) {
+    vnode_t *n = vfs_resolve(OOBE_INTRO, NULL);
+    if (!n || n->dir || !n->size) return;
+    int vw, vh; float fps;
+    mvid_t *v = mvid_open(n->data, n->size, &vw, &vh, &fps);
+    if (!v) { klog("setup: the intro does not open"); return; }
+    canvas_t *f = canvas_new(vw, vh);
+    if (!f) { mvid_close(v); return; }
+    /* as large as fits, centred; the rest of the screen in the frame's edge colours */
+    int dw = SCREEN_W, dh = vh * SCREEN_W / vw;
+    if (dh > SCREEN_H) { dh = SCREEN_H; dw = vw * SCREEN_H / vh; }
+    rect_t d = R((SCREEN_W - dw) / 2, (SCREEN_H - dh) / 2, dw, dh);
+    key_event_t ke; mouse_state_t ms;
+    while (keyboard_poll(&ke)) {}
+    while (mouse_poll(&ms)) {}
+    int prev = ms.buttons;
+    uint32_t t0 = timer_ticks(), shown = t0;
+    bool any = false;
+    for (;;) {
+        uint32_t now = timer_ticks();
+        gui_heartbeat = now;
+        oobe_music_tick();
+        if (mvid_frame(v, (now - t0) / 1000.0, f->px, f->stride)) {
+            shown = now; any = true;
+            if (d.y > 0) { fill_rect(&screen, 0, 0, SCREEN_W, d.y, edge_colour(f, true, 0)); fill_rect(&screen, 0, d.y + d.h, SCREEN_W, SCREEN_H - d.y - d.h, edge_colour(f, true, vh - 1)); }
+            if (d.x > 0) { fill_rect(&screen, 0, 0, d.x, SCREEN_H, edge_colour(f, false, 0)); fill_rect(&screen, d.x + d.w, 0, SCREEN_W - d.x - d.w, SCREEN_H, edge_colour(f, false, vw - 1)); }
+            if (dw == vw && dh == vh) blit(&screen, d.x, d.y, f, 0, 0, vw, vh); else blit_scaled_alpha(&screen, d, f, 255);
+            gfx_present(CURSOR_NONE, wm_mouse_x, wm_mouse_y);
+        } else if (now - shown > 600 && (any || now - t0 > 3000)) break;            /* the last picture has been up a moment: the end */
+        bool skip = false;
+        while (keyboard_poll(&ke)) if (ke.pressed) skip = true;
+        while (mouse_poll(&ms)) { if ((ms.buttons & 1) && !(prev & 1)) skip = true; prev = ms.buttons; }
+        if (skip) break;
+        task_yield(); idle_hlt();
+    }
+    /* out to black, then the OOBE */
+    for (int i = 0; i < 12; i++) { blend_rect(&screen, 0, 0, SCREEN_W, SCREEN_H, BLACK, 70); gfx_present(CURSOR_NONE, wm_mouse_x, wm_mouse_y); oobe_music_tick(); task_sleep(25); }
+    canvas_free(f);
+    mvid_close(v);
+}
 static void oobe_compose(int step, int pct, const char *eta, bool show_wizard, int frame) {
+    oobe_music_tick();
     if (obg) memcpy(screen.px, obg->px, SCREEN_W * SCREEN_H * 4); else gfx_clear(&screen, HEX(0x163EB0));
     canvas_reset_clip(&screen);
     draw_globe(&screen, 18, 6, 64, -36 + frame);
@@ -1781,6 +1853,8 @@ void setup_oobe(void) {
     memset(&ow, 0, sizeof ow);
     O.tz = 6;
     for (unsigned i = 0; i < ARRAY_LEN(zones); i++) if (zones[i].off == tz_offset_minutes) O.tz = i;
+    oobe_music_start();
+    oobe_intro();
     obg_render();
     /* Setup installed the devices and left the hardware profile; a disk installed by an
      * older Setup has none, so the step runs here */
@@ -1849,6 +1923,7 @@ void setup_oobe(void) {
         gfx_present(CURSOR_BUSY, wm_mouse_x, wm_mouse_y);
         task_sleep(25);
     }
+    oobe_music_stop();
     if (ow.surf) { canvas_free(ow.surf); ow.surf = NULL; }
     if (obg) { canvas_free(obg); obg = NULL; }
     klog("setup: first-boot configuration complete for %s (%s)", user_name, computer_name);

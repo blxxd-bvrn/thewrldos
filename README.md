@@ -1703,6 +1703,9 @@ device manager's job is to say what the computer has and which driver runs it.
     including during transitions; covering windows receive the mouse input.
   - Tray balloons; desktop icons with context menus.
   - Boot screen, welcome screen, and Turn Off / Log Off dialogs over a desaturated desktop.
+  - The first start after installing (the OOBE) opens with THE WRLD OS animation
+    (`C:\WRLD\Media\Setup\Intro.mpg`, MPEG-1, cropped to fill the screen; a key or click skips
+    it), and Blue Horizon plays under it and the setup pages, looping, until the desktop.
   - Turn Off and Restart close programs first, as Windows does: every open window is asked to
     close (as its close button would), with the desktop still running so programs can ask
     about unsaved work; cancelling such a question cancels the shutdown, and programs that do
