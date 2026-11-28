@@ -59,6 +59,14 @@ typedef struct {
 bool dxbc_exec_init(dxbc_exec_t *exec, const dxbc_shader_t *s, const dxbc_env_t *env, const vec4_t *in, vec4_t *out);
 void dxbc_exec_fini(dxbc_exec_t *exec);
 bool dxbc_exec_run(dxbc_exec_t *exec);
+/* Four invocations at once (rust/src/jit4.rs), where the shader compiles that way: in
+ * and out hold DX_MAX_REG registers as component vectors (register r, component c, lane l
+ * at float 16 * r + 4 * c + l). run takes the lanes to run as bits and returns those that
+ * did not discard. NULL from new: use dxbc_exec_t one invocation at a time. */
+typedef struct dxbc_quad dxbc_quad_t;
+dxbc_quad_t *dxbc_quad_new(const dxbc_shader_t *s, const dxbc_env_t *env, const float *in, float *out);
+void dxbc_quad_free(dxbc_quad_t *q);
+uint32_t dxbc_quad_run(dxbc_quad_t *q, uint32_t live);
 /* Allocating convenience wrapper. `in`/`out` hold DX_MAX_REG registers (the
  * last output slot holds depth). False on discard, allocation failure or the
  * instruction budget. Draw loops should use exec_init/run/fini instead. */

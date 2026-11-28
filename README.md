@@ -1482,6 +1482,16 @@ device manager's job is to say what the computer has and which driver runs it.
       sets up a share of the triangles into its own list, then rasterises and shades its own
       bands of 8 rows from all the lists in draw order. A 4-processor virtual machine draws
       about 3.7 times as fast as one.
+    - **Four pixels at a time** (`rust/src/jit4.rs`): fragment shaders are also compiled to
+      code that shades four neighbouring pixels of a row at once, one per SSE lane, with each
+      register kept as component vectors so swizzles cost nothing. Branches, loops,
+      `discard` and `return` run under per-pixel masks; texture reads and the rare
+      instructions it does not compile go pixel by pixel through the sampler and the
+      interpreter, so results are the same bits as before. The pixel code around it
+      (interpolation, tests, blending, texture filtering, clipping and triangle setup;
+      `src/win32/glsl_px*.inc`) is compiled twice, once for SSE: the 32-bit edition uses
+      that copy where SSE2 is. Together with the processors, CoronaKO draws about twice as
+      fast again.
     - **Shader machine code** (`rust/src/jit.rs`): Direct3D 10 and GLSL shaders are compiled
       once to x86 SSE code (both editions; the 32-bit one when the processor has SSE2) instead
       of being interpreted, 4 to 11 times faster. Arithmetic, comparisons, logic, conversions,

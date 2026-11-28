@@ -24,34 +24,34 @@ use core::ffi::{c_int, c_void};
 use core::mem::offset_of;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-const X64: bool = cfg!(target_pointer_width = "64");
-const PS: i32 = core::mem::size_of::<usize>() as i32;
+pub(crate) const X64: bool = cfg!(target_pointer_width = "64");
+pub(crate) const PS: i32 = core::mem::size_of::<usize>() as i32;
 
-const EAX: u8 = 0; const ECX: u8 = 1; const EDX: u8 = 2; const EBX: u8 = 3; const ESP: u8 = 4; const EBP: u8 = 5; const ESI: u8 = 6; const EDI: u8 = 7;
+pub(crate) const EAX: u8 = 0; pub(crate) const ECX: u8 = 1; pub(crate) const EDX: u8 = 2; pub(crate) const EBX: u8 = 3; pub(crate) const ESP: u8 = 4; pub(crate) const EBP: u8 = 5; pub(crate) const ESI: u8 = 6; pub(crate) const EDI: u8 = 7;
 
 
 /// A memory operand: [base + disp], [base + index + disp], or constant k.
 #[derive(Clone, Copy)]
-enum M { B(u8, i32), BI(u8, u8, i32), K(usize) }
+pub(crate) enum M { B(u8, i32), BI(u8, u8, i32), K(usize) }
 
-struct Asm {
-    b: Vec<u8>,
-    consts: Vec<[u32; 4]>,
-    cfix: Vec<(usize, usize, usize)>,     // disp32 position, end of the instruction, constant
-    label: Vec<usize>,                     // code offset of each IR instruction
-    jfix: Vec<(usize, usize)>,             // rel32 position, IR target (nins: the "ok" exit, nins+1: "fail")
+pub(crate) struct Asm {
+    pub(crate) b: Vec<u8>,
+    pub(crate) consts: Vec<[u32; 4]>,
+    pub(crate) cfix: Vec<(usize, usize, usize)>,     // disp32 position, end of the instruction, constant
+    pub(crate) label: Vec<usize>,                     // code offset of each IR instruction
+    pub(crate) jfix: Vec<(usize, usize)>,             // rel32 position, IR target (nins: the "ok" exit, nins+1: "fail")
 }
 
 impl Asm {
-    fn byte(&mut self, x: u8) { self.b.push(x); }
-    fn d32(&mut self, x: i32) { self.b.extend_from_slice(&x.to_le_bytes()); }
-    fn konst(&mut self, v: [u32; 4]) -> usize {
+    pub(crate) fn byte(&mut self, x: u8) { self.b.push(x); }
+    pub(crate) fn d32(&mut self, x: i32) { self.b.extend_from_slice(&x.to_le_bytes()); }
+    pub(crate) fn konst(&mut self, v: [u32; 4]) -> usize {
         if let Some(i) = self.consts.iter().position(|c| *c == v) { return i; }
         self.consts.push(v); self.consts.len() - 1
     }
-    fn k4(&mut self, x: u32) -> usize { self.konst([x; 4]) }
+    pub(crate) fn k4(&mut self, x: u32) -> usize { self.konst([x; 4]) }
     /// ModRM (+SIB, disp32) for register field r and operand m; imm: immediate bytes that follow.
-    fn modrm(&mut self, r: u8, m: M, imm: usize) {
+    pub(crate) fn modrm(&mut self, r: u8, m: M, imm: usize) {
         match m {
             M::B(base, disp) => {
                 self.byte(0x80 | (r << 3) | base);
@@ -62,38 +62,39 @@ impl Asm {
             M::K(k) => { self.byte((r << 3) | 5); let p = self.b.len(); self.d32(0); self.cfix.push((p, p + 4 + imm, k)); }
         }
     }
-    fn modreg(&mut self, r: u8, rm: u8) { self.byte(0xC0 | (r << 3) | rm); }
+    pub(crate) fn modreg(&mut self, r: u8, rm: u8) { self.byte(0xC0 | (r << 3) | rm); }
     /* SSE: [prefix] 0F op */
-    fn sse_m(&mut self, pre: u8, op: u8, x: u8, m: M) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 0); }
-    fn sse_r(&mut self, pre: u8, op: u8, x: u8, y: u8) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modreg(x, y); }
-    fn sse_ri(&mut self, pre: u8, op: u8, x: u8, y: u8, imm: u8) { self.sse_r(pre, op, x, y); self.byte(imm); }
-    fn sse_mi(&mut self, pre: u8, op: u8, x: u8, m: M, imm: u8) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 1); self.byte(imm); }
-    fn movups_ld(&mut self, x: u8, m: M) { self.sse_m(0, 0x10, x, m); }
-    fn movups_st(&mut self, m: M, x: u8) { self.sse_m(0, 0x11, x, m); }
-    fn movaps(&mut self, x: u8, y: u8) { self.sse_r(0, 0x28, x, y); }
-    fn zero(&mut self, x: u8) { self.sse_r(0, 0x57, x, x); }
-    fn shufps(&mut self, x: u8, y: u8, imm: u8) { self.sse_ri(0, 0xC6, x, y, imm); }
-    fn pshufd(&mut self, x: u8, y: u8, imm: u8) { self.sse_ri(0x66, 0x70, x, y, imm); }
-    fn movd_to_gp(&mut self, r: u8, x: u8) { self.byte(0x66); self.byte(0x0F); self.byte(0x7E); self.modreg(x, r); }
+    pub(crate) fn sse_m(&mut self, pre: u8, op: u8, x: u8, m: M) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 0); }
+    pub(crate) fn sse_r(&mut self, pre: u8, op: u8, x: u8, y: u8) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modreg(x, y); }
+    pub(crate) fn sse_ri(&mut self, pre: u8, op: u8, x: u8, y: u8, imm: u8) { self.sse_r(pre, op, x, y); self.byte(imm); }
+    pub(crate) fn sse_mi(&mut self, pre: u8, op: u8, x: u8, m: M, imm: u8) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 1); self.byte(imm); }
+    pub(crate) fn movups_ld(&mut self, x: u8, m: M) { self.sse_m(0, 0x10, x, m); }
+    pub(crate) fn movups_st(&mut self, m: M, x: u8) { self.sse_m(0, 0x11, x, m); }
+    pub(crate) fn movaps(&mut self, x: u8, y: u8) { self.sse_r(0, 0x28, x, y); }
+    pub(crate) fn zero(&mut self, x: u8) { self.sse_r(0, 0x57, x, x); }
+    pub(crate) fn shufps(&mut self, x: u8, y: u8, imm: u8) { self.sse_ri(0, 0xC6, x, y, imm); }
+    pub(crate) fn pshufd(&mut self, x: u8, y: u8, imm: u8) { self.sse_ri(0x66, 0x70, x, y, imm); }
+    pub(crate) fn movd_to_gp(&mut self, r: u8, x: u8) { self.byte(0x66); self.byte(0x0F); self.byte(0x7E); self.modreg(x, r); }
     /* general purpose */
-    fn rexw(&mut self) { if X64 { self.byte(0x48); } }
-    fn mov_ld(&mut self, r: u8, m: M) { self.byte(0x8B); self.modrm(r, m, 0); }
-    fn mov_ld_ptr(&mut self, r: u8, m: M) { self.rexw(); self.mov_ld(r, m); }
-    fn mov_st_imm(&mut self, m: M, v: i32) { self.byte(0xC7); self.modrm(0, m, 4); self.d32(v); }
-    fn add_imm(&mut self, r: u8, v: i32) { self.byte(0x81); self.modreg(0, r); self.d32(v); }
-    fn cmp_imm(&mut self, r: u8, v: i32) { self.byte(0x81); self.modreg(7, r); self.d32(v); }
-    fn cmp_m_imm(&mut self, m: M, v: i32) { self.byte(0x81); self.modrm(7, m, 4); self.d32(v); }
-    fn cmp_r_m(&mut self, r: u8, m: M) { self.byte(0x3B); self.modrm(r, m, 0); }
-    fn test(&mut self, r: u8) { self.byte(0x85); self.modreg(r, r); }
-    fn shl(&mut self, r: u8, n: u8) { self.byte(0xC1); self.modreg(4, r); self.byte(n); }
+    pub(crate) fn rexw(&mut self) { if X64 { self.byte(0x48); } }
+    pub(crate) fn mov_ld(&mut self, r: u8, m: M) { self.byte(0x8B); self.modrm(r, m, 0); }
+    pub(crate) fn mov_ld_ptr(&mut self, r: u8, m: M) { self.rexw(); self.mov_ld(r, m); }
+    pub(crate) fn mov_st_imm(&mut self, m: M, v: i32) { self.byte(0xC7); self.modrm(0, m, 4); self.d32(v); }
+    pub(crate) fn add_imm(&mut self, r: u8, v: i32) { self.byte(0x81); self.modreg(0, r); self.d32(v); }
+    pub(crate) fn cmp_imm(&mut self, r: u8, v: i32) { self.byte(0x81); self.modreg(7, r); self.d32(v); }
+    pub(crate) fn cmp_m_imm(&mut self, m: M, v: i32) { self.byte(0x81); self.modrm(7, m, 4); self.d32(v); }
+    pub(crate) fn cmp_r_m(&mut self, r: u8, m: M) { self.byte(0x3B); self.modrm(r, m, 0); }
+    pub(crate) fn test(&mut self, r: u8) { self.byte(0x85); self.modreg(r, r); }
+    pub(crate) fn shl(&mut self, r: u8, n: u8) { self.byte(0xC1); self.modreg(4, r); self.byte(n); }
     /// A forward jump (cc: 0x80+cond, or 0 for jmp) to be patched; returns the patch position.
-    fn jfwd(&mut self, cc: u8) -> usize { if cc == 0 { self.byte(0xE9); } else { self.byte(0x0F); self.byte(cc); } let p = self.b.len(); self.d32(0); p }
-    fn here(&mut self, p: usize) { let rel = (self.b.len() - (p + 4)) as i32; self.b[p..p + 4].copy_from_slice(&rel.to_le_bytes()); }
-    fn jir(&mut self, cc: u8, target: usize) { let p = self.jfwd(cc); self.jfix.push((p, target)); }
+    pub(crate) fn jfwd(&mut self, cc: u8) -> usize { if cc == 0 { self.byte(0xE9); } else { self.byte(0x0F); self.byte(cc); } let p = self.b.len(); self.d32(0); p }
+    pub(crate) fn here(&mut self, p: usize) { let rel = (self.b.len() - (p + 4)) as i32; self.b[p..p + 4].copy_from_slice(&rel.to_le_bytes()); }
+    pub(crate) fn jir(&mut self, cc: u8, target: usize) { let p = self.jfwd(cc); self.jfix.push((p, target)); }
 }
 
-const JAE: u8 = 0x83; const JE: u8 = 0x84; const JNE: u8 = 0x85; const JBE: u8 = 0x86;
+pub(crate) const JAE: u8 = 0x83; pub(crate) const JE: u8 = 0x84; pub(crate) const JNE: u8 = 0x85; pub(crate) const JBE: u8 = 0x86;
 
+struct Lk { a: Asm }
 struct Gen<'a> { a: Asm, s: &'a Shader, pool: &'a [Opnd] }
 
 fn off_exec_r() -> i32 { offset_of!(Exec, r) as i32 }
@@ -102,13 +103,13 @@ fn off_exec_out() -> i32 { offset_of!(Exec, out) as i32 }
 fn off_exec_env() -> i32 { offset_of!(Exec, env) as i32 }
 fn off_exec_block() -> i32 { offset_of!(Exec, block) as i32 }
 fn off_exec_discard() -> i32 { offset_of!(Exec, discard) as i32 }
-fn off_env_cb() -> i32 { offset_of!(Env, cb) as i32 }
-fn off_env_rows() -> i32 { offset_of!(Env, cb_rows) as i32 }
-fn off_env_ctx() -> i32 { offset_of!(Env, ctx) as i32 }
-fn off_env_sample() -> i32 { offset_of!(Env, sample) as i32 }
+pub(crate) fn off_env_cb() -> i32 { offset_of!(Env, cb) as i32 }
+pub(crate) fn off_env_rows() -> i32 { offset_of!(Env, cb_rows) as i32 }
+pub(crate) fn off_env_ctx() -> i32 { offset_of!(Env, ctx) as i32 }
+pub(crate) fn off_env_sample() -> i32 { offset_of!(Env, sample) as i32 }
 fn off_exec_scratch() -> i32 { offset_of!(Exec, scratch) as i32 }
 
-const BUDGET: i32 = 1_000_000;    // loop iterations per run, as the interpreter bounds instructions
+pub(crate) const BUDGET: i32 = 1_000_000;    // loop iterations per run, as the interpreter bounds instructions
 
 impl<'a> Gen<'a> {
     fn base_of(f: u8) -> Option<(u8, i32)> {
@@ -490,6 +491,13 @@ pub fn compile(s: &Shader) -> Option<(*mut u8, usize)> {
     g.a.mov_st_imm(M::B(EBX, off_exec_block()), BUDGET);
     if s.nclear > 0 { g.a.zero(0); for k in 0..s.nclear as usize { g.a.movups_st(M::B(EDI, 16 * s.clear_regs[k] as i32), 0); } }
     for (pc, i) in ins.iter().enumerate() { g.a.label.push(g.a.b.len()); g.ins(pc, i); }
+    link(g.a, n)
+}
+
+/// Common to both compilers: the exits (ok: label n, fail: n + 1), the epilogue for the
+/// prologue both use, the jumps patched, and the code with its constants in memory.
+pub(crate) fn link(a: Asm, n: usize) -> Option<(*mut u8, usize)> {
+    let mut g = Lk { a };
     /* exits: ok (nins), fail (nins + 1) */
     let ok = g.a.b.len();
     g.a.byte(0xB8); g.a.d32(1);
@@ -538,7 +546,7 @@ fn unlock() { LOCK.store(false, Ordering::Release); }
 #[no_mangle]
 pub static mut dxbc_jit_enabled: c_int = 1;
 
-fn cpu_ok() -> bool {
+pub(crate) fn cpu_ok() -> bool {
     if X64 { return true; }
     #[cfg(target_arch = "x86")]
     #[allow(unused_unsafe)]
@@ -571,11 +579,11 @@ pub unsafe fn forget(s: *const Shader) {
 }
 
 #[cfg(feature = "kernel")]
-unsafe fn jit_alloc(n: usize) -> *mut u8 { extern "C" { fn kmalloc(n: usize) -> *mut c_void; } kmalloc(n) as *mut u8 }
+pub(crate) unsafe fn jit_alloc(n: usize) -> *mut u8 { extern "C" { fn kmalloc(n: usize) -> *mut c_void; } kmalloc(n) as *mut u8 }
 #[cfg(feature = "kernel")]
-unsafe fn jit_free(p: *mut u8) { extern "C" { fn kfree(p: *mut c_void); } kfree(p as *mut c_void) }
+pub(crate) unsafe fn jit_free(p: *mut u8) { extern "C" { fn kfree(p: *mut c_void); } kfree(p as *mut c_void) }
 #[cfg(not(feature = "kernel"))]
-unsafe fn jit_alloc(n: usize) -> *mut u8 {
+pub(crate) unsafe fn jit_alloc(n: usize) -> *mut u8 {
     extern "C" { fn mmap(a: *mut c_void, l: usize, p: c_int, f: c_int, fd: c_int, o: i64) -> *mut c_void; }
     let p = mmap(core::ptr::null_mut(), n + 16, 7, 0x22, -1, 0);   /* RWX, private anonymous */
     if p as isize == -1 { return core::ptr::null_mut(); }
@@ -583,7 +591,7 @@ unsafe fn jit_alloc(n: usize) -> *mut u8 {
     (p as *mut u8).add(16)
 }
 #[cfg(not(feature = "kernel"))]
-unsafe fn jit_free(p: *mut u8) {
+pub(crate) unsafe fn jit_free(p: *mut u8) {
     extern "C" { fn munmap(a: *mut c_void, l: usize) -> c_int; }
     let b = p.sub(16); munmap(b as *mut c_void, *(b as *const usize));
 }

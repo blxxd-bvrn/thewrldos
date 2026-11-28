@@ -309,7 +309,7 @@ fn word(d: &[u8], at: usize) -> u32 {
 #[no_mangle] pub unsafe extern "C" fn dxbc_writes_depth(s: *const Shader) -> CBool { (*s).writes_depth }
 #[no_mangle] pub unsafe extern "C" fn dxbc_free(s: *mut Shader) {
     if s.is_null() { return; }
-    crate::jit::forget(s);
+    crate::jit::forget(s); crate::jit4::forget(s);
     kfree((*s).ins as *mut c_void); kfree((*s).pool as *mut c_void); kfree((*s).icb as *mut c_void); kfree(s as *mut c_void);
 }
 
