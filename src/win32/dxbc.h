@@ -59,6 +59,12 @@ typedef struct {
 bool dxbc_exec_init(dxbc_exec_t *exec, const dxbc_shader_t *s, const dxbc_env_t *env, const vec4_t *in, vec4_t *out);
 void dxbc_exec_fini(dxbc_exec_t *exec);
 bool dxbc_exec_run(dxbc_exec_t *exec);
+/* The uniform-only work of a shader split off (rust/src/hoist.rs): the shader without it
+ * (NULL if there is none), the pre-shader that does it in *pre, recording *nrows rows that
+ * the returned shader reads from constant buffer `slot`. hoist_run runs the pre-shader once
+ * for a draw with that draw's constant buffers and stores the rows. */
+dxbc_shader_t *dxbc_hoist(const dxbc_shader_t *s, int slot, dxbc_shader_t **pre, int *nrows);
+bool dxbc_hoist_run(const dxbc_shader_t *pre, const dxbc_env_t *env, vec4_t *rows, int nrows);
 /* Four invocations at once (rust/src/jit4.rs), where the shader compiles that way: in
  * and out hold DX_MAX_REG registers as component vectors (register r, component c, lane l
  * at float 16 * r + 4 * c + l). run takes the lanes to run as bits and returns those that

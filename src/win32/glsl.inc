@@ -37,6 +37,9 @@ typedef struct sl_obj {
     glsl_unit_t *u[2];                          /* [0] fragment, [1] vertex */
     sl_uni_t *uni; int nuni;
     vec4_t *cb[2]; int rows[2];
+    /* the uniform-only work of each stage, done once per draw (rust/src/hoist.rs): the
+     * stage's shader without it, the pre-shader and the rows it records (constant buffer 1) */
+    dxbc_shader_t *main[2], *pre[2]; vec4_t *hrows[2]; int nhoist[2];
     int unit[2][16];                            /* sampler slot -> texture unit */
     int in_slot[DX_MAX_REG];                    /* vertex input register -> SL_* */
     int link_src[DX_MAX_REG];                   /* fragment input register -> vertex output register, -1 none */
@@ -168,7 +171,11 @@ static GLuint new_obj(glctx_t *g, int kind) {
 }
 static void set_log(sl_obj_t *o, const char *m) { kfree(o->log); o->log = m ? strdup(m) : NULL; }
 static void unlink_prog(sl_obj_t *p) {
-    for (int i = 0; i < 2; i++) { if (p->u[i]) glsl_free(p->u[i]); p->u[i] = NULL; kfree(p->cb[i]); p->cb[i] = NULL; p->rows[i] = 0; }
+    for (int i = 0; i < 2; i++) {
+        if (p->u[i]) glsl_free(p->u[i]); p->u[i] = NULL; kfree(p->cb[i]); p->cb[i] = NULL; p->rows[i] = 0;
+        if (p->main[i]) dxbc_free(p->main[i]); if (p->pre[i]) dxbc_free(p->pre[i]); kfree(p->hrows[i]);
+        p->main[i] = p->pre[i] = NULL; p->hrows[i] = NULL; p->nhoist[i] = 0;
+    }
     kfree(p->uni); p->uni = NULL; p->nuni = 0; p->linked = false;
 }
 static void free_obj(glctx_t *g, GLuint id) {
@@ -323,6 +330,15 @@ static void WINAPI glLinkProgram(GLuint p) {
     }
     if (po->pos_reg < 0) { set_log(po, "ERROR: the vertex shader has no gl_Position\n"); unlink_prog(po); return; }
     for (int st = 0; st < 2; st++) for (int k = 0; k < 16; k++) po->unit[st][k] = 0;
+    /* uniform-only work out of the per-pixel and per-vertex code */
+    for (int st = 0; st < 2; st++) {
+        dxbc_shader_t *pre = NULL; int nr = 0;
+        dxbc_shader_t *m = dxbc_hoist(po->u[st]->shader, 1, &pre, &nr);
+        if (!m) continue;
+        po->hrows[st] = kzalloc(sizeof(vec4_t) * nr);
+        if (!po->hrows[st]) { dxbc_free(m); dxbc_free(pre); continue; }
+        po->main[st] = m; po->pre[st] = pre; po->nhoist[st] = nr;
+    }
     po->linked = true;
     set_log(po, "");
     klog("w32: GLSL program %u linked (%d + %d instructions, %d uniforms)", p, vs->ninstr, fs->ninstr, po->nuni);
@@ -662,6 +678,7 @@ typedef struct {
     dxbc_env_t env[2]; sctx_t sc[2];
     dxbc_exec_t vx, fx;
     vec4_t vin[DX_MAX_REG], vout[DX_MAX_REG], fin[DX_MAX_REG], fout[DX_MAX_REG];
+    const dxbc_shader_t *sh[2];                 /* what each stage runs: [0] fragment, [1] vertex */
     int nvar; int vreg[SLV], freg[SLV]; uint8_t flat[SLV], noper[SLV], lanes[SLV];
     vec4_t flatv[SLV];
     int fpos, fface;
@@ -823,19 +840,21 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
         e->cb[0] = o->cb[st]; e->cb_rows[0] = o->rows[st];
         P->sc[st] = (sctx_t){ g, o, st };
         e->ctx = &P->sc[st]; e->sample = sl_sample_x87; e->load = sl_load; e->size = sl_size;
+        P->sh[st] = o->u[st]->shader;
+        if (o->pre[st] && dxbc_hoist_run(o->pre[st], e, o->hrows[st], o->nhoist[st])) { e->cb[1] = o->hrows[st]; e->cb_rows[1] = o->nhoist[st]; P->sh[st] = o->main[st]; }
     }
     /* varyings */
     P->fpos = P->fface = -1;
-    const dxsig_t *fi; int nfi = dxbc_inputs(o->u[0]->shader, &fi);
+    const dxsig_t *fi; int nfi = dxbc_inputs(P->sh[0], &fi);
     for (int i = 0; i < nfi; i++) {
         if (fi[i].sysval == 1) { P->fpos = fi[i].reg; continue; }
         if (fi[i].sysval == 9) { P->fface = fi[i].reg; continue; }
         int src = o->link_src[fi[i].reg];
         if (src < 0 || P->nvar >= SLV) continue;          /* not written by the vertex shader: zero */
         P->vreg[P->nvar] = src; P->freg[P->nvar] = fi[i].reg;
-        int ip = dxbc_interpolation(o->u[0]->shader, fi[i].reg);
+        int ip = dxbc_interpolation(P->sh[0], fi[i].reg);
         P->flat[P->nvar] = ip == 1; P->noper[P->nvar] = ip == 4;
-        P->lanes[P->nvar] = dxbc_read_mask(o->u[0]->shader, fi[i].reg) & 15;
+        P->lanes[P->nvar] = dxbc_read_mask(P->sh[0], fi[i].reg) & 15;
         P->nvar++;
     }
     /* viewport, depth range, scissor */
@@ -862,18 +881,18 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
         if (P->flat[k]) { P->freg_flat[P->nflat] = P->freg[k]; P->kflat[P->nflat++] = k; continue; }
         for (int i = 0; i < 4; i++) if (P->lanes[k] & (1u << i)) { P->lreg[P->np] = P->freg[k]; P->lcomp[P->np] = k << 2 | i; P->lpers[P->np] = !P->noper[k]; P->np++; }
     }
-    if (!dxbc_exec_init(&P->vx, o->u[1]->shader, &P->env[1], P->vin, P->vout)) return false;
+    if (!dxbc_exec_init(&P->vx, P->sh[1], &P->env[1], P->vin, P->vout)) return false;
     /* one set of fragment registers per worker (the other processors take rows too) */
     P->nwk = MAX(1, smp_workers_n);
     P->wk = kzalloc(sizeof(sl_wk_t) * P->nwk);
     if (!P->wk) { dxbc_exec_fini(&P->vx); return false; }
     for (int i = 0; i < P->nwk; i++) {
         P->wk[i].P = P;
-        if (!dxbc_exec_init(&P->wk[i].fx, o->u[0]->shader, &P->env[0], P->wk[i].fin, P->wk[i].fout)) {
+        if (!dxbc_exec_init(&P->wk[i].fx, P->sh[0], &P->env[0], P->wk[i].fin, P->wk[i].fout)) {
             for (int k = 0; k < i; k++) { dxbc_exec_fini(&P->wk[k].fx); dxbc_exec_fini(&P->wk[k].vx); }
             kfree(P->wk); dxbc_exec_fini(&P->vx); return false;
         }
-        if (!dxbc_exec_init(&P->wk[i].vx, o->u[1]->shader, &P->env[1], P->wk[i].vin, P->wk[i].vout)) {
+        if (!dxbc_exec_init(&P->wk[i].vx, P->sh[1], &P->env[1], P->wk[i].vin, P->wk[i].vout)) {
             dxbc_exec_fini(&P->wk[i].fx);
             for (int k = 0; k < i; k++) { dxbc_exec_fini(&P->wk[k].fx); dxbc_exec_fini(&P->wk[k].vx); }
             kfree(P->wk); dxbc_exec_fini(&P->vx); return false;
@@ -884,7 +903,7 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
     for (int i = 0; i < P->nwk && quad; i++) {
         sl_wk_t *W = &P->wk[i];
         W->qin = kzalloc(sizeof(float) * 16 * DX_MAX_REG); W->qout = kzalloc(sizeof(float) * 16 * DX_MAX_REG);
-        if (W->qin && W->qout) W->q = dxbc_quad_new(o->u[0]->shader, &P->env[0], W->qin, W->qout);
+        if (W->qin && W->qout) W->q = dxbc_quad_new(P->sh[0], &P->env[0], W->qin, W->qout);
         quad = W->q != NULL;
     }
     if (!quad) for (int i = 0; i < P->nwk; i++) { sl_wk_t *W = &P->wk[i]; if (W->q) dxbc_quad_free(W->q); W->q = NULL; }

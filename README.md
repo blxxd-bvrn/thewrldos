@@ -1494,6 +1494,12 @@ device manager's job is to say what the computer has and which driver runs it.
       `src/win32/glsl_px*.inc`) is compiled twice, once for SSE: the 32-bit edition uses
       that copy where SSE2 is. Together with the processors, CoronaKO draws about twice as
       fast again.
+    - **Uniform work once per draw** (`rust/src/hoist.rs`): when a GLSL program links,
+      what its shaders compute from uniforms alone (a light direction normalised, colours
+      added up, the sine of an animation time) is split into a small pre-shader that runs
+      once per draw; the per-pixel and per-vertex code reads the results like uniforms. Only
+      values every pixel shares are moved (not ones inside branches on per-pixel values, nor
+      loop counters), and tests check the split shaders give the same bits as the originals.
     - **Shader machine code** (`rust/src/jit.rs`): Direct3D 10 and GLSL shaders are compiled
       once to x86 SSE code (both editions; the 32-bit one when the processor has SSE2) instead
       of being interpreted, 4 to 11 times faster. Arithmetic, comparisons, logic, conversions,

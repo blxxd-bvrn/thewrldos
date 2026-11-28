@@ -39,6 +39,7 @@ pub mod dxil;
 pub mod glsl;
 pub mod jit;
 pub mod jit4;
+pub mod hoist;
 pub mod lxpath;
 pub mod pcm;
 pub mod adblock;
