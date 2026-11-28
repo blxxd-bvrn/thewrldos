@@ -85,12 +85,13 @@ SL_ENTRY static void PX(sl_sample)(void *ctx, int ti, int si, const float *uv, f
 }
 /* four pixels in one call (jit4.rs, dxbc_quad_sample4): coordinates and texels as
  * component vectors, the texture looked up once */
-SL_ENTRY static void PX(sl_sample4)(void *ctx, int ts, const float *uv, const float *lod, uint32_t lanes, float *out) {
-    (void)lod;
+static inline void PX(sample_n)(void *ctx, int ts, const float *uv, uint32_t lanes, float *out, int nl) {
     PX(tview_t) T;
-    if (!PX(tview)(ctx, ts & 0xFFFF, &T)) { for (int l = 0; l < 4; l++) { out[l] = out[4 + l] = out[8 + l] = 0; out[12 + l] = 1; } return; }
-    for (int l = 0; l < 4; l++) if (lanes & (1u << l)) PX(filter)(&T, uv[l], uv[4 + l], out + l, 4);
+    if (!PX(tview)(ctx, ts & 0xFFFF, &T)) { for (int l = 0; l < nl; l++) { out[l] = out[nl + l] = out[2 * nl + l] = 0; out[3 * nl + l] = 1; } return; }
+    for (int l = 0; l < nl; l++) if (lanes & (1u << l)) PX(filter)(&T, uv[l], uv[nl + l], out + l, nl);
 }
+SL_ENTRY static void PX(sl_sample4)(void *ctx, int ts, const float *uv, const float *lod, uint32_t lanes, float *out) { (void)lod; PX(sample_n)(ctx, ts, uv, lanes, out, 4); }
+SL_ENTRY static void PX(sl_sample8)(void *ctx, int ts, const float *uv, const float *lod, uint32_t lanes, float *out) { (void)lod; PX(sample_n)(ctx, ts, uv, lanes, out, 8); }
 #elif SL_PART == 2
 static inline float PX(blend_f)(GLenum f, int ch, const float *s, const float *d, const float *bc) {
     switch (f) {
@@ -164,11 +165,11 @@ static inline __m128 PX(eq4)(GLenum e, __m128 a, __m128 b) {
     switch (e) { case 0x800A: return _mm_sub_ps(a, b); case 0x800B: return _mm_sub_ps(b, a); case 0x8007: return _mm_min_ps(a, b); case 0x8008: return _mm_max_ps(a, b); }
     return _mm_add_ps(a, b);
 }
-/* pixels x..x+3 of row y whose bits are in keep, colours c (component vectors) */
-static inline void PX(out4)(sl_wk_t *W, int x, int y, const float *zq, const float *c, uint32_t keep) {
+/* pixels x..x+3 of row y whose bits are in keep, colours c (component vectors, cs floats apart) */
+static inline void PX(out4)(sl_wk_t *W, int x, int y, const float *zq, const float *c, int cs, uint32_t keep) {
     pipe_t *P = W->P;
     __m128 S[4];
-    for (int i = 0; i < 4; i++) { __m128 v = _mm_loadu_ps(c + 4 * i); S[i] = PX(clamp4)(_mm_and_ps(v, _mm_cmpord_ps(v, v))); }
+    for (int i = 0; i < 4; i++) { __m128 v = _mm_loadu_ps(c + cs * i); S[i] = PX(clamp4)(_mm_and_ps(v, _mm_cmpord_ps(v, v))); }
     if (P->alpha_test) {
         float a[4]; _mm_storeu_ps(a, S[3]);
         for (int l = 0; l < 4; l++) if ((keep & (1u << l)) && !PX(test_alpha)(P->s->alpha_func, a[l], P->s->alpha_ref)) keep &= ~(1u << l);
@@ -207,13 +208,14 @@ static inline void PX(out4)(sl_wk_t *W, int x, int y, const float *zq, const flo
 /* not static: its float arguments then pass the standard way into the SSE copy */
 SL_ENTRY void PX(raster_quads)(sl_wk_t *W, const sl_tri_t *T, const float *pl, int xs, int xe, int y, float py, float z, float iw, float *dz) {
     pipe_t *P = W->P;
+    const int nl = W->nl;                       /* 4 or 8 pixels a group */
     float *qi = W->qin;
-    const float *qo = W->qout + 16 * P->o->target_reg;
+    const float *qo = W->qout + 4 * nl * P->o->target_reg;
     float fy = (P->t.flip ? y : P->t.h - 1 - y) + .5f;
-    for (int x = xs; x <= xe; x += 4) {
+    for (int x = xs; x <= xe; x += nl) {
         uint32_t live = 0;
-        float zq[4], wq[4], wc[4];
-        for (int l = 0; l < 4; l++, z += T->zdx, iw += T->idx) {
+        float zq[8], wq[8], wc[8];
+        for (int l = 0; l < nl; l++, z += T->zdx, iw += T->idx) {
             zq[l] = z; wq[l] = iw; wc[l] = iw != 0 ? 1.0f / iw : 0;
             int xx = x + l;
             if (xx > xe || z < 0 || z > 1) continue;
@@ -224,37 +226,22 @@ SL_ENTRY void PX(raster_quads)(sl_wk_t *W, const sl_tri_t *T, const float *pl, i
         float px0 = x + .5f;
         for (int i = 0; i < P->np; i++) {
             float d = pl[3 * i + 1], v = pl[3 * i] + d * px0 + pl[3 * i + 2] * py;
-            float *o = qi + 16 * P->lreg[i] + 4 * (P->lcomp[i] & 3);
-            if (P->lpers[i]) { o[0] = v * wc[0]; o[1] = (v + d) * wc[1]; o[2] = (v + 2 * d) * wc[2]; o[3] = (v + 3 * d) * wc[3]; }
-            else { o[0] = v; o[1] = v + d; o[2] = v + 2 * d; o[3] = v + 3 * d; }
+            float *o = qi + 4 * nl * P->lreg[i] + nl * (P->lcomp[i] & 3);
+            if (P->lpers[i]) for (int l = 0; l < nl; l++) o[l] = (v + l * d) * wc[l];
+            else for (int l = 0; l < nl; l++) o[l] = v + l * d;
         }
         if (P->fpos >= 0) {
-            float *o = qi + 16 * P->fpos;
-            for (int l = 0; l < 4; l++) { o[l] = px0 + l; o[4 + l] = fy; o[8 + l] = zq[l]; o[12 + l] = wq[l]; }
+            float *o = qi + 4 * nl * P->fpos;
+            for (int l = 0; l < nl; l++) { o[l] = px0 + l; o[nl + l] = fy; o[2 * nl + l] = zq[l]; o[3 * nl + l] = wq[l]; }
         }
         uint32_t keep = dxbc_quad_run(W->q, live);
         if (!keep) continue;
 #ifndef SL_X87
-#ifdef SL_VERIFY
-        {   /* both ways on the same pixels: the four-pixel output must match frag_out */
-            uint32_t *px = P->t.c->px + (size_t)y * P->t.c->stride + x; float *dzz = dz + x;
-            uint32_t sp[4], sv[4], a[4]; float sz[4], zv[4], zs[4]; uint32_t pv = W->pixels;
-            for (int l = 0; l < 4; l++) if (keep & (1u << l)) { sp[l] = px[l]; sz[l] = dzz[l]; }
-            PX(out4)(W, x, y, zq, qo, keep);
-            for (int l = 0; l < 4; l++) if (keep & (1u << l)) { sv[l] = px[l]; zv[l] = dzz[l]; px[l] = sp[l]; dzz[l] = sz[l]; }
-            uint32_t pv4 = W->pixels; W->pixels = pv;
-            for (int l = 0; l < 4; l++) if (keep & (1u << l)) { float cc[4] = { qo[l], qo[4 + l], qo[8 + l], qo[12 + l] }; PX(frag_out)(W, x + l, y, zq[l], cc); a[l] = px[l]; zs[l] = dzz[l]; }
-            static int bad;
-            for (int l = 0; l < 4; l++) if ((keep & (1u << l)) && (a[l] != sv[l] || memcmp(&zs[l], &zv[l], 4)) && bad < 20) { bad++; klog("verify: pixel %d,%d frag_out %08x out4 %08x", x + l, y, a[l], sv[l]); }
-            if (pv4 != W->pixels && bad < 20) { bad++; klog("verify: counts %u %u", pv4, W->pixels); }
-        }
+        for (int h = 0; h < nl; h += 4) if ((keep >> h) & 15) PX(out4)(W, x + h, y, zq + h, qo + h, nl, (keep >> h) & 15);
 #else
-        PX(out4)(W, x, y, zq, qo, keep);
-#endif
-#else
-        for (int l = 0; l < 4; l++) {
+        for (int l = 0; l < nl; l++) {
             if (!(keep & (1u << l))) continue;
-            float c[4] = { qo[l], qo[4 + l], qo[8 + l], qo[12 + l] };
+            float c[4] = { qo[l], qo[nl + l], qo[2 * nl + l], qo[3 * nl + l] };
             PX(frag_out)(W, x + l, y, zq[l], c);
         }
 #endif
@@ -295,9 +282,9 @@ SL_ENTRY void PX(raster_tri)(sl_wk_t *W, const sl_bin_t *B, const sl_tri_t *T, i
             if (P->fface >= 0) in[P->fface].u[0] = T->front;
             for (int i = 0; i < P->nflat; i++) memcpy(in[P->freg_flat[i]].f, fl + 4 * i, 16);
             if (W->q) {
-                float *qi = W->qin;
-                if (P->fface >= 0) for (int l = 0; l < 4; l++) ((uint32_t *)qi)[16 * P->fface + l] = T->front;
-                for (int i = 0; i < P->nflat; i++) for (int c = 0; c < 4; c++) for (int l = 0; l < 4; l++) qi[16 * P->freg_flat[i] + 4 * c + l] = fl[4 * i + c];
+                float *qi = W->qin; int nl = W->nl;
+                if (P->fface >= 0) for (int l = 0; l < nl; l++) ((uint32_t *)qi)[4 * nl * P->fface + l] = T->front;
+                for (int i = 0; i < P->nflat; i++) for (int c = 0; c < 4; c++) for (int l = 0; l < nl; l++) qi[4 * nl * P->freg_flat[i] + nl * c + l] = fl[4 * i + c];
             }
         }
         float px0 = xs + .5f;

@@ -71,6 +71,9 @@ bool dxbc_hoist_run(const dxbc_shader_t *pre, const dxbc_env_t *env, vec4_t *row
  * did not discard. NULL from new: use dxbc_exec_t one invocation at a time. */
 typedef struct dxbc_quad dxbc_quad_t;
 dxbc_quad_t *dxbc_quad_new(const dxbc_shader_t *s, const dxbc_env_t *env, const float *in, float *out);
+/* the same for nl lanes: 4, or 8 with AVX2 (NULL where the processor or system lacks it);
+ * in and out then hold 4 * nl floats a register (r, c, l at 4 * nl * r + nl * c + l) */
+dxbc_quad_t *dxbc_quad_new_n(const dxbc_shader_t *s, const dxbc_env_t *env, const float *in, float *out, int nl);
 void dxbc_quad_free(dxbc_quad_t *q);
 uint32_t dxbc_quad_run(dxbc_quad_t *q, uint32_t live);
 /* a sampler for four lanes at once: texture | sampler << 16, uv and out as four component

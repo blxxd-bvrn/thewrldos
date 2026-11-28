@@ -33,17 +33,19 @@ extern "C" {
 /// One context for four invocations of one shader (`dxbc_quad_t` in C, opaque there).
 #[repr(C, align(16))]
 pub struct Quad {
-    pub m: [u32; 4],                 // the execution mask
-    pub z: [u32; 4],                 // lanes off until the loop ends or for good (break, continue, ret, discard)
-    pub rr: [u32; 4],                // lanes that returned
-    pub d: [u32; 4],                 // lanes that discarded
-    pub live: [u32; 4],              // lanes that run at all
-    pub tmp: [[u32; 4]; 4],          // results when a destination is also a source
-    pub soa: [[u32; 4]; 4],          // a texture coordinate or texel, component vectors
-    pub uv: [[u32; 4]; 4],           // the same per lane
-    pub tex: [[u32; 4]; 4],
-    pub lod: [u32; 4],
-    pub stack: [[[u32; 4]; 3]; 64],  // per nesting level: saved mask, condition / saved z, break lanes
+    /* room for 8 lanes; at 4 lanes each vector is the first 16 bytes of its 32 */
+    pub m: [u32; 8],                 // the execution mask
+    pub z: [u32; 8],                 // lanes off until the loop ends or for good (break, continue, ret, discard)
+    pub rr: [u32; 8],                // lanes that returned
+    pub d: [u32; 8],                 // lanes that discarded
+    pub live: [u32; 8],              // lanes that run at all
+    pub tmp: [[u32; 8]; 4],          // results when a destination is also a source
+    pub soa: [[u32; 8]; 4],          // a texture coordinate or texel, component vectors (stride: one vector)
+    pub uv: [[u32; 4]; 8],           // the same per lane
+    pub tex: [[u32; 4]; 8],
+    pub lod: [u32; 8],
+    pub stack: [[[u32; 8]; 3]; 64],  // per nesting level: saved mask, condition / saved z, break lanes
+    pub nl: i32,                     // lanes: 4 (SSE) or 8 (AVX2)
     pub r: *mut u8, pub inp: *const u8, pub out: *mut u8,
     pub env: *const Env, pub shader: *const Shader,
     pub cbp: [*const Vec4; 14],      // the constant buffers (every row the code reads is there)
@@ -60,14 +62,17 @@ macro_rules! q { ($f:ident) => { offset_of!(Quad, $f) as i32 } }
 #[derive(Clone, Copy, Default)]
 struct Ctl { depth: usize, slot: usize, target: usize }
 
-struct G4<'a> { a: Asm, s: &'a Shader, pool: &'a [Opnd], ctl: Vec<Ctl>, seen_ret: bool }
+/// nl lanes (4 or 8), vw bytes per vector (16 or 32)
+struct G4<'a> { a: Asm, s: &'a Shader, pool: &'a [Opnd], ctl: Vec<Ctl>, seen_ret: bool, nl: i32, vw: i32 }
 
 const ODEPTH_REG: i32 = DX_MAX_REG as i32 - 1;
 
 impl<'a> G4<'a> {
     fn ldq(&mut self, x: u8, off: i32) { self.a.movups_ld(x, M::B(EBX, off)); }
     fn stq(&mut self, off: i32, x: u8) { self.a.movups_st(M::B(EBX, off), x); }
-    fn movmsk(&mut self, r: u8, x: u8) { self.a.byte(0x0F); self.a.byte(0x50); self.a.modreg(r, x); }
+    fn movmsk(&mut self, r: u8, x: u8) { self.a.sse_r(0, 0x50, r, x); }
+    /// before a call out: the C and Rust code there is SSE code
+    fn leave_avx(&mut self) { if self.a.wide { self.a.vzeroupper(); } }
     fn mov_st(&mut self, m: M, r: u8) { self.a.byte(0x89); self.a.modrm(r, m, 0); }
     fn pand(&mut self, x: u8, y: u8) { self.a.sse_r(0x66, 0xDB, x, y); }
     fn pandn(&mut self, x: u8, y: u8) { self.a.sse_r(0x66, 0xDF, x, y); }   /* x = ~x & y */
@@ -76,7 +81,8 @@ impl<'a> G4<'a> {
     /// The register file and offset of a register operand's component vector c (swizzle
     /// not applied), for direct temporaries, inputs, outputs and the depth output.
     fn reg(&self, o: &Opnd, c: usize) -> Option<M> {
-        let at = |b: u8, i: i32| Some(M::B(b, 64 * i + 16 * c as i32));
+        let vw = self.vw;
+        let at = |b: u8, i: i32| Some(M::B(b, 4 * vw * i + vw * c as i32));
         match o.ty {
             T_TEMP if o.rel[0] < 0 && o.idx[0] >= 0 && o.idx[0] < self.s.ntemps.max(1) => at(ESI, o.idx[0]),
             T_INPUT if o.rel[0] < 0 && o.idx[0] >= 0 && o.idx[0] < DX_MAX_REG as i32 => at(EBP, o.idx[0]),
@@ -114,8 +120,9 @@ impl<'a> G4<'a> {
             T_CB => {
                 /* dxbc_quad_new checked that the row exists */
                 self.a.mov_ld_ptr(ECX, M::B(EBX, q!(cbp) + PS * o.idx[0]));
-                self.a.sse_m(0xF3, 0x10, x, M::B(ECX, 16 * o.idx[1] + 4 * sw as i32));   /* movss */
-                self.a.shufps(x, x, 0);
+                let m = M::B(ECX, 16 * o.idx[1] + 4 * sw as i32);
+                if self.a.wide { self.a.vbroadcastss(x, m); }
+                else { self.a.sse_m(0xF3, 0x10, x, m); self.a.shufps(x, x, 0); }      /* movss, to all lanes */
             }
             _ => { let m = self.reg(&o, sw).expect("checked operand"); self.a.movups_ld(x, m); }
         }
@@ -164,10 +171,10 @@ impl<'a> G4<'a> {
         for c in 0..4 {
             if mask & (1 << c) == 0 { continue; }
             let x = f(self, c);
-            if alias { self.stq(q!(tmp) + 16 * c as i32, x); } else { self.store(i.o[0], c, x, sat, blend); }
+            if alias { self.stq(q!(tmp) + self.vw * c as i32, x); } else { self.store(i.o[0], c, x, sat, blend); }
         }
         if alias {
-            for c in 0..4 { if mask & (1 << c) != 0 { self.ldq(0, q!(tmp) + 16 * c as i32); self.store(i.o[0], c, 0, sat, blend); } }
+            for c in 0..4 { if mask & (1 << c) != 0 { self.ldq(0, q!(tmp) + self.vw * c as i32); self.store(i.o[0], c, 0, sat, blend); } }
         }
     }
     /// The same value (xmm 0) to every component of the destination.
@@ -204,13 +211,14 @@ impl<'a> G4<'a> {
         self.ldq(1, q!(z)); self.por(1, 0); self.stq(q!(z), 1);
         self.ldq(1, q!(m)); self.pandn(0, 1); self.stq(q!(m), 0);
     }
-    fn slot(&self, s: usize, w: i32) -> i32 { q!(stack) + 48 * s as i32 + 16 * w }
+    fn slot(&self, s: usize, w: i32) -> i32 { q!(stack) + 96 * s as i32 + 32 * w }
     fn reload_files(&mut self) {
         if X64 { self.a.mov_ld_ptr(ESI, M::B(EBX, q!(r))); self.a.mov_ld_ptr(EDI, M::B(EBX, q!(out))); }
     }
     fn helper(&mut self, pc: usize) {
         #[cfg(test)] { let op = self.s.ins()[pc].op; HELPED4.with(|h| h.borrow_mut().push(op)); }
         let f = quad_step as *const () as usize;
+        self.leave_avx();
         if X64 {
             self.a.byte(0x48); self.a.byte(0x89); self.a.byte(0xDF);                   /* mov rdi, rbx */
             self.a.byte(0xBE); self.a.d32(pc as i32);                                  /* mov esi, pc */
@@ -233,7 +241,8 @@ impl<'a> G4<'a> {
     fn sample(&mut self, pc: usize, i: &Ins) {
         let o = i.o;
         let t = self.pool[o[2] as usize]; let sm = self.pool[o[3] as usize];
-        for c in 0..4 { self.load(o[1], c, 0, false); self.stq(q!(soa) + 16 * c as i32, 0); }
+        let (nl, vw) = (self.nl, self.vw);
+        for c in 0..4 { self.load(o[1], c, 0, false); self.stq(q!(soa) + vw * c as i32, 0); }
         if i.op == OP_SAMPLE_L { self.load(o[4], 0, 1, false); } else { self.a.zero(1); }
         self.stq(q!(lod), 1);
         /* a sampler for four lanes: one call, coordinates and texels as component vectors
@@ -242,6 +251,7 @@ impl<'a> G4<'a> {
         self.a.cmp_m_imm(M::B(EBX, q!(sample4)), 0);
         let one_by_one = self.a.jfwd(JE);
         self.ldq(0, q!(m)); self.movmsk(EAX, 0);
+        self.leave_avx();
         let ts = (t.idx[0] & 0xFFFF) | (sm.idx[0] << 16);
         if X64 {
             self.a.byte(0x41); self.a.byte(0x89); self.a.byte(0xC0);                                        /* mov r8d, eax: lanes */
@@ -267,12 +277,13 @@ impl<'a> G4<'a> {
         self.sample_store(pc, i, q!(uv));
         let done = self.a.jfwd(0);
         self.a.here(one_by_one);
-        for l in 0..4 { for c in 0..4 {
-            self.a.mov_ld(EAX, M::B(EBX, q!(soa) + 16 * c + 4 * l));
+        for l in 0..nl { for c in 0..4 {
+            self.a.mov_ld(EAX, M::B(EBX, q!(soa) + vw * c + 4 * l));
             self.mov_st(M::B(EBX, q!(uv) + 16 * l + 4 * c), EAX);
         } }
         self.a.zero(7);
-        for l in 0..4 { self.stq(q!(tex) + 16 * l, 7); }
+        for l in 0..nl / (vw / 16) { self.stq(q!(tex) + vw * l, 7); }
+        self.leave_avx();
         self.a.mov_ld_ptr(EAX, M::B(EBX, q!(env)));
         self.a.byte(0x83); self.a.modrm(7, M::B(EAX, off_env_sample()), 1); self.a.byte(0);
         let skip = if X64 {
@@ -282,7 +293,7 @@ impl<'a> G4<'a> {
             self.a.here(lo0);
             sk
         } else { self.a.jfwd(JE) };
-        for l in 0..4i32 {
+        for l in 0..nl {
             self.a.cmp_m_imm(M::B(EBX, q!(m) + 4 * l), 0);
             let off = self.a.jfwd(JE);
             self.a.mov_ld_ptr(EAX, M::B(EBX, q!(env)));
@@ -291,7 +302,9 @@ impl<'a> G4<'a> {
                 self.a.byte(0xBE); self.a.d32(t.idx[0]);
                 self.a.byte(0xBA); self.a.d32(sm.idx[0]);
                 self.a.byte(0x48); self.a.byte(0x8D); self.a.modrm(ECX, M::B(EBX, q!(uv) + 16 * l), 0);    /* lea rcx */
+                let w = self.a.wide; self.a.wide = false;
                 self.a.sse_m(0xF3, 0x10, 0, M::B(EBX, q!(lod) + 4 * l));                                 /* movss xmm0 */
+                self.a.wide = w;
                 self.a.byte(0x4C); self.a.byte(0x8D); self.a.modrm(0, M::B(EBX, q!(tex) + 16 * l), 0);     /* lea r8 */
                 self.a.mov_ld_ptr(EAX, M::B(EAX, off_env_sample()));
                 self.a.byte(0xFF); self.a.byte(0xD0);
@@ -309,9 +322,9 @@ impl<'a> G4<'a> {
         }
         self.reload_files();
         self.a.here(skip);
-        for l in 0..4 { for c in 0..4 {
+        for l in 0..nl { for c in 0..4 {
             self.a.mov_ld(EAX, M::B(EBX, q!(tex) + 16 * l + 4 * c));
-            self.mov_st(M::B(EBX, q!(soa) + 16 * c + 4 * l), EAX);
+            self.mov_st(M::B(EBX, q!(soa) + vw * c + 4 * l), EAX);
         } }
         self.sample_store(pc, i, q!(soa));
         self.a.here(done);
@@ -325,7 +338,7 @@ impl<'a> G4<'a> {
         let blend = self.blend(pc);
         for c in 0..4 {
             if d.mask & (1 << c) == 0 { continue; }
-            self.ldq(0, at + 16 * (t.swz[c] & 3) as i32);
+            self.ldq(0, at + self.vw * (t.swz[c] & 3) as i32);
             self.store(o[0], c, 0, i.sat != 0, blend);
         }
     }
@@ -562,13 +575,13 @@ fn control(s: &Shader) -> Option<Vec<Ctl>> {
 }
 
 /// Machine code for four invocations of a shader, or None (it then runs one at a time).
-pub fn compile(s: &Shader) -> Option<(*mut u8, usize)> {
+pub fn compile(s: &Shader, nl: i32) -> Option<(*mut u8, usize)> {
     if s.xt_total != 0 || s.nins <= 0 || s.dxil != 0 { return None; }
     let ins = s.ins();
     if ins.iter().any(|i| i.op >= OP_BLOCK) { return None; }
     let ctl = control(s)?;
     let pool = s.pool();
-    let mut g = G4 { a: Asm { b: Vec::new(), consts: Vec::new(), cfix: Vec::new(), label: Vec::new(), jfix: Vec::new() }, s, pool, ctl, seen_ret: false };
+    let mut g = G4 { a: Asm { b: Vec::new(), consts: Vec::new(), cfix: Vec::new(), label: Vec::new(), jfix: Vec::new(), wide: nl == 8 }, s, pool, ctl, seen_ret: false, nl, vw: 4 * nl };
     /* registers must be addressed directly (the helper copies whole registers per lane),
      * and conditions read here */
     for i in ins {
@@ -586,7 +599,8 @@ pub fn compile(s: &Shader) -> Option<(*mut u8, usize)> {
     g.a.mov_ld_ptr(ESI, M::B(EBX, q!(r)));
     g.a.mov_ld_ptr(EBP, M::B(EBX, q!(inp)));
     g.a.mov_ld_ptr(EDI, M::B(EBX, q!(out)));
-    if s.nclear > 0 { g.a.zero(0); for k in 0..s.nclear as usize { for c in 0..4 { g.a.movups_st(M::B(EDI, 64 * s.clear_regs[k] as i32 + 16 * c), 0); } } }
+    let vw = g.vw;
+    if s.nclear > 0 { g.a.zero(0); for k in 0..s.nclear as usize { for c in 0..4 { g.a.movups_st(M::B(EDI, 4 * vw * s.clear_regs[k] as i32 + vw * c), 0); } } }
     for (pc, i) in ins.iter().enumerate() { g.a.label.push(g.a.b.len()); g.ins(pc, i); }
     link(g.a, n)
 }
@@ -612,24 +626,26 @@ unsafe extern "C" fn quad_step(q: *mut Quad, pc: c_int) -> c_int {
         add(o);
         for r in o.rel { if r >= 0 { add(&pool[r as usize]); } }
     }
-    for l in 0..4 {
+    let nl = q.nl as usize;
+    let rb = 16 * nl;                 /* bytes of one register */
+    for l in 0..nl {
         if q.m[l] == 0 { continue; }
         for &(ty, idx) in &regs[..nr] {
             let (soa, aos): (*const u32, *mut Vec4) = match ty {
-                T_TEMP => (q.r.add(64 * idx as usize) as *const u32, q.ex.r.add(idx as usize)),
-                T_INPUT => (q.inp.add(64 * idx as usize) as *const u32, &mut q.ain[idx as usize]),
-                _ => (q.out.add(64 * idx as usize) as *const u32, &mut q.aout[idx as usize]),
+                T_TEMP => (q.r.add(rb * idx as usize) as *const u32, q.ex.r.add(idx as usize)),
+                T_INPUT => (q.inp.add(rb * idx as usize) as *const u32, &mut q.ain[idx as usize]),
+                _ => (q.out.add(rb * idx as usize) as *const u32, &mut q.aout[idx as usize]),
             };
-            for c in 0..4 { (*aos).u[c] = *soa.add(4 * c + l); }
+            for c in 0..4 { (*aos).u[c] = *soa.add(nl * c + l); }
         }
         if dxbc_exec_step(&mut q.ex, pc) < 0 { return -1; }
         for &(ty, idx) in &regs[..nr] {
             let (soa, aos): (*mut u32, *const Vec4) = match ty {
-                T_TEMP => (q.r.add(64 * idx as usize) as *mut u32, q.ex.r.add(idx as usize)),
+                T_TEMP => (q.r.add(rb * idx as usize) as *mut u32, q.ex.r.add(idx as usize)),
                 T_INPUT => continue,
-                _ => (q.out.add(64 * idx as usize) as *mut u32, &q.aout[idx as usize]),
+                _ => (q.out.add(rb * idx as usize) as *mut u32, &q.aout[idx as usize]),
             };
-            for c in 0..4 { *soa.add(4 * c + l) = (*aos).u[c]; }
+            for c in 0..4 { *soa.add(nl * c + l) = (*aos).u[c]; }
         }
     }
     0
@@ -638,30 +654,47 @@ unsafe extern "C" fn quad_step(q: *mut Quad, pc: c_int) -> c_int {
 pub type Jit4Fn = unsafe extern "C" fn(*mut Quad) -> c_int;
 
 /* ---------------- the cache: shader -> code ---------------- */
-struct Entry { shader: usize, mem: usize, entry: usize }
+struct Entry { shader: usize, nl: i32, mem: usize, entry: usize }
 static mut CACHE: Vec<Entry> = Vec::new();
 static LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 fn lock() { while LOCK.compare_exchange(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() { core::hint::spin_loop(); } }
 fn unlock() { LOCK.store(false, core::sync::atomic::Ordering::Release); }
 
-unsafe fn get(s: *const Shader) -> usize {
+/// AVX2 there, and the system saving its registers (XCR0 has the SSE and AVX state)
+pub fn avx2_ok() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    #[allow(unused_unsafe)]
+    unsafe {
+        let c1 = core::arch::x86_64::__cpuid(1);
+        if c1.ecx & (1 << 27) == 0 || c1.ecx & (1 << 28) == 0 { return false; }
+        let (lo, _hi): (u32, u32);
+        core::arch::asm!("xgetbv", in("ecx") 0u32, out("eax") lo, out("edx") _hi, options(nomem, nostack));
+        if lo & 6 != 6 { return false; }
+        if core::arch::x86_64::__cpuid(0).eax < 7 { return false; }
+        return core::arch::x86_64::__cpuid_count(7, 0).ebx & (1 << 5) != 0;
+    }
+    #[allow(unreachable_code)]
+    false
+}
+unsafe fn get(s: *const Shader, nl: i32) -> usize {
     if core::ptr::read_volatile(core::ptr::addr_of!(dxbc_jit_enabled)) == 0 || s.is_null() || !cpu_ok() { return 0; }
+    if nl == 8 && !avx2_ok() { return 0; }
     lock();
     let cache = &mut *core::ptr::addr_of_mut!(CACHE);
-    if let Some(e) = cache.iter().find(|e| e.shader == s as usize) { let f = e.entry; unlock(); return f; }
+    if let Some(e) = cache.iter().find(|e| e.shader == s as usize && e.nl == nl) { let f = e.entry; unlock(); return f; }
     unlock();
-    let r = compile(&*s);
+    let r = compile(&*s, nl);
     lock();
     let cache = &mut *core::ptr::addr_of_mut!(CACHE);
     let (mem, entry) = match r { Some((m, off)) => (m as usize, m as usize + off), None => (0, 0) };
-    cache.push(Entry { shader: s as usize, mem, entry });
+    cache.push(Entry { shader: s as usize, nl, mem, entry });
     unlock();
     entry
 }
 pub unsafe fn forget(s: *const Shader) {
     lock();
     let cache = &mut *core::ptr::addr_of_mut!(CACHE);
-    if let Some(i) = cache.iter().position(|e| e.shader == s as usize) { let e = cache.swap_remove(i); if e.mem != 0 { jit_free(e.mem as *mut u8); } }
+    while let Some(i) = cache.iter().position(|e| e.shader == s as usize) { let e = cache.swap_remove(i); if e.mem != 0 { jit_free(e.mem as *mut u8); } }
     unlock();
 }
 
@@ -672,8 +705,15 @@ pub unsafe fn forget(s: *const Shader) {
 /// 16 * r + 4 * c + l); NULL when the shader does not compile this way.
 #[no_mangle]
 pub unsafe extern "C" fn dxbc_quad_new(s: *const Shader, env: *const Env, inp: *const f32, out: *mut f32) -> *mut Quad {
-    if s.is_null() || env.is_null() || inp.is_null() || out.is_null() { return core::ptr::null_mut(); }
-    let code = get(s);
+    dxbc_quad_new_n(s, env, inp, out, 4)
+}
+/// The same for `nl` lanes: 4 (SSE2), or 8 (AVX2; NULL where the processor or system lacks
+/// it). inp and out then hold 32 floats a register (register r, component c, lane l at
+/// float 4 * nl * r + nl * c + l), and run takes and returns 8 lane bits.
+#[no_mangle]
+pub unsafe extern "C" fn dxbc_quad_new_n(s: *const Shader, env: *const Env, inp: *const f32, out: *mut f32, nl: c_int) -> *mut Quad {
+    if s.is_null() || env.is_null() || inp.is_null() || out.is_null() || !(nl == 4 || nl == 8) { return core::ptr::null_mut(); }
+    let code = get(s, nl);
     if code == 0 { return core::ptr::null_mut(); }
     /* the code reads constants without checking: every row it names must exist */
     let e = &*env;
@@ -684,21 +724,21 @@ pub unsafe extern "C" fn dxbc_quad_new(s: *const Shader, env: *const Env, inp: *
         }
     }
     let nt = (*s).ntemps.max(1) as usize;
-    let size = core::mem::size_of::<Quad>() + 64 * nt + 32;
+    let size = core::mem::size_of::<Quad>() + 16 * nl as usize * nt + 32;
     let mem = kmalloc(size);
     if mem.is_null() { return core::ptr::null_mut(); }
     core::ptr::write_bytes(mem as *mut u8, 0, size);
     let q = ((mem as usize + 15) & !15) as *mut Quad;
     let qq = &mut *q;
     qq.cbp = e.cb;
-    qq.mem = mem; qq.code = code; qq.shader = s; qq.env = env;
+    qq.mem = mem; qq.code = code; qq.shader = s; qq.env = env; qq.nl = nl;
     qq.inp = inp as *const u8; qq.out = out as *mut u8;
     qq.r = (q as *mut u8).add(core::mem::size_of::<Quad>());
     if dxbc_exec_init(&mut qq.ex, s, env, qq.ain.as_ptr(), qq.aout.as_mut_ptr()) == 0 { kfree(mem); return core::ptr::null_mut(); }
     q
 }
 /// `sample4(ctx, texture | sampler << 16, uv, lod, lanes, out)`: uv and out are four
-/// component vectors of four lanes (16 floats), lod four floats, lanes a bit per lane that
+/// component vectors of the context's lanes (16 or 32 floats), lod a float per lane, lanes a bit per lane that
 /// needs its texel (the others may be left as they are).
 pub type Sample4Fn = unsafe extern "C" fn(*mut c_void, c_int, *const f32, *const f32, u32, *mut f32);
 /// Give the context a sampler for four lanes at once (it must give each lane the texel the
@@ -718,13 +758,14 @@ pub unsafe extern "C" fn dxbc_quad_free(q: *mut Quad) {
 #[no_mangle]
 pub unsafe extern "C" fn dxbc_quad_run(q: *mut Quad, live: u32) -> u32 {
     let qq = &mut *q;
-    for l in 0..4 { let v = if live & (1 << l) != 0 { !0 } else { 0 }; qq.live[l] = v; qq.m[l] = v; qq.z[l] = 0; qq.rr[l] = 0; qq.d[l] = 0; }
+    let nl = qq.nl as usize;
+    for l in 0..8 { let v = if l < nl && live & (1 << l) != 0 { !0 } else { 0 }; qq.live[l] = v; qq.m[l] = v; qq.z[l] = 0; qq.rr[l] = 0; qq.d[l] = 0; }
     qq.budget = BUDGET;
     qq.ex.discard = 0; qq.ex.block = -1; qq.ex.previous_block = -1;
     let f: Jit4Fn = core::mem::transmute::<usize, Jit4Fn>(qq.code);
     if f(q) == 0 { return 0; }
     let mut bits = 0;
-    for l in 0..4 { if qq.live[l] != 0 && qq.d[l] == 0 { bits |= 1 << l; } }
+    for l in 0..nl { if qq.live[l] != 0 && qq.d[l] == 0 { bits |= 1 << l; } }
     bits
 }
 
@@ -734,9 +775,16 @@ std::thread_local! { static HELPED4: core::cell::RefCell<Vec<u16>> = core::cell:
 mod tests {
     use super::*;
 
-    /// Four lanes at a time against the interpreter one at a time, lane masks and inputs at
-    /// random: every output of every surviving lane, and which lanes discard, must agree.
+    std::thread_local! { static NLT: core::cell::Cell<usize> = const { core::cell::Cell::new(4) }; }
+    /// Four (and eight) lanes at a time against the interpreter one at a time, lane masks and
+    /// inputs at random: every output of every surviving lane, and which lanes discard, must
+    /// agree. Eight lanes where the processor has AVX2.
     fn same4(stage: u8, src: &[u8], name: &str) -> (f64, Vec<u16>) {
+        if avx2_ok() { same_n(stage, src, name, 8); } else { println!("(no AVX2 here: 8 lanes not tested)"); }
+        same_n(stage, src, name, 4)
+    }
+    fn same_n(stage: u8, src: &[u8], name: &str, nl: usize) -> (f64, Vec<u16>) {
+        NLT.with(|v| v.set(nl));
         let c = crate::glsl::compile(stage, src).unwrap_or_else(|e| panic!("{}: {}", name, e));
         let sh = c.shader;
         let mut seed = 777u32;
@@ -746,31 +794,33 @@ mod tests {
         env.cb[0] = rows.as_ptr(); env.cb_rows[0] = rows.len() as u32;
         unsafe extern "C" fn smp(_c: *mut c_void, t: c_int, _s: c_int, uv: *const f32, l: f32, o: *mut f32) { for i in 0..4 { *o.add(i) = *uv.add(i % 2) * 0.5 + t as f32 * 0.1 + i as f32 * 0.01 + l; } }
         env.sample = Some(smp);
-        let mut inp4 = alloc::vec![0f32; DX_MAX_REG * 16];
-        let mut out4 = alloc::vec![0f32; DX_MAX_REG * 16];
-        let q = unsafe { dxbc_quad_new(sh, &env, inp4.as_ptr(), out4.as_mut_ptr()) };
+        let mut inp4 = alloc::vec![0f32; DX_MAX_REG * 4 * nl];
+        let mut out4 = alloc::vec![0f32; DX_MAX_REG * 4 * nl];
+        let q = unsafe { dxbc_quad_new_n(sh, &env, inp4.as_ptr(), out4.as_mut_ptr(), nl as c_int) };
         assert!(!q.is_null(), "{} does not compile for four lanes", name);
         /* the four-lane sampler on odd rounds: the same texels, from one call */
         unsafe extern "C" fn smp4(_c: *mut c_void, ts: c_int, uv: *const f32, lod: *const f32, lanes: u32, o: *mut f32) {
-            for l in 0..4 { if lanes & (1 << l) != 0 {
-                let u = [*uv.add(l), *uv.add(4 + l), *uv.add(8 + l), *uv.add(12 + l)];
+            let nl = NLT.with(|v| v.get());
+            for l in 0..nl { if lanes & (1 << l) != 0 {
+                let u = [*uv.add(l), *uv.add(nl + l), *uv.add(2 * nl + l), *uv.add(3 * nl + l)];
                 let mut t = [0f32; 4];
                 smp(core::ptr::null_mut(), ts & 0xFFFF, ts >> 16, u.as_ptr(), *lod.add(l), t.as_mut_ptr());
-                for c in 0..4 { *o.add(4 * c + l) = t[c]; }
+                for c in 0..4 { *o.add(nl * c + l) = t[c]; }
             } }
         }
         let (mut t1, mut t4) = (0u128, 0u128);
         for round in 0..400 {
-            let live: u32 = if round % 5 == 0 { 15 } else { (rnd().to_bits() >> 7) & 15 };
-            let mut inp = [[Vec4::default(); 32]; 4];
-            for l in 0..4 { for r in 0..32 { for cc in 0..4 {
+            let full = (1u32 << nl) - 1;
+            let live: u32 = if round % 5 == 0 { full } else { (rnd().to_bits() >> 7) & full };
+            let mut inp = [[Vec4::default(); 32]; 8];
+            for l in 0..nl { for r in 0..32 { for cc in 0..4 {
                 let v = if round % 3 == 0 && l > 0 { inp[0][r].u[cc] } else { rnd().to_bits() };   /* lanes that agree, too */
-                inp[l][r].u[cc] = v; inp4[16 * r + 4 * cc + l] = f32::from_bits(v);
+                inp[l][r].u[cc] = v; inp4[4 * nl * r + nl * cc + l] = f32::from_bits(v);
             } } }
-            let mut outs = [[Vec4::default(); 32]; 4];
-            let mut alive = [false; 4];
+            let mut outs = [[Vec4::default(); 32]; 8];
+            let mut alive = [false; 8];
             let t = std::time::Instant::now();
-            for l in 0..4 {
+            for l in 0..nl {
                 if live & (1 << l) == 0 { continue; }
                 let mut e: Exec = unsafe { core::mem::zeroed() };
                 unsafe {
@@ -784,14 +834,14 @@ mod tests {
             let t = std::time::Instant::now();
             let bits = unsafe { dxbc_quad_run(q, live) };
             t4 += t.elapsed().as_nanos();
-            for l in 0..4 {
+            for l in 0..nl {
                 if live & (1 << l) == 0 { continue; }
-                assert_eq!(alive[l], bits & (1 << l) != 0, "{}: lane {} discard differs (round {})", name, l, round);
+                assert_eq!(alive[l], bits & (1 << l) != 0, "{} ({} lanes): lane {} discard differs (round {})", name, nl, l, round);
                 if !alive[l] { continue; }
                 for k in 0..32 { for cc in 0..4 {
-                    let (a, b) = (outs[l][k].u[cc], out4[16 * k + 4 * cc + l].to_bits());
+                    let (a, b) = (outs[l][k].u[cc], out4[4 * nl * k + nl * cc + l].to_bits());
                     let nan = |x: u32| x & 0x7FFF_FFFF > 0x7F80_0000;
-                    assert!(a == b || (nan(a) && nan(b)), "{}: lane {} out[{}].{} interp {:08x} ({}) quad {:08x} ({}) round {}", name, l, k, cc, a, f32::from_bits(a), b, f32::from_bits(b), round);
+                    assert!(a == b || (nan(a) && nan(b)), "{} ({} lanes): lane {} out[{}].{} interp {:08x} ({}) quad {:08x} ({}) round {}", name, nl, l, k, cc, a, f32::from_bits(a), b, f32::from_bits(b), round);
                 } }
             }
         }
@@ -862,11 +912,15 @@ mod tests {
             let inp4 = alloc::vec![0.3f32; DX_MAX_REG * 16];
             let mut out4 = alloc::vec![0f32; DX_MAX_REG * 16];
             let q = unsafe { dxbc_quad_new(c.shader, &env, inp4.as_ptr(), out4.as_mut_ptr()) };
-            let n = 200_000;
+            let inp8 = alloc::vec![0.3f32; DX_MAX_REG * 32];
+            let mut out8 = alloc::vec![0f32; DX_MAX_REG * 32];
+            let q8 = unsafe { dxbc_quad_new_n(c.shader, &env, inp8.as_ptr(), out8.as_mut_ptr(), 8) };
+            let n = 400_000;
             let t = std::time::Instant::now(); for _ in 0..n { unsafe { dxbc_exec_run(&mut ex); } } let a = t.elapsed().as_nanos() as f64 / n as f64;
             let t = std::time::Instant::now(); for _ in 0..n / 4 { unsafe { dxbc_quad_run(q, 15); } } let b = t.elapsed().as_nanos() as f64 / n as f64;
-            println!("{}: one at a time {:.0} ns a pixel, four at a time {:.0} ns a pixel ({:.1}x)", p.file_name().unwrap().to_string_lossy(), a, b, a / b);
-            unsafe { dxbc_quad_free(q); dxbc_exec_fini(&mut ex) };
+            let e = if q8.is_null() { 0.0 } else { let t = std::time::Instant::now(); for _ in 0..n / 8 { unsafe { dxbc_quad_run(q8, 255); } } t.elapsed().as_nanos() as f64 / n as f64 };
+            println!("{}: one at a time {:.1} ns a pixel, four at a time {:.1}, eight at a time {:.1} ({:.2}x over four)", p.file_name().unwrap().to_string_lossy(), a, b, e, b / e);
+            unsafe { dxbc_quad_free(q); if !q8.is_null() { dxbc_quad_free(q8); } dxbc_exec_fini(&mut ex) };
         }
     }
 }

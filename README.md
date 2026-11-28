@@ -1482,8 +1482,10 @@ device manager's job is to say what the computer has and which driver runs it.
       sets up a share of the triangles into its own list, then rasterises and shades its own
       bands of 8 rows from all the lists in draw order. A 4-processor virtual machine draws
       about 3.7 times as fast as one.
-    - **Four pixels at a time** (`rust/src/jit4.rs`): fragment shaders are also compiled to
-      code that shades four neighbouring pixels of a row at once, one per SSE lane, with each
+    - **Four or eight pixels at a time** (`rust/src/jit4.rs`): fragment shaders are also
+      compiled to code that shades four neighbouring pixels of a row at once, one per SSE
+      lane (eight, one per AVX2 lane, in the 64-bit edition on a processor with AVX2; the
+      log says which), with each
       register kept as component vectors so swizzles cost nothing. Branches, loops,
       `discard` and `return` run under per-pixel masks; texture reads take one call for the
       four pixels (the texture looked up once, the four channels of each bilinear texel

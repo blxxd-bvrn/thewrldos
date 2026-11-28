@@ -704,7 +704,7 @@ typedef struct sl_wk {
     pipe_t *P; dxbc_exec_t fx, vx; vec4_t fin[DX_MAX_REG], fout[DX_MAX_REG], vin[DX_MAX_REG], vout[DX_MAX_REG]; uint32_t pixels;
     /* four pixels at a time, where the fragment shader compiles that way: registers as
      * component vectors (register r, component c, pixel l at 16 * r + 4 * c + l) */
-    dxbc_quad_t *q; float *qin, *qout;
+    dxbc_quad_t *q; float *qin, *qout; int nl;        /* nl: 4 pixels (SSE2) or 8 (AVX2) */
 } sl_wk_t;
 static bool vertex_slot(pipe_t *P, int slot, uint32_t index, const fatvert_t *imm, float *out) {
     glctx_t *g = P->g; struct gl2 *x = g->x; struct glsl_state *s = P->s;
@@ -902,14 +902,20 @@ static bool pipe_setup(pipe_t *P, glctx_t *g, sl_obj_t *o) {
     bool quad = true;
     for (int i = 0; i < P->nwk && quad; i++) {
         sl_wk_t *W = &P->wk[i];
-        W->qin = kzalloc(sizeof(float) * 16 * DX_MAX_REG); W->qout = kzalloc(sizeof(float) * 16 * DX_MAX_REG);
-        if (W->qin && W->qout) W->q = dxbc_quad_new(P->sh[0], &P->env[0], W->qin, W->qout);
+        W->qin = kzalloc(sizeof(float) * 32 * DX_MAX_REG); W->qout = kzalloc(sizeof(float) * 32 * DX_MAX_REG);
+        if (W->qin && W->qout) {
+            /* eight pixels where the processor has AVX2 (and the system saves it), else four */
+            W->nl = 8; W->q = dxbc_quad_new_n(P->sh[0], &P->env[0], W->qin, W->qout, 8);
+            if (!W->q) { W->nl = 4; W->q = dxbc_quad_new(P->sh[0], &P->env[0], W->qin, W->qout); }
+        }
         quad = W->q != NULL;
     }
     if (!quad) for (int i = 0; i < P->nwk; i++) { sl_wk_t *W = &P->wk[i]; if (W->q) dxbc_quad_free(W->q); W->q = NULL; }
     else {
+        static int said;
+        if (!said) { said = 1; klog("w32: GLSL fragment shaders run %d pixels at a time (%s)", P->wk[0].nl, P->wk[0].nl == 8 ? "AVX2" : "SSE2"); }
         P->env[0].sample = sl_sample_sse;                /* the four-pixel code needs SSE2 anyway */
-        for (int i = 0; i < P->nwk; i++) dxbc_quad_sample4(P->wk[i].q, sl_sample4_sse);
+        for (int i = 0; i < P->nwk; i++) dxbc_quad_sample4(P->wk[i].q, P->wk[i].nl == 8 ? sl_sample8_sse : sl_sample4_sse);
     }
     return true;
 }

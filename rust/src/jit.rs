@@ -39,7 +39,9 @@ pub(crate) struct Asm {
     pub(crate) consts: Vec<[u32; 4]>,
     pub(crate) cfix: Vec<(usize, usize, usize)>,     // disp32 position, end of the instruction, constant
     pub(crate) label: Vec<usize>,                     // code offset of each IR instruction
-    pub(crate) jfix: Vec<(usize, usize)>,             // rel32 position, IR target (nins: the "ok" exit, nins+1: "fail")
+    pub(crate) jfix: Vec<(usize, usize)>,
+    /// 256-bit AVX forms (VEX, 8 lanes) of the SSE instructions, for jit4.rs at 8 lanes
+    pub(crate) wide: bool,             // rel32 position, IR target (nins: the "ok" exit, nins+1: "fail")
 }
 
 impl Asm {
@@ -49,7 +51,25 @@ impl Asm {
         if let Some(i) = self.consts.iter().position(|c| *c == v) { return i; }
         self.consts.push(v); self.consts.len() - 1
     }
-    pub(crate) fn k4(&mut self, x: u32) -> usize { self.konst([x; 4]) }
+    pub(crate) fn k4(&mut self, x: u32) -> usize {
+        if !self.wide { return self.konst([x; 4]); }
+        /* 32 bytes: two entries in a row (looked up as a pair) */
+        if let Some(i) = (0..self.consts.len().saturating_sub(1)).find(|&i| self.consts[i] == [x; 4] && self.consts[i + 1] == [x; 4]) { return i; }
+        self.consts.push([x; 4]); self.consts.push([x; 4]); self.consts.len() - 2
+    }
+    /// VEX prefix (three-byte form) for 256-bit operations: legacy prefix pre, opcode map
+    /// (1: 0F, 2: 0F38), second source v (0 when there is none)
+    pub(crate) fn vex(&mut self, pre: u8, map: u8, v: u8) {
+        let pp = match pre { 0x66 => 1, 0xF3 => 2, 0xF2 => 3, _ => 0 };
+        self.byte(0xC4); self.byte(0xE0 | map); self.byte(((!v & 15) << 3) | 4 | pp);
+    }
+    /// The register an SSE instruction also reads, as VEX's second source: none for the
+    /// one-operand forms, the shifted register for the shift-by-immediate group
+    fn vex_v(op: u8, x: u8, y: u8) -> u8 {
+        match op { 0x10 | 0x11 | 0x28 | 0x29 | 0x50 | 0x51 | 0x5B | 0x70 => 0, 0x71 | 0x72 | 0x73 => y, _ => x }
+    }
+    pub(crate) fn vbroadcastss(&mut self, x: u8, m: M) { self.vex(0x66, 2, 0); self.byte(0x18); self.modrm(x, m, 0); }
+    pub(crate) fn vzeroupper(&mut self) { self.byte(0xC5); self.byte(0xF8); self.byte(0x77); }
     /// ModRM (+SIB, disp32) for register field r and operand m; imm: immediate bytes that follow.
     pub(crate) fn modrm(&mut self, r: u8, m: M, imm: usize) {
         match m {
@@ -64,10 +84,19 @@ impl Asm {
     }
     pub(crate) fn modreg(&mut self, r: u8, rm: u8) { self.byte(0xC0 | (r << 3) | rm); }
     /* SSE: [prefix] 0F op */
-    pub(crate) fn sse_m(&mut self, pre: u8, op: u8, x: u8, m: M) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 0); }
-    pub(crate) fn sse_r(&mut self, pre: u8, op: u8, x: u8, y: u8) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modreg(x, y); }
+    pub(crate) fn sse_m(&mut self, pre: u8, op: u8, x: u8, m: M) {
+        if self.wide { self.vex(pre, 1, Self::vex_v(op, x, 0)); self.byte(op); self.modrm(x, m, 0); return; }
+        if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 0);
+    }
+    pub(crate) fn sse_r(&mut self, pre: u8, op: u8, x: u8, y: u8) {
+        if self.wide { self.vex(pre, 1, Self::vex_v(op, x, y)); self.byte(op); self.modreg(x, y); return; }
+        if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modreg(x, y);
+    }
     pub(crate) fn sse_ri(&mut self, pre: u8, op: u8, x: u8, y: u8, imm: u8) { self.sse_r(pre, op, x, y); self.byte(imm); }
-    pub(crate) fn sse_mi(&mut self, pre: u8, op: u8, x: u8, m: M, imm: u8) { if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 1); self.byte(imm); }
+    pub(crate) fn sse_mi(&mut self, pre: u8, op: u8, x: u8, m: M, imm: u8) {
+        if self.wide { self.vex(pre, 1, Self::vex_v(op, x, 0)); self.byte(op); self.modrm(x, m, 1); self.byte(imm); return; }
+        if pre != 0 { self.byte(pre); } self.byte(0x0F); self.byte(op); self.modrm(x, m, 1); self.byte(imm);
+    }
     pub(crate) fn movups_ld(&mut self, x: u8, m: M) { self.sse_m(0, 0x10, x, m); }
     pub(crate) fn movups_st(&mut self, m: M, x: u8) { self.sse_m(0, 0x11, x, m); }
     pub(crate) fn movaps(&mut self, x: u8, y: u8) { self.sse_r(0, 0x28, x, y); }
@@ -473,11 +502,11 @@ pub fn compile(s: &Shader) -> Option<(*mut u8, usize)> {
     if ins.iter().any(|i| i.op >= OP_BLOCK) { return None; }
     /* control flow is compiled or not at all */
     {
-        let g0 = Gen { a: Asm { b: Vec::new(), consts: Vec::new(), cfix: Vec::new(), label: Vec::new(), jfix: Vec::new() }, s, pool: s.pool() };
+        let g0 = Gen { a: Asm { b: Vec::new(), consts: Vec::new(), cfix: Vec::new(), label: Vec::new(), jfix: Vec::new(), wide: false }, s, pool: s.pool() };
         if ins.iter().any(|i| matches!(i.op, OP_IF | OP_BREAKC | OP_CONTINUEC | OP_RETC | OP_DISCARD) && !g0.ok_opnd(i.o[0], false)) { return None; }
         if ins.iter().any(|i| matches!(i.op, OP_SWITCH | OP_CASE | OP_DEFAULT | OP_ENDSWITCH | OP_CALL | OP_CALLC | OP_LABEL)) { return None; }
     }
-    let mut g = Gen { a: Asm { b: Vec::new(), consts: Vec::new(), cfix: Vec::new(), label: Vec::new(), jfix: Vec::new() }, s, pool: s.pool() };
+    let mut g = Gen { a: Asm { b: Vec::new(), consts: Vec::new(), cfix: Vec::new(), label: Vec::new(), jfix: Vec::new(), wide: false }, s, pool: s.pool() };
     let n = ins.len();
     /* entry: save registers, the context in ebx, the register files in esi, ebp, edi */
     for r in [EBX, EBP, ESI, EDI] { g.a.byte(0x50 + r); }
@@ -505,6 +534,7 @@ pub(crate) fn link(a: Asm, n: usize) -> Option<(*mut u8, usize)> {
     let fail = g.a.b.len();
     g.a.byte(0xB8); g.a.d32(0);
     g.a.here(tail);
+    if g.a.wide { g.a.vzeroupper(); }
     if X64 { g.a.byte(0x48); g.a.byte(0x83); g.a.byte(0xC4); g.a.byte(40); } else { g.a.byte(0x83); g.a.byte(0xC4); g.a.byte(32); }
     for r in [EDI, ESI, EBP, EBX] { g.a.byte(0x58 + r); }
     g.a.byte(0xC3);
