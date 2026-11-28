@@ -328,7 +328,15 @@ static void WINAPI glFinish(void) { glFlush(); }
 
 /* ---------------- pixel transfer ---------------- */
 /* bytes per pixel of a format/type pair; 0 if it is not supported */
+/* components of a pixel in format fmt, and whether type is one value per component
+ * (BYTE ... FLOAT) rather than packed */
+static int fmt_comps(GLenum fmt) { return fmt == 0x1908 || fmt == 0x80E1 ? 4 : fmt == 0x1907 || fmt == 0x80E0 ? 3 : fmt == 0x190A ? 2 : 1; }
+static int comp_size(GLenum type) {
+    switch (type) { case 0x1400: return 1; case 0x1402: case 0x1403: return 2; case 0x1404: case 0x1405: case 0x1406: return 4; }
+    return 0;
+}
 static int px_bytes(GLenum fmt, GLenum type) {
+    if (comp_size(type)) return fmt_comps(fmt) * comp_size(type);   /* BYTE, SHORT, UNSIGNED_SHORT, INT, UNSIGNED_INT, FLOAT */
     switch (type) {
     case 0x1401: return fmt == 0x1908 || fmt == 0x80E1 ? 4 : fmt == 0x1907 || fmt == 0x80E0 ? 3 : fmt == 0x190A ? 2 : 1;
     case 0x8367: case 0x8035: return 4;                             /* UNSIGNED_INT_8_8_8_8(_REV) */
@@ -338,6 +346,24 @@ static int px_bytes(GLenum fmt, GLenum type) {
 }
 static uint32_t px_read(GLenum fmt, GLenum type, const uint8_t *s) {
     uint32_t r, gg, b, a = 255;
+    if (comp_size(type)) {
+        /* each component to 0..255 as GL normalises it (unsigned: v / max; signed: v / max,
+         * negatives to 0; float as is, clamped), then read as UNSIGNED_BYTE */
+        uint8_t u[4];
+        for (int i = 0; i < fmt_comps(fmt); i++) {
+            float f;
+            switch (type) {
+            case 0x1400: f = ((const int8_t *)s)[i] / 127.0f; break;
+            case 0x1402: { int16_t v; memcpy(&v, s + 2 * i, 2); f = v / 32767.0f; break; }
+            case 0x1403: { uint16_t v; memcpy(&v, s + 2 * i, 2); f = v / 65535.0f; break; }
+            case 0x1404: { int32_t v; memcpy(&v, s + 4 * i, 4); f = (float)(v / 2147483647.0); break; }
+            case 0x1405: { uint32_t v; memcpy(&v, s + 4 * i, 4); f = (float)(v / 4294967295.0); break; }
+            default: memcpy(&f, s + 4 * i, 4); break;
+            }
+            u[i] = f != f || f <= 0 ? 0 : f >= 1 ? 255 : (uint8_t)(f * 255 + 0.5f);
+        }
+        return px_read(fmt, 0x1401, u);
+    }
     if (type == 0x8367 || type == 0x8035) {                          /* as 32-bit words; _REV is byte order on little endian */
         uint32_t w = *(const uint32_t *)s;
         if (type == 0x8035) w = __builtin_bswap32(w);
@@ -410,11 +436,14 @@ static void WINAPI glBindTexture(GLenum target, GLuint t) {
     if (x && g->active_unit >= 0 && g->active_unit < 16) x->unit_tex[g->active_unit] = t;
     if (!g->active_unit) g->bound = t;                                /* the fixed-function path textures from unit 0 */
 }
+/* the texture bound to the active unit: what glTexImage2D and the like change */
+static GLuint act_tex(glctx_t *g) {
+    if (g->active_unit > 0 && g->active_unit < 16 && g->x) return g->x->unit_tex[g->active_unit];
+    return g->bound;
+}
 static void WINAPI glTexParameteri(GLenum target, GLenum p, GLint v) {
     G; (void)target;
-    /* the texture bound to the active unit */
-    GLuint t = g->bound;
-    if (g->active_unit > 0 && g->active_unit < 16 && g->x) t = g->x->unit_tex[g->active_unit];
+    GLuint t = act_tex(g);
     if (t >= NTEX) return;
     if (p == 0x2800 || p == 0x2801) g->tex[t].linear = v != 0x2600 && v != 0x2700;   /* GL_NEAREST, GL_NEAREST_MIPMAP_NEAREST */
     else if (p == 0x2802) g->tex[t].wrap_s = v; else if (p == 0x2803) g->tex[t].wrap_t = v;
@@ -425,9 +454,10 @@ static void WINAPI glTexEnvf(GLenum a, GLenum b, GLfloat c) { (void)a; (void)b; 
 static void WINAPI glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei w, GLsizei h, GLint border, GLenum fmt, GLenum type, const void *px) {
     G; (void)target; (void)ifmt; (void)border;
     if (level != 0) return;                                         /* mipmaps: only the base level is used */
-    if (w <= 0 || h <= 0 || w > 2048 || h > 2048 || g->bound >= NTEX) { err(g, 0x0501); return; }
+    GLuint id = act_tex(g);
+    if (w <= 0 || h <= 0 || w > 2048 || h > 2048 || id >= NTEX) { err(g, 0x0501); return; }
     if (!px_bytes(fmt, type)) { err(g, 0x0500); return; }
-    gltex_t *t = &g->tex[g->bound];
+    gltex_t *t = &g->tex[id];
     if (t->c && (t->c->w != w || t->c->h != h)) { canvas_free(t->c); t->c = NULL; }
     if (!t->c) t->c = canvas_new(w, h);
     t->used = true;
@@ -438,14 +468,16 @@ static void WINAPI glTexImage2D(GLenum target, GLint level, GLint ifmt, GLsizei 
 }
 static void WINAPI glTexSubImage2D(GLenum target, GLint level, GLint xo, GLint yo, GLsizei w, GLsizei h, GLenum fmt, GLenum type, const void *px) {
     G; (void)target;
-    if (level || g->bound >= NTEX || !g->tex[g->bound].c) return;
+    GLuint id = act_tex(g);
+    if (level || id >= NTEX || !g->tex[id].c) return;
     if (!px_bytes(fmt, type)) { err(g, 0x0500); return; }
-    upload(g, g->tex[g->bound].c, xo, yo, w, h, fmt, type, px);
+    upload(g, g->tex[id].c, xo, yo, w, h, fmt, type, px);
 }
 static void WINAPI glCopyTexSubImage2D(GLenum target_, GLint level, GLint xo, GLint yo, GLint x, GLint y, GLsizei w, GLsizei h) {
     G; (void)target_;
-    tgt_t t; if (level || g->bound >= NTEX || !g->tex[g->bound].c || !target(g, &t)) return;
-    canvas_t *c = g->tex[g->bound].c;
+    GLuint id = act_tex(g);
+    tgt_t t; if (level || id >= NTEX || !g->tex[id].c || !target(g, &t)) return;
+    canvas_t *c = g->tex[id].c;
     for (int r = 0; r < h; r++) {
         int sy = y + r, row = t.flip ? sy : t.h - 1 - sy, dy = yo + r;
         if (row < 0 || row >= t.h || dy < 0 || dy >= c->h) continue;

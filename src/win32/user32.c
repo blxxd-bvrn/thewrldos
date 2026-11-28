@@ -65,6 +65,14 @@ static w32cls_t *classes;
 typedef struct { uintptr_t hwnd, id; uint32_t ms, next; w32_proc_t *proc; void *fn; bool used; } w32timer_t;
 static w32timer_t timers[64];
 static uint8_t keystate[256];
+/* per virtual key: the toggle (low bit of GetKeyState, flips on each press, as Caps Lock's
+ * light does) and "pressed since GetAsyncKeyState last asked" (its low bit) */
+static uint8_t keytoggle[256], keyhit[256];
+static void key_set(int vk, bool down) {
+    vk &= 0xFF;
+    if (down && !keystate[vk]) { keytoggle[vk] ^= 1; keyhit[vk] = 1; }
+    keystate[vk] = down;
+}
 static uint8_t key_char[256];                /* vk -> the character of its last key press */
 static w32win_t *focus_win;
 
@@ -541,8 +549,8 @@ static void wm_mouse_cb(window_t *win, int type, int x, int y, int btn) {
     int lx = x - ox, ly = y - oy;
     uint32_t lp = (lx & 0xFFFF) | ((ly & 0xFFFF) << 16);
     /* the button state, as GetAsyncKeyState and DirectInput see it (VK_LBUTTON, VK_RBUTTON, VK_MBUTTON) */
-    if (type == ME_DOWN) { if (btn & MB_LEFT) keystate[1] = 1; if (btn & MB_RIGHT) keystate[2] = 1; if (btn & MB_MIDDLE) keystate[4] = 1; }
-    if (type == ME_UP) { if (!btn || (btn & MB_LEFT)) keystate[1] = 0; if (!btn || (btn & MB_RIGHT)) keystate[2] = 0; if (!btn || (btn & MB_MIDDLE)) keystate[4] = 0; }
+    if (type == ME_DOWN) { if (btn & MB_LEFT) key_set(1, true); if (btn & MB_RIGHT) key_set(2, true); if (btn & MB_MIDDLE) key_set(4, true); }
+    if (type == ME_UP) { if (!btn || (btn & MB_LEFT)) key_set(1, false); if (!btn || (btn & MB_RIGHT)) key_set(2, false); if (!btn || (btn & MB_MIDDLE)) key_set(4, false); }
     if (type == ME_WHEEL) { extern int w32_wheel_acc; w32_wheel_acc += -btn * 120; }
     uint32_t mk = (win->ui.down ? 1 : 0) | (keystate[0x10] ? 4 : 0) | (keystate[0x11] ? 8 : 0);
     /* built-in control behaviour */
@@ -580,7 +588,7 @@ static void wm_mouse_cb(window_t *win, int type, int x, int y, int btn) {
 static void wm_key_cb(window_t *win, key_event_t *e) {
     w32win_t *t = win->w32; if (!t) return;
     int vk = vk_of(e);
-    if (vk) keystate[vk & 0xFF] = e->pressed;
+    if (vk) key_set(vk, e->pressed);
     if (vk != 0x10 && vk != 0x11 && vk != 0x12) {          /* modifiers held during this key, even if their own events did not reach us */
         keystate[0x10] = keystate[0xA0] = (e->mods & MOD_SHIFT) != 0;
         keystate[0x11] = keystate[0xA2] = (e->mods & MOD_CTRL) != 0;
@@ -1106,15 +1114,60 @@ static int WINAPI GetSystemMetrics(int i) {
 static HANDLE WINAPI LoadCursorA(HINSTANCE h, const char *n) { return 0x20001; }
 static HANDLE WINAPI LoadIconA(HINSTANCE h, const char *n) { return 0x20002; }
 static HANDLE WINAPI LoadImageA(HINSTANCE h, const char *n, UINT t, int cx, int cy, UINT f) { return t == 0 ? 0 : 0x20003; }
-static HANDLE WINAPI SetCursor(HANDLE c) { return 0x20001; }
-static int WINAPI ShowCursor(BOOL s) { return s ? 0 : -1; }
+/* A program hides the pointer over its windows with ShowCursor(FALSE) (a count below zero)
+ * or SetCursor(NULL), as games do; over everything else it stays. Kept per process. */
+static struct { w32_proc_t *proc; int count; bool none; } cursor_state[16];
+static int cursor_slot(w32_proc_t *p) {
+    int free = -1;
+    for (int i = 0; i < 16; i++) { if (cursor_state[i].proc == p) return i; if (!cursor_state[i].proc && free < 0) free = i; }
+    if (free < 0) return -1;
+    cursor_state[free].proc = p; cursor_state[free].count = 0; cursor_state[free].none = false;
+    return free;
+}
+static void cursor_apply(w32_proc_t *p, int i) {
+    bool hide = cursor_state[i].count < 0 || cursor_state[i].none;
+    for (w32win_t *w = all_wins; w; w = w->all_next)
+        if (w->proc == p && !w->parent && w->top && !w->destroyed) w->top->cursor = hide ? CURSOR_NONE : CURSOR_ARROW;
+}
+/* a process that ends: its slot is free again */
+static void cursor_forget(w32_proc_t *p) { for (int i = 0; i < 16; i++) if (cursor_state[i].proc == p) cursor_state[i].proc = NULL; }
+static HANDLE WINAPI SetCursor(HANDLE c) {
+    w32_proc_t *p = P; int i = cursor_slot(p);
+    if (i < 0) return 0x20001;
+    HANDLE old = cursor_state[i].none ? 0 : 0x20001;
+    cursor_state[i].none = c == 0;
+    cursor_apply(p, i);
+    return old;
+}
+static int WINAPI ShowCursor(BOOL s) {
+    w32_proc_t *p = P; int i = cursor_slot(p);
+    if (i < 0) return s ? 0 : -1;
+    cursor_state[i].count += s ? 1 : -1;
+    cursor_apply(p, i);
+    return cursor_state[i].count;
+}
 static BOOL WINAPI GetCursorPos(LONG *pt) { pt[0] = wm_mouse_x; pt[1] = wm_mouse_y; return 1; }
-static BOOL WINAPI SetCursorPos(int x, int y) { return 1; }
+/* the pointer itself moves (games centre it each frame and turn by how far it then goes) */
+static BOOL WINAPI SetCursorPos(int x, int y) {
+    extern void mouse_warp(int x, int y);
+    x = CLAMP(x, 0, SCREEN_W - 1); y = CLAMP(y, 0, SCREEN_H - 1);
+    mouse_warp(x, y);
+    wm_mouse_x = x; wm_mouse_y = y;
+    return 1;
+}
 static BOOL WINAPI DestroyIcon(HANDLE h) { return 1; }
 static BOOL WINAPI DrawIcon(HDC h, int x, int y, HANDLE i) { dc_t *d = DC(h); if (!d) return 0; draw_icon(d->surf, ICON_EXE, 32, d->ox + x, d->oy + y); return 1; }
-static int16_t WINAPI GetKeyState(int vk) { return keystate[vk & 0xFF] ? (int16_t)0x8000 : 0; }
-static int16_t WINAPI GetAsyncKeyState(int vk) { if (vk == 1) return wm_window_count() ? 0 : 0; return keystate[vk & 0xFF] ? (int16_t)0x8001 : 0; }
-static BOOL WINAPI GetKeyboardState(BYTE *s) { for (int i = 0; i < 256; i++) s[i] = keystate[i] ? 0x80 : 0; return 1; }
+/* as Windows returns them: GetKeyState 0xFF80 for a key that is down (programs test the
+ * sign of the short or of its low byte), plus the toggle bit; GetAsyncKeyState 0x8000
+ * when down, plus 1 when pressed since the last call */
+static int16_t WINAPI GetKeyState(int vk) { vk &= 0xFF; return (int16_t)((keystate[vk] ? 0xFF80 : 0) | (keytoggle[vk] & 1)); }
+static int16_t WINAPI GetAsyncKeyState(int vk) {
+    vk &= 0xFF;
+    int16_t r = (int16_t)((keystate[vk] ? 0x8000 : 0) | (keyhit[vk] ? 1 : 0));
+    keyhit[vk] = 0;
+    return r;
+}
+static BOOL WINAPI GetKeyboardState(BYTE *s) { for (int i = 0; i < 256; i++) s[i] = (keystate[i] ? 0x80 : 0) | (keytoggle[i] & 1); return 1; }
 static UINT WINAPI MapVirtualKeyW(UINT c, UINT t);
 static UINT WINAPI MapVirtualKeyA(UINT c, UINT t) { return MapVirtualKeyW(c, t); }
 static DWORD WINAPI GetSysColor(int i) { gdiobj_t *o = OBJ(i + 1); return o ? (C_R(o->color) | (C_G(o->color) << 8) | (C_B(o->color) << 16)) : 0; }
@@ -1158,6 +1211,7 @@ bool w32_hwnd_client(uintptr_t hwnd, canvas_t **surf, rect_t *client) {
 }
 void w32_user_cleanup(w32_proc_t *p) {
     for (int i = 0; i < 64; i++) if (timers[i].proc == p) timers[i].used = false;
+    cursor_forget(p);
     for (w32win_t **pp = &all_wins; *pp;) {
         w32win_t *w = *pp;
         if (w->proc == p) {

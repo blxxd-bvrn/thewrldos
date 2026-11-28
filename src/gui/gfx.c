@@ -1177,6 +1177,7 @@ static void fb_store(int x, int y, uint32_t col) {
     screen.px[(size_t)y * screen.stride + x] = col | 0xFF000000u;
 }
 static void fb_draw_cursor(int kind, int mx, int my) {
+    if (kind == CURSOR_NONE) return;
     int w, h, hx, hy; cursor_metrics(kind, &w, &h, &hx, &hy);
     int ox = mx - hx, oy = my - hy;
     if (kind >= 0 && kind < CURSOR_COUNT && ucur[kind].px) {
@@ -1204,7 +1205,9 @@ static void fb_draw_cursor(int kind, int mx, int my) {
     }
 }
 static uint32_t cursor_saved[64 * 64];
+static int cursor_kind(int kind) { return kind == CURSOR_NONE ? kind : kind < 0 || kind >= CURSOR_COUNT ? CURSOR_ARROW : kind; }
 static rect_t cursor_rect(int kind, int x, int y) {
+    if (kind == CURSOR_NONE) return R(x, y, 0, 0);
     if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
     int w, h, hx, hy; cursor_metrics(kind, &w, &h, &hx, &hy);
     return rect_intersect(R(x - hx, y - hy, w, h), R(0, 0, SCREEN_W, SCREEN_H));
@@ -1222,7 +1225,7 @@ static void display_rect(rect_t r) {
         screen.px + (size_t)r.y * screen.stride + r.x, screen.stride);
 }
 void gfx_present(int kind, int mx, int my) {
-    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
+    kind = cursor_kind(kind);
     rect_t r = cursor_rect(kind, mx, my); cursor_save(r, false);
     fb_draw_cursor(kind, mx, my);
     basicfb_present(&display, screen.px, screen.stride);
@@ -1230,12 +1233,15 @@ void gfx_present(int kind, int mx, int my) {
     cur_x = mx; cur_y = my; cur_kind = kind;
 }
 void gfx_present_region(int kind, int mx, int my, rect_t r) {
-    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
+    kind = cursor_kind(kind);
     if (!display.have_frame) { gfx_present(kind, mx, my); return; }
     rect_t c = cursor_rect(kind, mx, my), old = cursor_rect(cur_kind, cur_x, cur_y);
-    /* the region, and where the cursor was and is */
-    int x0 = MIN(r.x, MIN(c.x, old.x)), y0 = MIN(r.y, MIN(c.y, old.y));
-    int x1 = MAX(r.x + r.w, MAX(c.x + c.w, old.x + old.w)), y1 = MAX(r.y + r.h, MAX(c.y + c.h, old.y + old.h));
+    /* the region, and where the cursor was and is (a hidden one has no area) */
+    int x0 = r.x, y0 = r.y, x1 = r.x + r.w, y1 = r.y + r.h;
+    rect_t ex[2] = { c, old };
+    for (int i = 0; i < 2; i++) if (ex[i].w > 0 && ex[i].h > 0) {
+        x0 = MIN(x0, ex[i].x); y0 = MIN(y0, ex[i].y); x1 = MAX(x1, ex[i].x + ex[i].w); y1 = MAX(y1, ex[i].y + ex[i].h);
+    }
     cursor_save(c, false);
     fb_draw_cursor(kind, mx, my);
     basicfb_present_region(&display, screen.px, screen.stride, x0, y0, x1 - x0, y1 - y0);
@@ -1243,7 +1249,7 @@ void gfx_present_region(int kind, int mx, int my, rect_t r) {
     cur_x = mx; cur_y = my; cur_kind = kind;
 }
 void gfx_move_cursor(int kind, int mx, int my) {
-    if (kind < 0 || kind >= CURSOR_COUNT) kind = CURSOR_ARROW;
+    kind = cursor_kind(kind);
     if (mx == cur_x && my == cur_y && kind == cur_kind) return;
     if (!display.have_frame) { gfx_present(kind, mx, my); return; }
     rect_t old = cursor_rect(cur_kind, cur_x, cur_y), r = cursor_rect(kind, mx, my);

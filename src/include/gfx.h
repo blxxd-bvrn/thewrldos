@@ -115,6 +115,7 @@ int wordmark_width(int style);
 
 /* cursor + presentation */
 enum { CURSOR_ARROW, CURSOR_IBEAM, CURSOR_HAND, CURSOR_SIZE_NS, CURSOR_SIZE_EW, CURSOR_SIZE_NWSE, CURSOR_SIZE_NESW, CURSOR_BUSY, CURSOR_MOVE, CURSOR_CROSS, CURSOR_COUNT };
+#define CURSOR_NONE 0x7F                /* no pointer drawn: a program hid it (not 0, which is "unset" for windows) */
 void gfx_present(int cursor, int mx, int my);
 void gfx_present_region(int cursor, int mx, int my, rect_t r);   /* only r changed (and the cursor) */
 void gfx_move_cursor(int cursor, int mx, int my);
